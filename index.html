@@ -1770,43 +1770,64 @@
           errorPageController.listVisibilityChanged(e);
       }
       function onDocumentLoadOrUpdate() {
-        const t =
-            loadTimeData.valueExists("downloadButton") &&
-            loadTimeData.getValue("downloadButton").msg,
-          e = document.getElementById("details-button"),
-          n = loadTimeData.valueExists("suggestedOfflineContentPresentation");
-        n &&
-          (document.querySelector(".nav-wrapper").classList.add(HIDDEN_CLASS),
-          e.classList.add(HIDDEN_CLASS),
-          (document.getElementById("download-link").hidden = !t),
+        const downloadButtonMsg =
+          loadTimeData.valueExists("downloadButton") &&
+          loadTimeData.getValue("downloadButton").msg;
+        const detailsButton = document.getElementById("details-button");
+        const suggestedOfflineContent = loadTimeData.valueExists(
+          "suggestedOfflineContentPresentation"
+        );
+
+        if (suggestedOfflineContent) {
+          document.querySelector(".nav-wrapper").classList.add(HIDDEN_CLASS);
+          detailsButton.classList.add(HIDDEN_CLASS);
+          document.getElementById("download-link").hidden = !downloadButtonMsg;
           document
             .getElementById("download-links-wrapper")
-            .classList.remove(HIDDEN_CLASS),
+            .classList.remove(HIDDEN_CLASS);
           document
             .getElementById("error-information-popup-container")
-            .classList.add("use-popup-container", HIDDEN_CLASS),
+            .classList.add("use-popup-container", HIDDEN_CLASS);
           document
             .getElementById("error-information-button")
-            .classList.remove(HIDDEN_CLASS));
-        loadTimeData.valueExists("attemptAutoFetch") &&
+            .classList.remove(HIDDEN_CLASS);
+        }
+
+        const attemptAutoFetch =
+          loadTimeData.valueExists("attemptAutoFetch") &&
           loadTimeData.getValue("attemptAutoFetch");
-        const o =
-            loadTimeData.valueExists("reloadButton") &&
-            loadTimeData.getValue("reloadButton").msg,
-          i = document.getElementById("reload-button"),
-          a = document.getElementById("download-button");
-        "none" === i.style.display &&
-          "none" === a.style.display &&
-          e.classList.add("singular"),
-          (document.getElementById("control-buttons").hidden = n || !(o || t));
-        const s =
+
+        const reloadButtonMsg =
+          loadTimeData.valueExists("reloadButton") &&
+          loadTimeData.getValue("reloadButton").msg;
+        const reloadButton = document.getElementById("reload-button");
+        const downloadButton = document.getElementById("download-button");
+
+        if (
+          reloadButton.style.display === "none" &&
+          downloadButton.style.display === "none"
+        ) {
+          detailsButton.classList.add("singular");
+        }
+
+        document.getElementById("control-buttons").hidden =
+          suggestedOfflineContent || !(reloadButtonMsg || downloadButtonMsg);
+
+        const iconClass =
           loadTimeData.valueExists("iconClass") &&
           loadTimeData.getValue("iconClass");
-        updateIconClass(s),
-          isSubFrame ||
-            "icon-offline" !== s ||
-            (document.documentElement.classList.add("offline"),
-            new Runner(".interstitial-wrapper"));
+        updateIconClass(iconClass);
+
+        if (!isSubFrame && iconClass === "icon-offline") {
+          document.documentElement.classList.add("offline");
+          const runner = new Runner(".interstitial-wrapper");
+
+          // Initialize and enable AI
+          if (runner.initAI && runner.enableAI) {
+            runner.initAI();
+            runner.enableAI();
+          }
+        }
       }
       function onDocumentLoad() {
         const t = document.getElementById("buttons");

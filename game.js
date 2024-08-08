@@ -1,3 +1,176 @@
+function AIController(runner) {
+    this.runner = runner;
+    this.enabled = false;
+    this.thinkInterval = null;
+    this.baseJumpThreshold = 85;
+    this.minJumpThreshold = 45;
+    this.maxJumpThreshold = 220;  // Increased for extreme speeds
+    this.speedAdjustment = 8;
+    this.lastJumpScore = 0;
+    this.consecutiveJumps = 0;
+    this.reactionBuffer = 5;
+    this.lastSpeed = 0;
+    this.gameStage = 'early'; // 'early', 'mid', 'late', 'extreme'
+  }
+  
+  AIController.prototype = {
+    enable: function() {
+      this.enabled = true;
+      this.thinkInterval = setInterval(this.think.bind(this), 8);  // Even more frequent thinking
+    },
+  
+    disable: function() {
+      this.enabled = false;
+      clearInterval(this.thinkInterval);
+    },
+  
+    think: function() {
+      if (!this.enabled || !this.runner.playing) return;
+  
+      var tRex = this.runner.tRex;
+      var obstacles = this.runner.horizon.obstacles;
+  
+      if (obstacles.length > 0) {
+        var nextObstacle = obstacles[0];
+        var distanceToObstacle = nextObstacle.xPos - tRex.xPos;
+        var tRexSpeed = this.runner.currentSpeed;
+        var currentScore = Math.floor(this.runner.distanceMeter.getActualDistance(this.runner.distanceRan));
+  
+        this.updateGameStage(currentScore, tRexSpeed);
+        var speedFactor = this.calculateSpeedFactor(tRexSpeed);
+        
+        var dynamicJumpThreshold = this.calculateDynamicJumpThreshold(speedFactor, currentScore, tRexSpeed);
+        dynamicJumpThreshold = this.adjustThresholdForObstacle(dynamicJumpThreshold, nextObstacle, tRexSpeed);
+  
+        console.log("Distance to obstacle:", distanceToObstacle);
+        console.log("Current speed:", tRexSpeed);
+        console.log("Dynamic jump threshold:", dynamicJumpThreshold);
+        console.log("Current score:", currentScore);
+        console.log("Game stage:", this.gameStage);
+  
+        if (distanceToObstacle <= dynamicJumpThreshold + this.reactionBuffer && !tRex.jumping && !tRex.ducking) {
+          console.log("Jumping!");
+          this.jump();
+          this.consecutiveJumps++;
+          this.lastJumpScore = currentScore;
+        } else {
+          this.consecutiveJumps = 0;
+        }
+  
+        // Adaptive emergency jump logic
+        var emergencyThreshold = this.minJumpThreshold * (1 + (tRexSpeed - 6) / 7);
+        if (distanceToObstacle <= emergencyThreshold && !tRex.jumping && !tRex.ducking) {
+          console.log("Emergency Jump!");
+          this.jump();
+        }
+  
+        this.adaptParameters(currentScore, tRexSpeed);
+        this.lastSpeed = tRexSpeed;
+      }
+    },
+  
+    updateGameStage: function(score, speed) {
+      if (score < 200) this.gameStage = 'early';
+      else if (score < 500) this.gameStage = 'mid';
+      else if (score < 1000 || speed < 9) this.gameStage = 'late';
+      else this.gameStage = 'extreme';
+    },
+  
+    calculateSpeedFactor: function(speed) {
+      if (this.gameStage === 'early') return Math.pow(speed / 6, 1.5);
+      if (this.gameStage === 'mid') return Math.pow(speed / 6, 2);
+      if (this.gameStage === 'late') return Math.pow(speed / 6, 2.7);
+      return Math.pow(speed / 6, 3);  // 'extreme' game
+    },
+  
+    calculateDynamicJumpThreshold: function(speedFactor, currentScore, currentSpeed) {
+      var threshold = this.baseJumpThreshold - (speedFactor - 1) * this.speedAdjustment * 20;
+      
+      if (this.gameStage === 'early') {
+        threshold = Math.max(threshold, 70);
+      } else if (this.gameStage === 'mid') {
+        threshold -= Math.min(25, (currentScore - 200) / 12);
+      } else if (this.gameStage === 'late') {
+        threshold -= Math.min(50, (currentScore - 500) / 15);
+      } else { // 'extreme' game
+        threshold -= Math.min(70, (currentScore - 1000) / 12);
+      }
+  
+      // Additional adjustment for very high speeds
+      if (currentSpeed > 8) {
+        threshold += (currentSpeed - 8) * 12;
+      }
+  
+      return Math.max(this.minJumpThreshold, Math.min(this.maxJumpThreshold, threshold));
+    },
+  
+    adjustThresholdForObstacle: function(threshold, obstacle, currentSpeed) {
+      if (obstacle.typeConfig && obstacle.typeConfig.type === "CACTUS_LARGE") {
+        threshold += 25;
+      }
+      
+      threshold += obstacle.width * (1 + (currentSpeed - 6) / 10);  // Increased speed-based width adjustment
+  
+      return threshold;
+    },
+  
+    adaptParameters: function(currentScore, currentSpeed) {
+      if (this.consecutiveJumps > 2) {
+        this.baseJumpThreshold = Math.min(this.maxJumpThreshold, this.baseJumpThreshold + 7);
+        this.speedAdjustment = Math.min(20, this.speedAdjustment + 0.8);
+        this.reactionBuffer = Math.max(0, this.reactionBuffer - 0.1);
+        console.log("Adjusting AI: New base threshold =", this.baseJumpThreshold, "New speed adjustment =", this.speedAdjustment);
+      }
+  
+      if (currentScore - this.lastJumpScore > 150) {
+        this.baseJumpThreshold = 85;
+        this.speedAdjustment = 8;
+        this.reactionBuffer = 5;
+        console.log("Resetting AI parameters");
+      }
+  
+      // Stage-based parameter adjustments
+      if (this.gameStage === 'mid') {
+        this.baseJumpThreshold = Math.max(75, Math.min(this.maxJumpThreshold, 85 + (currentScore - 200) / 16));
+        this.reactionBuffer = Math.min(13, 5 + (currentScore - 200) / 100);
+      } else if (this.gameStage === 'late') {
+        this.baseJumpThreshold = Math.max(70, Math.min(this.maxJumpThreshold, 80 + (currentScore - 500) / 10));
+        this.reactionBuffer = Math.min(20, 8 + (currentScore - 500) / 70);
+        this.speedAdjustment = Math.min(28, 8 + (currentScore - 500) / 50);
+      } else if (this.gameStage === 'extreme') {
+        this.baseJumpThreshold = Math.max(65, Math.min(this.maxJumpThreshold, 75 + (currentScore - 1000) / 8));
+        this.reactionBuffer = Math.min(25, 10 + (currentScore - 1000) / 60);
+        this.speedAdjustment = Math.min(35, 10 + (currentScore - 1000) / 40);
+      }
+  
+      // Speed-based adjustments
+      if (currentSpeed > 9) {
+        this.reactionBuffer = Math.max(this.reactionBuffer, 12);
+        this.minJumpThreshold = Math.max(25, this.minJumpThreshold - (currentSpeed - 9) * 2.5);
+      }
+  
+      // Sudden speed increase detection
+      if (currentSpeed - this.lastSpeed > 0.25) {
+        this.reactionBuffer += 3;
+        this.baseJumpThreshold += 10;
+        console.log("Speed increase detected! Adjusting parameters.");
+      }
+    },
+  
+    jump: function() {
+      var syntheticEvent = {
+        preventDefault: function() {},
+        type: 'keydown',
+        keyCode: 38,
+        which: 38,
+        charCode: 0,
+        key: 'ArrowUp',
+        code: 'ArrowUp'
+      };
+      this.runner.onKeyDown(syntheticEvent);
+    }
+  };
+
 function Runner(t, e) {
   if (Runner.instance_) return Runner.instance_;
   (Runner.instance_ = this),
@@ -738,6 +911,26 @@ function Horizon(t, e, i, s) {
         this.horizon.enableAltGameMode(this.spriteDef),
         this.generatedSoundFx.background();
     },
+    initAI() {
+        console.log('initAI')
+        this.aiController = new AIController(this);
+    },
+    enableAI() {
+        console.log('enableAI')
+
+        if (this.aiController) {
+            this.aiController.enable();
+        } else {
+            console.error('AI controller not initialized. Call initAI() first.');
+        }
+    },
+    disableAI() {
+        console.log('disableAI')
+        
+        if (this.aiController) {
+          this.aiController.disable();
+        }
+    },
     update() {
       this.updatePending = !1;
       const t = getTimeStamp();
@@ -1173,6 +1366,11 @@ function Horizon(t, e, i, s) {
           getA11yString(A11Y_STRINGS.jump)
         ),
         announcePhrase(getA11yString(A11Y_STRINGS.started)));
+
+        if (this.aiController && this.aiController.enabled) {
+            this.aiController.disable();
+            this.aiController.enable();
+        }
     },
     setPlayStatus(t) {
       this.touchController &&
