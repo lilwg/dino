@@ -502,7 +502,7 @@
          * Update the game status to started.
          */
         startGame: function () {
-            this.setArcadeMode();
+            // this.setArcadeMode();
             this.runningTime = 0;
             this.playingIntro = false;
             this.tRex.playingIntro = false;
