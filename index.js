@@ -1,3 +1,62 @@
+class AIPlayer {
+    constructor(runner) {
+      this.runner = runner;
+      this.tRex = runner.tRex;
+      this.horizon = runner.horizon;
+      this.activated = false;
+    }
+  
+    activate() {
+      this.activated = true;
+      this.update();
+    }
+  
+    deactivate() {
+      this.activated = false;
+    }
+  
+    update() {
+      if (!this.activated) return;
+  
+      if (this.shouldJump()) {
+        this.jump();
+      }
+  
+      // Schedule the next update
+      requestAnimationFrame(() => this.update());
+    }
+  
+    shouldJump() {
+      const obstacles = this.horizon.obstacles;
+      if (obstacles.length > 0) {
+        const closestObstacle = obstacles[0];
+        const distanceToObstacle = closestObstacle.xPos - this.tRex.xPos;
+        
+        // Adjust these values to fine-tune the jumping behavior
+        const jumpTriggerDistance = 100;
+        const jumpTriggerHeight = 50;
+  
+        return (distanceToObstacle <= jumpTriggerDistance && 
+                closestObstacle.yPos > jumpTriggerHeight);
+      }
+      return false;
+    }
+  
+    jump() {
+      if (!this.tRex.jumping) {
+        // Simulate a keydown event for jumping
+        const jumpEvent = new KeyboardEvent('keydown', { keyCode: 38 });
+        document.dispatchEvent(jumpEvent);
+        
+        // Simulate keyup shortly after
+        setTimeout(() => {
+          const keyupEvent = new KeyboardEvent('keyup', { keyCode: 38 });
+          document.dispatchEvent(keyupEvent);
+        }, 100);
+      }
+    }
+  }
+
 // Copyright (c) 2014 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
@@ -2747,6 +2806,8 @@
 
 function onDocumentLoad() {
     new Runner('.interstitial-wrapper');
+    const aiPlayer = new AIPlayer(Runner.instance_);
+    aiPlayer.activate();  // Start AI control
 }
 
 document.addEventListener('DOMContentLoaded', onDocumentLoad);
