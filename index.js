@@ -5,8 +5,8 @@ class AIPlayer {
         this.horizon = runner.horizon;
         this.activated = false;
         this.baseJumpTriggerDistance = 100;
-        this.minJumpTriggerDistance = 50;
-        this.speedAdjustmentFactor = 20;
+        this.minJumpTriggerDistance = 100;
+        this.speedAdjustmentFactor = 28;
         this.updateInterval = null;
     }
 
@@ -40,10 +40,10 @@ class AIPlayer {
 
       // Calculate jump trigger distance based on speed
       const currentSpeed = this.runner.currentSpeed;
-      const speedDifference = currentSpeed - 1.25 * this.runner.config.SPEED;
+      const speedDifference = currentSpeed - 1.6 * this.runner.config.SPEED;
       let jumpTriggerDistance =
         this.baseJumpTriggerDistance +
-        this.speedAdjustmentFactor * speedDifference;
+        this.speedAdjustmentFactor * speedDifference
 
       // Ensure the jump trigger distance doesn't get too small
       jumpTriggerDistance = Math.max(
@@ -58,12 +58,13 @@ class AIPlayer {
 
       // Check if we should duck
       if (
+        currentSpeed < 20 &&
         closestObstacle.typeConfig &&
         closestObstacle.typeConfig.type === "PTERODACTYL"
       ) {
         console.log(closestObstacle.yPos);
         if (
-          distanceToObstacle > -50 &&
+          distanceToObstacle > 0 &&
           distanceToObstacle <= jumpTriggerDistance &&
           closestObstacle.yPos == medBird
         ) {
@@ -270,7 +271,7 @@ class AIPlayer {
     MAX_CLOUDS: 6,
     MAX_OBSTACLE_LENGTH: 3,
     MAX_OBSTACLE_DUPLICATION: 2,
-    MAX_SPEED: 13,
+    MAX_SPEED: 20,
     MIN_JUMP_HEIGHT: 35,
     MOBILE_SPEED_COEFFICIENT: 1.2,
     RESOURCE_TEMPLATE_ID: "audio-resources",
