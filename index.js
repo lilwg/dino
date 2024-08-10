@@ -1,33 +1,36 @@
 class AIPlayer {
     constructor(runner) {
-      this.runner = runner;
-      this.tRex = runner.tRex;
-      this.horizon = runner.horizon;
-      this.activated = false;
-      this.baseJumpTriggerDistance = 100;  // Base distance for jumping
-      this.minJumpTriggerDistance = 50;    // Minimum distance for jumping
-      this.speedAdjustmentFactor = 20;     // Factor to adjust jump distance based on speed
+        this.runner = runner;
+        this.tRex = runner.tRex;
+        this.horizon = runner.horizon;
+        this.activated = false;
+        this.baseJumpTriggerDistance = 100;
+        this.minJumpTriggerDistance = 50;
+        this.speedAdjustmentFactor = 20;
+        this.updateInterval = null;
     }
 
-  activate() {
-    this.activated = true;
-    this.update();
-  }
-
-  deactivate() {
-    this.activated = false;
-  }
-
-  update() {
-    if (!this.activated) return;
-
-    if (this.shouldJump()) {
-      this.jump();
+    activate() {
+        this.activated = true;
+        this.update();
+        this.updateInterval = setInterval(() => this.updateInfoDisplay(), 100);
     }
 
-    // Schedule the next update
-    requestAnimationFrame(() => this.update());
-  } 
+    deactivate() {
+        this.activated = false;
+        clearInterval(this.updateInterval);
+        this.updateInfoDisplay();
+    }
+
+    update() {
+        if (!this.activated) return;
+
+        if (this.shouldJump()) {
+            this.jump();
+        }
+
+        requestAnimationFrame(() => this.update());
+    }
 
   shouldJump() {
     const obstacles = this.horizon.obstacles;
@@ -37,17 +40,43 @@ class AIPlayer {
 
       // Calculate jump trigger distance based on speed
       const currentSpeed = this.runner.currentSpeed;
-      const speedDifference = currentSpeed - 1.5*this.runner.config.SPEED;
-      let jumpTriggerDistance = this.baseJumpTriggerDistance + (this.speedAdjustmentFactor * speedDifference);
+      const speedDifference = currentSpeed - 1.25 * this.runner.config.SPEED;
+      let jumpTriggerDistance =
+        this.baseJumpTriggerDistance +
+        this.speedAdjustmentFactor * speedDifference;
 
       // Ensure the jump trigger distance doesn't get too small
-      jumpTriggerDistance = Math.max(jumpTriggerDistance, this.minJumpTriggerDistance);
+      jumpTriggerDistance = Math.max(
+        jumpTriggerDistance,
+        this.minJumpTriggerDistance
+      );
 
       // Adjust this value if needed
-      const jumpTriggerHeight = 50;
+      const highBird = 50;
+      const medBird = 75;
+      const lowBird = 100;
+
+      // Check if we should duck
+      if (
+        closestObstacle.typeConfig &&
+        closestObstacle.typeConfig.type === "PTERODACTYL"
+      ) {
+        console.log(closestObstacle.yPos);
+        if (
+          distanceToObstacle > -50 &&
+          distanceToObstacle <= jumpTriggerDistance &&
+          closestObstacle.yPos == medBird
+        ) {
+          this.duck();
+          return false;
+        }
+      }
 
       // Check if we should jump
-      if (distanceToObstacle <= jumpTriggerDistance && closestObstacle.yPos > jumpTriggerHeight) {
+      if (
+        distanceToObstacle <= jumpTriggerDistance &&
+        closestObstacle.yPos > highBird
+      ) {
         return true;
       }
     }
@@ -65,6 +94,59 @@ class AIPlayer {
         const keyupEvent = new KeyboardEvent("keyup", { keyCode: 38 });
         document.dispatchEvent(keyupEvent);
       }, 100);
+    }
+  }
+
+  duck() {
+    if (!this.tRex.jumping && !this.tRex.ducking) {
+      const duckEvent = new KeyboardEvent("keydown", { keyCode: 40 });
+      document.dispatchEvent(duckEvent);
+
+      setTimeout(() => {
+        const keyupEvent = new KeyboardEvent("keyup", { keyCode: 40 });
+        document.dispatchEvent(keyupEvent);
+      }, 500);
+    }
+  }
+
+  toggleAI() {
+    if (this.activated) {
+      this.deactivate();
+    } else {
+      this.activate();
+    }
+    this.updateUIButton();
+  }
+
+  updateUIButton() {
+    const button = document.getElementById("ai-toggle");
+    if (button) {
+      button.textContent = this.activated ? "Deactivate AI" : "Activate AI";
+    }
+  }
+
+  updateInfoDisplay() {
+    const speedElement = document.getElementById("ai-speed");
+    const distElement = document.getElementById("ai-dist");
+    const statusElement = document.getElementById("ai-status");
+
+    const score = this.runner.distanceMeter.getActualDistance(Math.ceil(this.runner.distanceRan));
+            
+    const obstacles = this.horizon.obstacles;
+    var distanceToObstacle = 0;
+    if (obstacles.length > 0) {
+      const closestObstacle = obstacles[0];
+      distanceToObstacle = closestObstacle.xPos - this.tRex.xPos;
+    }
+
+    if (speedElement && distElement && statusElement) {
+      speedElement.textContent = `Speed: ${this.runner.currentSpeed.toFixed(
+        2
+      )}`;
+      distElement.textContent = `Distance to Obstacle: ${distanceToObstacle}`;
+      statusElement.textContent = `Status: ${
+        this.tRex.ducking ? "Ducking" : this.tRex.jumping ? "Jumping" : "Running"
+      }`;
     }
   }
 }
@@ -2998,10 +3080,44 @@ class AIPlayer {
   };
 })();
 
+
+let aiPlayer;
+
+function initAI() {
+    if (typeof Runner !== 'undefined' && Runner.instance_) {
+        aiPlayer = new AIPlayer(Runner.instance_);
+        console.log('AI Player initialized');
+    } else {
+        console.log('Runner not ready, retrying in 1 second');
+        setTimeout(initAI, 1000);
+    }
+}
+
+function toggleAI() {
+    if (!aiPlayer) {
+        console.log('Initializing AI Player');
+        initAI();
+    }
+    
+    if (aiPlayer) {
+        aiPlayer.toggleAI();
+        document.getElementById('ai-toggle').textContent = aiPlayer.activated ? 'Deactivate AI' : 'Activate AI';
+    } else {
+        console.error('AI Player not initialized yet');
+    }
+}
+
+// Initialize AI when the page is loaded
+if (document.readyState === 'complete') {
+    initAI();
+} else {
+    window.addEventListener('load', initAI);
+}
+
 function onDocumentLoad() {
   new Runner(".interstitial-wrapper");
   const aiPlayer = new AIPlayer(Runner.instance_);
-  aiPlayer.activate(); // Start AI control
+  aiPlayer.updateUIButton();
 }
 
 document.addEventListener("DOMContentLoaded", onDocumentLoad);

@@ -163,3 +163,27 @@ html, body {
   transition: transform 250ms cubic-bezier(0.4, 0, 1, 1) 400ms;
   z-index: 2;
 }
+
+#ai-button-container {
+    text-align: center;
+    margin-top: 20px;
+}
+
+#ai-toggle {
+    background-color: #f1f1f1;
+    border: none;
+    color: black;
+    padding: 10px 20px;
+    text-align: center;
+    text-decoration: none;
+    display: inline-block;
+    font-size: 16px;
+    margin: 4px 2px;
+    cursor: pointer;
+    border-radius: 5px;
+    transition: background-color 0.3s;
+}
+
+#ai-toggle:hover {
+    background-color: #ddd;
+}

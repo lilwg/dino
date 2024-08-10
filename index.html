@@ -29,6 +29,14 @@
             </template>
         </div>
     </div>
+    <div id="ai-container" style="text-align: center; margin-top: 20px;">
+        <div id="ai-info" style="margin-bottom: 10px;">
+            <span id="ai-speed">Speed: 0</span> |
+            <span id="ai-dist">Distance to Obstacle: 0</span> |
+            <span id="ai-status">Status: Idle</span>
+        </div>
+        <button id="ai-toggle" onclick="toggleAI()">Activate AI</button>
+    </div>
 </body>
 
 <script>
@@ -37,6 +45,15 @@
     if (evt.keyCode == 32) {
         var box = document.getElementById("messageBox");
         box.style.visibility="hidden";
+    }
+};
+
+document.getElementById('ai-toggle').onclick = function() {
+    if (typeof aiPlayer !== 'undefined') {
+        aiPlayer.toggleAI();
+        this.textContent = aiPlayer.activated ? 'Deactivate AI' : 'Activate AI';
+    } else {
+        console.error('aiPlayer is not defined');
     }
 };
 </script>
