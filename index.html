@@ -11,10 +11,10 @@
 </head>
 
 <body id="t" class="offline">
-    <div id="messageBox" class="sendmessage">
+    <!-- <div id="messageBox" class="sendmessage">
          <h1 style="text-align: center;font-family: 'Open Sans', sans-serif;">Press Space to start</h1>
          <div class="niokbutton" onclick="okbuttonsend()"></div>
-    </div>
+    </div> -->
     <div id="main-frame-error" class="interstitial-wrapper">
         <div id="main-content">
             <div class="icon icon-offline" alt=""></div>
@@ -32,10 +32,10 @@
     <div id="ai-container" style="text-align: center; margin-top: 20px;">
         <div id="ai-info" style="margin-bottom: 10px;">
             <span id="ai-speed">Speed: 0</span> |
-            <span id="ai-dist">Distance to Obstacle: 0</span> |
             <span id="ai-status">Status: Idle</span>
         </div>
-        <button id="ai-toggle" onclick="toggleAI()">Activate AI</button>
+        <ul id="score-list"></ul>
+        <!-- <button id="ai-toggle" onclick="toggleAI()">Activate AI</button> -->
     </div>
 </body>
 
@@ -48,14 +48,14 @@
     }
 };
 
-document.getElementById('ai-toggle').onclick = function() {
-    if (typeof aiPlayer !== 'undefined') {
-        aiPlayer.toggleAI();
-        this.textContent = aiPlayer.activated ? 'Deactivate AI' : 'Activate AI';
-    } else {
-        console.error('aiPlayer is not defined');
-    }
-};
+// document.getElementById('ai-toggle').onclick = function() {
+//     if (typeof aiPlayer !== 'undefined') {
+//         aiPlayer.toggleAI();
+//         this.textContent = aiPlayer.activated ? 'Deactivate AI' : 'Activate AI';
+//     } else {
+//         console.error('aiPlayer is not defined');
+//     }
+// };
 </script>
     
 </html>

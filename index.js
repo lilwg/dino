@@ -1,36 +1,50 @@
+// Global variables
+let aiPlayer;
+let scoreList = [];
+
+function updateScoreList() {
+  const scoreListElement = document.getElementById("score-list");
+  if (scoreListElement) {
+    scoreListElement.innerHTML = scoreList
+      .map((score, index) => `<li>Game ${index + 1}: ${score}</li>`)
+      .join("");
+  }
+}
+
 class AIPlayer {
-    constructor(runner) {
-        this.runner = runner;
-        this.tRex = runner.tRex;
-        this.horizon = runner.horizon;
-        this.activated = false;
-        this.baseJumpTriggerDistance = 100;
-        this.minJumpTriggerDistance = 100;
-        this.speedAdjustmentFactor = 28;
-        this.updateInterval = null;
+  constructor(runner) {
+    this.runner = runner;
+    this.tRex = runner.tRex;
+    this.horizon = runner.horizon;
+    this.activated = true; // Start activated
+    this.baseJumpTriggerDistance = 150;
+    this.minJumpTriggerDistance = 100;
+    this.speedAdjustmentFactor = 25;
+    this.updateInterval = null;
+    this.activate(); // Activate immediately
+  }
+
+  activate() {
+    this.activated = true;
+    this.update();
+    this.updateInterval = setInterval(() => this.updateInfoDisplay(), 100);
+  }
+
+  deactivate() {
+    this.activated = false;
+    clearInterval(this.updateInterval);
+    this.updateInfoDisplay();
+  }
+
+  update() {
+    if (!this.activated) return;
+
+    if (this.shouldJump()) {
+      this.jump();
     }
 
-    activate() {
-        this.activated = true;
-        this.update();
-        this.updateInterval = setInterval(() => this.updateInfoDisplay(), 100);
-    }
-
-    deactivate() {
-        this.activated = false;
-        clearInterval(this.updateInterval);
-        this.updateInfoDisplay();
-    }
-
-    update() {
-        if (!this.activated) return;
-
-        if (this.shouldJump()) {
-            this.jump();
-        }
-
-        requestAnimationFrame(() => this.update());
-    }
+    requestAnimationFrame(() => this.update());
+  }
 
   shouldJump() {
     const obstacles = this.horizon.obstacles;
@@ -43,7 +57,7 @@ class AIPlayer {
       const speedDifference = currentSpeed - 1.6 * this.runner.config.SPEED;
       let jumpTriggerDistance =
         this.baseJumpTriggerDistance +
-        this.speedAdjustmentFactor * speedDifference
+        this.speedAdjustmentFactor * speedDifference;
 
       // Ensure the jump trigger distance doesn't get too small
       jumpTriggerDistance = Math.max(
@@ -62,7 +76,6 @@ class AIPlayer {
         closestObstacle.typeConfig &&
         closestObstacle.typeConfig.type === "PTERODACTYL"
       ) {
-        console.log(closestObstacle.yPos);
         if (
           distanceToObstacle > 0 &&
           distanceToObstacle <= jumpTriggerDistance &&
@@ -71,6 +84,16 @@ class AIPlayer {
           this.duck();
           return false;
         }
+      }
+
+      // Check if we should drop out of jump
+      if (
+        currentSpeed >= 20 &&
+        this.tRex.jumping &&
+        distanceToObstacle < 100 + currentSpeed / 2
+      ) {
+        this.keydown();
+        return false;
       }
 
       // Check if we should jump
@@ -98,15 +121,24 @@ class AIPlayer {
     }
   }
 
+  keydown() {
+    const duckEvent = new KeyboardEvent("keydown", { keyCode: 40 });
+    document.dispatchEvent(duckEvent);
+    setTimeout(() => {
+      const keyupEvent = new KeyboardEvent("keyup", { keyCode: 40 });
+      document.dispatchEvent(keyupEvent);
+    }, 200);
+  }
+
   duck() {
-    if (!this.tRex.jumping && !this.tRex.ducking) {
+    if (!this.tRex.ducking) {
       const duckEvent = new KeyboardEvent("keydown", { keyCode: 40 });
       document.dispatchEvent(duckEvent);
 
       setTimeout(() => {
         const keyupEvent = new KeyboardEvent("keyup", { keyCode: 40 });
         document.dispatchEvent(keyupEvent);
-      }, 500);
+      }, 400);
     }
   }
 
@@ -128,25 +160,20 @@ class AIPlayer {
 
   updateInfoDisplay() {
     const speedElement = document.getElementById("ai-speed");
-    const distElement = document.getElementById("ai-dist");
     const statusElement = document.getElementById("ai-status");
 
-    const score = this.runner.distanceMeter.getActualDistance(Math.ceil(this.runner.distanceRan));
-            
-    const obstacles = this.horizon.obstacles;
-    var distanceToObstacle = 0;
-    if (obstacles.length > 0) {
-      const closestObstacle = obstacles[0];
-      distanceToObstacle = closestObstacle.xPos - this.tRex.xPos;
-    }
+    if (speedElement && statusElement) {
+      speedElement.textContent = `Speed: ${(
+        (100 * this.runner.currentSpeed) /
+        13
+      ).toFixed(0)}%`;
 
-    if (speedElement && distElement && statusElement) {
-      speedElement.textContent = `Speed: ${this.runner.currentSpeed.toFixed(
-        2
-      )}`;
-      distElement.textContent = `Distance to Obstacle: ${distanceToObstacle}`;
       statusElement.textContent = `Status: ${
-        this.tRex.ducking ? "Ducking" : this.tRex.jumping ? "Jumping" : "Running"
+        this.tRex.ducking
+          ? "Ducking"
+          : this.tRex.jumping
+          ? "Jumping"
+          : "Running"
       }`;
     }
   }
@@ -271,7 +298,7 @@ class AIPlayer {
     MAX_CLOUDS: 6,
     MAX_OBSTACLE_LENGTH: 3,
     MAX_OBSTACLE_DUPLICATION: 2,
-    MAX_SPEED: 20,
+    MAX_SPEED: 35,
     MIN_JUMP_HEIGHT: 35,
     MOBILE_SPEED_COEFFICIENT: 1.2,
     RESOURCE_TEMPLATE_ID: "audio-resources",
@@ -1004,17 +1031,12 @@ class AIPlayer {
 
       this.tRex.update(100, Trex.status.CRASHED);
 
-      // Game over panel.
-      if (!this.gameOverPanel) {
-        this.gameOverPanel = new GameOverPanel(
-          this.canvas,
-          this.spriteDef.TEXT_SPRITE,
-          this.spriteDef.RESTART,
-          this.dimensions
-        );
-      } else {
-        this.gameOverPanel.draw();
-      }
+      // Record the score
+      const score = this.distanceMeter.getActualDistance(
+        Math.ceil(this.distanceRan)
+      );
+      scoreList.push(score);
+      updateScoreList();
 
       // Update the high score.
       if (this.distanceRan > this.highestScore) {
@@ -1024,6 +1046,8 @@ class AIPlayer {
 
       // Reset the time clock.
       this.time = getTimeStamp();
+
+      setTimeout(() => this.restart(), 100);
     },
 
     stop: function () {
@@ -2333,8 +2357,17 @@ class AIPlayer {
       var paint = true;
       var playSound = false;
 
+      distance = this.getActualDistance(distance);
+
+      if (distance > 0) {
+        // Acheivement unlocked
+        if (distance % this.config.ACHIEVEMENT_DISTANCE == 0) {
+          playSound = true;
+        }
+      }
+
       if (!this.acheivement) {
-        distance = this.getActualDistance(distance);
+        // distance = this.getActualDistance(distance);
         // Score has gone beyond the initial digit count.
         if (
           distance > this.maxScore &&
@@ -2352,7 +2385,7 @@ class AIPlayer {
             // Flash score and play sound.
             this.acheivement = true;
             this.flashTimer = 0;
-            playSound = true;
+            // playSound = true;
           }
 
           // Create a string representation of the distance with leading 0.
@@ -3081,38 +3114,53 @@ class AIPlayer {
   };
 })();
 
-
-let aiPlayer;
-
 function initAI() {
-    if (typeof Runner !== 'undefined' && Runner.instance_) {
-        aiPlayer = new AIPlayer(Runner.instance_);
-        console.log('AI Player initialized');
-    } else {
-        console.log('Runner not ready, retrying in 1 second');
-        setTimeout(initAI, 1000);
-    }
+  if (typeof Runner !== "undefined" && Runner.instance_) {
+    aiPlayer = new AIPlayer(Runner.instance_);
+    console.log("AI Player initialized and activated");
+
+    // Start the game
+    // Runner.instance_.play();
+    aiPlayer.jump();
+  } else {
+    console.log("Runner not ready, retrying in 1 second");
+    setTimeout(initAI, 1000);
+  }
 }
 
 function toggleAI() {
-    if (!aiPlayer) {
-        console.log('Initializing AI Player');
-        initAI();
-    }
-    
-    if (aiPlayer) {
-        aiPlayer.toggleAI();
-        document.getElementById('ai-toggle').textContent = aiPlayer.activated ? 'Deactivate AI' : 'Activate AI';
-    } else {
-        console.error('AI Player not initialized yet');
-    }
+  if (!aiPlayer) {
+    console.log("Initializing AI Player");
+    initAI();
+  }
+
+  if (aiPlayer) {
+    aiPlayer.toggleAI();
+    document.getElementById("ai-toggle").textContent = aiPlayer.activated
+      ? "Deactivate AI"
+      : "Activate AI";
+  } else {
+    console.error("AI Player not initialized yet");
+  }
 }
 
 // Initialize AI when the page is loaded
-if (document.readyState === 'complete') {
-    initAI();
+if (document.readyState === "complete") {
+  initAI();
 } else {
-    window.addEventListener('load', initAI);
+  window.addEventListener("load", initAI);
+}
+
+// Update the HTML to include the score list
+const aiContainer = document.getElementById("ai-container");
+if (aiContainer) {
+  aiContainer.insertAdjacentHTML("beforeend", '<ul id="score-list"></ul>');
+}
+
+// Remove the initial message box
+const messageBox = document.getElementById("messageBox");
+if (messageBox) {
+  messageBox.style.display = "none";
 }
 
 function onDocumentLoad() {

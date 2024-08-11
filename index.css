@@ -187,3 +187,13 @@ html, body {
 #ai-toggle:hover {
     background-color: #ddd;
 }
+
+#score-list {
+    list-style-type: none;
+    padding: 0;
+    margin-top: 10px;
+}
+#score-list li {
+    display: inline-block;
+    margin-right: 10px;
+}
