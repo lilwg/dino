@@ -283,7 +283,7 @@ class AIPlayer {
    * @enum {number}
    */
   Runner.config = {
-    ACCELERATION: 0.001,
+    ACCELERATION: 0.005,
     BG_CLOUD_SPEED: 0.2,
     BOTTOM_PAD: 10,
     CLEAR_TIME: 3000,
