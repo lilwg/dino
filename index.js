@@ -589,6 +589,11 @@ class AIPlayer {
         Runner.events.RESIZE,
         this.debounceResize.bind(this)
       );
+      const e = window.matchMedia("(prefers-color-scheme: dark)");
+      (this.isDarkMode = e && e.matches),
+        e.addListener((t) => {
+          this.isDarkMode = t.matches;
+        });
     },
 
     /**
@@ -704,6 +709,17 @@ class AIPlayer {
       }
     },
 
+    toggleNightMode: function () {
+      if (this.isDarkMode === undefined) {
+        this.isDarkMode = window.matchMedia(
+          "(prefers-color-scheme: dark)"
+        ).matches;
+      }
+
+      // Toggle night mode.
+      this.invert(this.isDarkMode);
+    },
+
     /**
      * Update the game status to started.
      */
@@ -809,7 +825,7 @@ class AIPlayer {
           this.invertTrigger = false;
           this.invert();
         } else if (this.invertTimer) {
-          this.invertTimer += deltaTime;
+          this.invertTimer += deltaTime * Math.max(1, this.currentSpeed / 13);
         } else {
           var actualDistance = this.distanceMeter.getActualDistance(
             Math.ceil(this.distanceRan)
@@ -1126,17 +1142,17 @@ class AIPlayer {
      * Pause the game if the tab is not in focus.
      */
     onVisibilityChange: function (e) {
-      if (
-        document.hidden ||
-        document.webkitHidden ||
-        e.type == "blur" ||
-        document.visibilityState != "visible"
-      ) {
-        this.stop();
-      } else if (!this.crashed) {
-        this.tRex.reset();
-        this.play();
-      }
+      // if (
+      //   document.hidden ||
+      //   document.webkitHidden ||
+      //   e.type == "blur" ||
+      //   document.visibilityState != "visible"
+      // ) {
+      //   this.stop();
+      // } else if (!this.crashed) {
+      //   this.tRex.reset();
+      //   this.play();
+      // }
     },
 
     /**
@@ -3117,20 +3133,17 @@ class AIPlayer {
 function initAI() {
   if (typeof Runner !== "undefined" && Runner.instance_) {
     aiPlayer = new AIPlayer(Runner.instance_);
-    console.log("AI Player initialized and activated");
 
     // Start the game
     // Runner.instance_.play();
     aiPlayer.jump();
   } else {
-    console.log("Runner not ready, retrying in 1 second");
     setTimeout(initAI, 1000);
   }
 }
 
 function toggleAI() {
   if (!aiPlayer) {
-    console.log("Initializing AI Player");
     initAI();
   }
 
@@ -3140,7 +3153,6 @@ function toggleAI() {
       ? "Deactivate AI"
       : "Activate AI";
   } else {
-    console.error("AI Player not initialized yet");
   }
 }
 
