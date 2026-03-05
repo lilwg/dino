@@ -1,0 +1,2199 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DinoPong</title>
+    <link rel="stylesheet" href="si-styles.css?v=2">
+    <script src="dino-sounds.js"></script>
+    <style>
+        #game-canvas { width: 100%; height: auto; max-width: none !important; }
+    </style>
+</head>
+<body>
+    <img id="offline-resources-1x"
+         src="assets/default_100_percent/100-offline-sprite.png"
+         style="display:none;">
+
+    <div class="si-page" style="padding-bottom: 40px;">
+        <h1>DinoPong</h1>
+        <p class="si-subtitle">T-Rex vs Pterodactyl &mdash; first to 21 wins</p>
+
+        <!-- ═══ GAME ═══ -->
+        <div class="si-game-box">
+            <canvas id="game-canvas" width="600" height="400"></canvas>
+
+            <div class="si-controls" style="margin-top: 12px;">
+                <button class="si-btn active" id="human-btn" onclick="setMode('off')">Human</button>
+                <button class="si-btn" id="rules-btn" onclick="setMode('rules')">AI</button>
+                <button class="si-btn" id="viz-btn" onclick="toggleViz()">Viz</button>
+                <button class="si-btn" onclick="restartGame()">Restart</button>
+                <button class="si-btn" id="pause-btn" onclick="togglePause()">Pause</button>
+                <div class="si-speed" style="font-size: 11px;">
+                    Difficulty: <input type="range" id="play-diff" min="1" max="10" value="1">
+                    <span id="play-diff-val">1</span>
+                </div>
+            </div>
+
+            <p class="si-help" style="text-align: center;">&uarr; / W up &nbsp;|&nbsp; &darr; / S down &nbsp;|&nbsp; R restart &nbsp;|&nbsp; Touch: drag</p>
+        </div>
+
+        <!-- ═══ HOW IT WORKS ═══ -->
+        <h2 style="margin-top: 16px;">How it works</h2>
+        <p class="si-prose">
+            The AI uses a two-hit lookahead with shot placement. When the ball approaches, it simulates the flight to find where it will arrive, then evaluates every reachable catch position on the paddle. For each, it calculates the return angle, simulates the opponent&rsquo;s tracking, and checks whether the opponent can reach the shot. If the opponent would catch it, the AI simulates the return and plans a second shot &mdash; picking the position that scores or forces a rally it can survive.
+        </p>
+        <p class="si-prose">
+            Tap <strong>Viz</strong> to watch the AI think. A grey dashed line shows the incoming ball flight. Coloured dots on the paddle mark candidate catch positions &mdash; green for high-scoring, red for risky. A green dashed line traces the AI&rsquo;s planned return shot to the opponent, with a green or red dot showing whether the opponent catches it. If a second hit is planned, a blue dashed line shows the follow-up shot.
+        </p>
+
+        <p style="margin-top: 20px;">
+            <a href="dino-games.html" style="color: #0071e3; font-size: 14px; text-decoration: none;">&larr; Back</a>
+        </p>
+    </div>
+
+    <!-- Hidden elements for JS compatibility -->
+    <div style="display:none">
+        <button id="dqn-btn"></button>
+        <button id="evo-btn"></button>
+        <input type="range" id="dqn-speed" min="1" max="500" value="100">
+        <span id="dqn-speed-val">100</span>
+        <span id="dqn-stats"></span>
+        <button id="dqn-train-btn"></button>
+        <button id="dqn-cached-btn"></button>
+        <div id="dqn-viz-box"><canvas id="dqn-chart" width="1" height="1"></canvas></div>
+        <button id="evo-train-btn"></button>
+        <input type="range" id="evo-speed" min="1" max="20" value="8">
+        <span id="evo-speed-val">8</span>
+        <span id="evo-stats"></span>
+        <div id="evo-viz-box"><canvas id="evo-chart" width="1" height="1"></canvas></div>
+        <div id="elo-viz-box"><div id="elo-ladder"></div></div>
+        <div id="match-viewer-box">
+            <select id="match-left"></select>
+            <select id="match-right"></select>
+        </div>
+    </div>
+
+<script src="pong-weights.js"></script>
+<script>
+(function () {
+    'use strict';
+
+    // =================================================================
+    //  SHARED CONSTANTS & SPRITES
+    // =================================================================
+    var CW = 600, CH = 400;
+    var PAD_W = 8, PAD_H = 60;
+    var AGENT_X = 20, OPP_X = CW - 20 - PAD_W;
+    var PAD_SPEED = 5, OPP_SPEED_BASE = 3.5;
+    var BALL_SZ = 8, BALL_SPEED = 4;
+    var TOP = 25, BOT = CH - 10;
+    var MAX_SCORE = 21;
+    var FRAME_SKIP = 3;
+
+    var SPRITES = {
+        TREX_RUN1:  { x: 848 + 88,  y: 2, w: 44, h: 47 },
+        TREX_RUN2:  { x: 848 + 132, y: 2, w: 44, h: 47 },
+        TREX_IDLE:  { x: 848,        y: 2, w: 44, h: 47 },
+        PTERO1:     { x: 134,       y: 2, w: 46, h: 40 },
+        PTERO2:     { x: 134 + 46,  y: 2, w: 46, h: 40 }
+    };
+    var STAR_SPRITE = { x: 645, y: 2, size: 9 };
+    var MOON_SPRITE = { x: 484, y: 2, w: 20, h: 40 };
+    var MOON_PHASES = [140, 120, 100, 60, 40, 20, 0];
+    var spriteImg = document.getElementById('offline-resources-1x');
+
+    // =================================================================
+    //  PongGame CLASS -- shared by playable game and DQN
+    // =================================================================
+    function PongGame() { this.reset(); }
+
+    PongGame.prototype.reset = function (oppSpeed) {
+        this.ay = this.oy = CH / 2 - PAD_H / 2;
+        this.aPts = this.oPts = 0;
+        this._oppSpeed = oppSpeed; // undefined=use slider, number=fixed
+        this.needsServe = false;
+        this._serve();
+    };
+
+    PongGame.prototype._serve = function () {
+        this.bx = CW / 2 - BALL_SZ / 2;
+        this.by = CH / 2 - BALL_SZ / 2;
+        var a = (Math.random() - 0.5);
+        var d = Math.random() < 0.5 ? 1 : -1;
+        this.bvx = BALL_SPEED * Math.cos(a) * d;
+        this.bvy = BALL_SPEED * Math.sin(a);
+        this.rally = 0;
+        this.needsServe = false;
+    };
+
+    function getOppSpeed() {
+        var d = parseInt(document.getElementById('play-diff').value) || 1;
+        document.getElementById('play-diff-val').textContent = d;
+        // Difficulty 1=slow (1.8), 5=same speed as player (5), 10=very fast (9)
+        return 1 + d * 0.8;
+    }
+
+    function getBallSpeedMult() {
+        var d = parseInt(document.getElementById('play-diff').value) || 1;
+        // diff 1=1.0x, 6=1.4x, 10=1.72x
+        return 1 + (d - 1) * 0.08;
+    }
+
+    PongGame.prototype.step = function (action) {
+        // action: 0=up, 1=stay, 2=down
+        if (this.needsServe) return { reward: 0, done: false }; // waiting for serve
+        if (action === 0) this.ay = Math.max(TOP + 5, this.ay - PAD_SPEED);
+        if (action === 2) this.ay = Math.min(BOT - PAD_H, this.ay + PAD_SPEED);
+
+        // Opponent AI
+        var oppSpeed = this._oppSpeed !== undefined ? this._oppSpeed : getOppSpeed();
+        if (this.bvx > 0 && this.bx > CW / 2) {
+            var t = this.by + BALL_SZ / 2 - PAD_H / 2;
+            var diff = t - this.oy;
+            this.oy += Math.max(-oppSpeed, Math.min(oppSpeed, diff));
+        }
+        this.oy = Math.max(TOP + 5, Math.min(BOT - PAD_H, this.oy));
+
+        var bsm = this._oppSpeed !== undefined ? 1 : getBallSpeedMult();
+        var sm = Math.min(1 + this.rally * 0.03, 1.5) * bsm;
+        this.bx += this.bvx * sm;
+        this.by += this.bvy * sm;
+
+        var reward = 0, done = false;
+
+        // Walls
+        if (this.by < TOP) { this.by = 2 * TOP - this.by; this.bvy = Math.abs(this.bvy); }
+        if (this.by > BOT - BALL_SZ) { this.by = 2 * (BOT - BALL_SZ) - this.by; this.bvy = -Math.abs(this.bvy); }
+
+        // Agent paddle
+        if (this.bx <= AGENT_X + PAD_W && this.bvx < 0) {
+            if (this.by + BALL_SZ > this.ay && this.by < this.ay + PAD_H) {
+                this.bx = AGENT_X + PAD_W;
+                this.bvx = Math.abs(this.bvx);
+                var h = (this.by + BALL_SZ / 2 - this.ay) / PAD_H;
+                this.bvy = BALL_SPEED * (h - 0.5) * 2.5;
+                this.rally++;
+            } else if (this.bx < 0) {
+                this.oPts++; reward = -1;
+                done = this.oPts >= MAX_SCORE;
+                if (!done) this.needsServe = true;
+            }
+        }
+
+        // Opponent paddle
+        if (this.bx + BALL_SZ >= OPP_X && this.bvx > 0) {
+            if (this.by + BALL_SZ > this.oy && this.by < this.oy + PAD_H) {
+                this.bx = OPP_X - BALL_SZ;
+                this.bvx = -Math.abs(this.bvx);
+                var h = (this.by + BALL_SZ / 2 - this.oy) / PAD_H;
+                this.bvy = BALL_SPEED * (h - 0.5) * 2.5;
+                this.rally++;
+            } else if (this.bx > CW) {
+                this.aPts++; reward = 1;
+                done = this.aPts >= MAX_SCORE;
+                if (!done) this.needsServe = true;
+            }
+        }
+
+        return { reward: reward, done: done };
+    };
+
+    PongGame.prototype.getFeatures = function () {
+        return [
+            this.ay / CH,
+            this.bx / CW,
+            this.by / CH,
+            this.bvx / (BALL_SPEED * 1.5),
+            this.bvy / (BALL_SPEED * 2.5),
+            this.oy / CH
+        ];
+    };
+
+    // Mirrored features for right-side player (opponent perspective)
+    PongGame.prototype.getFeaturesB = function () {
+        return [
+            this.oy / CH,
+            (CW - this.bx) / CW,
+            this.by / CH,
+            -this.bvx / (BALL_SPEED * 1.5),
+            this.bvy / (BALL_SPEED * 2.5),
+            this.ay / CH
+        ];
+    };
+
+    // Mirror game state so Rules AI can play from right side
+    PongGame.prototype.getMirror = function () {
+        return { ay: this.oy, oy: this.ay,
+                 bx: CW - this.bx - BALL_SZ, by: this.by,
+                 bvx: -this.bvx, bvy: this.bvy,
+                 rally: this.rally, _oppSpeed: this._oppSpeed };
+    };
+
+    // Self-play step: both paddles controlled by actions (no hardcoded AI)
+    PongGame.prototype.stepSelfPlay = function (actionA, actionB) {
+        // Left paddle (agent)
+        if (actionA === 0) this.ay = Math.max(TOP + 5, this.ay - PAD_SPEED);
+        if (actionA === 2) this.ay = Math.min(BOT - PAD_H, this.ay + PAD_SPEED);
+
+        // Right paddle (opponent) — controlled by actionB instead of AI
+        if (actionB === 0) this.oy = Math.max(TOP + 5, this.oy - PAD_SPEED);
+        if (actionB === 2) this.oy = Math.min(BOT - PAD_H, this.oy + PAD_SPEED);
+
+        var sm = Math.min(1 + this.rally * 0.03, 1.5);
+        this.bx += this.bvx * sm;
+        this.by += this.bvy * sm;
+
+        var reward = 0, done = false;
+
+        // Walls
+        if (this.by < TOP) { this.by = 2 * TOP - this.by; this.bvy = Math.abs(this.bvy); }
+        if (this.by > BOT - BALL_SZ) { this.by = 2 * (BOT - BALL_SZ) - this.by; this.bvy = -Math.abs(this.bvy); }
+
+        // Agent paddle
+        if (this.bx <= AGENT_X + PAD_W && this.bvx < 0) {
+            if (this.by + BALL_SZ > this.ay && this.by < this.ay + PAD_H) {
+                this.bx = AGENT_X + PAD_W;
+                this.bvx = Math.abs(this.bvx);
+                var h = (this.by + BALL_SZ / 2 - this.ay) / PAD_H;
+                this.bvy = BALL_SPEED * (h - 0.5) * 2.5;
+                this.rally++;
+            } else if (this.bx < 0) {
+                this.oPts++; reward = -1;
+                done = this.oPts >= MAX_SCORE;
+                if (!done) this._serve();
+            }
+        }
+
+        // Opponent paddle
+        if (this.bx + BALL_SZ >= OPP_X && this.bvx > 0) {
+            if (this.by + BALL_SZ > this.oy && this.by < this.oy + PAD_H) {
+                this.bx = OPP_X - BALL_SZ;
+                this.bvx = -Math.abs(this.bvx);
+                var h = (this.by + BALL_SZ / 2 - this.oy) / PAD_H;
+                this.bvy = BALL_SPEED * (h - 0.5) * 2.5;
+                this.rally++;
+            } else if (this.bx > CW) {
+                this.aPts++; reward = 1;
+                done = this.aPts >= MAX_SCORE;
+                if (!done) this._serve();
+            }
+        }
+
+        return { reward: reward, done: done };
+    };
+
+    // Shared drawing function
+    function drawPongGame(c, g, anim, agentMov, oppMov) {
+        c.fillStyle = '#f7f7f7';
+        c.fillRect(0, 0, CW, CH);
+        // Court lines
+        c.strokeStyle = '#535353'; c.lineWidth = 1;
+        c.beginPath(); c.moveTo(0, CH - 8); c.lineTo(CW, CH - 8); c.stroke();
+        c.beginPath(); c.moveTo(0, TOP); c.lineTo(CW, TOP); c.stroke();
+        c.strokeStyle = '#d2d2d7'; c.setLineDash([6, 6]);
+        c.beginPath(); c.moveTo(CW / 2, TOP); c.lineTo(CW / 2, CH - 8); c.stroke();
+        c.setLineDash([]);
+        // T-Rex paddle — idle when not moving
+        var ts = agentMov ? (anim === 0 ? SPRITES.TREX_RUN1 : SPRITES.TREX_RUN2) : SPRITES.TREX_IDLE;
+        var sc = PAD_H / ts.h;
+        if (spriteImg && spriteImg.complete)
+            c.drawImage(spriteImg, ts.x, ts.y, ts.w, ts.h,
+                AGENT_X + PAD_W / 2 - ts.w * sc / 2, g.ay + PAD_H / 2 - ts.h * sc / 2,
+                ts.w * sc, ts.h * sc);
+        // Ptero paddle — wings still when not moving
+        var ps = oppMov ? (anim === 0 ? SPRITES.PTERO1 : SPRITES.PTERO2) : SPRITES.PTERO1;
+        sc = PAD_H / ps.h;
+        if (spriteImg && spriteImg.complete)
+            c.drawImage(spriteImg, ps.x, ps.y, ps.w, ps.h,
+                OPP_X + PAD_W / 2 - ps.w * sc / 2, g.oy + PAD_H / 2 - ps.h * sc / 2,
+                ps.w * sc, ps.h * sc);
+        // Ball
+        c.fillStyle = '#535353';
+        c.beginPath();
+        c.arc(Math.max(BALL_SZ, Math.min(CW - BALL_SZ, g.bx + BALL_SZ / 2)),
+              Math.max(TOP + BALL_SZ, Math.min(BOT - BALL_SZ, g.by + BALL_SZ / 2)),
+              BALL_SZ / 2, 0, Math.PI * 2);
+        c.fill();
+        // HUD
+        c.font = '600 13px "Courier New", monospace';
+        c.fillStyle = '#535353';
+        c.textAlign = 'left'; c.fillText('T-REX  ' + pad2(g.aPts), 10, 18);
+        c.textAlign = 'right'; c.fillText(pad2(g.oPts) + '  PTERO', CW - 10, 18);
+        c.textAlign = 'center'; c.fillText('RALLY ' + g.rally, CW / 2, 18);
+        c.textAlign = 'left';
+    }
+
+    function pad2(n) { return n < 10 ? '0' + n : '' + n; }
+
+    // =================================================================
+    //  RULES-BASED AI — 2-Hit-Ahead Shot Placement (Breakout-style)
+    // =================================================================
+    var pongSimAI = {
+        enabled: false,
+        _vizEnabled: false,
+        _vizData: null,
+
+        // Simulate ball free-flight (wall bounces only, no paddles)
+        // mode: 'toAgent' stops when ball reaches agent paddle, 'toOpp' for opponent
+        _simBallFlight: function (bx, by, bvx, bvy, rally, mode) {
+            var path = [{ x: bx, y: by }];
+            var bsm = getBallSpeedMult();
+            for (var f = 0; f < 500; f++) {
+                var sm = Math.min(1 + rally * 0.03, 1.5) * bsm;
+                bx += bvx * sm;
+                by += bvy * sm;
+                // Wall bounces (exact game physics)
+                if (by < TOP) { by = 2 * TOP - by; bvy = Math.abs(bvy); }
+                if (by > BOT - BALL_SZ) { by = 2 * (BOT - BALL_SZ) - by; bvy = -Math.abs(bvy); }
+                path.push({ x: bx, y: by });
+                // Stop conditions
+                if (mode === 'toAgent' && bx <= AGENT_X + PAD_W && bvx < 0) {
+                    return { reached: true, frames: f + 1, bx: bx, by: by, bvx: bvx, bvy: bvy, path: path };
+                }
+                if (mode === 'toOpp' && bx + BALL_SZ >= OPP_X && bvx > 0) {
+                    return { reached: true, frames: f + 1, bx: bx, by: by, bvx: bvx, bvy: bvy, path: path };
+                }
+                // Ball went off-screen
+                if (bx < -20 || bx > CW + 20) {
+                    return { reached: false, frames: f + 1, bx: bx, by: by, bvx: bvx, bvy: bvy, path: path };
+                }
+            }
+            return { reached: false, frames: 500, bx: bx, by: by, bvx: bvx, bvy: bvy, path: path };
+        },
+
+        // Simulate our return shot to opponent, including opponent tracking AI
+        _simShotToOpp: function (bx, by, bvx, bvy, rally, oy, oppSpeed) {
+            var path = [{ x: bx, y: by }];
+            var faceBy = -1, faceOy = -1; // ball/opp Y when ball first reaches opponent paddle face
+            var bsm = getBallSpeedMult();
+            for (var f = 0; f < 500; f++) {
+                // Opponent tracking (exact game logic — runs BEFORE ball moves)
+                if (bvx > 0 && bx > CW / 2) {
+                    var t = by + BALL_SZ / 2 - PAD_H / 2;
+                    var diff = t - oy;
+                    oy += Math.max(-oppSpeed, Math.min(oppSpeed, diff));
+                }
+                oy = Math.max(TOP + 5, Math.min(BOT - PAD_H, oy));
+                // Ball physics
+                var sm = Math.min(1 + rally * 0.03, 1.5) * bsm;
+                bx += bvx * sm;
+                by += bvy * sm;
+                // Wall bounces
+                if (by < TOP) { by = 2 * TOP - by; bvy = Math.abs(bvy); }
+                if (by > BOT - BALL_SZ) { by = 2 * (BOT - BALL_SZ) - by; bvy = -Math.abs(bvy); }
+                path.push({ x: bx, y: by });
+                // Opponent paddle zone — matches real game: catch OR keep going until off-screen
+                if (bx + BALL_SZ >= OPP_X && bvx > 0) {
+                    // Record ball position at opponent paddle face (first time only)
+                    if (faceBy < 0) { faceBy = by; faceOy = oy; }
+                    if (by + BALL_SZ > oy && by < oy + PAD_H) {
+                        // Opponent catches — snap and compute return angle
+                        bx = OPP_X - BALL_SZ;
+                        var h = (by + BALL_SZ / 2 - oy) / PAD_H;
+                        return { frames: f + 1, bx: bx, by: by, bvx: bvx, bvy: bvy,
+                                 oy: oy, caught: true, path: path, rally: rally,
+                                 faceBy: faceBy, faceOy: faceOy,
+                                 retBvx: -Math.abs(bvx),
+                                 retBvy: BALL_SPEED * (h - 0.5) * 2.5,
+                                 retRally: rally + 1 };
+                    } else if (bx > CW) {
+                        // Ball past field — opponent missed (matches real game: bx > CW)
+                        return { frames: f + 1, bx: bx, by: by, bvx: bvx, bvy: bvy,
+                                 oy: oy, caught: false, path: path, rally: rally,
+                                 faceBy: faceBy, faceOy: faceOy };
+                    }
+                    // Ball in opponent zone but not caught yet — continue
+                    // (opponent keeps tracking on next frame, just like real game)
+                }
+            }
+            return { frames: 500, bx: bx, by: by, bvx: bvx, bvy: bvy,
+                     oy: oy, caught: false, path: path, rally: rally,
+                     faceBy: faceBy >= 0 ? faceBy : by, faceOy: faceOy >= 0 ? faceOy : oy };
+        },
+
+        update: function (game) {
+            var oppSpeed = game._oppSpeed !== undefined ? game._oppSpeed : getOppSpeed();
+            var ay = game.ay, oy = game.oy;
+            var bx = game.bx, by = game.by, bvx = game.bvx, bvy = game.bvy;
+            var rally = game.rally;
+            var NAMES = ['UP', 'STAY', 'DOWN'];
+
+            // Fallback: ball going right → track ball Y (keep previous viz visible)
+            if (bvx >= 0) {
+                var target = by + BALL_SZ / 2 - PAD_H / 2;
+                var action = target < ay - 2 ? 0 : target > ay + 2 ? 2 : 1;
+                return action;
+            }
+
+            // === 2-HIT-AHEAD SEARCH ===
+            var flight1 = this._simBallFlight(bx, by, bvx, bvy, rally, 'toAgent');
+            if (!flight1.reached) {
+                var target = by + BALL_SZ / 2 - PAD_H / 2;
+                var action = target < ay - 2 ? 0 : target > ay + 2 ? 2 : 1;
+                return action;
+            }
+
+            var F1 = flight1.frames;
+            var by1 = flight1.by, bvx1 = flight1.bvx;
+
+            // Reachable paddle range at frame F1
+            var reachLo = Math.max(TOP + 5, ay - F1 * PAD_SPEED);
+            var reachHi = Math.min(BOT - PAD_H, ay + F1 * PAD_SPEED);
+            // Valid catch range (paddle overlaps ball)
+            var catchLo = Math.max(TOP + 5, by1 - PAD_H + 1);
+            var catchHi = Math.min(BOT - PAD_H, by1 + BALL_SZ - 1);
+
+            // Grid quantization: p = ay + k * PAD_SPEED
+            var kMin = Math.ceil((Math.max(TOP + 5, catchLo) - ay) / PAD_SPEED);
+            var kMax = Math.floor((Math.min(BOT - PAD_H, catchHi) - ay) / PAD_SPEED);
+            kMin = Math.max(kMin, -F1);
+            kMax = Math.min(kMax, F1);
+
+            var candidates = [];
+            var bestScore = -999, bestIdx = -1;
+
+            for (var k = kMin; k <= kMax; k++) {
+                var p = ay + k * PAD_SPEED;
+                // Clamp and verify catch
+                p = Math.max(TOP + 5, Math.min(BOT - PAD_H, p));
+                if (p > catchHi || p + PAD_H - 1 < by1) continue; // doesn't cover ball
+
+                // OUR RETURN (Shot 1) — exact game physics
+                var h1 = (by1 + BALL_SZ / 2 - p) / PAD_H;
+                var retBvx = Math.abs(bvx1);                      // flip right, KEEP magnitude
+                var retBvy = BALL_SPEED * (h1 - 0.5) * 2.5;       // fresh angle calc
+                var shot1 = this._simShotToOpp(AGENT_X + PAD_W, by1, retBvx, retBvy, rally + 1, oy, oppSpeed);
+
+                var score, bestP2 = -1, bestShot2 = null, flight3 = null;
+
+                if (!shot1.caught) {
+                    score = 10; // IMMEDIATE SCORE!
+                } else {
+                    // OPPONENT'S RETURN — simulate back to us
+                    flight3 = this._simBallFlight(OPP_X - BALL_SZ, shot1.by,
+                        shot1.retBvx, shot1.retBvy, shot1.retRally, 'toAgent');
+
+                    if (!flight3.reached) {
+                        score = 10; // opponent's return went off-screen
+                    } else {
+                        // Can WE reach the return from position p?
+                        var F3 = flight3.frames;
+                        var ourReachLo = Math.max(TOP + 5, p - F3 * PAD_SPEED);
+                        var ourReachHi = Math.min(BOT - PAD_H, p + F3 * PAD_SPEED);
+                        var catch3Lo = Math.max(TOP + 5, flight3.by - PAD_H + 1);
+                        var catch3Hi = Math.min(BOT - PAD_H, flight3.by + BALL_SZ - 1);
+
+                        if (ourReachHi < catch3Lo || ourReachLo > catch3Hi) {
+                            score = -10; // WE DIE — can't reach the return
+                        } else {
+                            // OUR 2ND RETURN (Shot 2) — inner loop
+                            var k2Min = Math.ceil((Math.max(TOP + 5, catch3Lo) - p) / PAD_SPEED);
+                            var k2Max = Math.floor((Math.min(BOT - PAD_H, catch3Hi) - p) / PAD_SPEED);
+                            k2Min = Math.max(k2Min, -F3);
+                            k2Max = Math.min(k2Max, F3);
+
+                            var bestScore2 = -99;
+                            for (var k2 = k2Min; k2 <= k2Max; k2++) {
+                                var p2 = p + k2 * PAD_SPEED;
+                                p2 = Math.max(TOP + 5, Math.min(BOT - PAD_H, p2));
+                                if (p2 > catch3Hi || p2 + PAD_H - 1 < flight3.by) continue;
+
+                                var h2 = (flight3.by + BALL_SZ / 2 - p2) / PAD_H;
+                                var ret2Bvx = Math.abs(flight3.bvx);
+                                var ret2Bvy = BALL_SPEED * (h2 - 0.5) * 2.5;
+                                var shot2 = this._simShotToOpp(AGENT_X + PAD_W, flight3.by,
+                                    ret2Bvx, ret2Bvy, shot1.retRally + 1, shot1.oy, oppSpeed);
+
+                                var s2 = shot2.caught ? 0 : 5;
+                                if (s2 > bestScore2) {
+                                    bestScore2 = s2;
+                                    bestP2 = p2;
+                                    bestShot2 = shot2;
+                                }
+                            }
+                            score = bestScore2 > -99 ? bestScore2 : -10;
+                        }
+                    }
+                }
+
+                candidates.push({
+                    p: p, score: score, h: h1,
+                    shot1: shot1, flight3: flight3,
+                    bestP2: bestP2, bestShot2: bestShot2
+                });
+                if (score > bestScore) { bestScore = score; bestIdx = candidates.length - 1; }
+            }
+
+            // Pick best — move toward it
+            var action = 1;
+            if (bestIdx >= 0) {
+                var bestP = candidates[bestIdx].p;
+                action = bestP < ay - 2 ? 0 : bestP > ay + 2 ? 2 : 1;
+            } else {
+                // No valid catch positions — track ball Y
+                var target = by1 + BALL_SZ / 2 - PAD_H / 2;
+                action = target < ay - 2 ? 0 : target > ay + 2 ? 2 : 1;
+            }
+
+            if (this._vizEnabled) {
+                this._vizData = {
+                    mode: '2hit', action: action, paddleY: ay,
+                    flight1: flight1, candidates: candidates,
+                    bestIdx: bestIdx, bestScore: bestScore, catchFrame: F1
+                };
+            }
+            return action;
+        }
+    };
+
+    // Visualization — shot placement overlay
+    function drawPongSimViz(ctx) {
+        var viz = pongSimAI._vizData;
+        if (!viz) return;
+        var NAMES = ['UP', 'STAY', 'DOWN'];
+        var ACOL = ['#0071e3', '#8e8e93', '#ff9f0a'];
+
+        ctx.save();
+
+        // === 2-HIT VIZ (persists while ball travels to opponent) ===
+        var best = viz.bestIdx >= 0 ? viz.candidates[viz.bestIdx] : null;
+
+        // 1) Grey dashed: incoming ball flight to our paddle
+        if (viz.flight1 && viz.flight1.path.length > 1) {
+            ctx.strokeStyle = 'rgba(83,83,83,0.25)';
+            ctx.setLineDash([3, 3]); ctx.lineWidth = 1;
+            ctx.beginPath();
+            for (var i = 0; i < viz.flight1.path.length; i++) {
+                var pt = viz.flight1.path[i];
+                if (i === 0) ctx.moveTo(pt.x + BALL_SZ / 2, pt.y + BALL_SZ / 2);
+                else ctx.lineTo(pt.x + BALL_SZ / 2, pt.y + BALL_SZ / 2);
+            }
+            ctx.stroke(); ctx.setLineDash([]);
+        }
+
+        // 2) Colored dots: catch position candidates along our paddle
+        if (viz.candidates.length > 0) {
+            var minS = 999, maxS = -999;
+            for (var i = 0; i < viz.candidates.length; i++) {
+                var s = viz.candidates[i].score;
+                if (s < minS) minS = s;
+                if (s > maxS) maxS = s;
+            }
+            var range = maxS - minS || 1;
+
+            for (var i = 0; i < viz.candidates.length; i++) {
+                var cd = viz.candidates[i];
+                var isBest = (i === viz.bestIdx);
+                var t = (cd.score - minS) / range; // 0=worst, 1=best
+                var cr = Math.round(255 * (1 - t));
+                var cg = Math.round(200 * t);
+                ctx.fillStyle = isBest ? '#30d158' : 'rgb(' + cr + ',' + cg + ',0)';
+                ctx.globalAlpha = isBest ? 0.9 : 0.5;
+                ctx.beginPath();
+                ctx.arc(AGENT_X + PAD_W + 2, cd.p + PAD_H / 2, isBest ? 5 : 3, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // Target ring at best position
+            if (best) {
+                ctx.strokeStyle = '#30d158'; ctx.lineWidth = 2; ctx.globalAlpha = 0.8;
+                ctx.beginPath();
+                ctx.arc(AGENT_X + PAD_W + 2, best.p + PAD_H / 2, 8, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+        }
+
+        // 3) Green dashed: Shot 1 trajectory (our return to opponent)
+        if (best && best.shot1 && best.shot1.path.length > 1) {
+            ctx.strokeStyle = '#30d158'; ctx.globalAlpha = 0.5;
+            ctx.setLineDash([2, 2]); ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            for (var i = 0; i < best.shot1.path.length; i++) {
+                var pt = best.shot1.path[i];
+                // Clip path at opponent paddle face
+                var px = Math.min(pt.x + BALL_SZ / 2, OPP_X);
+                if (i === 0) ctx.moveTo(px, pt.y + BALL_SZ / 2);
+                else ctx.lineTo(px, pt.y + BALL_SZ / 2);
+                if (pt.x + BALL_SZ >= OPP_X) break; // stop drawing at opponent
+            }
+            ctx.stroke(); ctx.setLineDash([]);
+
+            // Miss/catch indicator at opponent side — use faceBy (ball Y at paddle face)
+            var dotBy = best.shot1.faceBy !== undefined ? best.shot1.faceBy : best.shot1.by;
+            if (!best.shot1.caught) {
+                // Scoring shot — green dot
+                ctx.fillStyle = '#30d158'; ctx.globalAlpha = 0.8;
+                ctx.beginPath();
+                ctx.arc(OPP_X - 4, dotBy + BALL_SZ / 2, 5, 0, Math.PI * 2);
+                ctx.fill();
+            } else {
+                // Opponent catches — red dot
+                ctx.fillStyle = '#ff3b30'; ctx.globalAlpha = 0.5;
+                ctx.beginPath();
+                ctx.arc(OPP_X - 4, dotBy + BALL_SZ / 2, 4, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        // 4) Cyan dashed: Opponent's return path (if they caught shot 1)
+        if (best && best.flight3 && best.flight3.path.length > 1) {
+            ctx.strokeStyle = '#00bcd4'; ctx.globalAlpha = 0.35;
+            ctx.setLineDash([2, 3]); ctx.lineWidth = 1;
+            ctx.beginPath();
+            for (var i = 0; i < best.flight3.path.length; i++) {
+                var pt = best.flight3.path[i];
+                if (i === 0) ctx.moveTo(pt.x + BALL_SZ / 2, pt.y + BALL_SZ / 2);
+                else ctx.lineTo(pt.x + BALL_SZ / 2, pt.y + BALL_SZ / 2);
+            }
+            ctx.stroke(); ctx.setLineDash([]);
+        }
+
+        // 5) Blue dashed: Shot 2 trajectory (our 2nd return, if applicable)
+        if (best && best.bestShot2 && best.bestShot2.path.length > 1) {
+            ctx.strokeStyle = '#0071e3'; ctx.globalAlpha = 0.4;
+            ctx.setLineDash([2, 2]); ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            for (var i = 0; i < best.bestShot2.path.length; i++) {
+                var pt = best.bestShot2.path[i];
+                var px = Math.min(pt.x + BALL_SZ / 2, OPP_X);
+                if (i === 0) ctx.moveTo(px, pt.y + BALL_SZ / 2);
+                else ctx.lineTo(px, pt.y + BALL_SZ / 2);
+                if (pt.x + BALL_SZ >= OPP_X) break;
+            }
+            ctx.stroke(); ctx.setLineDash([]);
+
+            // 2nd shot indicator at opponent — green=score, red=caught
+            var dot2By = best.bestShot2.faceBy !== undefined ? best.bestShot2.faceBy : best.bestShot2.by;
+            if (!best.bestShot2.caught) {
+                ctx.fillStyle = '#30d158'; ctx.globalAlpha = 0.8;
+                ctx.beginPath();
+                ctx.arc(OPP_X - 4, dot2By + BALL_SZ / 2, 5, 0, Math.PI * 2);
+                ctx.fill();
+            } else {
+                ctx.fillStyle = '#ff3b30'; ctx.globalAlpha = 0.5;
+                ctx.beginPath();
+                ctx.arc(OPP_X - 4, dot2By + BALL_SZ / 2, 4, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        // 6) Decision badge
+        var action = viz.action;
+        var dText = '\u2192 ' + NAMES[action];
+        var badgeColor = ACOL[action];
+        if (best) {
+            if (best.score >= 10) { dText += '  \u2713SCORE'; badgeColor = '#30d158'; }
+            else if (best.score >= 5) { dText += '  \u27132nd'; badgeColor = '#0071e3'; }
+            else if (best.score >= 0) { dText += '  \u2022rally'; badgeColor = '#8e8e93'; }
+            else { dText += '  \u2717die'; badgeColor = '#ff3b30'; }
+            dText += '  f=' + viz.catchFrame;
+        }
+
+        ctx.font = 'bold 10px sans-serif'; ctx.textBaseline = 'middle';
+        var dMet = ctx.measureText(dText);
+        var dX = AGENT_X + 2, dY = Math.max(TOP + 10, viz.paddleY - 12);
+        var dPadX = 4, dPadY = 6;
+        ctx.globalAlpha = 0.15; ctx.fillStyle = badgeColor;
+        var dr = 4, dbx = dX - dPadX, dby = dY - dPadY;
+        var dbw = dMet.width + dPadX * 2, dbh = dPadY * 2;
+        ctx.beginPath();
+        ctx.moveTo(dbx + dr, dby);
+        ctx.arcTo(dbx + dbw, dby, dbx + dbw, dby + dbh, dr);
+        ctx.arcTo(dbx + dbw, dby + dbh, dbx, dby + dbh, dr);
+        ctx.arcTo(dbx, dby + dbh, dbx, dby, dr);
+        ctx.arcTo(dbx, dby, dbx + dbw, dby, dr);
+        ctx.fill();
+        ctx.globalAlpha = 0.9; ctx.fillStyle = badgeColor;
+        ctx.fillText(dText, dX, dY);
+
+        ctx.globalAlpha = 1;
+        ctx.restore();
+    }
+
+    // =================================================================
+    //  SECTION 1: PLAYABLE GAME
+    // =================================================================
+    var playCanvas = document.getElementById('game-canvas');
+    var playCtx = playCanvas.getContext('2d');
+    var playGame = new PongGame();
+    window.playGame = playGame;
+    var playKeys = {};
+    var playOver = false;
+    var playAnim = 0, playFrame = 0;
+    var gameStarted = false;
+    var paused = false;
+    var agentMoving = false, oppMoving = false;
+    var aiMode = 'off'; // 'off', 'rules', 'dqn', 'evo', 'spectate'
+    var scorePauseTimer = 0;   // frames to freeze after a point is scored
+    var scoreFlashSide = 0;    // +1 = T-Rex scored, -1 = Ptero scored
+    var prevAPts = 0, prevOPts = 0; // track score changes
+
+    // Day/night
+    var inverted = false, dayTimer = 0, nightOpacity = 0;
+    var moonPhase = 0, moonX = CW - 50, moonY = 25;
+    var nightStars = [];
+    function placeStars() {
+        nightStars = [];
+        for (var i = 0; i < 10; i++)
+            nightStars.push({ x: Math.random() * CW, y: Math.random() * CH * 0.5,
+                              sourceY: STAR_SPRITE.y + STAR_SPRITE.size * (i % 2) });
+    }
+    placeStars();
+
+    window.resetPlayGame = function () {
+        playGame.reset(); playOver = false; gameStarted = false; paused = false;
+        inverted = false; dayTimer = 0; nightOpacity = 0; placeStars();
+        scorePauseTimer = 0; scoreFlashSide = 0;
+        prevAPts = 0; prevOPts = 0;
+        pongSimAI._vizData = null;
+        document.getElementById('pause-btn').textContent = 'Pause';
+    };
+
+    window.togglePause = function () {
+        if (!gameStarted || playOver) return;
+        paused = !paused;
+        document.getElementById('pause-btn').textContent = paused ? 'Resume' : 'Pause';
+    };
+
+    function setAIMode(mode) {
+        aiMode = mode;
+        pongSimAI.enabled = (mode === 'rules');
+        pongSimAI._vizEnabled = (mode === 'rules');
+        if (mode !== 'rules') pongSimAI._vizData = null;
+        if (mode !== 'spectate') { spectateNetA = null; spectateNetB = null; spectateRulesA = false; spectateRulesB = false; }
+        document.getElementById('rules-btn').classList.toggle('active', mode === 'rules');
+        document.getElementById('dqn-btn').classList.toggle('active', mode === 'dqn');
+        document.getElementById('evo-btn').classList.toggle('active', mode === 'evo');
+        if (mode !== 'off') {
+            if (!gameStarted) gameStarted = true;
+            if (playOver) { playGame.reset(); playOver = false; }
+        }
+    }
+
+    window.toggleRulesAI = function () {
+        setAIMode(aiMode === 'rules' ? 'off' : 'rules');
+    };
+
+    window.toggleDqnAI = function () {
+        setAIMode(aiMode === 'dqn' ? 'off' : 'dqn');
+    };
+
+    window.toggleEvoAI = function () {
+        if (!evoChampion) {
+            document.getElementById('evo-stats').textContent = 'Train first to get a champion!';
+            return;
+        }
+        setAIMode(aiMode === 'evo' ? 'off' : 'evo');
+    };
+
+    function playUpdate() {
+        if (!gameStarted || playOver || paused) return;
+
+        // Score pause: brief freeze after a point is scored
+        if (scorePauseTimer > 0) {
+            scorePauseTimer--;
+            return;
+        }
+
+        // Serve logic: AI auto-serves, human waits for Space
+        if (playGame.needsServe) {
+            if (aiMode !== 'off') {
+                playGame._serve();
+                prevAPts = playGame.aPts;
+                prevOPts = playGame.oPts;
+            } else {
+                return; // wait for Space
+            }
+        }
+
+        playFrame++; playAnim = Math.floor(playFrame / 10) % 2;
+
+        var action = 1; // stay
+        var r;
+        if (aiMode === 'spectate') {
+            // Spectate mode: both paddles controlled by AIs via stepSelfPlay
+            var actA = 1, actB = 1;
+            if (spectateRulesA) {
+                actA = pongSimAI.update(playGame);
+            } else if (spectateNetA) {
+                actA = argmax(spectateNetA.forward(playGame.getFeatures()));
+            }
+            if (spectateRulesB) {
+                actB = pongSimAI.update(playGame.getMirror());
+            } else if (spectateNetB) {
+                actB = argmax(spectateNetB.forward(playGame.getFeaturesB()));
+            }
+            if (spectateNetA || spectateNetB || spectateRulesA || spectateRulesB) {
+                var prevAy = playGame.ay, prevOy = playGame.oy;
+                r = playGame.stepSelfPlay(actA, actB);
+                agentMoving = (playGame.ay !== prevAy);
+                oppMoving = (playGame.oy !== prevOy);
+            } else {
+                r = { done: false };
+            }
+        } else {
+            if (aiMode === 'rules') {
+                action = pongSimAI.update(playGame);
+            } else if (aiMode === 'dqn') {
+                var features = playGame.getFeatures();
+                action = argmax(policy.forward(features));
+            } else if (aiMode === 'evo') {
+                if (evoChampion) {
+                    var features = playGame.getFeatures();
+                    action = argmax(evoChampion.forward(features));
+                }
+            } else {
+                if (playKeys[38] || playKeys[87]) action = 0; // up
+                if (playKeys[40] || playKeys[83]) action = 2; // down
+            }
+            var prevAy = playGame.ay, prevOy = playGame.oy;
+            r = playGame.step(action);
+            agentMoving = (playGame.ay !== prevAy);
+            oppMoving = (playGame.oy !== prevOy);
+        }
+        // Detect scoring — trigger pause + flash
+        if (playGame.aPts > prevAPts) {
+            scoreFlashSide = 1; scorePauseTimer = 45;
+            prevAPts = playGame.aPts;
+        } else if (playGame.oPts > prevOPts) {
+            scoreFlashSide = -1; scorePauseTimer = 45;
+            prevOPts = playGame.oPts;
+        }
+        if (r.done) {
+            playOver = true;
+            scorePauseTimer = 0; // don't freeze on game over
+            // Auto-restart when non-human AI is playing (not spectate)
+            if (aiMode !== 'off' && aiMode !== 'spectate') {
+                setTimeout(function () {
+                    playGame.reset(); playOver = false;
+                    inverted = false; dayTimer = 0; nightOpacity = 0; placeStars();
+                }, 1000);
+            }
+        }
+        // Day/night
+        dayTimer++;
+        if (!inverted && dayTimer >= 1800) { inverted = true; dayTimer = 0; moonPhase = (moonPhase + 1) % 7; }
+        else if (inverted && dayTimer >= 720) { inverted = false; dayTimer = 0; }
+        if (inverted) nightOpacity = Math.min(1, nightOpacity + 0.035);
+        else nightOpacity = Math.max(0, nightOpacity - 0.035);
+        if (nightOpacity > 0) {
+            moonX -= 0.25; if (moonX < -20) moonX = CW;
+            for (var i = 0; i < nightStars.length; i++) {
+                nightStars[i].x -= 0.3;
+                if (nightStars[i].x < -9) nightStars[i].x = CW;
+            }
+        } else placeStars();
+    }
+
+    function playDraw() {
+        drawPongGame(playCtx, playGame, playAnim, agentMoving, oppMoving);
+        // Night elements
+        if (nightOpacity > 0 && spriteImg && spriteImg.complete) {
+            playCtx.save(); playCtx.globalAlpha = nightOpacity;
+            for (var i = 0; i < nightStars.length; i++) {
+                var s = nightStars[i];
+                playCtx.drawImage(spriteImg, STAR_SPRITE.x, s.sourceY, 9, 9,
+                    Math.round(s.x), s.y, 9, 9);
+            }
+            var mx = MOON_SPRITE.x + MOON_PHASES[moonPhase];
+            var mw = moonPhase === 3 ? 40 : 20;
+            playCtx.drawImage(spriteImg, mx, MOON_SPRITE.y, mw, 40,
+                Math.round(moonX), moonY, mw, 40);
+            playCtx.globalAlpha = 1; playCtx.restore();
+        }
+        // Night inversion
+        if (inverted) {
+            playCtx.globalCompositeOperation = 'difference';
+            playCtx.fillStyle = '#fff';
+            playCtx.fillRect(0, 0, CW, CH);
+            playCtx.globalCompositeOperation = 'source-over';
+        }
+        // Big background scores (drawn AFTER night inversion so they adapt)
+        playCtx.fillStyle = inverted ? 'rgba(255,255,255,0.07)' : 'rgba(83,83,83,0.06)';
+        playCtx.font = '600 120px "Courier New", monospace';
+        playCtx.textAlign = 'center';
+        playCtx.fillText(playGame.aPts, CW / 4, CH / 2 + 40);
+        playCtx.fillText(playGame.oPts, 3 * CW / 4, CH / 2 + 40);
+        playCtx.textAlign = 'left';
+        // Simulation visualization overlay (drawn AFTER night inversion so colors stay correct)
+        if (aiMode === 'rules' && pongSimAI._vizEnabled) drawPongSimViz(playCtx);
+        // Score flash overlay (drawn AFTER night inversion so colors are correct)
+        if (scorePauseTimer > 0) {
+            var night = inverted;
+            var flashAlpha = 0.20 + 0.12 * Math.sin(scorePauseTimer * 0.3);
+            // Scorer's side highlight (grayscale)
+            var hx = scoreFlashSide > 0 ? 0 : CW / 2;
+            playCtx.fillStyle = night ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)';
+            playCtx.fillRect(hx, TOP, CW / 2, BOT - TOP);
+            // Bold score number for the scorer (grayscale)
+            playCtx.font = '600 120px "Courier New", monospace';
+            playCtx.textAlign = 'center';
+            var scoreCol = night
+                ? 'rgba(255,255,255,' + flashAlpha + ')'
+                : 'rgba(40,40,40,' + flashAlpha + ')';
+            if (scoreFlashSide > 0) {
+                playCtx.fillStyle = scoreCol;
+                playCtx.fillText(playGame.aPts, CW / 4, CH / 2 + 40);
+            } else {
+                playCtx.fillStyle = scoreCol;
+                playCtx.fillText(playGame.oPts, 3 * CW / 4, CH / 2 + 40);
+            }
+            playCtx.textAlign = 'left';
+        }
+        // Pause overlay
+        if (paused && gameStarted && !playOver) {
+            playCtx.fillStyle = 'rgba(0,0,0,0.4)';
+            playCtx.fillRect(0, 0, CW, CH);
+            playCtx.fillStyle = '#fff';
+            playCtx.font = '600 24px "Courier New", monospace';
+            playCtx.textAlign = 'center';
+            playCtx.fillText('PAUSED', CW / 2, CH / 2);
+            playCtx.font = '12px "Courier New", monospace';
+            playCtx.fillStyle = '#ccc';
+            playCtx.fillText('Press P to resume', CW / 2, CH / 2 + 24);
+            playCtx.textAlign = 'left';
+        }
+        // "Press Space" overlays
+        if (!gameStarted) {
+            playCtx.fillStyle = 'rgba(247,247,247,0.8)';
+            playCtx.fillRect(0, CH / 2 - 30, CW, 60);
+            playCtx.fillStyle = '#535353';
+            playCtx.font = '600 16px "Courier New", monospace';
+            playCtx.textAlign = 'center';
+            playCtx.fillText('Press Space to start', CW / 2, CH / 2 + 6);
+            playCtx.textAlign = 'left';
+        } else if (playGame.needsServe && aiMode === 'off' && !playOver) {
+            playCtx.fillStyle = '#535353';
+            playCtx.font = '600 13px "Courier New", monospace';
+            playCtx.textAlign = 'center';
+            playCtx.fillText('Press Space to serve', CW / 2, CH / 2 + 6);
+            playCtx.textAlign = 'left';
+        }
+        // Game over
+        if (playOver) {
+            playCtx.fillStyle = 'rgba(247,247,247,0.8)';
+            playCtx.fillRect(0, CH / 2 - 40, CW, 80);
+            playCtx.fillStyle = '#535353';
+            playCtx.font = '600 20px "Courier New", monospace';
+            playCtx.textAlign = 'center';
+            playCtx.fillText(playGame.aPts >= 21 ? 'T-REX WINS!' : 'PTERO WINS', CW / 2, CH / 2 - 5);
+            playCtx.font = '13px "Courier New", monospace';
+            playCtx.fillText(pad2(playGame.aPts) + ' - ' + pad2(playGame.oPts), CW / 2, CH / 2 + 16);
+            playCtx.font = '11px "Courier New", monospace';
+            playCtx.fillStyle = '#86868b';
+            playCtx.fillText('Press R or ENTER to restart', CW / 2, CH / 2 + 32);
+            playCtx.textAlign = 'left';
+        }
+    }
+
+    function playLoop() {
+        for (var i = 0; i < FRAME_SKIP; i++) playUpdate();
+        playDraw();
+        requestAnimationFrame(playLoop);
+    }
+
+    document.addEventListener('keydown', function (e) {
+        playKeys[e.keyCode] = true;
+        if ([32, 37, 38, 39, 40, 87, 83].indexOf(e.keyCode) !== -1) e.preventDefault();
+        // Space starts the game or serves
+        if (e.keyCode === 32) {
+            if (!gameStarted) { gameStarted = true; }
+            else if (playGame.needsServe && aiMode === 'off') { playGame._serve(); }
+        }
+        // P toggles pause
+        if (e.keyCode === 80) { togglePause(); }
+        if (e.keyCode === 82 || e.keyCode === 13) {
+            if (playOver) resetPlayGame();
+        }
+    });
+    document.addEventListener('keyup', function (e) { playKeys[e.keyCode] = false; });
+
+    // --- Touch controls ---
+    (function () {
+        var canvas = document.getElementById('game-canvas');
+        function touchY(e) {
+            var t = e.touches[0];
+            var rect = canvas.getBoundingClientRect();
+            return (t.clientY - rect.top) * (canvas.height / rect.height);
+        }
+        canvas.addEventListener('touchstart', function (e) {
+            e.preventDefault();
+            if (!gameStarted) { gameStarted = true; }
+            if (playOver) { resetPlayGame(); return; }
+            if (playGame.needsServe && aiMode === 'off') { playGame._serve(); }
+            var y = touchY(e);
+            var padCenter = playGame.ay + PAD_H / 2;
+            playKeys[38] = y < padCenter;
+            playKeys[40] = y >= padCenter;
+        }, { passive: false });
+        canvas.addEventListener('touchmove', function (e) {
+            e.preventDefault();
+            var y = touchY(e);
+            var padCenter = playGame.ay + PAD_H / 2;
+            playKeys[38] = y < padCenter - 5;
+            playKeys[40] = y > padCenter + 5;
+            if (!playKeys[38] && !playKeys[40]) { playKeys[38] = false; playKeys[40] = false; }
+        }, { passive: false });
+        canvas.addEventListener('touchend', function (e) {
+            e.preventDefault();
+            playKeys[38] = false;
+            playKeys[40] = false;
+        }, { passive: false });
+    })();
+
+    resetPlayGame();
+    playLoop();
+
+    // =================================================================
+    //  MLP -- forward + backward + Adam (vanilla JS, no deps)
+    // =================================================================
+    function randn() {
+        var u = 0, v = 0;
+        while (!u) u = Math.random();
+        while (!v) v = Math.random();
+        return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+    }
+
+    function MLP(sizes) {
+        this.n = sizes.length - 1;
+        this.W = []; this.b = []; this.dims = [];
+        this.mW = []; this.vW = []; this.mb = []; this.vb = [];
+        this.t = 0;
+        for (var l = 0; l < this.n; l++) {
+            var ni = sizes[l], no = sizes[l + 1];
+            this.dims.push({ i: ni, o: no });
+            var w = new Float64Array(no * ni);
+            var std = Math.sqrt(2.0 / ni);
+            for (var j = 0; j < w.length; j++) w[j] = randn() * std;
+            this.W.push(w);
+            this.b.push(new Float64Array(no));
+            this.mW.push(new Float64Array(no * ni));
+            this.vW.push(new Float64Array(no * ni));
+            this.mb.push(new Float64Array(no));
+            this.vb.push(new Float64Array(no));
+        }
+    }
+
+    MLP.prototype.forward = function (x) {
+        this._x = [x.slice ? x.slice() : x.concat()];
+        this._z = [];
+        var a = this._x[0];
+        for (var l = 0; l < this.n; l++) {
+            var d = this.dims[l], z = new Float64Array(d.o);
+            for (var i = 0; i < d.o; i++) {
+                var s = this.b[l][i];
+                for (var j = 0; j < d.i; j++) s += this.W[l][i * d.i + j] * a[j];
+                z[i] = s;
+            }
+            this._z.push(z);
+            if (l < this.n - 1) {
+                a = new Float64Array(d.o);
+                for (var i = 0; i < d.o; i++) a[i] = z[i] > 0 ? z[i] : 0;
+            } else a = z;
+            this._x.push(a instanceof Float64Array ? new Float64Array(a) : a.slice());
+        }
+        return a;
+    };
+
+    MLP.prototype.zeroGrad = function () {
+        this._dW = []; this._db = [];
+        for (var l = 0; l < this.n; l++) {
+            this._dW.push(new Float64Array(this.dims[l].o * this.dims[l].i));
+            this._db.push(new Float64Array(this.dims[l].o));
+        }
+    };
+
+    MLP.prototype.backward = function (grad) {
+        // Accumulates into existing _dW, _db
+        var delta = grad;
+        for (var l = this.n - 1; l >= 0; l--) {
+            var d = this.dims[l], inp = this._x[l], z = this._z[l];
+            // ReLU derivative for hidden layers
+            if (l < this.n - 1) {
+                var dz = new Float64Array(d.o);
+                for (var i = 0; i < d.o; i++) dz[i] = z[i] > 0 ? delta[i] : 0;
+                delta = dz;
+            }
+            // Accumulate weight & bias grads
+            for (var i = 0; i < d.o; i++) {
+                this._db[l][i] += delta[i];
+                for (var j = 0; j < d.i; j++)
+                    this._dW[l][i * d.i + j] += delta[i] * inp[j];
+            }
+            // Propagate
+            if (l > 0) {
+                var gi = new Float64Array(d.i);
+                for (var j = 0; j < d.i; j++) {
+                    var s = 0;
+                    for (var i = 0; i < d.o; i++) s += this.W[l][i * d.i + j] * delta[i];
+                    gi[j] = s;
+                }
+                delta = gi;
+            }
+        }
+    };
+
+    MLP.prototype.update = function (lr, batchSize) {
+        this.t++;
+        var b1 = 0.9, b2 = 0.999, eps = 1e-8;
+        var bc1 = 1 - Math.pow(b1, this.t), bc2 = 1 - Math.pow(b2, this.t);
+        for (var l = 0; l < this.n; l++) {
+            for (var i = 0; i < this.W[l].length; i++) {
+                var g = this._dW[l][i] / batchSize;
+                g = Math.max(-5, Math.min(5, g));
+                this.mW[l][i] = b1 * this.mW[l][i] + (1 - b1) * g;
+                this.vW[l][i] = b2 * this.vW[l][i] + (1 - b2) * g * g;
+                this.W[l][i] -= lr * (this.mW[l][i] / bc1) / (Math.sqrt(this.vW[l][i] / bc2) + eps);
+            }
+            for (var i = 0; i < this.b[l].length; i++) {
+                var g = this._db[l][i] / batchSize;
+                g = Math.max(-5, Math.min(5, g));
+                this.mb[l][i] = b1 * this.mb[l][i] + (1 - b1) * g;
+                this.vb[l][i] = b2 * this.vb[l][i] + (1 - b2) * g * g;
+                this.b[l][i] -= lr * (this.mb[l][i] / bc1) / (Math.sqrt(this.vb[l][i] / bc2) + eps);
+            }
+        }
+    };
+
+    MLP.prototype.copyFrom = function (other) {
+        for (var l = 0; l < this.n; l++) {
+            this.W[l].set(other.W[l]);
+            this.b[l].set(other.b[l]);
+        }
+    };
+
+    MLP.prototype.serialize = function () {
+        var data = { W: [], b: [] };
+        for (var l = 0; l < this.n; l++) {
+            data.W.push(Array.from(this.W[l]));
+            data.b.push(Array.from(this.b[l]));
+        }
+        return data;
+    };
+
+    MLP.prototype.deserialize = function (data) {
+        for (var l = 0; l < this.n; l++) {
+            this.W[l].set(data.W[l]);
+            this.b[l].set(data.b[l]);
+        }
+    };
+
+    // =================================================================
+    //  REPLAY BUFFER
+    // =================================================================
+    function ReplayBuffer(cap) { this.cap = cap; this.buf = []; this.pos = 0; }
+    ReplayBuffer.prototype.push = function (s, a, r, ns, d) {
+        var item = { s: s, a: a, r: r, ns: ns, d: d };
+        if (this.buf.length < this.cap) this.buf.push(item);
+        else this.buf[this.pos] = item;
+        this.pos = (this.pos + 1) % this.cap;
+    };
+    ReplayBuffer.prototype.sample = function (n) {
+        var out = [];
+        for (var i = 0; i < n; i++) out.push(this.buf[Math.floor(Math.random() * this.buf.length)]);
+        return out;
+    };
+
+    // =================================================================
+    //  DQN AGENT
+    // =================================================================
+    var N_FEAT = 6, N_ACT = 3;
+    var GAMMA = 0.99, LR = 0.001;
+    var BATCH_SZ = 32, BUF_CAP = 20000, WARMUP = 500;
+    var TGT_SYNC = 500; // steps between target sync
+    var EPS_START = 1.0, EPS_END = 0.05, EPS_DECAY = 15000;
+
+    var policy, target, buf;
+    var dqnGame;
+    var dqnStep, dqnEp, dqnScores, dqnBest;
+    var dqnTraining = false;
+
+    function argmax(arr) {
+        var b = 0;
+        for (var i = 1; i < arr.length; i++) if (arr[i] > arr[b]) b = i;
+        return b;
+    }
+
+    function initDQN() {
+        policy = new MLP([N_FEAT, 64, 64, N_ACT]);
+        target = new MLP([N_FEAT, 64, 64, N_ACT]);
+        target.copyFrom(policy);
+        buf = new ReplayBuffer(BUF_CAP);
+        dqnGame = new PongGame();
+        dqnGame.reset(OPP_SPEED_BASE); // train at base difficulty
+        dqnStep = 0; dqnEp = 0;
+        dqnScores = []; dqnBest = -99;
+        dqnTraining = false;
+        document.getElementById('dqn-train-btn').textContent = 'Train';
+        document.getElementById('dqn-train-btn').classList.remove('active');
+        document.getElementById('dqn-stats').textContent = 'Ready to train';
+        document.getElementById('dqn-viz-box').style.display = 'none';
+    }
+
+    function getEpsilon() {
+        return Math.max(EPS_END, EPS_START - (EPS_START - EPS_END) * dqnStep / EPS_DECAY);
+    }
+
+    // One training tick: run N game steps + train (headless, no drawing)
+    function dqnTrainTick() {
+        if (!dqnTraining) return;
+        var speed = parseInt(document.getElementById('dqn-speed').value) || 100;
+        document.getElementById('dqn-speed-val').textContent = speed;
+        var stepsThisTick = speed;
+        var t0 = performance.now();
+
+        for (var s = 0; s < stepsThisTick; s++) {
+            var eps = getEpsilon();
+            var features = dqnGame.getFeatures();
+
+            // Epsilon-greedy action
+            var action;
+            if (Math.random() < eps) {
+                action = Math.floor(Math.random() * N_ACT);
+            } else {
+                action = argmax(policy.forward(features));
+            }
+
+            // Step game (with frame skip)
+            if (dqnGame.needsServe) dqnGame._serve(); // auto-serve in training
+            var totalReward = 0, done = false;
+            for (var fs = 0; fs < FRAME_SKIP; fs++) {
+                var r = dqnGame.step(action);
+                totalReward += r.reward;
+                if (r.done) { done = true; break; }
+            }
+
+            var nextFeatures = dqnGame.getFeatures();
+            buf.push(features, action, totalReward, nextFeatures, done);
+            dqnStep++;
+
+            // Episode done
+            if (done) {
+                var score = dqnGame.aPts - dqnGame.oPts;
+                dqnScores.push(score);
+                dqnEp++;
+                if (score > dqnBest) dqnBest = score;
+                dqnGame.reset(OPP_SPEED_BASE); // train at base difficulty
+            }
+
+            // Train on batch
+            if (buf.buf.length >= WARMUP) {
+                var batch = buf.sample(BATCH_SZ);
+                policy.zeroGrad();
+                for (var b = 0; b < batch.length; b++) {
+                    var tr = batch[b];
+                    // Q(s, a)
+                    var q = policy.forward(tr.s);
+                    var qa = q[tr.a];
+                    // Double DQN target
+                    var bestNextA = argmax(policy.forward(tr.ns));
+                    var nextQ = target.forward(tr.ns)[bestNextA];
+                    var tgt = tr.r + (tr.d ? 0 : GAMMA * nextQ);
+                    var td = Math.max(-1, Math.min(1, qa - tgt)); // Huber clip
+                    // Gradient: only for chosen action
+                    policy.forward(tr.s); // re-forward for correct cache
+                    var grad = new Float64Array(N_ACT);
+                    grad[tr.a] = td;
+                    policy.backward(grad);
+                }
+                policy.update(LR, BATCH_SZ);
+            }
+
+            // Target sync
+            if (dqnStep % TGT_SYNC === 0) target.copyFrom(policy);
+        }
+
+        // Update UI
+        var elapsed = (performance.now() - t0) / 1000;
+        var sps = stepsThisTick / Math.max(0.001, elapsed);
+        var avg = 0;
+        if (dqnScores.length > 0) {
+            var last50 = dqnScores.slice(-50);
+            for (var i = 0; i < last50.length; i++) avg += last50[i];
+            avg /= last50.length;
+        }
+        document.getElementById('dqn-stats').textContent =
+            'Ep ' + dqnEp + ' | Step ' + dqnStep +
+            ' | Avg50: ' + avg.toFixed(1) +
+            ' | Best: ' + (dqnBest > 0 ? '+' : '') + dqnBest +
+            ' | Eps: ' + getEpsilon().toFixed(2) +
+            ' | ' + Math.round(sps) + ' s/s';
+
+        if (dqnScores.length > 0) {
+            document.getElementById('dqn-viz-box').style.display = '';
+            drawChart();
+        }
+
+        // Auto-save every 10 ticks
+        if (++_dqnSaveCounter % 10 === 0) saveDQN();
+
+        setTimeout(dqnTrainTick, 0);
+    }
+
+    // -- Chart ---------------------------------------------------------
+    function drawChart() {
+        var cc = document.getElementById('dqn-chart');
+        var c = cc.getContext('2d');
+        var w = cc.width, h = cc.height;
+        c.fillStyle = '#fff'; c.fillRect(0, 0, w, h);
+
+        if (dqnScores.length < 2) return;
+        var data = dqnScores;
+        var pad = 40;
+        var pw = w - pad * 2, ph = h - pad * 2;
+
+        // Y range: -21 to +21
+        var yMin = -21, yMax = 21;
+
+        // Grid
+        c.strokeStyle = '#e8e8e8'; c.lineWidth = 1;
+        for (var y = -20; y <= 20; y += 10) {
+            var py = pad + ph - (y - yMin) / (yMax - yMin) * ph;
+            c.beginPath(); c.moveTo(pad, py); c.lineTo(w - pad, py); c.stroke();
+            c.fillStyle = '#86868b'; c.font = '10px "Courier New"';
+            c.textAlign = 'right'; c.fillText(y, pad - 4, py + 3);
+        }
+        // Zero line
+        var zy = pad + ph - (0 - yMin) / (yMax - yMin) * ph;
+        c.strokeStyle = '#d2d2d7'; c.setLineDash([4, 4]);
+        c.beginPath(); c.moveTo(pad, zy); c.lineTo(w - pad, zy); c.stroke();
+        c.setLineDash([]);
+
+        // Raw scores (light dots)
+        c.fillStyle = 'rgba(0,113,227,0.15)';
+        for (var i = 0; i < data.length; i++) {
+            var px = pad + (i / (data.length - 1)) * pw;
+            var py = pad + ph - (data[i] - yMin) / (yMax - yMin) * ph;
+            c.fillRect(px - 1, py - 1, 3, 3);
+        }
+
+        // Rolling average
+        if (data.length >= 10) {
+            c.strokeStyle = '#0071e3'; c.lineWidth = 2;
+            c.beginPath();
+            var winSz = Math.min(50, Math.floor(data.length / 3));
+            if (winSz < 2) winSz = 2;
+            for (var i = winSz; i < data.length; i++) {
+                var sum = 0;
+                for (var j = i - winSz; j < i; j++) sum += data[j];
+                var avg = sum / winSz;
+                var px = pad + (i / (data.length - 1)) * pw;
+                var py = pad + ph - (avg - yMin) / (yMax - yMin) * ph;
+                if (i === winSz) c.moveTo(px, py); else c.lineTo(px, py);
+            }
+            c.stroke();
+        }
+
+        // Labels
+        c.fillStyle = '#535353'; c.font = '10px "Courier New"';
+        c.textAlign = 'center';
+        c.fillText('Episode', w / 2, h - 5);
+        c.textAlign = 'left';
+    }
+
+    // =================================================================
+    //  SELF-PLAY EVOLUTION
+    // =================================================================
+    var EVO_POP_SIZE = 30;
+    var EVO_ELITE = 5;
+    var EVO_MATCHES = 6;       // matches per individual per generation
+    var EVO_ARCH = [N_FEAT, 24, N_ACT]; // [6, 24, 3]
+
+    var evoPop = null;
+    var evoGen = 0;
+    var evoChampion = null;
+    var evoScores = [];        // best fitness per generation (relative)
+    var evoAvgScores = [];     // avg fitness per generation (relative)
+    var evoBenchScores = [];   // champion vs fixed opponent (absolute skill)
+    var evoTraining = false;
+    var evoSigma = 0.3;
+    var evoStagnCount = 0;        // gens since last benchmark improvement
+    var EVO_STAG_THRESH = 50;     // gens before sigma restart
+    var EVO_SIGMA_MIN = 0.03;
+    var EVO_SIGMA_RESTART = 0.20; // sigma resets to this on stagnation
+
+    // -- Anchor Elo System ------------------------------------------------
+    var evoAnchors = [];           // [{gen, net: serialized, elo, benchScore}]
+    var EVO_ANCHOR_INTERVAL = 10;  // save anchor every N gens
+    var EVO_MAX_ANCHORS = 50;
+    var spectateNetA = null;       // MLP for left player in spectate mode
+    var spectateNetB = null;       // MLP for right player in spectate mode
+    var spectateRulesA = false;    // true = left player is Rules AI
+    var spectateRulesB = false;    // true = right player is Rules AI
+
+    function eloExpected(ra, rb) {
+        return 1 / (1 + Math.pow(10, (rb - ra) / 400));
+    }
+
+    function eloUpdate(ra, score, expected) {
+        return ra + 32 * (score - expected);
+    }
+
+    // Incremental: play new anchor vs all existing, update Elo
+    function eloAddAnchor(newIdx) {
+        if (evoAnchors.length < 2) return;
+        var newA = evoAnchors[newIdx];
+        var newNet = new MLP(EVO_ARCH);
+        newNet.deserialize(newA.net);
+        for (var i = 0; i < evoAnchors.length; i++) {
+            if (i === newIdx) continue;
+            var otherNet = new MLP(EVO_ARCH);
+            otherNet.deserialize(evoAnchors[i].net);
+            var winsNew = 0, winsOther = 0;
+            for (var m = 0; m < 5; m++) {
+                var diff = evoPlayMatch(newNet, otherNet);
+                if (diff > 0) winsNew++; else if (diff < 0) winsOther++;
+            }
+            var sNew = (winsNew + (5 - winsNew - winsOther) * 0.5) / 5;
+            var ea = eloExpected(newA.elo, evoAnchors[i].elo);
+            newA.elo = eloUpdate(newA.elo, sNew, ea);
+            evoAnchors[i].elo = eloUpdate(evoAnchors[i].elo, 1 - sNew, 1 - ea);
+        }
+        for (var i = 0; i < evoAnchors.length; i++)
+            evoAnchors[i].elo = Math.round(evoAnchors[i].elo);
+    }
+
+    // Full round-robin recalibration (called on load or button press)
+    function eloRecalibrate() {
+        if (evoAnchors.length < 2) return;
+        for (var i = 0; i < evoAnchors.length; i++) evoAnchors[i].elo = 1000;
+        var nets = evoAnchors.map(function (a) {
+            var n = new MLP(EVO_ARCH); n.deserialize(a.net); return n;
+        });
+        // Collect wins
+        var wins = [];
+        for (var i = 0; i < nets.length; i++) {
+            wins[i] = [];
+            for (var j = 0; j < nets.length; j++) wins[i][j] = 0;
+        }
+        for (var i = 0; i < nets.length; i++) {
+            for (var j = i + 1; j < nets.length; j++) {
+                for (var m = 0; m < 5; m++) {
+                    var diff = evoPlayMatch(nets[i], nets[j]);
+                    if (diff > 0) wins[i][j]++; else if (diff < 0) wins[j][i]++;
+                }
+            }
+        }
+        // 5 passes of Elo updates
+        for (var pass = 0; pass < 5; pass++) {
+            for (var i = 0; i < nets.length; i++) {
+                for (var j = i + 1; j < nets.length; j++) {
+                    var ea = eloExpected(evoAnchors[i].elo, evoAnchors[j].elo);
+                    var sa = (wins[i][j] + (5 - wins[i][j] - wins[j][i]) * 0.5) / 5;
+                    evoAnchors[i].elo = eloUpdate(evoAnchors[i].elo, sa, ea);
+                    evoAnchors[j].elo = eloUpdate(evoAnchors[j].elo, 1 - sa, 1 - ea);
+                }
+            }
+        }
+        for (var i = 0; i < evoAnchors.length; i++)
+            evoAnchors[i].elo = Math.round(evoAnchors[i].elo);
+    }
+
+    function evoClone(net) {
+        var c = new MLP(EVO_ARCH);
+        c.copyFrom(net);
+        return c;
+    }
+
+    function evoMutate(net, sigma) {
+        for (var l = 0; l < net.n; l++) {
+            for (var i = 0; i < net.W[l].length; i++)
+                net.W[l][i] += randn() * sigma;
+            for (var i = 0; i < net.b[l].length; i++)
+                net.b[l][i] += randn() * sigma;
+        }
+    }
+
+    function evoCrossover(a, b) {
+        var child = evoClone(a);
+        for (var l = 0; l < child.n; l++) {
+            for (var i = 0; i < child.W[l].length; i++)
+                if (Math.random() < 0.5) child.W[l][i] = b.W[l][i];
+            for (var i = 0; i < child.b[l].length; i++)
+                if (Math.random() < 0.5) child.b[l][i] = b.b[l][i];
+        }
+        return child;
+    }
+
+    function evoCreatePop(n) {
+        var pop = [];
+        for (var i = 0; i < n; i++) pop.push(new MLP(EVO_ARCH));
+        return pop;
+    }
+
+    // Benchmark: play net vs fixed-difficulty tracking AI, returns score differential
+    // nMatches > 1 averages multiple games to reduce noise
+    function evoBenchmark(net, nMatches) {
+        nMatches = nMatches || 1;
+        var totalDiff = 0;
+        var benchSpeed = 1 + 5 * 0.8; // difficulty 5 = same speed as player
+        for (var m = 0; m < nMatches; m++) {
+            var g = new PongGame();
+            g.reset(benchSpeed);
+            var maxSteps = 3000;
+            for (var s = 0; s < maxSteps; s++) {
+                if (g.needsServe) g._serve();
+                var feat = g.getFeatures();
+                var act = argmax(net.forward(feat));
+                var r = g.step(act);
+                if (r.done) break;
+            }
+            totalDiff += g.aPts - g.oPts;
+        }
+        return Math.round(totalDiff / nMatches);
+    }
+
+    // Play one match between two networks, returns score differential from A's perspective
+    function evoPlayMatch(netA, netB) {
+        var g = new PongGame();
+        g.reset();
+        var maxSteps = 3000; // safety limit (~enough for a game to 21)
+        for (var s = 0; s < maxSteps; s++) {
+            var featA = g.getFeatures();
+            var featB = g.getFeaturesB();
+            var actA = argmax(netA.forward(featA));
+            var actB = argmax(netB.forward(featB));
+            var r = g.stepSelfPlay(actA, actB);
+            if (r.done) break;
+        }
+        return g.aPts - g.oPts;
+    }
+
+    function evoTrainTick() {
+        if (!evoTraining) return;
+        var t0 = performance.now();
+
+        // Evaluate all individuals
+        var fitness = new Float64Array(EVO_POP_SIZE);
+        var matchesPerTick = parseInt(document.getElementById('evo-speed').value) || 8;
+        document.getElementById('evo-speed-val').textContent = matchesPerTick;
+
+        // Pre-deserialize a few random anchors for hall-of-fame matches
+        var hofNets = [];
+        if (evoAnchors.length > 0) {
+            var nHof = Math.min(3, evoAnchors.length);
+            for (var h = 0; h < nHof; h++) {
+                var ai = Math.floor(Math.random() * evoAnchors.length);
+                var hn = new MLP(EVO_ARCH);
+                hn.deserialize(evoAnchors[ai].net);
+                hofNets.push(hn);
+            }
+        }
+
+        for (var i = 0; i < EVO_POP_SIZE; i++) {
+            var totalWeight = 0;
+            var weightedDiff = 0;
+            for (var m = 0; m < matchesPerTick; m++) {
+                var r = Math.random();
+                if (r < 0.50) {
+                    // Tracking AI pressure (50%, weighted 2×)
+                    var d = evoBenchmark(evoPop[i]);
+                    weightedDiff += d * 2;
+                    totalWeight += 2;
+                } else if (r < 0.75 || hofNets.length === 0) {
+                    // Self-play vs random population member (25%)
+                    var j = i;
+                    while (j === i) j = Math.floor(Math.random() * EVO_POP_SIZE);
+                    weightedDiff += evoPlayMatch(evoPop[i], evoPop[j]);
+                    totalWeight += 1;
+                } else {
+                    // Hall of fame: vs random saved anchor (25%)
+                    var hi = Math.floor(Math.random() * hofNets.length);
+                    weightedDiff += evoPlayMatch(evoPop[i], hofNets[hi]);
+                    totalWeight += 1;
+                }
+            }
+            fitness[i] = weightedDiff / totalWeight;
+        }
+
+        // Sort by fitness (descending)
+        var indices = [];
+        for (var i = 0; i < EVO_POP_SIZE; i++) indices.push(i);
+        indices.sort(function (a, b) { return fitness[b] - fitness[a]; });
+
+        // Record stats
+        var bestFit = fitness[indices[0]];
+        var avgFit = 0;
+        for (var i = 0; i < EVO_POP_SIZE; i++) avgFit += fitness[i];
+        avgFit /= EVO_POP_SIZE;
+        evoScores.push(bestFit);
+        evoAvgScores.push(avgFit);
+        evoGen++;
+
+        // Champion = best individual
+        evoChampion = evoClone(evoPop[indices[0]]);
+
+        // Benchmark: champion vs fixed opponent (3-match average for stability)
+        var benchScore = evoBenchmark(evoChampion, 3);
+        evoBenchScores.push(benchScore);
+
+        // Anchor Elo: save champion snapshot every N gens
+        if (evoGen % EVO_ANCHOR_INTERVAL === 0) {
+            evoAnchors.push({
+                gen: evoGen,
+                net: evoChampion.serialize(),
+                elo: 1000,
+                benchScore: benchScore
+            });
+            if (evoAnchors.length > EVO_MAX_ANCHORS) evoAnchors.shift();
+            eloAddAnchor(evoAnchors.length - 1);
+            updateEloUI();
+        }
+
+        // Build new population: elite + children
+        var newPop = [];
+        // Elite: top EVO_ELITE
+        for (var i = 0; i < EVO_ELITE; i++) {
+            newPop.push(evoClone(evoPop[indices[i]]));
+        }
+        // Children: fill remaining
+        var numParents = Math.min(10, EVO_POP_SIZE);
+        while (newPop.length < EVO_POP_SIZE) {
+            if (Math.random() < 0.7) {
+                // Mutation: clone a random parent from top half
+                var pi = indices[Math.floor(Math.random() * numParents)];
+                var child = evoClone(evoPop[pi]);
+                evoMutate(child, evoSigma);
+                newPop.push(child);
+            } else {
+                // Crossover: two random parents from top half
+                var pi1 = indices[Math.floor(Math.random() * numParents)];
+                var pi2 = indices[Math.floor(Math.random() * numParents)];
+                var child = evoCrossover(evoPop[pi1], evoPop[pi2]);
+                evoMutate(child, evoSigma * 0.5); // light mutation after crossover
+                newPop.push(child);
+            }
+        }
+        evoPop = newPop;
+
+        // Adaptive sigma: rolling-window improvement check + fixed restart
+        var rollingBest = -21;
+        var lookback = Math.min(15, evoBenchScores.length);
+        for (var rb = evoBenchScores.length - lookback; rb < evoBenchScores.length; rb++) {
+            if (evoBenchScores[rb] > rollingBest) rollingBest = evoBenchScores[rb];
+        }
+        if (benchScore >= rollingBest && benchScore > -21) {
+            evoStagnCount = 0;
+            evoSigma = Math.max(EVO_SIGMA_MIN, evoSigma * 0.97); // reward: converge
+        } else {
+            evoStagnCount++;
+            if (evoStagnCount >= EVO_STAG_THRESH) {
+                evoSigma = EVO_SIGMA_RESTART; // fixed restart, not multiplicative
+                evoStagnCount = 0;
+            } else {
+                evoSigma = Math.max(EVO_SIGMA_MIN, evoSigma * 0.9995); // very slow decay
+            }
+        }
+
+        // Update UI
+        var elapsed = (performance.now() - t0);
+        var matchCount = EVO_POP_SIZE * matchesPerTick;
+        var eloStr = evoAnchors.length > 0 ? ' | Elo: ' + evoAnchors[evoAnchors.length - 1].elo : '';
+        document.getElementById('evo-stats').textContent =
+            'Gen ' + evoGen +
+            ' | Bench: ' + (benchScore > 0 ? '+' : '') + benchScore +
+            eloStr +
+            ' | \u03C3: ' + evoSigma.toFixed(3) +
+            ' | ' + Math.round(elapsed) + 'ms';
+
+        if (evoScores.length > 0) {
+            document.getElementById('evo-viz-box').style.display = '';
+            drawEvoChart();
+        }
+
+        // Auto-save every 5 gens
+        if (++_evoSaveCounter % 5 === 0) saveEvo();
+
+        if (evoTraining) setTimeout(evoTrainTick, 0);
+    }
+
+    // -- Evo Chart -----------------------------------------------------
+    function drawEvoChart() {
+        var cc = document.getElementById('evo-chart');
+        var c = cc.getContext('2d');
+        var w = cc.width, h = cc.height;
+        c.fillStyle = '#fff'; c.fillRect(0, 0, w, h);
+
+        if (evoScores.length < 2) return;
+        var pad = 40, padR = 50;
+        var pw = w - pad - padR, ph = h - pad * 2;
+
+        // Left axis: Benchmark score (-21 to +21)
+        var bMin = -21, bMax = 21;
+        // Right axis: Elo (auto-scale from anchors)
+        var eMin = 1000, eMax = 1000;
+        for (var i = 0; i < evoAnchors.length; i++) {
+            if (evoAnchors[i].elo < eMin) eMin = evoAnchors[i].elo;
+            if (evoAnchors[i].elo > eMax) eMax = evoAnchors[i].elo;
+        }
+        eMin = Math.floor((eMin - 30) / 50) * 50;
+        eMax = Math.ceil((eMax + 30) / 50) * 50;
+        if (eMin === eMax) { eMin = 950; eMax = 1050; }
+
+        // Grid lines for benchmark
+        c.strokeStyle = '#e8e8e8'; c.lineWidth = 1;
+        for (var y = -20; y <= 20; y += 10) {
+            var py = pad + ph - (y - bMin) / (bMax - bMin) * ph;
+            c.beginPath(); c.moveTo(pad, py); c.lineTo(w - padR, py); c.stroke();
+            c.fillStyle = '#86868b'; c.font = '10px "Courier New"';
+            c.textAlign = 'right'; c.fillText(y, pad - 4, py + 3);
+        }
+        // Right axis labels (Elo)
+        c.textAlign = 'left';
+        var eStep = Math.max(50, Math.round((eMax - eMin) / 4 / 50) * 50);
+        for (var y = eMin; y <= eMax; y += eStep) {
+            var py = pad + ph - (y - eMin) / (eMax - eMin) * ph;
+            c.fillStyle = '#86868b'; c.font = '10px "Courier New"';
+            c.fillText(y, w - padR + 4, py + 3);
+        }
+
+        // Zero line
+        var zy = pad + ph - (0 - bMin) / (bMax - bMin) * ph;
+        c.strokeStyle = '#d2d2d7'; c.setLineDash([4, 4]);
+        c.beginPath(); c.moveTo(pad, zy); c.lineTo(w - padR, zy); c.stroke();
+        c.setLineDash([]);
+
+        var xLen = evoScores.length - 1;
+
+        // Benchmark score line (blue)
+        if (evoBenchScores.length >= 2) {
+            c.strokeStyle = '#0071e3'; c.lineWidth = 2;
+            c.beginPath();
+            for (var i = 0; i < evoBenchScores.length; i++) {
+                var px = pad + (i / xLen) * pw;
+                var py = pad + ph - (evoBenchScores[i] - bMin) / (bMax - bMin) * ph;
+                if (i === 0) c.moveTo(px, py); else c.lineTo(px, py);
+            }
+            c.stroke();
+        }
+
+        // Anchor Elo line (purple) — plotted at anchor gen positions
+        if (evoAnchors.length >= 2) {
+            c.strokeStyle = '#af52de'; c.lineWidth = 2;
+            c.beginPath();
+            for (var i = 0; i < evoAnchors.length; i++) {
+                var gi = evoAnchors[i].gen - 1; // gen is 1-indexed, array is 0-indexed
+                if (gi < 0) gi = 0;
+                var px = pad + (gi / xLen) * pw;
+                var py = pad + ph - (evoAnchors[i].elo - eMin) / (eMax - eMin) * ph;
+                if (i === 0) c.moveTo(px, py); else c.lineTo(px, py);
+            }
+            c.stroke();
+            // Dots at each anchor
+            for (var i = 0; i < evoAnchors.length; i++) {
+                var gi = evoAnchors[i].gen - 1;
+                if (gi < 0) gi = 0;
+                var px = pad + (gi / xLen) * pw;
+                var py = pad + ph - (evoAnchors[i].elo - eMin) / (eMax - eMin) * ph;
+                c.fillStyle = '#af52de';
+                c.beginPath(); c.arc(px, py, 3, 0, Math.PI * 2); c.fill();
+            }
+        }
+
+        // Labels
+        c.fillStyle = '#535353'; c.font = '10px "Courier New"';
+        c.textAlign = 'center';
+        c.fillText('Generation', w / 2, h - 5);
+        c.textAlign = 'left';
+
+        // Legend
+        c.fillStyle = '#0071e3'; c.fillRect(pad + 5, pad + 5, 12, 3);
+        c.fillStyle = '#535353'; c.font = '9px sans-serif';
+        c.fillText('Bench', pad + 20, pad + 10);
+        c.fillStyle = '#af52de'; c.fillRect(pad + 65, pad + 5, 12, 3);
+        c.fillStyle = '#535353';
+        c.fillText('Elo', pad + 80, pad + 10);
+    }
+
+    // -- Elo UI Functions -------------------------------------------------
+    function updateEloLadder() {
+        var el = document.getElementById('elo-ladder');
+        if (!el || evoAnchors.length === 0) { if (el) el.innerHTML = ''; return; }
+        // Sort by Elo descending for display
+        var sorted = evoAnchors.map(function (a, i) { return { a: a, i: i }; });
+        sorted.sort(function (x, y) { return y.a.elo - x.a.elo; });
+        var html = '';
+        for (var i = 0; i < sorted.length; i++) {
+            var a = sorted[i].a;
+            var bench = a.benchScore;
+            html += '<div style="padding:2px 0;">' +
+                '<span style="color:#86868b;">#' + (i + 1) + '</span> ' +
+                '<span style="font-weight:600;">Gen ' + a.gen + '</span> ' +
+                '<span style="color:#af52de;">Elo ' + a.elo + '</span> ' +
+                '<span style="color:#0071e3;">Bench ' + (bench > 0 ? '+' : '') + bench + '</span>' +
+                '</div>';
+        }
+        el.innerHTML = html;
+    }
+
+    function updateMatchDropdowns() {
+        var left = document.getElementById('match-left');
+        var right = document.getElementById('match-right');
+        if (!left || !right) return;
+        var opts = '<option value="rules">Rules AI</option>';
+        opts += '<option value="dqn">DQN AI</option>';
+        if (evoChampion) {
+            opts += '<option value="champion">Evo Champion</option>';
+        }
+        for (var i = 0; i < evoAnchors.length; i++) {
+            opts += '<option value="anchor-' + i + '">Gen ' + evoAnchors[i].gen + ' (Elo ' + evoAnchors[i].elo + ')</option>';
+        }
+        left.innerHTML = opts;
+        right.innerHTML = opts;
+        // Default: Rules AI vs Evo Champion
+        if (evoChampion) {
+            left.value = 'rules';
+            right.value = 'champion';
+        }
+    }
+
+    function updateEloUI() {
+        var box = document.getElementById('elo-viz-box');
+        if (evoAnchors.length >= 2) {
+            box.style.display = '';
+            updateEloLadder();
+            updateMatchDropdowns();
+        }
+        drawEvoChart(); // redraw main chart with Elo line
+    }
+
+    // -- Evo UI Handlers -----------------------------------------------
+    window.toggleEvoTrain = function () {
+        if (!evoPop) {
+            evoPop = evoCreatePop(EVO_POP_SIZE);
+            evoGen = 0;
+            evoScores = [];
+            evoAvgScores = [];
+            evoBenchScores = [];
+            evoAnchors = [];
+            evoSigma = 0.3;
+            evoStagnCount = 0;
+            evoChampion = null;
+        }
+        evoTraining = !evoTraining;
+        var btn = document.getElementById('evo-train-btn');
+        if (evoTraining) {
+            btn.textContent = 'Pause';
+            btn.classList.add('active');
+            evoTrainTick();
+        } else {
+            btn.textContent = 'Train';
+            btn.classList.remove('active');
+            saveEvo(); // save on pause
+        }
+    };
+
+    window.resetEvo = function () {
+        evoTraining = false;
+        evoPop = null;
+        evoGen = 0;
+        evoScores = [];
+        evoAvgScores = [];
+        evoBenchScores = [];
+        evoAnchors = [];
+        evoSigma = 0.3;
+        evoStagnCount = 0;
+        evoChampion = null;
+        document.getElementById('evo-train-btn').textContent = 'Train';
+        document.getElementById('evo-train-btn').classList.remove('active');
+        document.getElementById('evo-stats').textContent = 'Ready to train';
+        document.getElementById('evo-viz-box').style.display = 'none';
+        document.getElementById('elo-viz-box').style.display = 'none';
+        if (aiMode === 'evo' || aiMode === 'spectate') setAIMode('off');
+        try { localStorage.removeItem(SAVE_KEY_EVO); } catch (e) {}
+    };
+
+    window.loadEvoPreTrained = function () {
+        fetch('evo-best-agent.json').then(function (r) { return r.json(); }).then(function (data) {
+            evoChampion = new MLP(EVO_ARCH);
+            evoChampion.deserialize(data.weights);
+            var b = Math.round(data.bestBench * 10) / 10;
+            document.getElementById('evo-stats').textContent =
+                'Pre-trained loaded (bench: ' + (b > 0 ? '+' : '') + b.toFixed(1) + ')';
+            setAIMode('evo');
+            updateMatchDropdowns();
+        }).catch(function (e) {
+            document.getElementById('evo-stats').textContent = 'Failed to load pre-trained: ' + e.message;
+        });
+    };
+
+    window.watchMatch = function () {
+        var leftVal = document.getElementById('match-left').value;
+        var rightVal = document.getElementById('match-right').value;
+
+        function getPlayer(val) {
+            if (val === 'rules') return { type: 'rules', name: 'Rules AI', net: null };
+            if (val === 'dqn') return { type: 'nn', name: 'DQN AI', net: policy };
+            if (val === 'champion') {
+                if (!evoChampion) return null;
+                return { type: 'nn', name: 'Evo Champion', net: evoClone(evoChampion) };
+            }
+            if (val.indexOf('anchor-') === 0) {
+                var idx = parseInt(val.replace('anchor-', ''));
+                if (idx >= 0 && idx < evoAnchors.length) {
+                    var n = new MLP(EVO_ARCH);
+                    n.deserialize(evoAnchors[idx].net);
+                    return { type: 'nn', name: 'Gen ' + evoAnchors[idx].gen, net: n };
+                }
+            }
+            return null;
+        }
+
+        var playerA = getPlayer(leftVal);
+        var playerB = getPlayer(rightVal);
+        if (!playerA || !playerB) {
+            document.getElementById('evo-stats').textContent = 'Select two valid players first';
+            return;
+        }
+
+        spectateNetA = playerA.type === 'nn' ? playerA.net : null;
+        spectateNetB = playerB.type === 'nn' ? playerB.net : null;
+        spectateRulesA = playerA.type === 'rules';
+        spectateRulesB = playerB.type === 'rules';
+        playGame.reset();
+        playOver = false;
+        gameStarted = true;
+        inverted = false; dayTimer = 0; nightOpacity = 0;
+        scorePauseTimer = 0; scoreFlashSide = 0;
+        prevAPts = 0; prevOPts = 0;
+        setAIMode('spectate');
+
+        // Show who's playing in stats
+        var nameA = playerA.name;
+        var nameB = playerB.name;
+        document.getElementById('evo-stats').textContent = 'Watching: ' + nameA + ' vs ' + nameB;
+    };
+
+    // -- UI Handlers ---------------------------------------------------
+    window.toggleTrain = function () {
+        dqnTraining = !dqnTraining;
+        var btn = document.getElementById('dqn-train-btn');
+        if (dqnTraining) {
+            btn.textContent = 'Pause';
+            btn.classList.add('active');
+            dqnTrainTick();
+        } else {
+            btn.textContent = 'Train';
+            btn.classList.remove('active');
+            saveDQN(); // save on pause
+        }
+    };
+
+    window.resetDQN = function () {
+        dqnTraining = false;
+        initDQN();
+        try { localStorage.removeItem(SAVE_KEY_DQN); } catch (e) {}
+    };
+
+    window.loadCached = function () {
+        if (typeof PONG_CACHED_WEIGHTS === 'undefined' || !PONG_CACHED_WEIGHTS) {
+            alert('No cached weights available yet.');
+            return;
+        }
+        if (dqnTraining) toggleTrain();
+        policy.deserialize(PONG_CACHED_WEIGHTS);
+        target.copyFrom(policy);
+        document.getElementById('dqn-stats').textContent = 'Pre-trained model loaded';
+        dqnGame.reset();
+        // Turn DQN AI on so user can see the agent play
+        setAIMode('dqn');
+    };
+
+    window.getWeights = function () { return policy.serialize(); };
+
+    // =================================================================
+    //  PERSISTENCE (localStorage)
+    // =================================================================
+    var SAVE_KEY_DQN = 'pong_dqn_state';
+    var SAVE_KEY_EVO = 'pong_evo_state';
+    var _dqnSaveCounter = 0;
+    var _evoSaveCounter = 0;
+
+    function saveDQN() {
+        try {
+            var state = {
+                policy: policy.serialize(),
+                step: dqnStep,
+                ep: dqnEp,
+                scores: dqnScores,
+                best: dqnBest
+            };
+            localStorage.setItem(SAVE_KEY_DQN, JSON.stringify(state));
+        } catch (e) { /* quota exceeded — ignore */ }
+    }
+
+    function loadDQN() {
+        try {
+            var raw = localStorage.getItem(SAVE_KEY_DQN);
+            if (!raw) return false;
+            var state = JSON.parse(raw);
+            policy.deserialize(state.policy);
+            target.copyFrom(policy);
+            dqnStep = state.step || 0;
+            dqnEp = state.ep || 0;
+            dqnScores = state.scores || [];
+            dqnBest = state.best || -99;
+            document.getElementById('dqn-stats').textContent =
+                'Restored: Ep ' + dqnEp + ' | Step ' + dqnStep + ' | Best: ' + (dqnBest > 0 ? '+' : '') + dqnBest;
+            if (dqnScores.length > 0) {
+                document.getElementById('dqn-viz-box').style.display = '';
+                drawChart();
+            }
+            return true;
+        } catch (e) { return false; }
+    }
+
+    function saveEvo() {
+        try {
+            var state = {
+                gen: evoGen,
+                sigma: evoSigma,
+                stagnCount: evoStagnCount,
+                scores: evoScores,
+                avgScores: evoAvgScores,
+                benchScores: evoBenchScores,
+                anchors: evoAnchors,
+                champion: evoChampion ? evoChampion.serialize() : null,
+                pop: evoPop ? evoPop.map(function (n) { return n.serialize(); }) : null
+            };
+            localStorage.setItem(SAVE_KEY_EVO, JSON.stringify(state));
+        } catch (e) { /* quota exceeded — ignore */ }
+    }
+
+    function loadEvo() {
+        try {
+            var raw = localStorage.getItem(SAVE_KEY_EVO);
+            if (!raw) return false;
+            var state = JSON.parse(raw);
+            evoGen = state.gen || 0;
+            evoSigma = state.sigma || 0.3;
+            evoStagnCount = state.stagnCount || 0;
+            evoScores = state.scores || [];
+            evoAvgScores = state.avgScores || [];
+            evoBenchScores = state.benchScores || [];
+            evoAnchors = state.anchors || [];
+            if (state.champion) {
+                evoChampion = new MLP(EVO_ARCH);
+                evoChampion.deserialize(state.champion);
+            }
+            if (state.pop) {
+                evoPop = state.pop.map(function (d) {
+                    var n = new MLP(EVO_ARCH);
+                    n.deserialize(d);
+                    return n;
+                });
+            }
+            document.getElementById('evo-stats').textContent =
+                'Restored: Gen ' + evoGen + ' | \u03C3: ' + evoSigma.toFixed(3);
+            if (evoScores.length > 0) {
+                document.getElementById('evo-viz-box').style.display = '';
+                drawEvoChart();
+            }
+            if (evoAnchors.length >= 2) {
+                document.getElementById('elo-viz-box').style.display = '';
+                updateEloLadder();
+                updateMatchDropdowns();
+            }
+            return true;
+        } catch (e) { return false; }
+    }
+
+    // ── Expose for page-level wrappers ──
+    window.pongSimAI = pongSimAI;
+    window.pongSetAIMode = setAIMode;
+
+    initDQN();
+
+    // Auto-restore on load
+    loadDQN();
+    loadEvo();
+    updateMatchDropdowns(); // populate match viewer with available AIs
+})();
+</script>
+
+<!-- ═══ Page-level wrappers ═══ -->
+<script>
+(function () {
+    var origResetPlayGame = window.resetPlayGame;
+    var origTogglePause = window.togglePause;
+
+    // --- setMode: Human/AI toggle ---
+    window.setMode = function (mode) {
+        window.pongSetAIMode(mode === 'rules' ? 'rules' : 'off');
+
+        // Update button states
+        document.getElementById('human-btn').classList.toggle('active', mode === 'off');
+        // rules-btn active state handled by setAIMode
+
+        // Set difficulty defaults: Human=1, AI=6
+        var slider = document.getElementById('play-diff');
+        var val = mode === 'rules' ? 6 : 1;
+        slider.value = val;
+        document.getElementById('play-diff-val').textContent = val;
+
+        // Viz off by default when entering AI mode
+        if (mode === 'rules' && window.pongSimAI) {
+            window.pongSimAI._vizEnabled = false;
+            document.getElementById('viz-btn').classList.remove('active');
+        }
+
+        // Clear pause state
+        document.getElementById('pause-btn').textContent = 'Pause';
+        document.getElementById('pause-btn').classList.remove('active');
+    };
+
+    // --- toggleViz ---
+    window.toggleViz = function () {
+        var ai = window.pongSimAI;
+        if (!ai) return;
+        ai._vizEnabled = !ai._vizEnabled;
+        document.getElementById('viz-btn').classList.toggle('active', ai._vizEnabled);
+    };
+
+    // --- restartGame ---
+    window.restartGame = function () {
+        origResetPlayGame();
+    };
+
+    // --- Slider live update ---
+    document.getElementById('play-diff').addEventListener('input', function () {
+        document.getElementById('play-diff-val').textContent = this.value;
+    });
+
+    // --- R key restart (enhanced) ---
+    document.addEventListener('keydown', function (e) {
+        if (e.keyCode !== 82) return;
+        var el = document.activeElement;
+        if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) return;
+        window.restartGame();
+    });
+
+    // --- Sound hooks ---
+    var g = window.playGame;
+    if (g) {
+        var origStep = g.step.bind(g);
+        g.step = function (action) {
+            var prevRally = g.rally, prevAPts = g.aPts, prevOPts = g.oPts;
+            var r = origStep(action);
+            if (g.rally > prevRally) DinoSounds.press();       // paddle hit
+            if (g.aPts > prevAPts) DinoSounds.reached();       // player scored
+            if (g.oPts > prevOPts) DinoSounds.hit();           // opponent scored
+            return r;
+        };
+        var origStepSP = g.stepSelfPlay && g.stepSelfPlay.bind(g);
+        if (origStepSP) {
+            g.stepSelfPlay = function (a, b) {
+                var prevRally = g.rally, prevAPts = g.aPts, prevOPts = g.oPts;
+                var r = origStepSP(a, b);
+                if (g.rally > prevRally) DinoSounds.press();
+                if (g.aPts > prevAPts) DinoSounds.reached();
+                if (g.oPts > prevOPts) DinoSounds.hit();
+                return r;
+            };
+        }
+    }
+})();
+</script>
+</body>
+</html>

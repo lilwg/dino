@@ -1,0 +1,1012 @@
+/* ==========================================================================
+   Chrome Dino AI — Narrative Layout Styles
+   ========================================================================== */
+
+/* --- Reset & Base --- */
+*, *::before, *::after {
+    box-sizing: border-box;
+}
+
+html {
+    height: auto !important;
+    overflow: visible !important;
+}
+
+body {
+    margin: 0;
+    padding: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                 "Helvetica Neue", Arial, sans-serif;
+    background: #f5f5f7;
+    color: #1d1d1f;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    height: auto !important;
+    overflow: visible !important;
+}
+
+/* --- Layout --- */
+.app-container {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px 24px 60px;
+}
+
+/* --- Hero --- */
+.hero {
+    text-align: center;
+    margin-bottom: 32px;
+    padding-top: 12px;
+}
+
+.hero h1 {
+    font-size: 28px;
+    font-weight: 700;
+    color: #1d1d1f;
+    margin: 0 0 6px;
+    letter-spacing: -0.5px;
+    line-height: 1.2;
+}
+
+.hero .subtitle {
+    font-size: 15px;
+    color: #6e6e73;
+    margin: 0;
+}
+
+/* --- Narrative Sections --- */
+.narrative-section {
+    margin-bottom: 48px;
+}
+
+.narrative-section h2 {
+    font-size: 22px;
+    font-weight: 600;
+    color: #1d1d1f;
+    margin: 0 0 16px;
+    letter-spacing: -0.3px;
+}
+
+/* --- Prose --- */
+.prose {
+    max-width: 640px;
+    margin: 0 auto;
+    font-size: 15px;
+    line-height: 1.7;
+    color: #1d1d1f;
+}
+
+.prose p {
+    margin: 0 0 16px;
+}
+
+.prose p:last-child {
+    margin-bottom: 0;
+}
+
+.prose + .demo-box {
+    margin-top: 24px;
+}
+
+.demo-box + .prose {
+    margin-top: 24px;
+}
+
+/* --- Demo Box --- */
+.demo-box {
+    background: #ffffff;
+    border: 1px solid #d2d2d7;
+    border-radius: 12px;
+    padding: 16px;
+    margin: 24px 0;
+}
+
+.demo-box h3 {
+    font-size: 14px;
+    font-weight: 600;
+    margin: 0 0 12px;
+    color: #1d1d1f;
+}
+
+.demo-caption {
+    font-size: 12px;
+    color: #86868b;
+    margin: 10px 0 0;
+    line-height: 1.5;
+}
+
+/* --- Demo Controls --- */
+.demo-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+/* --- Buttons --- */
+.btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 14px;
+    font-size: 13px;
+    font-weight: 500;
+    color: #1d1d1f;
+    background: #ffffff;
+    border: 1px solid #d2d2d7;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+    white-space: nowrap;
+    user-select: none;
+}
+
+.btn:hover {
+    background: #f0f0f5;
+    border-color: #c7c7cc;
+}
+
+.btn:active {
+    background: #e8e8ed;
+}
+
+.btn.active {
+    background: #0071e3;
+    color: #ffffff;
+    border-color: #0071e3;
+}
+
+.btn.active:hover {
+    background: #0077ed;
+}
+
+.btn.danger {
+    color: #ff3b30;
+    border-color: #ff3b30;
+}
+
+.btn.danger:hover {
+    background: #fff5f5;
+}
+
+.btn-small {
+    padding: 4px 10px;
+    font-size: 12px;
+}
+
+.btn-text {
+    background: none;
+    border: none;
+    color: #0071e3;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    padding: 6px 0;
+}
+
+.btn-text:hover {
+    color: #0077ed;
+    text-decoration: underline;
+}
+
+/* --- Stats Inline --- */
+.stats-inline {
+    font-size: 12px;
+    color: #6e6e73;
+    font-family: "SF Mono", "Menlo", "Monaco", "Courier New", monospace;
+}
+
+.stats-inline b {
+    color: #1d1d1f;
+    font-weight: 600;
+}
+
+/* --- Stats Bar (for DIY section) --- */
+.stats-bar {
+    font-size: 12px;
+    color: #6e6e73;
+    padding: 8px 0;
+    font-family: "SF Mono", "Menlo", "Monaco", "Courier New", monospace;
+}
+
+.stats-bar b {
+    color: #1d1d1f;
+    font-weight: 600;
+}
+
+/* --- Game Slot (target for moving game-wrapper between sections) --- */
+.game-slot {
+    min-height: 0;
+}
+
+/* Placeholder when the game canvas isn't in this slot — shows captured idle state */
+.game-slot {
+    background-size: 600px 150px;
+    background-repeat: no-repeat;
+    background-position: center top;
+}
+
+.game-slot:not(:has(.game-wrapper)) {
+    height: 192px;
+    max-width: 600px;
+    margin: 0 auto;
+    opacity: 0.4;
+}
+
+/* --- Game Canvas Wrapper --- */
+.game-wrapper {
+    position: relative;
+    background: #ffffff;
+    border-radius: 12px;
+    border: 1px solid #d2d2d7;
+    padding: 16px;
+    padding-bottom: 8px;
+    overflow: hidden;
+}
+
+/* When game-wrapper is inside demo-box, remove double borders */
+.demo-box .game-wrapper {
+    border: none;
+    padding: 0;
+    border-radius: 0;
+}
+
+.game-bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 6px 4px 2px;
+    font-size: 13px;
+    color: #6e6e73;
+}
+
+.game-bar-speed {
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif;
+}
+
+.game-wrapper .interstitial-wrapper {
+    position: relative;
+    height: 160px;
+    max-width: 600px;
+    margin: 0 auto;
+    padding-top: 0;
+    overflow: hidden;
+}
+
+.game-wrapper .runner-container {
+    position: relative !important;
+    top: auto !important;
+    left: auto !important;
+    right: auto !important;
+    margin: 0 auto;
+    width: 600px;
+    max-width: 100%;
+    height: 150px;
+    background: #ffffff;
+    transform: none !important;
+}
+
+.game-wrapper .runner-canvas {
+    position: relative !important;
+    top: auto !important;
+}
+
+.game-wrapper #main-content {
+    opacity: 0;
+    height: 0;
+    overflow: hidden;
+}
+
+.interstitial-wrapper.arcade-mode {
+    height: 160px;
+    max-width: 600px;
+    overflow: hidden;
+}
+
+.arcade-mode .runner-container {
+    transform: none !important;
+    transition: none !important;
+}
+
+.game-wrapper .controller {
+    position: absolute !important;
+    width: 100% !important;
+    height: 100% !important;
+    left: 0 !important;
+    top: 0 !important;
+    z-index: 1;
+}
+
+/* Hide old fixed-position UI elements from index.css */
+#ai-toggle:not(.app-btn),
+#arcade-toggle:not(.app-btn),
+#ai-stats:not(.app-stats) {
+    display: none !important;
+}
+
+/* --- Chart --- */
+.chart-container {
+    background: #ffffff;
+    border: 1px solid #d2d2d7;
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 16px;
+}
+
+.chart-container h3 {
+    font-size: 14px;
+    font-weight: 600;
+    margin: 0 0 12px;
+    color: #1d1d1f;
+}
+
+.chart-container canvas {
+    width: 100%;
+    display: block;
+    border-radius: 6px;
+}
+
+/* (expandable-header removed — training integrated inline) */
+
+/* --- Strategy Analysis --- */
+.strategy-section {
+    background: #ffffff;
+    border: 1px solid #d2d2d7;
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 16px;
+}
+
+.strategy-output {
+    margin-top: 12px;
+    font-size: 13px;
+    line-height: 1.5;
+    color: #1d1d1f;
+}
+
+.strategy-output h4 {
+    font-size: 14px;
+    font-weight: 600;
+    margin: 16px 0 6px;
+    color: #1d1d1f;
+}
+
+.strategy-output h4:first-child {
+    margin-top: 0;
+}
+
+.strategy-neuron {
+    background: #f5f5f7;
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin: 6px 0;
+    font-family: 'SF Mono', 'Menlo', monospace;
+    font-size: 12px;
+    line-height: 1.6;
+}
+
+.strategy-neuron .neuron-label {
+    font-weight: 600;
+    color: #0071e3;
+}
+
+.strategy-neuron .weight-pos {
+    color: #30d158;
+}
+
+.strategy-neuron .weight-neg {
+    color: #ff3b30;
+}
+
+.strategy-rule {
+    background: #f0f7ff;
+    border-left: 3px solid #0071e3;
+    padding: 8px 12px;
+    margin: 6px 0;
+    font-size: 13px;
+    border-radius: 0 6px 6px 0;
+}
+
+.strategy-rule .action-jump {
+    color: #ff9f0a;
+    font-weight: 600;
+}
+
+.strategy-rule .action-duck {
+    color: #bf5af2;
+    font-weight: 600;
+}
+
+.strategy-rule .action-run {
+    color: #30d158;
+    font-weight: 600;
+}
+
+/* --- Ghost Dino Legend --- */
+.ghost-legend {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    font-size: 12px;
+    color: #6e6e73;
+    margin-bottom: 8px;
+}
+
+.ghost-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.ghost-legend-swatch {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 2px;
+}
+
+/* --- Decision Overlay (Sim Visualization) --- */
+.decision-overlay {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    background: rgba(255, 255, 255, 0.92);
+    border: 1px solid #d2d2d7;
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 11px;
+    font-family: "SF Mono", "Menlo", monospace;
+    pointer-events: none;
+    z-index: 10;
+}
+
+/* --- Slider Controls --- */
+.slider-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 5px 0;
+}
+
+.slider-row label {
+    font-size: 12px;
+    font-weight: 500;
+    color: #6e6e73;
+    min-width: 110px;
+    flex-shrink: 0;
+}
+
+.slider-row input[type="range"] {
+    flex: 1;
+    height: 4px;
+    -webkit-appearance: none;
+    appearance: none;
+    background: #d2d2d7;
+    border-radius: 2px;
+    outline: none;
+    cursor: pointer;
+}
+
+.slider-row input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #0071e3;
+    border: 2px solid #ffffff;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+    cursor: pointer;
+}
+
+.slider-row input[type="range"]::-moz-range-thumb {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #0071e3;
+    border: 2px solid #ffffff;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+    cursor: pointer;
+}
+
+.slider-value {
+    font-family: "SF Mono", "Menlo", monospace;
+    font-size: 12px;
+    font-weight: 500;
+    color: #1d1d1f;
+    min-width: 42px;
+    text-align: right;
+}
+
+/* --- Info Panels (used in DIY section) --- */
+.info-panel {
+    background: #ffffff;
+    border: 1px solid #d2d2d7;
+    border-radius: 12px;
+    margin-bottom: 16px;
+    overflow: hidden;
+}
+
+.info-panel-header {
+    display: flex;
+    align-items: center;
+    padding: 12px 16px;
+    cursor: pointer;
+    user-select: none;
+    font-size: 14px;
+    font-weight: 500;
+    color: #1d1d1f;
+    transition: background 0.15s;
+}
+
+.info-panel-header:hover {
+    background: #f5f5f7;
+}
+
+.info-panel-header .chevron {
+    margin-right: 8px;
+    font-size: 12px;
+    color: #6e6e73;
+    transition: transform 0.2s;
+}
+
+.info-panel-header.open .chevron {
+    transform: rotate(90deg);
+}
+
+.info-panel-body {
+    display: none;
+    padding: 0 16px 16px;
+    font-size: 13px;
+    color: #48484a;
+    line-height: 1.6;
+}
+
+.info-panel-body.open {
+    display: block;
+}
+
+.info-panel-body h3 {
+    font-size: 14px;
+    font-weight: 600;
+    color: #1d1d1f;
+    margin: 16px 0 6px;
+}
+
+.info-panel-body h3:first-child {
+    margin-top: 4px;
+}
+
+.info-panel-body p {
+    margin: 0 0 10px;
+}
+
+.info-panel-body ul {
+    margin: 4px 0 10px;
+    padding-left: 20px;
+}
+
+.info-panel-body li {
+    margin-bottom: 4px;
+}
+
+/* --- Responsive --- */
+@media (max-width: 640px) {
+    .app-container {
+        padding: 12px 16px 40px;
+    }
+
+    .hero h1 {
+        font-size: 22px;
+    }
+
+    .narrative-section h2 {
+        font-size: 18px;
+    }
+
+    .prose {
+        font-size: 14px;
+    }
+
+    .btn {
+        padding: 5px 10px;
+        font-size: 12px;
+    }
+
+    .demo-controls {
+        gap: 6px;
+    }
+}
+
+/* --- Night-mode: per-canvas inversion --- */
+/* The inverted class is on the .interstitial-wrapper (outerContainerEl).
+   We invert the entire game-wrapper so the white box turns black,
+   then un-invert the game-bar so buttons/slider stay normal.
+   Override index.css .inverted rule to avoid double-inversion. */
+.game-wrapper .inverted {
+    filter: none;
+}
+.game-wrapper:has(.interstitial-wrapper.inverted) {
+    filter: invert(100%);
+    border-color: #2d2d32;
+}
+.game-wrapper:has(.interstitial-wrapper.inverted) .game-bar {
+    filter: invert(100%);
+}
+
+/* --- Utility --- */
+.hidden {
+    display: none !important;
+}
+
+.mono {
+    font-family: "SF Mono", "Menlo", "Monaco", "Courier New", monospace;
+}
+
+/* --- Gen select dropdown (DIY section) --- */
+.gen-select {
+    padding: 6px 10px;
+    font-size: 13px;
+    border: 1px solid #d2d2d7;
+    border-radius: 6px;
+    background: #ffffff;
+    color: #1d1d1f;
+    cursor: pointer;
+    min-width: 180px;
+}
+
+.gen-select:focus {
+    outline: none;
+    border-color: #0071e3;
+    box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.15);
+}
+
+/* --- Decision Tree Rules --- */
+.tree-rules {
+    font-family: "SF Mono", "Menlo", "Monaco", "Courier New", monospace;
+    font-size: 12px;
+    line-height: 1.7;
+    margin: 0;
+    padding: 0;
+    white-space: pre-wrap;
+    overflow-x: auto;
+    color: #1d1d1f;
+}
+
+/* --- Logistic Regression Weight Matrix --- */
+.weight-matrix {
+    border-collapse: collapse;
+    font-family: "SF Mono", "Menlo", "Monaco", "Courier New", monospace;
+    font-size: 11px;
+    width: 100%;
+    overflow-x: auto;
+    display: block;
+}
+
+.weight-matrix th {
+    padding: 4px 6px;
+    font-size: 10px;
+    font-weight: 600;
+    color: #6e6e73;
+    text-align: center;
+    border-bottom: 1px solid #d2d2d7;
+    white-space: nowrap;
+}
+
+.weight-matrix td {
+    padding: 4px 6px;
+    text-align: center;
+    border-bottom: 1px solid #f0f0f5;
+    white-space: nowrap;
+}
+
+.weight-matrix .action-label {
+    font-weight: 600;
+    color: #1d1d1f;
+    text-align: left;
+    background: none !important;
+}
+
+/* --- Decision Tree — Compact Vertical Diagram --- */
+.tv-wrap {
+    font-family: "SF Mono", "Menlo", monospace;
+    font-size: 11px;
+    line-height: 1;
+    padding: 2px 0;
+}
+
+/* --- Decision Tree: Graphical tree diagram --- */
+.tv-graph {
+    margin: 0 auto;
+    overflow-x: auto;
+}
+
+.tv-wrap {
+    overflow-x: auto;
+    padding: 8px 0;
+}
+
+.tv-node {
+    position: absolute;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    font-size: 11.5px;
+    font-weight: 500;
+    white-space: nowrap;
+    text-align: center;
+    box-sizing: border-box;
+    transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+    cursor: default;
+    z-index: 1;
+}
+
+.tv-node.tv-cond {
+    background: #f5f5f7;
+    border: 1.5px solid #c7c7cc;
+    color: #1d1d1f;
+}
+
+.tv-node.tv-leaf.tg-jump {
+    background: #e8f4ff;
+    border: 1.5px solid #4a9eff;
+    color: #1a6ed8;
+    font-weight: 600;
+}
+
+.tv-node.tv-leaf.tg-duck {
+    background: #fef6e8;
+    border: 1.5px solid #e8a735;
+    color: #9a6c00;
+    font-weight: 600;
+}
+
+.tv-node.tv-leaf.tg-run {
+    background: #f0f0f5;
+    border: 1.5px solid #aaa;
+    color: #666;
+    font-weight: 600;
+}
+
+/* Active (highlighted during live play) */
+.tv-node.tv-active.tv-cond {
+    background: #d0e6ff;
+    border-color: #4a9eff;
+    box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.2);
+}
+
+.tv-node.tv-active.tv-leaf {
+    box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.3);
+}
+
+/* SVG connecting lines */
+.tv-lines {
+    pointer-events: none;
+}
+
+.tv-line {
+    fill: none;
+    stroke: #c7c7cc;
+    stroke-width: 1.5;
+    transition: stroke 0.15s;
+}
+
+.tv-line.tv-line-active {
+    stroke: #4a9eff;
+    stroke-width: 2;
+}
+
+/* --- Q-Learning Policy Grid --- */
+.q-policy-header {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 8px;
+    font-size: 11px;
+    flex-wrap: wrap;
+}
+
+.q-legend {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.q-lg-swatch {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 2px;
+}
+
+.q-policy-table {
+    border-collapse: separate;
+    border-spacing: 2px;
+}
+
+.q-policy-table th {
+    font-size: 10px;
+    color: #86868b;
+    font-weight: 500;
+    padding: 2px 0;
+    text-align: center;
+}
+
+.q-cell {
+    width: 28px;
+    height: 22px;
+    text-align: center;
+    font-size: 9px;
+    font-weight: 700;
+    font-family: "SF Mono", monospace;
+    border-radius: 3px;
+    color: rgba(0,0,0,0.5);
+}
+
+.q-cell.q-unvisited {
+    background: #fff;
+    border: 1px dashed #e0e0e5;
+}
+
+.q-speed-label {
+    font-size: 10px;
+    font-weight: 600;
+    color: #86868b;
+    padding: 0 6px;
+    vertical-align: middle;
+    text-align: center;
+}
+
+.q-row-label {
+    font-size: 9px;
+    color: #86868b;
+    white-space: nowrap;
+    padding-right: 6px;
+    text-align: right;
+}
+
+.q-separator td {
+    height: 4px;
+    border: none;
+}
+
+.q-subtable-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: #1d1d1f;
+    margin: 8px 0 4px;
+}
+
+.q-subtable-label:first-child {
+    margin-top: 0;
+}
+
+.q-policy-footer {
+    text-align: center;
+    font-size: 10px;
+    color: #86868b;
+    margin-top: 6px;
+}
+
+/* --- Feature Importance Bars --- */
+.feat-imp-section {
+    margin-bottom: 12px;
+}
+
+.feat-imp-action-label {
+    font-size: 12px;
+    font-weight: 600;
+    margin-bottom: 4px;
+    padding: 2px 0;
+}
+
+.feat-imp-action-label.jump { color: #1a6ed8; }
+.feat-imp-action-label.duck { color: #9a6c00; }
+.feat-imp-action-label.run { color: #666; }
+
+.feat-imp-row {
+    display: flex;
+    align-items: center;
+    margin: 1px 0;
+    height: 18px;
+}
+
+.feat-imp-name {
+    width: 52px;
+    text-align: right;
+    padding-right: 6px;
+    color: #86868b;
+    font-family: "SF Mono", monospace;
+    font-size: 10px;
+    flex-shrink: 0;
+}
+
+.feat-imp-bar-wrap {
+    flex: 1;
+    height: 14px;
+    background: #f5f5f7;
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.feat-imp-bar {
+    display: block;
+    height: 100%;
+    border-radius: 3px;
+    min-width: 1px;
+}
+
+.feat-imp-bar.pos {
+    background: #4a9eff;
+}
+
+.feat-imp-bar.neg {
+    background: #e86464;
+}
+
+.feat-imp-val {
+    width: 44px;
+    padding-left: 6px;
+    font-family: "SF Mono", monospace;
+    font-size: 10px;
+    color: #86868b;
+    flex-shrink: 0;
+}
+
+/* --- Neural Network SVG Visualization --- */
+.nn-svg {
+    width: 100%;
+    max-width: 520px;
+    height: auto;
+    display: block;
+    margin: 0 auto;
+}
+
+.nn-edge {
+    stroke-linecap: round;
+}
+
+.nn-node {
+    transition: fill 0.1s, stroke 0.1s, stroke-width 0.1s, opacity 0.1s;
+}
+
+.nn-input {
+    fill: #f0f0f5;
+    stroke: #c7c7cc;
+    stroke-width: 1;
+}
+
+.nn-hidden {
+    fill: #f0f0f5;
+    stroke: #d2d2d7;
+    stroke-width: 0.8;
+}
+
+.nn-output {
+    fill: #f0f0f5;
+    stroke: #d2d2d7;
+    stroke-width: 1.5;
+}
+
+.nn-label {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    font-size: 8.5px;
+    fill: #6e6e73;
+}
+
+.nn-label-left {
+    text-anchor: end;
+}
+
+.nn-label-right {
+    text-anchor: start;
+    font-weight: 600;
+    font-size: 9.5px;
+}
+
+.nn-layer-title {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    font-size: 9px;
+    font-weight: 600;
+    fill: #86868b;
+    text-anchor: middle;
+}

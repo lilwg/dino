@@ -1,0 +1,425 @@
+/* ==========================================================================
+   RL Training Page — Dark Theme
+   ========================================================================== */
+
+/* --- Controls bar (fixed top) --- */
+#rl-controls {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 1000;
+    display: flex;
+    gap: 8px;
+    padding: 8px 12px;
+    background: #1a1a2e;
+    border-bottom: 2px solid #16213e;
+    font-family: 'Courier New', monospace;
+}
+
+#rl-controls button {
+    padding: 6px 14px;
+    font-family: 'Courier New', monospace;
+    font-size: 13px;
+    font-weight: bold;
+    border: 2px solid #0f3460;
+    border-radius: 4px;
+    cursor: pointer;
+    background: #16213e;
+    color: #e94560;
+    transition: all 0.15s ease;
+    letter-spacing: 0.5px;
+}
+
+#rl-controls button:hover {
+    background: #0f3460;
+    border-color: #e94560;
+}
+
+#rl-controls button:active {
+    transform: scale(0.96);
+}
+
+#rl-toggle.active {
+    background: #e94560;
+    color: #1a1a2e;
+    border-color: #e94560;
+}
+
+/* --- Stats bar (fixed below controls) --- */
+#rl-stats {
+    position: fixed;
+    top: 46px;
+    left: 0;
+    right: 0;
+    z-index: 999;
+    padding: 6px 12px;
+    background: #16213e;
+    color: #a8d8ea;
+    font-family: 'Courier New', monospace;
+    font-size: 13px;
+    letter-spacing: 0.3px;
+    border-bottom: 1px solid #0f3460;
+    text-align: center;
+}
+
+/* Push the game content down to make room for controls + stats */
+body.offline {
+    padding-top: 80px;
+    background: #0d0d1a;
+}
+
+/* --- Speed indicator glow when fast --- */
+#speed-toggle.fast {
+    color: #ffd700;
+    border-color: #ffd700;
+    text-shadow: 0 0 6px rgba(255, 215, 0, 0.5);
+}
+
+/* --- Arcade toggle styling --- */
+#arcade-toggle.active {
+    background: #533483;
+    color: #fff;
+    border-color: #533483;
+}
+
+/* Override game styles for dark RL theme */
+.icon-offline {
+    margin-top: 20px;
+}
+
+/* ==========================================================================
+   Algorithm Description Panel
+   ========================================================================== */
+
+#algo-info {
+    position: fixed;
+    top: 72px;
+    left: 0;
+    right: 0;
+    z-index: 998;
+    background: #12122a;
+    font-family: 'Courier New', monospace;
+}
+
+#algo-info-toggle {
+    display: block;
+    width: 100%;
+    padding: 6px 16px;
+    background: #16213e;
+    color: #a8d8ea;
+    border: none;
+    border-bottom: 1px solid #0f3460;
+    font-family: 'Courier New', monospace;
+    font-size: 13px;
+    cursor: pointer;
+    text-align: left;
+    letter-spacing: 0.5px;
+}
+
+#algo-info-toggle:hover {
+    background: #1a2a4e;
+    color: #e94560;
+}
+
+#algo-info-content {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.4s ease;
+    padding: 0 20px;
+    color: #c8dce8;
+    font-size: 13px;
+    line-height: 1.5;
+    border-bottom: 1px solid transparent;
+}
+
+#algo-info-content.expanded {
+    max-height: 800px;
+    padding: 12px 20px 16px;
+    border-bottom: 1px solid #0f3460;
+    overflow-y: auto;
+}
+
+#algo-info-content h3 {
+    color: #e94560;
+    font-size: 14px;
+    margin: 10px 0 6px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+}
+
+#algo-info-content h3:first-child {
+    margin-top: 0;
+}
+
+#algo-info-content p {
+    margin: 4px 0 8px;
+    color: #a8b8c8;
+}
+
+#algo-info-content p.small {
+    font-size: 11px;
+    color: #788898;
+    margin-top: 8px;
+}
+
+#algo-info-content em {
+    color: #ffd700;
+    font-style: italic;
+}
+
+.algo-columns {
+    display: flex;
+    gap: 30px;
+}
+
+.algo-columns .algo-section {
+    flex: 1;
+}
+
+.input-list, .evo-list {
+    margin: 4px 0;
+    padding-left: 20px;
+    color: #90a8b8;
+    font-size: 12px;
+    line-height: 1.6;
+}
+
+.input-list li { list-style-type: decimal; }
+.evo-list { list-style: none; padding-left: 0; }
+.evo-list li { padding: 1px 0; }
+.evo-list b { color: #a8d8ea; }
+
+/* --- Neural network diagram --- */
+.nn-diagram {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 12px 0;
+}
+
+.nn-layer {
+    text-align: center;
+}
+
+.nn-label {
+    font-size: 11px;
+    color: #788898;
+    margin-bottom: 6px;
+}
+
+.nn-nodes {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    align-items: center;
+}
+
+.nn-nodes span {
+    display: block;
+    width: 20px;
+    height: 6px;
+    background: #3a5a8a;
+    border-radius: 2px;
+    font-size: 8px;
+    line-height: 6px;
+    color: #c8dce8;
+    text-align: center;
+}
+
+.nn-nodes.hi span { background: #4a6a9a; width: 24px; }
+.nn-nodes.out span {
+    background: #e94560;
+    width: 36px;
+    height: 14px;
+    line-height: 14px;
+    font-size: 9px;
+    font-weight: bold;
+    border-radius: 3px;
+}
+
+.nn-arrows {
+    font-size: 24px;
+    color: #555;
+    padding: 0 4px;
+}
+
+/* ==========================================================================
+   Viewer Controls & Iframes
+   ========================================================================== */
+
+#viewer-controls {
+    padding: 10px 16px;
+    background: #1a1a2e;
+    border-top: 2px solid #16213e;
+    border-bottom: 2px solid #16213e;
+    font-family: 'Courier New', monospace;
+}
+
+.viewer-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+#viewer-controls select {
+    padding: 6px 10px;
+    font-family: 'Courier New', monospace;
+    font-size: 12px;
+    background: #16213e;
+    color: #a8d8ea;
+    border: 2px solid #0f3460;
+    border-radius: 4px;
+    cursor: pointer;
+    min-width: 180px;
+}
+
+#viewer-controls button {
+    padding: 6px 14px;
+    font-family: 'Courier New', monospace;
+    font-size: 12px;
+    font-weight: bold;
+    border: 2px solid #0f3460;
+    border-radius: 4px;
+    cursor: pointer;
+    background: #16213e;
+    color: #a8d8ea;
+    transition: all 0.15s ease;
+}
+
+#viewer-controls button:hover {
+    background: #0f3460;
+    border-color: #a8d8ea;
+}
+
+#vs-btn {
+    color: #ffd700 !important;
+    border-color: #665500 !important;
+}
+
+#vs-btn:hover {
+    border-color: #ffd700 !important;
+    background: #332a00 !important;
+}
+
+.close-all-btn {
+    margin-left: auto;
+    color: #e94560 !important;
+    border-color: #5a1a2e !important;
+}
+
+.close-all-btn:hover {
+    border-color: #e94560 !important;
+}
+
+/* --- Viewer iframe container --- */
+#viewer-container {
+    display: flex;
+    gap: 12px;
+    padding: 12px 16px;
+    background: #0d0d1a;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+
+.viewer-frame {
+    flex: 1;
+    min-width: 300px;
+    max-width: 550px;
+    border: 2px solid #0f3460;
+    border-radius: 6px;
+    overflow: hidden;
+    background: #1a1a2e;
+}
+
+.viewer-header {
+    display: flex;
+    align-items: center;
+    padding: 6px 10px;
+    background: #16213e;
+    border-bottom: 1px solid #0f3460;
+    font-family: 'Courier New', monospace;
+    font-size: 12px;
+    gap: 8px;
+}
+
+.viewer-label {
+    color: #a8d8ea;
+    font-weight: bold;
+    flex: 1;
+}
+
+.viewer-score {
+    color: #ffd700;
+    font-weight: bold;
+}
+
+.viewer-close {
+    background: none;
+    border: 1px solid #5a1a2e;
+    color: #e94560;
+    font-size: 16px;
+    cursor: pointer;
+    padding: 0 6px;
+    border-radius: 3px;
+    font-family: 'Courier New', monospace;
+    line-height: 1.2;
+}
+
+.viewer-close:hover {
+    background: #e94560;
+    color: #1a1a2e;
+}
+
+.viewer-iframe {
+    width: 100%;
+    height: 280px;
+    border: none;
+    background: #fff;
+}
+
+/* ==========================================================================
+   Comparison Stats
+   ========================================================================== */
+
+#comparison-stats {
+    padding: 10px 20px;
+    background: #16213e;
+    border-bottom: 2px solid #0f3460;
+    font-family: 'Courier New', monospace;
+    font-size: 13px;
+    color: #a8d8ea;
+    text-align: center;
+}
+
+.comp-row {
+    padding: 3px 0;
+}
+
+.comp-label {
+    display: inline-block;
+    width: 140px;
+    text-align: right;
+    color: #e94560;
+    font-weight: bold;
+}
+
+/* ==========================================================================
+   Learning Curve Chart (now in document flow)
+   ========================================================================== */
+
+#chart-container {
+    background: #1a1a2e;
+    border-top: 2px solid #16213e;
+    padding: 8px;
+    text-align: center;
+}
+
+#learning-curve {
+    background: #0a0a1a;
+    border-radius: 4px;
+    border: 1px solid #16213e;
+    max-width: 100%;
+}

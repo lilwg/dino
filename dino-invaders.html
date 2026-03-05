@@ -1,0 +1,859 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DinoInvaders</title>
+    <link rel="stylesheet" href="si-styles.css?v=2">
+    <style>
+        #game-canvas { width: 100%; height: auto; max-width: none !important; }
+    </style>
+</head>
+<body>
+    <img id="offline-resources-1x"
+         src="assets/default_100_percent/100-offline-sprite.png"
+         style="display:none;">
+
+    <div class="si-page" style="padding-bottom: 40px;">
+        <h1>DinoInvaders</h1>
+        <p class="si-subtitle">Defend the desert from invading pterodactyls</p>
+
+        <!-- ═══ GAME ═══ -->
+        <div class="si-game-box">
+            <canvas id="game-canvas" width="600" height="400"></canvas>
+
+            <div class="si-controls" style="margin-top: 12px;">
+                <button class="si-btn active" id="human-btn" onclick="setMode('off')">Human</button>
+                <button class="si-btn" id="rules-btn" onclick="setMode('rules')">AI</button>
+                <button class="si-btn" id="viz-btn" onclick="toggleViz()">Viz</button>
+                <button class="si-btn" onclick="restartGame()">Restart</button>
+                <button class="si-btn" id="pause-btn" onclick="togglePause()">Pause</button>
+                <div class="si-speed" style="font-size: 11px;">
+                    Speed: <input type="range" id="speed-slider" min="1" max="3" value="1" step="1"
+                        oninput="game.speedMultiplier=parseInt(this.value);document.getElementById('speed-val').textContent=this.value+'x'">
+                    <span id="speed-val">1x</span>
+                </div>
+            </div>
+
+            <p class="si-help" style="text-align: center;">&larr; / &rarr; move &nbsp;|&nbsp; Space fire &nbsp;|&nbsp; R restart &nbsp;|&nbsp; Touch: drag &amp; tap</p>
+        </div>
+
+        <!-- ═══ HOW IT WORKS ═══ -->
+        <h2 style="margin-top: 16px;">How it works</h2>
+        <p class="si-prose">
+            The AI uses forward simulation to decide every move. Each frame, it snapshots the game state and simulates 45 frames ahead for all six actions &mdash; move left, move right, fire, fire-left, fire-right, and stay. It scores each action by the points gained, penalises death, and favours staying clear of enemy bullets. Stay wins ties, keeping the player conservative when nothing is urgent.
+        </p>
+        <p class="si-prose">
+            Tap <strong>Viz</strong> to watch the AI think. Coloured trails show predicted player positions &mdash; blue for left, orange for right, grey for staying still. A dashed line traces the player bullet&rsquo;s path for the chosen action. Pill badges above the trails show each family&rsquo;s outcome (hit, score, or safe), and a badge below the player names the chosen action.
+        </p>
+
+        <p style="margin-top: 20px;">
+            <a href="dino-games.html" style="color: #0071e3; font-size: 14px; text-decoration: none;">&larr; Back</a>
+        </p>
+    </div>
+
+    <!-- Hidden elements for JS compatibility -->
+    <div style="display:none">
+        <button id="dqn-btn"></button>
+        <input type="range" id="dqn-speed" min="1" max="500" value="100">
+        <span id="dqn-speed-val">100</span>
+        <span id="dqn-stats"></span>
+        <button id="dqn-train-btn"></button>
+        <button id="dqn-cached-btn"></button>
+        <div id="dqn-viz-box"><canvas id="dqn-chart" width="1" height="1"></canvas></div>
+    </div>
+
+<script src="dino-sounds.js"></script>
+<script src="space-invaders.js"></script>
+<script src="invaders-weights.js"></script>
+<script>
+(function () {
+    'use strict';
+
+    // ═══════════════════════════════════════════════════════════════
+    //  GAME — use the original SpaceInvadersGame directly
+    // ═══════════════════════════════════════════════════════════════
+    var canvas = document.getElementById('game-canvas');
+    var game = new SpaceInvadersGame(canvas, { primary: true });
+    window.game = game;
+    game.start();
+
+    // ═══════════════════════════════════════════════════════════════
+    //  AI TOGGLE — let DQN control the game at normal speed
+    // ═══════════════════════════════════════════════════════════════
+    var aiMode = 'off';
+
+    // ═══════════════════════════════════════════════════════════════
+    //  RULES AI — pure simulation using snapshotState / restoreState
+    // ═══════════════════════════════════════════════════════════════
+    var simGame = new SpaceInvadersGame(document.createElement('canvas'), { primary: false });
+    simGame._suppressEnemyFire = true;
+
+    var invadersSimAI = {
+        enabled: false,
+        _vizEnabled: false,
+        _vizData: null,
+
+        update: function (g) {
+            var snap = g.snapshotState();
+            var N = 45;
+            var results = [];
+            for (var a = 0; a < 6; a++) {
+                results.push(this._simulate(snap, a, N));
+            }
+
+            // Pick best action — pure simulation outcomes only
+            // Evaluate STAY (action 5) first so it wins ties (conservative default)
+            var scores = new Array(6);
+            for (var a = 0; a < 6; a++) {
+                var r = results[a];
+                var s = 0;
+                if (r.died) s -= 1000;
+                s += r.scoreGain * 10;
+                s += Math.min(r.minBulletDist, 200) * 0.05;
+                scores[a] = s;
+            }
+            var best = 5;
+            var bestScore = scores[5];
+            for (var a = 0; a < 6; a++) {
+                if (a === 5) continue;
+                if (scores[a] > bestScore) { bestScore = scores[a]; best = a; }
+            }
+
+            if (this._vizEnabled) {
+                this._vizData = {
+                    results: results,
+                    chosenAction: best,
+                    playerX: g.player.x,
+                    playerY: g.player.y
+                };
+            }
+
+            g.executeAction(best);
+        },
+
+        _simulate: function (snap, action, nSteps) {
+            simGame.restoreState(snap);
+            simGame._suppressEnemyFire = true;
+
+            var startScore = simGame.score;
+            var startLives = simGame.lives;
+            var positions = [];
+            var bulletPositions = [];
+            var died = false;
+            var minBulletDist = 9999;
+
+            for (var i = 0; i < nSteps; i++) {
+                simGame.executeAction(action);
+                simGame.update();
+
+                // Player center position
+                positions.push({ x: simGame.player.x + 22, y: simGame.player.y + 23 });
+
+                // Track player bullet for viz
+                if (simGame.bullets.length > 0) {
+                    bulletPositions.push({ x: simGame.bullets[0].x + 1.5, y: simGame.bullets[0].y });
+                }
+
+                // Track closest enemy bullet distance to player
+                var px = simGame.player.x + 22;
+                var py = simGame.player.y;
+                for (var j = 0; j < simGame.enemyBullets.length; j++) {
+                    var eb = simGame.enemyBullets[j];
+                    var dx = eb.x - px, dy = eb.y - py;
+                    var dist = Math.sqrt(dx * dx + dy * dy);
+                    if (dist < minBulletDist) minBulletDist = dist;
+                }
+
+                if (simGame.lives < startLives) { died = true; break; }
+                if (simGame.gameOver) { died = true; break; }
+            }
+
+            return {
+                scoreGain: simGame.score - startScore,
+                died: died,
+                positions: positions,
+                bulletPositions: bulletPositions,
+                minBulletDist: minBulletDist,
+                finalX: simGame.player.x + 22
+            };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════════
+    //  SIMULATION VISUALIZATION
+    // ═══════════════════════════════════════════════════════════════
+    // Action families: LEFT(0,3)=blue  STAY(5,2)=grey  RIGHT(1,4)=orange
+    var ACTION_FAMILY = [0, 2, 1, 0, 2, 1];
+    var FAMILY_COLORS = ['#0071e3', '#8e8e93', '#ff9f0a'];
+    var ACTION_NAMES = ['\u2190 LEFT', '\u2192 RIGHT', '\u2191 FIRE', '\u2190 L+F', '\u2192 R+F', '\u00b7 STAY'];
+
+    function drawInvadersSimViz(ctx) {
+        var d = invadersSimAI._vizData;
+        if (!d) return;
+
+        ctx.save();
+
+        // Player position trails spreading UPWARD (Y decreases with time, X = player center)
+        var trailHeight = 140;
+        var baseY = d.playerY + 10;
+
+        for (var a = 0; a < 6; a++) {
+            var r = d.results[a];
+            var fi = ACTION_FAMILY[a];
+            ctx.fillStyle = FAMILY_COLORS[fi];
+            var n = r.positions.length;
+            for (var i = 0; i < n; i++) {
+                var t = i / Math.max(1, n - 1);
+                var dotY = baseY - t * trailHeight;
+                var dotX = r.positions[i].x;
+                var sz = 2.5 - t * 1.5;
+                ctx.globalAlpha = 0.5 - t * 0.3;
+                ctx.fillRect(dotX - sz / 2, dotY - sz / 2, sz, sz);
+            }
+        }
+
+        // Bullet trajectory for chosen action (dashed line)
+        var chosen = d.results[d.chosenAction];
+        if (chosen.bulletPositions.length > 0) {
+            ctx.strokeStyle = FAMILY_COLORS[ACTION_FAMILY[d.chosenAction]];
+            ctx.globalAlpha = 0.4;
+            ctx.setLineDash([3, 3]);
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            for (var i = 0; i < chosen.bulletPositions.length; i++) {
+                var bp = chosen.bulletPositions[i];
+                if (i === 0) ctx.moveTo(bp.x, bp.y);
+                else ctx.lineTo(bp.x, bp.y);
+            }
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
+
+        // Outcome badges — one per family
+        ctx.globalAlpha = 0.85;
+        var shownFamilies = {};
+        for (var a = 0; a < 6; a++) {
+            var fi = ACTION_FAMILY[a];
+            if (shownFamilies[fi]) continue;
+            shownFamilies[fi] = true;
+
+            var r = d.results[a];
+            var fx = r.finalX;
+            var fy = baseY - trailHeight - 10;
+            var label = r.died ? '\u2717 HIT' : (r.scoreGain > 0 ? '\u2713 +' + r.scoreGain : '\u2713 safe');
+
+            ctx.font = '600 9px "Courier New", monospace';
+            var tw = ctx.measureText(label).width;
+            var pw = tw + 8;
+
+            // Pill background
+            ctx.fillStyle = FAMILY_COLORS[fi];
+            ctx.beginPath();
+            ctx.arc(fx - pw / 2 + 3, fy, 3, Math.PI * 0.5, Math.PI * 1.5);
+            ctx.arc(fx + pw / 2 - 3, fy, 3, -Math.PI * 0.5, Math.PI * 0.5);
+            ctx.closePath();
+            ctx.fill();
+
+            ctx.fillStyle = '#fff';
+            ctx.textAlign = 'center';
+            ctx.fillText(label, fx, fy + 3);
+        }
+
+        // Decision badge below player
+        var decFi = ACTION_FAMILY[d.chosenAction];
+        var decLabel = '\u2192 ' + ACTION_NAMES[d.chosenAction] + ' \u2713';
+        ctx.globalAlpha = 0.9;
+        ctx.font = '600 10px "Courier New", monospace';
+        var dtw = ctx.measureText(decLabel).width;
+        var dpw = dtw + 10;
+        var dx = d.playerX + 22, dy = d.playerY + 55;
+
+        ctx.fillStyle = FAMILY_COLORS[decFi];
+        ctx.beginPath();
+        ctx.arc(dx - dpw / 2 + 4, dy, 4, Math.PI * 0.5, Math.PI * 1.5);
+        ctx.arc(dx + dpw / 2 - 4, dy, 4, -Math.PI * 0.5, Math.PI * 0.5);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.fillStyle = '#fff';
+        ctx.textAlign = 'center';
+        ctx.fillText(decLabel, dx, dy + 3.5);
+
+        ctx.restore();
+        ctx.textAlign = 'left';
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  AI MODE MANAGEMENT
+    // ═══════════════════════════════════════════════════════════════
+    function setAIMode(mode) {
+        aiMode = mode;
+        invadersSimAI.enabled = false;
+        invadersSimAI._vizEnabled = false;
+        game.aiAgent.enabled = (mode !== 'off');
+        document.getElementById('rules-btn').classList.remove('active');
+        document.getElementById('dqn-btn').classList.remove('active');
+
+        if (mode === 'rules') {
+            invadersSimAI.enabled = true;
+            invadersSimAI._vizEnabled = true;
+            document.getElementById('rules-btn').classList.add('active');
+            if (game.gameOver) game.restart();
+        } else if (mode === 'dqn') {
+            document.getElementById('dqn-btn').classList.add('active');
+            if (game.gameOver) game.restart();
+        }
+    }
+
+    window.toggleRulesAI = function () {
+        setAIMode(aiMode === 'rules' ? 'off' : 'rules');
+    };
+
+    window.toggleDqnAI = function () {
+        setAIMode(aiMode === 'dqn' ? 'off' : 'dqn');
+    };
+
+    // Hook into the game's update cycle via aiAgent interface
+    game.aiAgent = {
+        enabled: false,
+        update: function (g) {
+            if (aiMode === 'rules' && invadersSimAI.enabled) {
+                invadersSimAI.update(g);
+            } else if (aiMode === 'dqn' && policy) {
+                var state = g.extractState();
+                var features = stateToArray(state);
+                var action = argmax(policy.forward(features));
+                g.executeAction(action);
+            }
+        },
+        onCrash: function () {}
+    };
+
+    // Patch draw to overlay simulation visualization
+    var origDraw = game.draw.bind(game);
+    game.draw = function () {
+        origDraw();
+        if (aiMode === 'rules' && invadersSimAI._vizEnabled) {
+            drawInvadersSimViz(game.ctx);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════════
+    //  STATE HELPERS
+    // ═══════════════════════════════════════════════════════════════
+    var N_FEAT = SpaceInvadersGame.STATE_SIZE; // 24
+    var N_ACT = SpaceInvadersGame.NUM_ACTIONS; // 6
+
+    function stateToArray(s) {
+        return [
+            s.playerX,
+            s.nearestAlienDx, s.nearestAlienY, s.alienDir,
+            s.b1Dx, s.b1Y, s.b1Dy,
+            s.b2Dx, s.b2Y, s.b2Dy,
+            s.b3Dx, s.b3Y, s.b3Dy,
+            s.b4Dx, s.b4Y, s.b4Dy,
+            s.b5Dx, s.b5Y, s.b5Dy,
+            s.bulletCount, s.aliensAlive, s.canFire, s.wave, s.lowestAlienY
+        ];
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  MLP — forward + backward + Adam (vanilla JS, no deps)
+    // ═══════════════════════════════════════════════════════════════
+    function randn() {
+        var u = 0, v = 0;
+        while (!u) u = Math.random();
+        while (!v) v = Math.random();
+        return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+    }
+
+    function MLP(sizes) {
+        this.n = sizes.length - 1;
+        this.W = []; this.b = []; this.dims = [];
+        this.mW = []; this.vW = []; this.mb = []; this.vb = [];
+        this.t = 0;
+        for (var l = 0; l < this.n; l++) {
+            var ni = sizes[l], no = sizes[l + 1];
+            this.dims.push({ i: ni, o: no });
+            var w = new Float64Array(no * ni);
+            var std = Math.sqrt(2.0 / ni);
+            for (var j = 0; j < w.length; j++) w[j] = randn() * std;
+            this.W.push(w);
+            this.b.push(new Float64Array(no));
+            this.mW.push(new Float64Array(no * ni));
+            this.vW.push(new Float64Array(no * ni));
+            this.mb.push(new Float64Array(no));
+            this.vb.push(new Float64Array(no));
+        }
+    }
+
+    MLP.prototype.forward = function (x) {
+        this._x = [x.slice ? x.slice() : x.concat()];
+        this._z = [];
+        var a = this._x[0];
+        for (var l = 0; l < this.n; l++) {
+            var d = this.dims[l], z = new Float64Array(d.o);
+            for (var i = 0; i < d.o; i++) {
+                var s = this.b[l][i];
+                for (var j = 0; j < d.i; j++) s += this.W[l][i * d.i + j] * a[j];
+                z[i] = s;
+            }
+            this._z.push(z);
+            if (l < this.n - 1) {
+                a = new Float64Array(d.o);
+                for (var i = 0; i < d.o; i++) a[i] = z[i] > 0 ? z[i] : 0;
+            } else a = z;
+            this._x.push(a instanceof Float64Array ? new Float64Array(a) : a.slice());
+        }
+        return a;
+    };
+
+    MLP.prototype.zeroGrad = function () {
+        this._dW = []; this._db = [];
+        for (var l = 0; l < this.n; l++) {
+            this._dW.push(new Float64Array(this.dims[l].o * this.dims[l].i));
+            this._db.push(new Float64Array(this.dims[l].o));
+        }
+    };
+
+    MLP.prototype.backward = function (grad) {
+        var delta = grad;
+        for (var l = this.n - 1; l >= 0; l--) {
+            var d = this.dims[l], inp = this._x[l], z = this._z[l];
+            if (l < this.n - 1) {
+                var dz = new Float64Array(d.o);
+                for (var i = 0; i < d.o; i++) dz[i] = z[i] > 0 ? delta[i] : 0;
+                delta = dz;
+            }
+            for (var i = 0; i < d.o; i++) {
+                this._db[l][i] += delta[i];
+                for (var j = 0; j < d.i; j++)
+                    this._dW[l][i * d.i + j] += delta[i] * inp[j];
+            }
+            if (l > 0) {
+                var gi = new Float64Array(d.i);
+                for (var j = 0; j < d.i; j++) {
+                    var s = 0;
+                    for (var i = 0; i < d.o; i++) s += this.W[l][i * d.i + j] * delta[i];
+                    gi[j] = s;
+                }
+                delta = gi;
+            }
+        }
+    };
+
+    MLP.prototype.update = function (lr, batchSize) {
+        this.t++;
+        var b1 = 0.9, b2 = 0.999, eps = 1e-8;
+        var bc1 = 1 - Math.pow(b1, this.t), bc2 = 1 - Math.pow(b2, this.t);
+        for (var l = 0; l < this.n; l++) {
+            for (var i = 0; i < this.W[l].length; i++) {
+                var g = this._dW[l][i] / batchSize;
+                g = Math.max(-5, Math.min(5, g));
+                this.mW[l][i] = b1 * this.mW[l][i] + (1 - b1) * g;
+                this.vW[l][i] = b2 * this.vW[l][i] + (1 - b2) * g * g;
+                this.W[l][i] -= lr * (this.mW[l][i] / bc1) / (Math.sqrt(this.vW[l][i] / bc2) + eps);
+            }
+            for (var i = 0; i < this.b[l].length; i++) {
+                var g = this._db[l][i] / batchSize;
+                g = Math.max(-5, Math.min(5, g));
+                this.mb[l][i] = b1 * this.mb[l][i] + (1 - b1) * g;
+                this.vb[l][i] = b2 * this.vb[l][i] + (1 - b2) * g * g;
+                this.b[l][i] -= lr * (this.mb[l][i] / bc1) / (Math.sqrt(this.vb[l][i] / bc2) + eps);
+            }
+        }
+    };
+
+    MLP.prototype.copyFrom = function (other) {
+        for (var l = 0; l < this.n; l++) {
+            this.W[l].set(other.W[l]);
+            this.b[l].set(other.b[l]);
+        }
+    };
+
+    MLP.prototype.serialize = function () {
+        var data = { W: [], b: [] };
+        for (var l = 0; l < this.n; l++) {
+            data.W.push(Array.from(this.W[l]));
+            data.b.push(Array.from(this.b[l]));
+        }
+        return data;
+    };
+
+    MLP.prototype.deserialize = function (data) {
+        for (var l = 0; l < this.n; l++) {
+            this.W[l].set(data.W[l]);
+            this.b[l].set(data.b[l]);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════════
+    //  REPLAY BUFFER
+    // ═══════════════════════════════════════════════════════════════
+    function ReplayBuffer(cap) { this.cap = cap; this.buf = []; this.pos = 0; }
+    ReplayBuffer.prototype.push = function (s, a, r, ns, d) {
+        var item = { s: s, a: a, r: r, ns: ns, d: d };
+        if (this.buf.length < this.cap) this.buf.push(item);
+        else this.buf[this.pos] = item;
+        this.pos = (this.pos + 1) % this.cap;
+    };
+    ReplayBuffer.prototype.sample = function (n) {
+        var out = [];
+        for (var i = 0; i < n; i++) out.push(this.buf[Math.floor(Math.random() * this.buf.length)]);
+        return out;
+    };
+
+    // ═══════════════════════════════════════════════════════════════
+    //  DQN TRAINING — uses the ORIGINAL game's extractState/executeAction
+    // ═══════════════════════════════════════════════════════════════
+    var GAMMA = 0.99, LR = 0.0005;
+    var BATCH_SZ = 32, BUF_CAP = 50000, WARMUP = 2000;
+    var TGT_SYNC = 1000;
+    var EPS_START = 1.0, EPS_END = 0.05, EPS_DECAY = 50000;
+    var FRAME_SKIP = 2;
+
+    var policy, target, buf;
+    var trainGame; // separate headless game instance for training
+    var dqnStep, dqnEp, dqnScores, dqnBest;
+    var dqnTraining = false;
+
+    function argmax(arr) {
+        var b = 0;
+        for (var i = 1; i < arr.length; i++) if (arr[i] > arr[b]) b = i;
+        return b;
+    }
+
+    function initDQN() {
+        policy = new MLP([N_FEAT, 128, 64, N_ACT]);
+        target = new MLP([N_FEAT, 128, 64, N_ACT]);
+        target.copyFrom(policy);
+        buf = new ReplayBuffer(BUF_CAP);
+        // Create a SECOND game instance for headless training
+        // (not rendered — the visible game stays as-is for human play)
+        trainGame = new SpaceInvadersGame(
+            document.createElement('canvas'), { primary: false });
+        trainGame.restart();
+        dqnStep = 0; dqnEp = 0;
+        dqnScores = []; dqnBest = -99;
+        dqnTraining = false;
+        document.getElementById('dqn-train-btn').textContent = 'Train';
+        document.getElementById('dqn-train-btn').classList.remove('active');
+        document.getElementById('dqn-stats').textContent = 'Ready to train';
+        document.getElementById('dqn-viz-box').style.display = 'none';
+    }
+
+    function getEpsilon() {
+        return Math.max(EPS_END, EPS_START - (EPS_START - EPS_END) * dqnStep / EPS_DECAY);
+    }
+
+    function dqnTrainTick() {
+        if (!dqnTraining) return;
+        var speed = parseInt(document.getElementById('dqn-speed').value) || 100;
+        document.getElementById('dqn-speed-val').textContent = speed;
+        var stepsThisTick = speed;
+        var t0 = performance.now();
+
+        for (var s = 0; s < stepsThisTick; s++) {
+            var eps = getEpsilon();
+            var state = trainGame.extractState();
+            var features = stateToArray(state);
+            var prevScore = trainGame.score;
+
+            // Epsilon-greedy action
+            var action;
+            if (Math.random() < eps) {
+                action = Math.floor(Math.random() * N_ACT);
+            } else {
+                action = argmax(policy.forward(features));
+            }
+
+            // Step game with frame skip
+            var totalReward = 0, done = false;
+            for (var fs = 0; fs < FRAME_SKIP; fs++) {
+                trainGame.executeAction(action);
+                trainGame.update();
+                var scoreDelta = trainGame.score - prevScore;
+                prevScore = trainGame.score;
+                totalReward += scoreDelta / 30;
+                if (trainGame.gameOver) {
+                    done = true;
+                    totalReward -= 5;
+                    break;
+                }
+            }
+
+            var nextState = trainGame.extractState();
+            var nextFeatures = stateToArray(nextState);
+            buf.push(features, action, totalReward, nextFeatures, done);
+            dqnStep++;
+
+            if (done) {
+                var score = trainGame.score;
+                dqnScores.push(score);
+                dqnEp++;
+                if (score > dqnBest) dqnBest = score;
+                trainGame.restart();
+            }
+
+            // Train on batch
+            if (buf.buf.length >= WARMUP) {
+                var batch = buf.sample(BATCH_SZ);
+                policy.zeroGrad();
+                for (var b = 0; b < batch.length; b++) {
+                    var tr = batch[b];
+                    var q = policy.forward(tr.s);
+                    var qa = q[tr.a];
+                    var bestNextA = argmax(policy.forward(tr.ns));
+                    var nextQ = target.forward(tr.ns)[bestNextA];
+                    var tgt = tr.r + (tr.d ? 0 : GAMMA * nextQ);
+                    var td = Math.max(-1, Math.min(1, qa - tgt));
+                    policy.forward(tr.s);
+                    var grad = new Float64Array(N_ACT);
+                    grad[tr.a] = td;
+                    policy.backward(grad);
+                }
+                policy.update(LR, BATCH_SZ);
+            }
+
+            if (dqnStep % TGT_SYNC === 0) target.copyFrom(policy);
+        }
+
+        var elapsed = (performance.now() - t0) / 1000;
+        var sps = stepsThisTick / Math.max(0.001, elapsed);
+        var avg = 0;
+        if (dqnScores.length > 0) {
+            var last50 = dqnScores.slice(-50);
+            for (var i = 0; i < last50.length; i++) avg += last50[i];
+            avg /= last50.length;
+        }
+        document.getElementById('dqn-stats').textContent =
+            'Ep ' + dqnEp + ' | Step ' + dqnStep +
+            ' | Avg50: ' + avg.toFixed(0) +
+            ' | Best: ' + dqnBest +
+            ' | Eps: ' + getEpsilon().toFixed(2) +
+            ' | ' + Math.round(sps) + ' s/s';
+
+        if (dqnScores.length > 0) {
+            document.getElementById('dqn-viz-box').style.display = '';
+            drawChart();
+        }
+
+        setTimeout(dqnTrainTick, 0);
+    }
+
+    // ── Chart ──────────────────────────────────────────────────────
+    function drawChart() {
+        var cc = document.getElementById('dqn-chart');
+        var c = cc.getContext('2d');
+        var w = cc.width, h = cc.height;
+        c.fillStyle = '#fff'; c.fillRect(0, 0, w, h);
+
+        if (dqnScores.length < 2) return;
+        var data = dqnScores;
+        var pad = 40;
+        var pw = w - pad * 2, ph = h - pad * 2;
+        var yMin = 0, yMax = Math.max(100, Math.max.apply(null, data) * 1.1);
+
+        c.strokeStyle = '#e8e8e8'; c.lineWidth = 1;
+        for (var y = 0; y <= yMax; y += Math.max(20, Math.round(yMax / 5))) {
+            var py = pad + ph - (y - yMin) / (yMax - yMin) * ph;
+            c.beginPath(); c.moveTo(pad, py); c.lineTo(w - pad, py); c.stroke();
+            c.fillStyle = '#86868b'; c.font = '10px "Courier New"';
+            c.textAlign = 'right'; c.fillText(y, pad - 4, py + 3);
+        }
+
+        c.fillStyle = 'rgba(0,113,227,0.15)';
+        for (var i = 0; i < data.length; i++) {
+            var px = pad + (i / (data.length - 1)) * pw;
+            var py = pad + ph - (data[i] - yMin) / (yMax - yMin) * ph;
+            c.fillRect(px - 1, py - 1, 3, 3);
+        }
+
+        if (data.length >= 10) {
+            c.strokeStyle = '#0071e3'; c.lineWidth = 2;
+            c.beginPath();
+            var winSz = Math.min(50, Math.floor(data.length / 3));
+            if (winSz < 2) winSz = 2;
+            for (var i = winSz; i < data.length; i++) {
+                var sum = 0;
+                for (var j = i - winSz; j < i; j++) sum += data[j];
+                var avg = sum / winSz;
+                var px = pad + (i / (data.length - 1)) * pw;
+                var py = pad + ph - (avg - yMin) / (yMax - yMin) * ph;
+                if (i === winSz) c.moveTo(px, py); else c.lineTo(px, py);
+            }
+            c.stroke();
+        }
+
+        c.fillStyle = '#535353'; c.font = '10px "Courier New"';
+        c.textAlign = 'center';
+        c.fillText('Episode', w / 2, h - 5);
+        c.textAlign = 'left';
+    }
+
+    // ── UI Handlers ──────────────────────────────────────────────
+    window.toggleTrain = function () {
+        dqnTraining = !dqnTraining;
+        var btn = document.getElementById('dqn-train-btn');
+        if (dqnTraining) {
+            btn.textContent = 'Pause';
+            btn.classList.add('active');
+            dqnTrainTick();
+        } else {
+            btn.textContent = 'Train';
+            btn.classList.remove('active');
+        }
+    };
+
+    window.resetDQN = function () {
+        dqnTraining = false;
+        initDQN();
+    };
+
+    // ── Cached Weights ──────────────────────────────────────────
+    window.loadCached = function () {
+        if (!INVADERS_CACHED_WEIGHTS) { alert('No cached weights yet. Train first.'); return; }
+        if (dqnTraining) toggleTrain();
+        policy.deserialize(INVADERS_CACHED_WEIGHTS);
+        target.copyFrom(policy);
+        document.getElementById('dqn-stats').textContent = 'Pre-trained model loaded \u2014 watching DQN AI';
+        setAIMode('dqn');
+    };
+
+    window.getWeights = function () { return policy.serialize(); };
+
+    // ── Expose for page-level wrappers ──
+    window.invadersSimAI = invadersSimAI;
+    window.setAIMode = setAIMode;
+
+    // ── Init ──────────────────────────────────────────────────────
+    initDQN();
+
+})();
+</script>
+
+<!-- ═══ Page-level wrappers ═══ -->
+<script>
+(function () {
+    // --- setMode: Human/AI toggle ---
+    window.setMode = function (mode) {
+        var g = window.game;
+        window.setAIMode(mode === 'rules' ? 'rules' : 'off');
+
+        // Update button states
+        document.getElementById('human-btn').classList.toggle('active', mode === 'off');
+        // rules-btn active state is already handled by setAIMode
+
+        // Viz off by default when entering AI mode
+        if (mode === 'rules' && window.invadersSimAI) {
+            window.invadersSimAI._vizEnabled = false;
+            document.getElementById('viz-btn').classList.remove('active');
+        }
+
+        // Unpause when switching modes
+        if (g) g.paused = false;
+        document.getElementById('pause-btn').textContent = 'Pause';
+        document.getElementById('pause-btn').classList.remove('active');
+    };
+
+    // --- toggleViz ---
+    window.toggleViz = function () {
+        var ai = window.invadersSimAI;
+        if (!ai) return;
+        ai._vizEnabled = !ai._vizEnabled;
+        document.getElementById('viz-btn').classList.toggle('active', ai._vizEnabled);
+    };
+
+    // --- restartGame ---
+    window.restartGame = function () {
+        var g = window.game;
+        if (g) { g.restart(); g.paused = false; }
+        document.getElementById('pause-btn').textContent = 'Pause';
+        document.getElementById('pause-btn').classList.remove('active');
+    };
+
+    // --- togglePause ---
+    window.togglePause = function () {
+        var g = window.game;
+        if (!g || g.gameOver) return;
+        g.paused = !g.paused;
+        document.getElementById('pause-btn').textContent = g.paused ? 'Resume' : 'Pause';
+        document.getElementById('pause-btn').classList.toggle('active', g.paused);
+    };
+
+    // --- R key restart ---
+    document.addEventListener('keydown', function (e) {
+        if (e.keyCode !== 82) return;
+        var el = document.activeElement;
+        if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) return;
+        window.restartGame();
+    });
+
+    // --- Touch controls ---
+    (function () {
+        var canvas = document.getElementById('game-canvas');
+        var g = window.game;
+        if (!g) return;
+        var touchActive = false;
+        canvas.addEventListener('touchstart', function (e) {
+            e.preventDefault();
+            touchActive = true;
+            if (g.gameOver) { g.restart(); return; }
+            var t = e.touches[0];
+            var rect = canvas.getBoundingClientRect();
+            var x = (t.clientX - rect.left) / rect.width;
+            g.keys[37] = x < 0.4;
+            g.keys[39] = x > 0.6;
+            g.keys[32] = true;
+        }, { passive: false });
+        canvas.addEventListener('touchmove', function (e) {
+            e.preventDefault();
+            var t = e.touches[0];
+            var rect = canvas.getBoundingClientRect();
+            var x = (t.clientX - rect.left) / rect.width;
+            g.keys[37] = x < 0.4;
+            g.keys[39] = x > 0.6;
+        }, { passive: false });
+        canvas.addEventListener('touchend', function (e) {
+            e.preventDefault();
+            touchActive = false;
+            g.keys[37] = false;
+            g.keys[39] = false;
+            g.keys[32] = false;
+        }, { passive: false });
+    })();
+
+    // --- Sound hooks ---
+    var g = window.game;
+    if (g) {
+        // Fire sound: patch bullet creation
+        var origUpdate = g.update.bind(g);
+        var prevBullets = 0;
+        g.update = function () {
+            prevBullets = g.bullets.length;
+            origUpdate();
+            if (g.bullets.length > prevBullets) DinoSounds.press();
+        };
+
+        // Wave complete sound: patch _checkWaveComplete
+        var origWaveCheck = g._checkWaveComplete.bind(g);
+        g._checkWaveComplete = function () {
+            var oldWave = g.wave;
+            origWaveCheck();
+            if (g.wave > oldWave) DinoSounds.reached();
+        };
+
+        // Death sound
+        var origDraw = g.draw.bind(g);
+        var wasDead = false;
+        g.draw = function () {
+            if (g.gameOver && !wasDead) DinoSounds.hit();
+            wasDead = g.gameOver;
+            origDraw();
+        };
+    }
+})();
+</script>
+</body>
+</html>

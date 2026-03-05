@@ -1,0 +1,1 @@
+var INVADERS_CACHED_WEIGHTS = null;

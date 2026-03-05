@@ -1,0 +1,266 @@
+/* =============================================================================
+   Space Invaders AI — Styles
+   Matches the dino app.css aesthetic: Apple-like, clean, minimal
+   ============================================================================= */
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #f7f7f7;
+    color: #1d1d1f;
+    line-height: 1.6;
+}
+
+.si-page {
+    max-width: 740px;
+    margin: 0 auto;
+    padding: 40px 20px 80px;
+}
+
+h1 {
+    font-size: 32px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    text-align: center;
+    margin-bottom: 4px;
+}
+
+.si-subtitle {
+    text-align: center;
+    color: #6e6e73;
+    font-size: 15px;
+    margin-bottom: 32px;
+}
+
+h2 {
+    font-size: 22px;
+    font-weight: 700;
+    margin: 48px 0 12px;
+    letter-spacing: -0.3px;
+}
+
+p {
+    margin-bottom: 12px;
+    font-size: 15px;
+    color: #1d1d1f;
+}
+
+.si-prose {
+    margin-bottom: 20px;
+    font-size: 15px;
+    line-height: 1.65;
+}
+
+.si-prose em {
+    font-style: italic;
+}
+
+/* Game container */
+.si-game-box {
+    background: #fff;
+    border-radius: 12px;
+    padding: 16px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    margin: 16px 0 20px;
+}
+
+.si-game-box canvas {
+    display: block;
+    border-radius: 4px;
+    image-rendering: pixelated;
+    width: 100%;
+    max-width: 600px;
+}
+
+/* Controls row */
+.si-controls {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-top: 10px;
+    flex-wrap: wrap;
+}
+
+.si-help {
+    color: #86868b;
+    font-size: 12px;
+    margin-top: 6px;
+}
+
+/* Buttons */
+.si-btn {
+    padding: 6px 16px;
+    border-radius: 8px;
+    border: 1px solid #d2d2d7;
+    background: #fff;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    color: #1d1d1f;
+    transition: background 0.15s;
+    font-family: inherit;
+}
+.si-btn:hover { background: #f0f0f5; }
+
+.si-btn.active {
+    background: #0071e3;
+    color: #fff;
+    border-color: #0071e3;
+}
+.si-btn.active:hover { background: #0062c4; }
+
+.si-btn.danger {
+    color: #e8453c;
+    border-color: #e8453c;
+}
+.si-btn.danger:hover { background: #fef2f1; }
+
+/* Speed slider */
+.si-speed {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: #6e6e73;
+}
+
+.si-speed input[type=range] {
+    width: 100px;
+    accent-color: #0071e3;
+}
+
+/* Stats line */
+.si-stats {
+    font-family: 'Courier New', monospace;
+    font-size: 12px;
+    color: #6e6e73;
+    margin-top: 6px;
+}
+
+/* Demo / visualization boxes */
+.si-viz-box {
+    background: #fff;
+    border-radius: 12px;
+    padding: 16px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    margin: 12px 0;
+}
+
+.si-viz-box h3 {
+    font-size: 15px;
+    font-weight: 600;
+    margin-bottom: 8px;
+}
+
+.si-viz-box .si-caption {
+    color: #86868b;
+    font-size: 12px;
+    margin-top: 8px;
+}
+
+/* NN SVG styles */
+.nn-node {
+    transition: fill 0.15s;
+}
+.nn-input {
+    fill: #f0f0f5;
+    stroke: #c7c7cc;
+    stroke-width: 1;
+}
+.nn-hidden {
+    fill: #f0f0f5;
+    stroke: #d2d2d7;
+    stroke-width: 1;
+}
+.nn-output {
+    fill: #f0f0f5;
+    stroke: #d2d2d7;
+    stroke-width: 1;
+}
+.nn-edge {
+    stroke-linecap: round;
+}
+.nn-label {
+    font-size: 10px;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    fill: #6e6e73;
+}
+.nn-label-right {
+    font-weight: 600;
+}
+.nn-layer-title {
+    font-size: 11px;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    fill: #86868b;
+    font-weight: 500;
+}
+
+/* Chart canvas */
+.si-chart-canvas {
+    width: 100%;
+    max-width: 500px;
+    height: 200px;
+    display: block;
+}
+
+/* Placeholder sections */
+.si-placeholder {
+    color: #86868b;
+    font-style: italic;
+    padding: 24px;
+    text-align: center;
+    background: #f0f0f5;
+    border-radius: 8px;
+    margin: 16px 0;
+    font-size: 14px;
+}
+
+/* Agent Showdown grid */
+.si-showdown-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    justify-content: center;
+}
+
+.si-showdown-cell {
+    background: #fff;
+    border-radius: 10px;
+    padding: 10px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    width: 224px;
+    text-align: center;
+}
+
+.si-showdown-cell canvas {
+    display: block;
+    width: 204px;
+    height: 136px;
+    border-radius: 4px;
+    image-rendering: pixelated;
+    margin: 0 auto;
+}
+
+.si-showdown-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: #1d1d1f;
+    margin-bottom: 6px;
+}
+
+.si-showdown-score {
+    font-family: 'Courier New', monospace;
+    font-size: 11px;
+    color: #6e6e73;
+    margin-top: 6px;
+}
+
+/* Disabled button style */
+.si-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+.si-btn:disabled:hover {
+    background: #fff;
+}

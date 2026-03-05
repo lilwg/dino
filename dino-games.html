@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dino Arcade</title>
+    <link rel="stylesheet" href="si-styles.css?v=2">
+    <style>
+        .games-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 20px;
+            margin: 24px 0;
+        }
+        @media (max-width: 560px) {
+            .games-grid { grid-template-columns: 1fr; }
+        }
+        .game-card {
+            background: #fff;
+            border-radius: 12px;
+            padding: 24px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+            text-decoration: none;
+            color: inherit;
+            transition: box-shadow 0.15s, transform 0.15s;
+            display: flex;
+            flex-direction: column;
+        }
+        .game-card:hover {
+            box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+            transform: translateY(-2px);
+        }
+        .game-card canvas {
+            image-rendering: pixelated;
+            margin-bottom: 16px;
+            opacity: 0.7;
+            align-self: flex-start;
+        }
+        .game-card:hover canvas { opacity: 1; }
+        .game-card h3 {
+            font-size: 17px;
+            font-weight: 700;
+            margin-bottom: 2px;
+        }
+        .game-card .genre {
+            font-family: 'Courier New', monospace;
+            font-size: 11px;
+            color: #86868b;
+            margin-bottom: 10px;
+        }
+        .game-card p {
+            font-size: 13px;
+            color: #6e6e73;
+            line-height: 1.55;
+            margin-bottom: 0;
+            flex: 1;
+        }
+        .game-card .play-link {
+            font-size: 13px;
+            font-weight: 500;
+            color: #0071e3;
+            margin-top: 14px;
+        }
+    </style>
+</head>
+<body>
+    <img id="offline-resources-1x" src="assets/default_100_percent/100-offline-sprite.png" style="display:none">
+    <div class="si-page">
+        <h1>Dino Arcade</h1>
+        <p class="si-subtitle">Classic games rebuilt for AI experiments</p>
+
+        <div class="games-grid">
+            <a class="game-card" href="dino-runner.html">
+                <canvas width="57" height="61" data-sprites='[{"x":936,"y":2,"w":44,"h":47}]'></canvas>
+                <h3>DinoRunner</h3>
+                <div class="genre">Endless runner</div>
+                <p>Jump and duck through an endless desert. The AI simulates 80 frames ahead to dodge every obstacle.</p>
+                <div class="play-link">Play &rarr;</div>
+            </a>
+
+            <a class="game-card" href="dino-invaders.html">
+                <canvas width="60" height="52" data-sprites='[{"x":134,"y":2,"w":46,"h":40}]'></canvas>
+                <h3>DinoInvaders</h3>
+                <div class="genre">Fixed shooter</div>
+                <p>Defend the desert from waves of pterodactyls. The AI tests all 6 actions 45 frames into the future.</p>
+                <div class="play-link">Play &rarr;</div>
+            </a>
+
+            <a class="game-card" href="dino-pong.html">
+                <canvas width="180" height="61" data-sprites='[{"x":936,"y":2,"w":44,"h":47,"offsetX":14},{"x":134,"y":2,"w":46,"h":40,"flipX":true,"offsetX":110}]' data-extras='[{"type":"rect","x":3,"y":15,"w":4,"h":30,"color":"#bbb"},{"type":"rect","x":173,"y":15,"w":4,"h":30,"color":"#bbb"},{"type":"circle","cx":90,"cy":30,"r":4,"color":"#aaa"}]'></canvas>
+                <h3>DinoPong</h3>
+                <div class="genre">Two-player rally</div>
+                <p>T-Rex vs Pterodactyl &mdash; first to 21. The AI plans two hits ahead, placing shots the opponent can't reach.</p>
+                <div class="play-link">Play &rarr;</div>
+            </a>
+
+            <a class="game-card" href="dino-breakout.html">
+                <canvas width="70" height="55" data-sprites='[{"x":228,"y":2,"w":17,"h":35,"offsetX":24,"offsetY":0}]' data-extras='[{"type":"circle","cx":52,"cy":38,"r":5,"color":"#aaa"},{"type":"rect","x":17,"y":50,"w":36,"h":3,"color":"#bbb"}]'></canvas>
+                <h3>DinoBreakout</h3>
+                <div class="genre">Brick breaker</div>
+                <p>Smash 48 cactus bricks with a bouncing meteor. The AI calculates two-bounce trajectories to find the best catch.</p>
+                <div class="play-link">Play &rarr;</div>
+            </a>
+        </div>
+
+        <p class="si-prose" style="text-align:center; color:#86868b;">
+            All games run in the browser. Play yourself or watch the AI take over.
+        </p>
+    </div>
+
+    <script>
+    (function () {
+        var img = document.getElementById('offline-resources-1x');
+        var scale = 1.3;
+
+        function drawCards() {
+            var cards = document.querySelectorAll('.game-card canvas');
+            for (var i = 0; i < cards.length; i++) {
+                var c = cards[i];
+                var ctx = c.getContext('2d');
+                var sprites;
+                try { sprites = JSON.parse(c.getAttribute('data-sprites')); } catch (e) { continue; }
+                for (var j = 0; j < sprites.length; j++) {
+                    var s = sprites[j];
+                    var dx = (s.offsetX || 0);
+                    var dy = s.offsetY !== undefined ? s.offsetY : (c.height - s.h * scale) / 2;
+                    ctx.save();
+                    if (s.flipX) {
+                        ctx.translate(dx + s.w * scale, dy);
+                        ctx.scale(-1, 1);
+                        ctx.drawImage(img, s.x, s.y, s.w, s.h, 0, 0, s.w * scale, s.h * scale);
+                    } else {
+                        ctx.drawImage(img, s.x, s.y, s.w, s.h, dx, dy, s.w * scale, s.h * scale);
+                    }
+                    ctx.restore();
+                }
+                // Draw extra shapes (rects, circles)
+                var extras;
+                try { extras = JSON.parse(c.getAttribute('data-extras')); } catch (e) { extras = null; }
+                if (extras) {
+                    for (var k = 0; k < extras.length; k++) {
+                        var ex = extras[k];
+                        ctx.fillStyle = ex.color || '#aaa';
+                        if (ex.type === 'rect') {
+                            ctx.fillRect(ex.x, ex.y, ex.w, ex.h);
+                        } else if (ex.type === 'circle') {
+                            ctx.beginPath();
+                            ctx.arc(ex.cx, ex.cy, ex.r, 0, Math.PI * 2);
+                            ctx.fill();
+                        }
+                    }
+                }
+            }
+        }
+
+        if (img.complete) drawCards();
+        else img.onload = drawCards;
+    })();
+    </script>
+</body>
+</html>

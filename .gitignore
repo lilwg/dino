@@ -1,0 +1,37 @@
+.DS_Store
+
+# Dev tools
+.claude/
+.wrangler/
+node_modules/
+
+# Python / training scripts
+*.py
+*.ipynb
+__pycache__/
+
+# Non-deployable files
+*.zip
+content.md
+test.txt
+Gemini_Generated_Image_*.png
+gemini-sprites.png
+dino-runner-sim-backup.html
+
+# Standalone legacy scripts
+evo-bench.js
+evo-run.js
+evo-train.js
+gen-race.js
+si-dqn.js
+si-logistic.js
+si-neuro.js
+si-pretrained.js
+si-qlearn.js
+si-rules.js
+si-sim.js
+
+# Legacy entry points
+space-invaders.html
+index-rl.html
+viewer.html

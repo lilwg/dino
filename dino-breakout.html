@@ -1,0 +1,2724 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DinoBreakout</title>
+    <link rel="stylesheet" href="si-styles.css?v=2">
+    <script src="dino-sounds.js"></script>
+    <style>
+        #game-canvas { width: 100%; height: auto; max-width: none !important; }
+    </style>
+</head>
+<body>
+    <img id="offline-resources-1x"
+         src="assets/default_100_percent/100-offline-sprite.png"
+         style="display:none;">
+
+    <div class="si-page" style="padding-bottom: 40px;">
+        <h1>DinoBreakout</h1>
+        <p class="si-subtitle">Smash the cactus wall with your meteor</p>
+
+        <!-- ═══ GAME ═══ -->
+        <div class="si-game-box">
+            <canvas id="game-canvas" width="600" height="400"></canvas>
+
+            <div class="si-controls" style="margin-top: 12px;">
+                <button class="si-btn active" id="human-btn" onclick="setMode('off')">Human</button>
+                <button class="si-btn" id="rules-btn" onclick="setMode('rules')">AI</button>
+                <button class="si-btn" id="viz-btn" onclick="toggleViz()">Viz</button>
+                <button class="si-btn" onclick="restartGame()">Restart</button>
+                <button class="si-btn" id="pause-btn" onclick="togglePause()">Pause</button>
+                <div class="si-speed" style="font-size: 11px;">
+                    Difficulty: <input type="range" id="play-diff" min="1" max="10" value="1">
+                    <span id="play-diff-val">1</span>
+                </div>
+            </div>
+
+            <p class="si-help" style="text-align: center;">&larr; / A left &nbsp;|&nbsp; &rarr; / D right &nbsp;|&nbsp; Space launch &nbsp;|&nbsp; R restart &nbsp;|&nbsp; Touch: drag</p>
+        </div>
+
+        <!-- ═══ HOW IT WORKS ═══ -->
+        <h2 style="margin-top: 16px;">How it works</h2>
+        <p class="si-prose">
+            The AI uses a two-bounce lookahead. When the ball is heading toward the paddle, it calculates every reachable catch position, then for each one simulates the exact bounce angle and resulting ball flight. It scores each candidate by the bricks it would break over two bounces, with a heavy penalty for losing the ball. The paddle moves toward the highest-scoring catch point.
+        </p>
+        <p class="si-prose">
+            Tap <strong>Viz</strong> to watch the AI think. A grey dashed line shows the ball&rsquo;s predicted flight. Coloured dots along the paddle mark candidate catch positions &mdash; green for high-scoring, red for low-scoring &mdash; with a bright green ring around the chosen target. A green dashed line traces the post-bounce trajectory, and a dot at the far end shows whether the second catch is reachable.
+        </p>
+
+        <p style="margin-top: 20px;">
+            <a href="dino-games.html" style="color: #0071e3; font-size: 14px; text-decoration: none;">&larr; Back</a>
+        </p>
+    </div>
+
+    <!-- Hidden elements for JS compatibility -->
+    <div style="display:none">
+        <button id="hybrid-btn"></button>
+        <button id="dp-btn"></button>
+        <button id="dqn-btn"></button>
+        <div id="dp-horizon-box">
+            <input type="range" id="dp-horizon" min="30" max="1000" value="120" step="10">
+            <span id="dp-horizon-val">120</span>
+        </div>
+        <input type="range" id="dqn-speed" min="1" max="500" value="100">
+        <span id="dqn-speed-val">100</span>
+        <span id="dqn-stats"></span>
+        <button id="dqn-train-btn"></button>
+        <button id="dqn-cached-btn"></button>
+        <div id="dqn-viz-box"><canvas id="dqn-chart" width="1" height="1"></canvas></div>
+        <button id="hybrid-collect-btn"></button>
+        <button id="hybrid-train-btn"></button>
+        <button id="hybrid-play-btn"></button>
+        <button id="hybrid-cached-btn"></button>
+        <span id="hybrid-stats"></span>
+        <div id="hybrid-viz-box"><canvas id="hybrid-chart" width="1" height="1"></canvas></div>
+    </div>
+
+<script src="breakout-weights.js?v=2"></script>
+<script>
+(function () {
+    'use strict';
+
+    // ═════════════════════════════════════════════════════════════════
+    //  SHARED CONSTANTS & SPRITES
+    // ═════════════════════════════════════════════════════════════════
+    var CW = 600, CH = 400;
+    var PAD_W_BASE = 60, PAD_H = 12;
+    var PAD_Y = CH - 12 - (PAD_H + 20) - 2; // top of dino's head (on ground)
+    var PAD_SPEED = 6;
+    var BALL_SZ = 10, BALL_SPEED = 4;
+
+    var COLS = 8, ROWS = 6;
+    var BRICK_W = 60, BRICK_H = 16, BRICK_GAP = 4;
+    var BRICK_TOP = 50;
+    var BRICK_LEFT = (CW - COLS * (BRICK_W + BRICK_GAP) + BRICK_GAP) / 2;
+    var ROW_TYPES = ['PTERO', 'PTERO', 'CACTUS', 'CACTUS', 'CACTUS', 'CACTUS'];
+    var ROW_POINTS = [30, 30, 20, 20, 10, 10];
+    var ROW_COLORS = ['#c8c8c8', '#c8c8c8', '#d8d8d8', '#d8d8d8', '#e8e8e8', '#e8e8e8'];
+    var MAX_LIVES = 3;
+    var FRAME_SKIP = 3;
+
+    var SPRITES = {
+        TREX_RUN1:  { x: 848 + 88,  y: 2, w: 44, h: 47 },
+        TREX_RUN2:  { x: 848 + 132, y: 2, w: 44, h: 47 },
+        TREX_IDLE:  { x: 848 + 44,  y: 2, w: 44, h: 47 },
+        PTERO1:     { x: 134,       y: 2, w: 46, h: 40 },
+        PTERO2:     { x: 134 + 46,  y: 2, w: 46, h: 40 },
+        CACTUS_SM:  { x: 228,       y: 2, w: 17, h: 35 }
+    };
+    var STAR_SPRITE = { x: 645, y: 2, size: 9 };
+    var MOON_SPRITE = { x: 484, y: 2, w: 20, h: 40 };
+    var MOON_PHASES = [140, 120, 100, 60, 40, 20, 0];
+    var spriteImg = document.getElementById('offline-resources-1x');
+
+    // Explosion sprite (offscreen canvas)
+    var explosionCanvas = document.createElement('canvas');
+    var EXPL_SIZE = 24;
+    explosionCanvas.width = EXPL_SIZE;
+    explosionCanvas.height = EXPL_SIZE;
+    (function () {
+        var ec = explosionCanvas.getContext('2d');
+        var c = EXPL_SIZE / 2;
+        ec.fillStyle = '#535353';
+        ec.fillRect(c - 1, c - 1, 3, 3);
+        var rays = [[-7,-7],[7,-7],[-7,7],[7,7],[0,-9],[0,9],[-9,0],[9,0]];
+        for (var i = 0; i < rays.length; i++)
+            ec.fillRect(c + rays[i][0] - 1, c + rays[i][1] - 1, 3, 3);
+    })();
+
+    function getDifficulty() {
+        var d = parseInt(document.getElementById('play-diff').value) || 3;
+        document.getElementById('play-diff-val').textContent = d;
+        return d;
+    }
+    function getBallSpeedMult() { return 1 + (getDifficulty() - 1) * 0.35; }
+    function getPadWidth() { return Math.max(30, PAD_W_BASE - (getDifficulty() - 1) * 3); }
+
+    // ═════════════════════════════════════════════════════════════════
+    //  BreakoutGame CLASS — shared by playable game and DQN
+    // ═════════════════════════════════════════════════════════════════
+    function BreakoutGame() { this.reset(); }
+
+    BreakoutGame.prototype.reset = function (diff) {
+        this._diff = diff; // undefined=use slider, number=fixed
+        this.padW = diff !== undefined ? Math.max(30, PAD_W_BASE - (diff - 1) * 3) : getPadWidth();
+        this._speedMult = diff !== undefined ? (1 + (diff - 1) * 0.12) : getBallSpeedMult();
+        this.px = CW / 2 - this.padW / 2;
+        this.score = 0;
+        this.lives = MAX_LIVES;
+        this.level = 1;
+        this._initBricks();
+        this.explosions = [];
+        this.gameOver = false;
+        this.won = false;
+        this._serve();
+    };
+
+    BreakoutGame.prototype._initBricks = function () {
+        this.totalBricks = ROWS * COLS;
+        this.bricks = [];
+        for (var r = 0; r < ROWS; r++) {
+            this.bricks[r] = [];
+            for (var c = 0; c < COLS; c++) this.bricks[r][c] = true;
+        }
+    };
+
+    BreakoutGame.prototype._nextLevel = function () {
+        this.level++;
+        // Speed up ~10% per level, paddle shrinks 3px per level
+        this._speedMult *= 1.1;
+        this.padW = Math.max(30, this.padW - 3);
+        this.px = Math.min(this.px, CW - this.padW); // clamp paddle after shrink
+        this._initBricks();
+        this.explosions = [];
+        this._serve();
+    };
+
+    BreakoutGame.prototype._serve = function () {
+        this.bx = this.px + this.padW / 2 - BALL_SZ / 2;
+        this.by = PAD_Y - BALL_SZ - 2;
+        this.bvx = 0; this.bvy = 0;
+        this.stuck = true;
+    };
+
+    BreakoutGame.prototype.launch = function () {
+        if (!this.stuck) return;
+        this.stuck = false;
+        var a = (Math.random() - 0.5) * 0.8;
+        var sm = this._speedMult;
+        this.bvx = BALL_SPEED * Math.sin(a) * sm;
+        this.bvy = -BALL_SPEED * Math.cos(a) * sm;
+    };
+
+    BreakoutGame.prototype.step = function (action) {
+        // action: 0=left, 1=stay, 2=right, 3=launch (alias for stay+launch)
+        if (action === 0) this.px = Math.max(0, this.px - PAD_SPEED);
+        if (action === 2) this.px = Math.min(CW - this.padW, this.px + PAD_SPEED);
+        if (action === 3) this.launch();
+
+        if (this._diff === undefined) { this.padW = getPadWidth(); this._speedMult = getBallSpeedMult(); }
+        var sm = this._speedMult;
+        var reward = 0;
+
+        if (this.stuck) {
+            this.bx = this.px + this.padW / 2 - BALL_SZ / 2;
+            this.by = PAD_Y - BALL_SZ - 2;
+            return { reward: 0, done: false };
+        }
+
+        // Substep ball movement to prevent tunneling through bricks
+        var speed = Math.max(Math.abs(this.bvx), Math.abs(this.bvy));
+        var nSub = Math.max(1, Math.ceil(speed / (BALL_SZ * 0.8)));
+        var dxSub = this.bvx / nSub, dySub = this.bvy / nSub;
+
+        for (var sub = 0; sub < nSub; sub++) {
+            this.bx += dxSub;
+            this.by += dySub;
+
+            // Wall bounces
+            if (this.bx < 0) { this.bx = -this.bx; this.bvx = Math.abs(this.bvx); dxSub = Math.abs(dxSub); }
+            if (this.bx > CW - BALL_SZ) { this.bx = 2 * (CW - BALL_SZ) - this.bx; this.bvx = -Math.abs(this.bvx); dxSub = -Math.abs(dxSub); }
+            if (this.by < 0) { this.by = -this.by; this.bvy = Math.abs(this.bvy); dySub = Math.abs(dySub); }
+
+            // Brick collision
+            for (var r = 0; r < ROWS; r++) {
+                for (var c = 0; c < COLS; c++) {
+                    if (!this.bricks[r][c]) continue;
+                    var br = brickRect(r, c);
+                    if (this.bx + BALL_SZ > br.x && this.bx < br.x + br.w &&
+                        this.by + BALL_SZ > br.y && this.by < br.y + br.h) {
+                        this.bricks[r][c] = false;
+                        var pts = ROW_POINTS[r];
+                        this.score += pts;
+                        reward += pts / 30;
+
+                        this.explosions.push({
+                            x: br.x + br.w / 2, y: br.y + br.h / 2,
+                            ttl: 15, text: '+' + pts
+                        });
+
+                        var overlapL = (this.bx + BALL_SZ) - br.x;
+                        var overlapR = (br.x + br.w) - this.bx;
+                        var overlapT = (this.by + BALL_SZ) - br.y;
+                        var overlapB = (br.y + br.h) - this.by;
+                        if (Math.min(overlapT, overlapB) < Math.min(overlapL, overlapR)) {
+                            this.bvy = -this.bvy; dySub = -dySub;
+                        } else {
+                            this.bvx = -this.bvx; dxSub = -dxSub;
+                        }
+
+                        this.totalBricks--;
+                        if (this.totalBricks <= 0) {
+                            this._nextLevel();
+                            return { reward: reward + 10, done: false };
+                        }
+                        r = ROWS; break; // one brick per substep
+                    }
+                }
+            }
+
+            // Paddle bounce (checked each substep to prevent tunneling)
+            if (this.bvy > 0 && this.by + BALL_SZ >= PAD_Y && this.by < PAD_Y + PAD_H) {
+                if (this.bx + BALL_SZ > this.px && this.bx < this.px + this.padW) {
+                    this.by = PAD_Y - BALL_SZ;
+                    this.bvy = -Math.abs(this.bvy);
+                    dySub = -Math.abs(dySub);
+                    var hit = (this.bx + BALL_SZ / 2 - this.px) / this.padW;
+                    this.bvx = BALL_SPEED * sm * (hit - 0.5) * 2.5;
+                    dxSub = this.bvx / nSub;
+                    reward = Math.max(reward, 0.1);
+                    break; // exit substep loop after bounce
+                }
+            }
+        }
+
+        // Ball below paddle
+        if (this.by > CH) {
+            this.lives--;
+            if (this.lives <= 0) {
+                this.gameOver = true;
+                return { reward: -5, done: true };
+            }
+            this._serve();
+            return { reward: -1, done: false };
+        }
+
+        // Update explosions
+        for (var i = this.explosions.length - 1; i >= 0; i--) {
+            this.explosions[i].ttl--;
+            if (this.explosions[i].ttl <= 0) this.explosions.splice(i, 1);
+        }
+
+        return { reward: reward, done: false };
+    };
+
+    BreakoutGame.prototype.getFeatures = function () {
+        // Find nearest brick to ball
+        var nearDx = 0, nearDy = -1;
+        var bestDist = 999999;
+        for (var r = 0; r < ROWS; r++) {
+            for (var c = 0; c < COLS; c++) {
+                if (!this.bricks[r][c]) continue;
+                var br = brickRect(r, c);
+                var cx = br.x + br.w / 2, cy = br.y + br.h / 2;
+                var dist = Math.abs(cx - this.bx) + Math.abs(cy - this.by);
+                if (dist < bestDist) {
+                    bestDist = dist;
+                    nearDx = (cx - this.bx) / CW;
+                    nearDy = (cy - this.by) / CH;
+                }
+            }
+        }
+        var sm = this._speedMult;
+        return [
+            this.px / CW,
+            this.bx / CW,
+            this.by / CH,
+            this.bvx / (BALL_SPEED * sm * 2.5),
+            this.bvy / (BALL_SPEED * sm),
+            nearDx,
+            nearDy
+        ];
+    };
+
+    function brickRect(r, c) {
+        return {
+            x: BRICK_LEFT + c * (BRICK_W + BRICK_GAP),
+            y: BRICK_TOP + r * (BRICK_H + BRICK_GAP),
+            w: BRICK_W, h: BRICK_H
+        };
+    }
+
+    function padScore(n) {
+        var s = '' + n;
+        while (s.length < 5) s = '0' + s;
+        return s;
+    }
+
+    // Shared drawing function
+    function drawBreakoutGame(ctx, g, anim, moveDir, faceDir) {
+        ctx.fillStyle = '#f7f7f7';
+        ctx.fillRect(0, 0, CW, CH);
+
+        // Ground (spritesheet horizon texture)
+        if (spriteImg && spriteImg.complete) {
+            ctx.drawImage(spriteImg, 2, 54, 600, 12, 0, CH - 12, CW, 12);
+        } else {
+            ctx.strokeStyle = '#535353'; ctx.lineWidth = 1;
+            ctx.beginPath(); ctx.moveTo(0, CH - 8); ctx.lineTo(CW, CH - 8); ctx.stroke();
+        }
+
+        // Bricks
+        for (var r = 0; r < ROWS; r++) {
+            for (var c = 0; c < COLS; c++) {
+                if (!g.bricks[r][c]) continue;
+                var br = brickRect(r, c);
+                ctx.fillStyle = ROW_COLORS[r];
+                ctx.fillRect(br.x, br.y, br.w, br.h);
+                if (ROW_TYPES[r] === 'PTERO') {
+                    var pspr = anim === 0 ? SPRITES.PTERO1 : SPRITES.PTERO2;
+                    var pScale = Math.min(br.w / pspr.w, br.h / pspr.h) * 0.9;
+                    if (spriteImg && spriteImg.complete)
+                        ctx.drawImage(spriteImg, pspr.x, pspr.y, pspr.w, pspr.h,
+                            br.x + (br.w - pspr.w * pScale) / 2,
+                            br.y + (br.h - pspr.h * pScale) / 2,
+                            pspr.w * pScale, pspr.h * pScale);
+                } else {
+                    var cspr = SPRITES.CACTUS_SM;
+                    var cScale = (br.h - 2) / cspr.h;
+                    if (spriteImg && spriteImg.complete)
+                        ctx.drawImage(spriteImg, cspr.x, cspr.y, cspr.w, cspr.h,
+                            br.x + (br.w - cspr.w * cScale) / 2,
+                            br.y + (br.h - cspr.h * cScale) / 2,
+                            cspr.w * cScale, cspr.h * cScale);
+                }
+            }
+        }
+
+        // Paddle (T-Rex) — direction-aware
+        var isMoving = moveDir !== undefined && moveDir !== 1;
+        var trexSpr = isMoving
+            ? (anim === 0 ? SPRITES.TREX_RUN1 : SPRITES.TREX_RUN2)
+            : SPRITES.TREX_IDLE;
+        var trexScale = (PAD_H + 20) / trexSpr.h;
+        var trexW = trexSpr.w * trexScale, trexH = trexSpr.h * trexScale;
+        var trexDrawX = g.px + g.padW / 2 - trexW / 2;
+        var trexDrawY = CH - 12 - trexH; // feet on ground
+        // Face direction: use current move dir, or last-known facing when idle
+        var facing = isMoving ? moveDir : (faceDir !== undefined ? faceDir : 2);
+        if (spriteImg && spriteImg.complete) {
+            if (facing === 0) {
+                // Facing left — flip horizontally
+                ctx.save();
+                ctx.translate(trexDrawX + trexW, trexDrawY);
+                ctx.scale(-1, 1);
+                ctx.drawImage(spriteImg, trexSpr.x, trexSpr.y, trexSpr.w, trexSpr.h,
+                    0, 0, trexW, trexH);
+                ctx.restore();
+            } else {
+                ctx.drawImage(spriteImg, trexSpr.x, trexSpr.y, trexSpr.w, trexSpr.h,
+                    trexDrawX, trexDrawY, trexW, trexH);
+            }
+        }
+        ctx.fillStyle = '#535353';
+        ctx.fillRect(g.px, PAD_Y, g.padW, 2);
+
+        // Ball
+        ctx.fillStyle = '#535353';
+        ctx.beginPath();
+        ctx.arc(Math.max(BALL_SZ, Math.min(CW - BALL_SZ, g.bx + BALL_SZ / 2)),
+                Math.max(BALL_SZ, Math.min(CH - BALL_SZ, g.by + BALL_SZ / 2)),
+                BALL_SZ / 2, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Explosions
+        for (var i = 0; i < g.explosions.length; i++) {
+            var e = g.explosions[i];
+            var alpha = e.ttl / 15;
+            ctx.globalAlpha = Math.min(1, alpha);
+            ctx.drawImage(explosionCanvas, e.x - EXPL_SIZE / 2, e.y - EXPL_SIZE / 2);
+            if (e.text) {
+                ctx.font = 'bold 11px "Courier New", monospace';
+                ctx.fillStyle = '#535353';
+                ctx.textAlign = 'center';
+                ctx.fillText(e.text, e.x, e.y - EXPL_SIZE / 2 - 2);
+            }
+        }
+        ctx.globalAlpha = 1;
+
+        // HUD
+        ctx.font = '600 13px "Courier New", monospace';
+        ctx.fillStyle = '#535353';
+        ctx.textAlign = 'left';
+        ctx.fillText('HI ' + padScore(g.score), 10, 18);
+        ctx.textAlign = 'right';
+        ctx.fillText(g.lives + '\u00d7', CW - 10 - g.lives * 26, 17);
+        for (var i = 0; i < g.lives; i++) {
+            if (spriteImg && spriteImg.complete)
+                ctx.drawImage(spriteImg, SPRITES.TREX_IDLE.x, SPRITES.TREX_IDLE.y,
+                    SPRITES.TREX_IDLE.w, SPRITES.TREX_IDLE.h,
+                    CW - 8 - (i + 1) * 24, 5,
+                    SPRITES.TREX_IDLE.w * 0.4, SPRITES.TREX_IDLE.h * 0.4);
+        }
+        ctx.textAlign = 'center';
+        ctx.fillText(g.totalBricks + ' LEFT', CW / 2, 18);
+        if (g.level > 1) {
+            ctx.fillText('LV ' + g.level, CW / 2, 32);
+        }
+
+        if (g.stuck && !g.gameOver) {
+            ctx.fillStyle = '#86868b';
+            ctx.font = '13px "Courier New", monospace';
+            ctx.fillText('Press SPACE to launch', CW / 2, CH / 2 + 40);
+        }
+
+        ctx.textAlign = 'left';
+    }
+
+    // ═════════════════════════════════════════════════════════════════
+    //  RULES-BASED AI — Forward simulation with path visualization
+    // ═════════════════════════════════════════════════════════════════
+    var breakoutSimAI = {
+        enabled: false,
+        _vizEnabled: false,
+        _vizData: null,
+
+        _lastDecision: null,
+        _prevLives: -1,
+
+        update: function (game) {
+            if (game.gameOver) return 1;
+            if (game.stuck) {
+                // Move to center before launching
+                var center = CW / 2 - game.padW / 2;
+                var diff = center - game.px;
+                if (Math.abs(diff) > PAD_SPEED) return diff < 0 ? 0 : 2;
+                return 3; // centered — launch
+            }
+
+            this._prevLives = game.lives;
+
+            var px = game.px, padW = game.padW, sm = game._speedMult;
+            var bx = game.bx, by = game.by, bvx = game.bvx, bvy = game.bvy;
+
+            // Copy bricks
+            var bricks = [];
+            for (var r = 0; r < ROWS; r++) {
+                bricks[r] = [];
+                for (var c = 0; c < COLS; c++) bricks[r][c] = game.bricks[r][c];
+            }
+
+            // 1. Simulate ball free-flight to paddle zone
+            var flight1 = this._simBallFlight(bx, by, bvx, bvy, bricks, 1000);
+
+            // Ball going up or won't reach paddle — track ball x
+            if (!flight1.caught) {
+                var target = bx + BALL_SZ / 2 - padW / 2;
+                var action = target < px - 2 ? 0 : target > px + 2 ? 2 : 1;
+                this._lastDecision = {
+                    mode: 'track', action: action, px: px,
+                    bx: bx, by: by, bvx: bvx, bvy: bvy,
+                    flight1caught: false, flight1lost: flight1.lost,
+                    flight1frames: flight1.frames
+                };
+                if (this._vizEnabled) {
+                    this._vizData = { mode: 'track', action: action,
+                        paddleX: px, padW: padW, flight: flight1.path };
+                }
+                return action;
+            }
+
+            // 2. Reachable paddle range at catch frame
+            var F = flight1.frames;
+            var reachMin = Math.max(0, px - F * PAD_SPEED);
+            var reachMax = Math.min(CW - padW, px + F * PAD_SPEED);
+
+            // 3. Intersect reachable grid with catch positions
+            var cbx = flight1.bx, cby = flight1.by;
+            var catchLo = cbx - padW + 1;  // leftmost paddle x that catches
+            var catchHi = cbx + BALL_SZ - 1; // rightmost paddle x that catches
+
+            // Exact reachable grid: px + 6*k, clamped to [0, CW-padW]
+            // Find first grid point >= catchLo
+            var kMin = Math.ceil((Math.max(0, catchLo) - px) / PAD_SPEED);
+            var kMax = Math.floor((Math.min(CW - padW, catchHi) - px) / PAD_SPEED);
+            kMin = Math.max(kMin, -F);
+            kMax = Math.min(kMax, F);
+
+            // Count remaining bricks — if a trajectory clears them all, level resets
+            var bricksLeft = game.totalBricks;
+
+            var bestP = -1, bestScore = -999, bestPost = null, bestCatch2 = false, bestClearsAll = false;
+            var candidates = [];
+            for (var k = kMin; k <= kMax; k++) {
+                var p = px + k * PAD_SPEED;
+                if (p < 0 || p > CW - padW) continue;
+                if (p < catchLo || p > catchHi) continue;
+                var hit = (cbx + BALL_SZ / 2 - p) / padW;
+                var newBvx = BALL_SPEED * sm * (hit - 0.5) * 2.5;
+                var newBvy = -Math.abs(flight1.bvy);
+
+                // Post-bounce flight
+                var flight2 = this._simBallFlight(cbx, PAD_Y - BALL_SZ,
+                    newBvx, newBvy, flight1.bricks, 1000);
+
+                var totalHits = flight1.hits + flight2.hits;
+                var score = flight1.reward + 1.0 + flight2.reward;
+                // If this trajectory clears all bricks, level resets — no catch needed
+                if (totalHits >= bricksLeft) { score += 10.0; }
+                var canCatch2 = false;
+                if (totalHits < bricksLeft && flight2.caught) {
+                    // Find best 2nd catch position on the grid from p
+                    var F2 = flight2.frames;
+                    var c2Lo = flight2.bx - padW + 1, c2Hi = flight2.bx + BALL_SZ - 1;
+                    var k2Min = Math.ceil((Math.max(0, c2Lo) - p) / PAD_SPEED);
+                    var k2Max = Math.floor((Math.min(CW - padW, c2Hi) - p) / PAD_SPEED);
+                    k2Min = Math.max(k2Min, -F2);
+                    k2Max = Math.min(k2Max, F2);
+
+                    var bestScore2 = -5.0;
+                    for (var k2 = k2Min; k2 <= k2Max; k2++) {
+                        var p2 = p + k2 * PAD_SPEED;
+                        if (p2 < 0 || p2 > CW - padW) continue;
+                        if (p2 < c2Lo || p2 > c2Hi) continue;
+                        canCatch2 = true;
+
+                        // 3rd bounce: sim from 2nd catch position
+                        var hit2 = (flight2.bx + BALL_SZ / 2 - p2) / padW;
+                        var bvx3 = BALL_SPEED * sm * (hit2 - 0.5) * 2.5;
+                        var bvy3 = -Math.abs(flight2.bvy);
+                        var flight3 = this._simBallFlight(flight2.bx, PAD_Y - BALL_SZ,
+                            bvx3, bvy3, flight2.bricks, 1000);
+
+                        var s2 = 1.0 + flight3.reward;
+                        if (flight3.caught) {
+                            var F3 = flight3.frames;
+                            var r3Min = Math.max(0, p2 - F3 * PAD_SPEED);
+                            var r3Max = Math.min(CW - padW, p2 + F3 * PAD_SPEED);
+                            var canCatch3 = flight3.bx + BALL_SZ > r3Min &&
+                                            flight3.bx < r3Max + padW;
+                            s2 += canCatch3 ? 1.0 : -5.0;
+                        } else if (flight3.lost) {
+                            s2 -= 5.0;
+                        }
+                        if (s2 > bestScore2) bestScore2 = s2;
+                    }
+                    score += canCatch2 ? bestScore2 : -5.0;
+                } else if (totalHits < bricksLeft && flight2.lost) {
+                    score -= 5.0;
+                }
+
+                candidates.push({ p: p, score: score, canCatch2: canCatch2, post: flight2 });
+                if (score > bestScore) {
+                    bestScore = score; bestP = p;
+                    bestPost = flight2; bestCatch2 = canCatch2;
+                    bestClearsAll = (totalHits >= bricksLeft);
+                }
+            }
+
+            // 5. Move toward best catch position
+            var action;
+            if (bestP < 0) {
+                // No catch possible — track ball
+                action = cbx + BALL_SZ / 2 < px + padW / 2 ? 0 : 2;
+            } else {
+                var diff = bestP - px;
+                action = diff < -2 ? 0 : diff > 2 ? 2 : 1;
+            }
+
+            this._lastDecision = {
+                mode: bestP < 0 ? 'no_catch' : '2bounce',
+                action: action, bestP: bestP, px: px,
+                catchFrame: F, nCandidates: candidates.length,
+                bestScore: bestScore, canCatch2: bestCatch2,
+                bx: bx, by: by, bvx: bvx, bvy: bvy,
+                simBx: flight1.bx, simBy: flight1.by,
+                reachMin: reachMin, reachMax: reachMax,
+                catchLo: catchLo, catchHi: catchHi
+            };
+
+            if (this._vizEnabled) {
+                this._vizData = {
+                    mode: '2bounce', action: action,
+                    paddleX: px, padW: padW,
+                    flight1: flight1, bestP: bestP,
+                    bestScore: bestScore, bestCatch2: bestCatch2,
+                    bestClearsAll: bestClearsAll,
+                    flight1ClearsAll: (flight1.hits >= bricksLeft),
+                    bestPost: bestPost, candidates: candidates,
+                    catchFrame: F
+                };
+            }
+            return action;
+        },
+
+        _simBallFlight: function (bx, by, bvx, bvy, bricksIn, maxFrames) {
+            // Copy bricks and count them
+            var bricks = [], initialBricks = 0;
+            for (var r = 0; r < ROWS; r++) {
+                bricks[r] = [];
+                for (var c = 0; c < COLS; c++) {
+                    bricks[r][c] = bricksIn[r][c];
+                    if (bricksIn[r][c]) initialBricks++;
+                }
+            }
+            var reward = 0, hits = 0, path = [], allCleared = (initialBricks === 0);
+            for (var f = 0; f < maxFrames; f++) {
+                // Substep to prevent tunneling (match game physics)
+                var spd = Math.max(Math.abs(bvx), Math.abs(bvy));
+                var nSub = Math.max(1, Math.ceil(spd / (BALL_SZ * 0.8)));
+                var dxS = bvx / nSub, dyS = bvy / nSub;
+                for (var s = 0; s < nSub; s++) {
+                    bx += dxS; by += dyS;
+                    if (bx < 0) { bx = -bx; bvx = Math.abs(bvx); dxS = Math.abs(dxS); }
+                    if (bx > CW - BALL_SZ) { bx = 2 * (CW - BALL_SZ) - bx; bvx = -Math.abs(bvx); dxS = -Math.abs(dxS); }
+                    if (by < 0) { by = -by; bvy = Math.abs(bvy); dyS = Math.abs(dyS); }
+
+                    // Brick collisions
+                    for (var r = 0; r < ROWS; r++) {
+                        for (var c = 0; c < COLS; c++) {
+                            if (!bricks[r][c]) continue;
+                            var br = brickRect(r, c);
+                            if (bx + BALL_SZ > br.x && bx < br.x + br.w &&
+                                by + BALL_SZ > br.y && by < br.y + br.h) {
+                                bricks[r][c] = false;
+                                hits++;
+                                reward += ROW_POINTS[r] / 30;
+                                var oL = (bx + BALL_SZ) - br.x, oR = (br.x + br.w) - bx;
+                                var oT = (by + BALL_SZ) - br.y, oB = (br.y + br.h) - by;
+                                if (Math.min(oT, oB) < Math.min(oL, oR)) { bvy = -bvy; dyS = -dyS; }
+                                else { bvx = -bvx; dxS = -dxS; }
+                                if (hits >= initialBricks) { allCleared = true; path.push({ x: bx, y: by }); }
+                                r = ROWS; break;
+                            }
+                        }
+                    }
+
+                    // Ball in paddle zone — stop (checked each substep, must match game's PAD_Y exactly)
+                    if (bvy > 0 && by + BALL_SZ >= PAD_Y && by < PAD_Y + PAD_H) {
+                        if (!allCleared) path.push({ x: bx, y: by });
+                        return { caught: true, lost: false, frames: f + 1,
+                            bx: bx, by: by, bvx: bvx, bvy: bvy,
+                            reward: reward, hits: hits, bricks: bricks, path: path };
+                    }
+                    // Ball lost
+                    if (by > CH + 20) {
+                        if (!allCleared) path.push({ x: bx, y: by });
+                        return { caught: false, lost: true, frames: f + 1,
+                            bx: bx, by: by, bvx: bvx, bvy: bvy,
+                            reward: reward, hits: hits, bricks: bricks, path: path };
+                    }
+                }
+
+                if (!allCleared) path.push({ x: bx, y: by });
+            }
+            // Ran out of frames
+            return { caught: false, lost: false, frames: maxFrames,
+                bx: bx, by: by, bvx: bvx, bvy: bvy,
+                reward: reward, hits: hits, bricks: bricks, path: path };
+        },
+
+        _simulate: function (game, action, nSteps) {
+            var px = game.px, padW = game.padW;
+            var bx = game.bx, by = game.by;
+            var bvx = game.bvx, bvy = game.bvy;
+            var sm = game._speedMult;
+            var bricks = [];
+            for (var r = 0; r < ROWS; r++) {
+                bricks[r] = [];
+                for (var c = 0; c < COLS; c++) bricks[r][c] = game.bricks[r][c];
+            }
+
+            var paddlePositions = [];
+            var ballPositions = [];
+            var totalReward = 0;
+            var minPaddleBallDist = 9999;
+
+            for (var f = 0; f < nSteps; f++) {
+                if (action === 0) px = Math.max(0, px - PAD_SPEED);
+                if (action === 2) px = Math.min(CW - padW, px + PAD_SPEED);
+
+                var spd = Math.max(Math.abs(bvx), Math.abs(bvy));
+                var nSub = Math.max(1, Math.ceil(spd / (BALL_SZ * 0.8)));
+                var dxS = bvx / nSub, dyS = bvy / nSub;
+                for (var s = 0; s < nSub; s++) {
+                    bx += dxS; by += dyS;
+                    if (bx < 0) { bx = -bx; bvx = Math.abs(bvx); dxS = Math.abs(dxS); }
+                    if (bx > CW - BALL_SZ) { bx = 2 * (CW - BALL_SZ) - bx; bvx = -Math.abs(bvx); dxS = -Math.abs(dxS); }
+                    if (by < 0) { by = -by; bvy = Math.abs(bvy); dyS = Math.abs(dyS); }
+                    for (var r = 0; r < ROWS; r++) {
+                        for (var c = 0; c < COLS; c++) {
+                            if (!bricks[r][c]) continue;
+                            var br = brickRect(r, c);
+                            if (bx + BALL_SZ > br.x && bx < br.x + br.w &&
+                                by + BALL_SZ > br.y && by < br.y + br.h) {
+                                bricks[r][c] = false;
+                                totalReward += ROW_POINTS[r] / 30;
+                                var oL = (bx + BALL_SZ) - br.x, oR = (br.x + br.w) - bx;
+                                var oT = (by + BALL_SZ) - br.y, oB = (br.y + br.h) - by;
+                                if (Math.min(oT, oB) < Math.min(oL, oR)) { bvy = -bvy; dyS = -dyS; }
+                                else { bvx = -bvx; dxS = -dxS; }
+                                r = ROWS; break;
+                            }
+                        }
+                    }
+                }
+
+                if (bvy > 0 && by + BALL_SZ >= PAD_Y && by + BALL_SZ <= PAD_Y + PAD_H + 4) {
+                    if (bx + BALL_SZ > px && bx < px + padW) {
+                        by = PAD_Y - BALL_SZ;
+                        bvy = -Math.abs(bvy);
+                        var hit = (bx + BALL_SZ / 2 - px) / padW;
+                        bvx = BALL_SPEED * sm * (hit - 0.5) * 2.5;
+                        totalReward += 0.1;
+                    }
+                }
+
+                if (by > CH) {
+                    totalReward = -1;
+                    paddlePositions.push({ x: px });
+                    ballPositions.push({ x: bx, y: by });
+                    break;
+                }
+
+                paddlePositions.push({ x: px });
+                ballPositions.push({ x: bx, y: by });
+
+                if (bvy > 0 && by > PAD_Y - 80) {
+                    var dist = Math.abs(px + padW / 2 - bx - BALL_SZ / 2);
+                    if (dist < minPaddleBallDist) minPaddleBallDist = dist;
+                }
+            }
+            return {
+                totalReward: totalReward,
+                paddlePositions: paddlePositions,
+                ballPositions: ballPositions,
+                minPaddleBallDist: minPaddleBallDist
+            };
+        }
+    };
+
+    function drawBreakoutSimViz(ctx) {
+        var viz = breakoutSimAI._vizData;
+        if (!viz) return;
+        // Don't draw path viz after last brick destroyed
+        if (playGame.totalBricks <= 0) return;
+        ctx.save();
+
+        var NAMES = ['LEFT', 'STAY', 'RIGHT'];
+        var ACOLORS = ['#0071e3', '#8e8e93', '#ff9f0a'];
+
+        // Draw ball free-flight path (gray dashed, adaptive to day/night)
+        var flightPath = viz.mode === '2bounce' ? viz.flight1.path :
+                         viz.mode === 'track' ? viz.flight : null;
+        if (flightPath && flightPath.length > 1) {
+            var pathGray = nightOpacity > 0.5 ? 'rgba(200,200,200,0.35)' : 'rgba(40,40,40,0.35)';
+            ctx.strokeStyle = pathGray;
+            ctx.setLineDash([3, 3]);
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            for (var i = 0; i < flightPath.length; i++) {
+                var pt = flightPath[i];
+                if (i === 0) ctx.moveTo(pt.x + BALL_SZ / 2, pt.y + BALL_SZ / 2);
+                else ctx.lineTo(pt.x + BALL_SZ / 2, pt.y + BALL_SZ / 2);
+            }
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
+
+        if (viz.mode === '2bounce' && viz.candidates && viz.candidates.length > 0) {
+            // Skip paddle indicators when flight1 alone clears all bricks
+            // (level resets on last brick hit, ball never reaches paddle)
+            if (!viz.flight1ClearsAll) {
+                // Find score range for color mapping
+                var minS = 999, maxS = -999;
+                for (var i = 0; i < viz.candidates.length; i++) {
+                    if (viz.candidates[i].score < minS) minS = viz.candidates[i].score;
+                    if (viz.candidates[i].score > maxS) maxS = viz.candidates[i].score;
+                }
+                var range = maxS - minS || 1;
+
+                // Draw catch position dots colored by score
+                for (var i = 0; i < viz.candidates.length; i++) {
+                    var cd = viz.candidates[i];
+                    var t = (cd.score - minS) / range; // 0=worst, 1=best
+                    var isBest = cd.p === viz.bestP;
+                    // Red(0) → Yellow(0.5) → Green(1)
+                    var cr = Math.round(255 * (1 - t));
+                    var cg = Math.round(200 * t);
+                    ctx.globalAlpha = isBest ? 0.9 : 0.5;
+                    ctx.fillStyle = isBest ? '#30d158' : 'rgb(' + cr + ',' + cg + ',0)';
+                    ctx.beginPath();
+                    ctx.arc(cd.p + viz.padW / 2, PAD_Y - 1, isBest ? 5 : 3, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+
+                // Draw target marker (bright ring at best catch position)
+                if (viz.bestP >= 0) {
+                    ctx.globalAlpha = 0.8;
+                    ctx.strokeStyle = '#30d158';
+                    ctx.lineWidth = 2;
+                    ctx.beginPath();
+                    ctx.arc(viz.bestP + viz.padW / 2, PAD_Y - 1, 8, 0, Math.PI * 2);
+                    ctx.stroke();
+                }
+            }
+
+            // Draw post-bounce trajectory from best catch (green dashed)
+            // Path naturally stops at last brick cleared thanks to allCleared in sim
+            if (viz.bestPost && viz.bestPost.path && viz.bestPost.path.length > 1 && !viz.flight1ClearsAll) {
+                ctx.strokeStyle = '#30d158';
+                ctx.globalAlpha = 0.4;
+                ctx.lineWidth = 1.5;
+                ctx.setLineDash([2, 2]);
+                ctx.beginPath();
+                for (var i = 0; i < viz.bestPost.path.length; i++) {
+                    var pt = viz.bestPost.path[i];
+                    if (i === 0) ctx.moveTo(pt.x + BALL_SZ / 2, pt.y + BALL_SZ / 2);
+                    else ctx.lineTo(pt.x + BALL_SZ / 2, pt.y + BALL_SZ / 2);
+                }
+                ctx.stroke();
+                ctx.setLineDash([]);
+
+                // 2nd catch indicator (skip when trajectory clears all bricks)
+                if (viz.bestPost.caught && !viz.bestClearsAll) {
+                    var c2x = viz.bestPost.bx + BALL_SZ / 2;
+                    var c2y = viz.bestPost.by + BALL_SZ / 2;
+                    ctx.globalAlpha = 0.6;
+                    ctx.fillStyle = viz.bestCatch2 ? '#30d158' : '#ff3b30';
+                    ctx.beginPath();
+                    ctx.arc(c2x, c2y, 5, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+        }
+
+        // Decision badge
+        var aColor = ACOLORS[viz.action];
+        var dText = '\u2192 ' + NAMES[viz.action];
+        if (viz.mode === '2bounce') {
+            if (viz.flight1ClearsAll) {
+                dText += '  \u2713CLEAR';
+            } else {
+                dText += '  ' + viz.bestScore.toFixed(1);
+                dText += viz.bestClearsAll ? '  \u2713ALL' : viz.bestCatch2 ? '  \u27132nd' : '  \u27172nd';
+                dText += '  f=' + viz.catchFrame;
+            }
+        }
+        ctx.font = 'bold 11px sans-serif';
+        ctx.textBaseline = 'middle';
+        var dMet = ctx.measureText(dText);
+        var dX = Math.max(5, Math.min(CW - dMet.width - 15,
+            viz.paddleX + viz.padW / 2 - dMet.width / 2));
+        var dY = PAD_Y + 26;
+        ctx.globalAlpha = 0.15;
+        ctx.fillStyle = aColor;
+        ctx.fillRect(dX - 5, dY - 7, dMet.width + 10, 14);
+        ctx.globalAlpha = 0.9;
+        ctx.fillStyle = aColor;
+        ctx.fillText(dText, dX, dY);
+
+        ctx.globalAlpha = 1;
+        ctx.restore();
+    }
+
+    // ═════════════════════════════════════════════════════════════════
+    //  HYBRID AI — Forward sim + learned value network
+    // ═════════════════════════════════════════════════════════════════
+
+    // 24-dim feature vector: works on both live game state and simulated leaf
+    function extractHybridFeatures(px, bx, by, bvx, bvy, bricks, lives, score, padW, sm) {
+        var nearDx = 0, nearDy = -1, bestDist = 999999;
+        var colCounts = new Float64Array(COLS);
+        var rowCounts = new Float64Array(ROWS);
+        var totalBricks = 0;
+        for (var r = 0; r < ROWS; r++) {
+            for (var c = 0; c < COLS; c++) {
+                if (!bricks[r][c]) continue;
+                totalBricks++;
+                colCounts[c]++;
+                rowCounts[r]++;
+                var br = brickRect(r, c);
+                var cx = br.x + br.w / 2, cy = br.y + br.h / 2;
+                var dist = Math.abs(cx - bx) + Math.abs(cy - by);
+                if (dist < bestDist) { bestDist = dist; nearDx = (cx - bx) / CW; nearDy = (cy - by) / CH; }
+            }
+        }
+        var f = new Float64Array(24);
+        f[0] = px / CW;
+        f[1] = bx / CW;
+        f[2] = by / CH;
+        f[3] = bvx / (BALL_SPEED * sm * 2.5 || 1);
+        f[4] = bvy / (BALL_SPEED * sm || 1);
+        f[5] = nearDx;
+        f[6] = nearDy;
+        for (var c = 0; c < COLS; c++) f[7 + c] = colCounts[c] / ROWS;
+        for (var r = 0; r < ROWS; r++) f[15 + r] = rowCounts[r] / COLS;
+        f[21] = totalBricks / (ROWS * COLS);
+        f[22] = lives / MAX_LIVES;
+        f[23] = Math.min(score / 480, 1);
+        return f;
+    }
+
+    var hybridAI = {
+        enabled: false,
+        _vizEnabled: false,
+        _vizData: null,
+        valueNet: null,
+        trained: false,
+        _collectingData: false,
+        _trainingData: [],
+        _lossHistory: [],
+        SIM_HORIZON: 30,
+        DISCOUNT: 0.99,
+
+        init: function () {
+            this.valueNet = new MLP([24, 32, 16, 1]);
+            this.trained = false;
+            this._trainingData = [];
+            this._lossHistory = [];
+            this._vizData = null;
+        },
+
+        update: function (game) {
+            if (game.stuck || game.gameOver) return 1;
+            var results = [];
+            for (var a = 0; a < 3; a++) results.push(this._simulateAndEvaluate(game, a));
+            var best = 1;
+            for (var a = 0; a < 3; a++) {
+                if (results[a].combinedScore > results[best].combinedScore) best = a;
+            }
+            if (this._vizEnabled) {
+                this._vizData = {
+                    results: results,
+                    chosenAction: best,
+                    paddleX: game.px,
+                    padW: game.padW,
+                    ballPos: { x: game.bx, y: game.by }
+                };
+            }
+            return best;
+        },
+
+        _simulateAndEvaluate: function (game, action) {
+            var N = this.SIM_HORIZON;
+            var px = game.px, padW = game.padW;
+            var bx = game.bx, by = game.by;
+            var bvx = game.bvx, bvy = game.bvy;
+            var sm = game._speedMult;
+            var lives = game.lives, score = game.score;
+            var bricks = [];
+            for (var r = 0; r < ROWS; r++) {
+                bricks[r] = [];
+                for (var c = 0; c < COLS; c++) bricks[r][c] = game.bricks[r][c];
+            }
+
+            var ballPositions = [], paddlePositions = [];
+            var simReward = 0, done = false;
+
+            for (var f = 0; f < N; f++) {
+                if (action === 0) px = Math.max(0, px - PAD_SPEED);
+                if (action === 2) px = Math.min(CW - padW, px + PAD_SPEED);
+
+                var spd = Math.max(Math.abs(bvx), Math.abs(bvy));
+                var nSub = Math.max(1, Math.ceil(spd / (BALL_SZ * 0.8)));
+                var dxS = bvx / nSub, dyS = bvy / nSub;
+                for (var s = 0; s < nSub; s++) {
+                    bx += dxS; by += dyS;
+                    if (bx < 0) { bx = -bx; bvx = Math.abs(bvx); dxS = Math.abs(dxS); }
+                    if (bx > CW - BALL_SZ) { bx = 2 * (CW - BALL_SZ) - bx; bvx = -Math.abs(bvx); dxS = -Math.abs(dxS); }
+                    if (by < 0) { by = -by; bvy = Math.abs(bvy); dyS = Math.abs(dyS); }
+                    for (var r = 0; r < ROWS; r++) {
+                        for (var c = 0; c < COLS; c++) {
+                            if (!bricks[r][c]) continue;
+                            var br = brickRect(r, c);
+                            if (bx + BALL_SZ > br.x && bx < br.x + br.w &&
+                                by + BALL_SZ > br.y && by < br.y + br.h) {
+                                bricks[r][c] = false;
+                                simReward += ROW_POINTS[r] / 30;
+                                score += ROW_POINTS[r];
+                                var oL = (bx + BALL_SZ) - br.x, oR = (br.x + br.w) - bx;
+                                var oT = (by + BALL_SZ) - br.y, oB = (br.y + br.h) - by;
+                                if (Math.min(oT, oB) < Math.min(oL, oR)) { bvy = -bvy; dyS = -dyS; }
+                                else { bvx = -bvx; dxS = -dxS; }
+                                r = ROWS; break;
+                            }
+                        }
+                    }
+                }
+
+                if (bvy > 0 && by + BALL_SZ >= PAD_Y && by + BALL_SZ <= PAD_Y + PAD_H + 4) {
+                    if (bx + BALL_SZ > px && bx < px + padW) {
+                        by = PAD_Y - BALL_SZ;
+                        bvy = -Math.abs(bvy);
+                        var hit = (bx + BALL_SZ / 2 - px) / padW;
+                        bvx = BALL_SPEED * sm * (hit - 0.5) * 2.5;
+                        simReward += 0.1;
+                    }
+                }
+
+                if (by > CH) {
+                    lives--;
+                    simReward += (lives <= 0) ? -5 : -1;
+                    done = true;
+                    ballPositions.push({ x: bx, y: by });
+                    paddlePositions.push({ x: px });
+                    break;
+                }
+
+                ballPositions.push({ x: bx, y: by });
+                paddlePositions.push({ x: px });
+            }
+
+            // Evaluate leaf state with value network
+            var leafValue = 0;
+            if (!done && this.trained) {
+                var leafF = extractHybridFeatures(px, bx, by, bvx, bvy, bricks, lives, score, padW, sm);
+                leafValue = this.valueNet.forward(leafF)[0];
+            }
+
+            var discountPow = Math.pow(this.DISCOUNT, ballPositions.length);
+            return {
+                simReward: simReward,
+                leafValue: leafValue,
+                combinedScore: simReward + discountPow * leafValue,
+                ballPositions: ballPositions,
+                paddlePositions: paddlePositions,
+                done: done
+            };
+        },
+
+        collectData: function () {
+            var self = this;
+            var collectGame = new BreakoutGame();
+            var episodesTarget = 30;
+            var episodesDone = 0;
+            var frameFeatures = [], frameRewards = [];
+
+            function startEp() {
+                collectGame.reset(3);
+                collectGame.launch();
+                frameFeatures = [];
+                frameRewards = [];
+            }
+
+            function tick() {
+                if (!self._collectingData) return;
+                if (episodesDone >= episodesTarget) {
+                    self._collectingData = false;
+                    document.getElementById('hybrid-collect-btn').textContent = '1. Collect Data';
+                    document.getElementById('hybrid-collect-btn').classList.remove('active');
+                    document.getElementById('hybrid-stats').textContent =
+                        'Collected ' + self._trainingData.length + ' frames from ' +
+                        episodesTarget + ' episodes. Ready to train!';
+                    return;
+                }
+
+                var stepsPerTick = 300;
+                for (var s = 0; s < stepsPerTick; s++) {
+                    var feat = extractHybridFeatures(
+                        collectGame.px, collectGame.bx, collectGame.by,
+                        collectGame.bvx, collectGame.bvy, collectGame.bricks,
+                        collectGame.lives, collectGame.score,
+                        collectGame.padW, collectGame._speedMult
+                    );
+
+                    // Rules AI picks action
+                    var action = breakoutSimAI._simulate ?
+                        (function () {
+                            var results = [];
+                            for (var a = 0; a < 3; a++)
+                                results.push(breakoutSimAI._simulate(collectGame, a, 100));
+                            var best = 1;
+                            for (var a = 0; a < 3; a++) {
+                                if (results[a].totalReward > results[best].totalReward) best = a;
+                                else if (results[a].totalReward === results[best].totalReward &&
+                                         results[a].minPaddleBallDist < results[best].minPaddleBallDist) best = a;
+                            }
+                            return best;
+                        })() : 1;
+
+                    if (collectGame.stuck) collectGame.launch();
+                    var result = collectGame.step(action);
+                    frameFeatures.push(feat);
+                    frameRewards.push(result.reward);
+
+                    if (result.done || collectGame.gameOver) {
+                        // Compute discounted returns backward
+                        var G = 0;
+                        for (var t = frameFeatures.length - 1; t >= 0; t--) {
+                            G = frameRewards[t] + self.DISCOUNT * G;
+                            self._trainingData.push({ features: frameFeatures[t], returns: G });
+                        }
+                        episodesDone++;
+                        document.getElementById('hybrid-stats').textContent =
+                            'Collecting... Episode ' + episodesDone + '/' + episodesTarget +
+                            ' (' + self._trainingData.length + ' frames)';
+                        startEp();
+                    }
+                }
+                setTimeout(tick, 0);
+            }
+
+            self._collectingData = true;
+            self._trainingData = [];
+            document.getElementById('hybrid-collect-btn').textContent = 'Collecting...';
+            document.getElementById('hybrid-collect-btn').classList.add('active');
+            startEp();
+            tick();
+        },
+
+        trainValueNet: function () {
+            if (this._trainingData.length < 100) {
+                document.getElementById('hybrid-stats').textContent =
+                    'Need data first! Click "1. Collect Data".';
+                return;
+            }
+            var self = this;
+            var allData = self._trainingData;
+
+            // Subsample to max 15K for fast training
+            var MAX_TRAIN = 15000;
+            var data;
+            if (allData.length > MAX_TRAIN) {
+                data = [];
+                for (var i = 0; i < MAX_TRAIN; i++) {
+                    data.push(allData[Math.floor(Math.random() * allData.length)]);
+                }
+            } else {
+                data = allData;
+            }
+
+            var nData = data.length;
+            var epochs = 200;
+            var batchSize = Math.min(64, nData);
+            var lr = 0.001;
+
+            // Normalize returns for stable training
+            var meanR = 0;
+            for (var i = 0; i < nData; i++) meanR += data[i].returns;
+            meanR /= nData;
+            var varR = 0;
+            for (var i = 0; i < nData; i++) varR += (data[i].returns - meanR) * (data[i].returns - meanR);
+            varR /= nData;
+            var stdR = Math.sqrt(varR) + 1e-8;
+
+            var targets = new Float64Array(nData);
+            for (var i = 0; i < nData; i++) targets[i] = (data[i].returns - meanR) / stdR;
+
+            self._returnMean = meanR;
+            self._returnStd = stdR;
+            self._lossHistory = [];
+
+            // Re-initialize value net for fresh training
+            self.valueNet = new MLP([24, 32, 16, 1]);
+            var epoch = 0;
+            var indices = [];
+            for (var i = 0; i < nData; i++) indices.push(i);
+
+            document.getElementById('hybrid-train-btn').textContent = 'Training...';
+            document.getElementById('hybrid-train-btn').classList.add('active');
+
+            var nBatches = Math.floor(nData / batchSize);
+
+            function trainTick() {
+                if (epoch >= epochs) {
+                    self.trained = true;
+                    document.getElementById('hybrid-train-btn').textContent = '2. Train Value Net';
+                    document.getElementById('hybrid-train-btn').classList.remove('active');
+                    document.getElementById('hybrid-stats').textContent =
+                        'Value net trained! ' + epochs + ' epochs, final loss: ' +
+                        self._lossHistory[self._lossHistory.length - 1].toFixed(6) +
+                        ' | ' + nData + ' samples from ' + allData.length + ' frames';
+                    document.getElementById('hybrid-viz-box').style.display = '';
+                    drawHybridChart();
+                    return;
+                }
+
+                // Do up to 10 epochs per tick (15K data keeps this fast)
+                var tickEpochs = Math.min(10, epochs - epoch);
+                for (var te = 0; te < tickEpochs; te++) {
+                    // Shuffle indices
+                    for (var i = nData - 1; i > 0; i--) {
+                        var j = Math.floor(Math.random() * (i + 1));
+                        var t = indices[i]; indices[i] = indices[j]; indices[j] = t;
+                    }
+
+                    var epochLoss = 0;
+                    for (var b = 0; b < nBatches; b++) {
+                        self.valueNet.zeroGrad();
+                        for (var i = 0; i < batchSize; i++) {
+                            var idx = indices[b * batchSize + i];
+                            var pred = self.valueNet.forward(data[idx].features);
+                            var err = pred[0] - targets[idx];
+                            epochLoss += err * err;
+                            var grad = new Float64Array(1);
+                            grad[0] = Math.max(-5, Math.min(5, err));
+                            self.valueNet.backward(grad);
+                        }
+                        self.valueNet.update(lr, batchSize);
+                    }
+
+                    epochLoss /= (nBatches * batchSize || 1);
+                    self._lossHistory.push(epochLoss);
+                    epoch++;
+                }
+
+                document.getElementById('hybrid-stats').textContent =
+                    'Training... Epoch ' + epoch + '/' + epochs +
+                    ' | Loss: ' + self._lossHistory[self._lossHistory.length - 1].toFixed(6);
+                document.getElementById('hybrid-viz-box').style.display = '';
+                drawHybridChart();
+
+                setTimeout(trainTick, 0);
+            }
+
+            trainTick();
+        }
+    };
+
+    // ── Hybrid Visualization ─────────────────────────────────────────
+    function drawHybridViz(ctx) {
+        var viz = hybridAI._vizData;
+        if (!viz) return;
+
+        var COLORS = ['#0071e3', '#8e8e93', '#ff9f0a'];
+        var NAMES = ['LEFT', 'STAY', 'RIGHT'];
+
+        ctx.save();
+
+        // Draw ball trajectories for all 3 actions
+        for (var pass = 0; pass < 2; pass++) {
+            for (var a = 0; a < 3; a++) {
+                var isChosen = (a === viz.chosenAction);
+                if ((pass === 0 && isChosen) || (pass === 1 && !isChosen)) continue;
+
+                var result = viz.results[a];
+                var alpha = isChosen ? 0.5 : 0.15;
+                var color = COLORS[a];
+
+                // Ball trajectory line
+                if (result.ballPositions.length > 1) {
+                    ctx.strokeStyle = color;
+                    ctx.globalAlpha = alpha;
+                    ctx.lineWidth = isChosen ? 2.5 : 1;
+                    ctx.setLineDash(isChosen ? [] : [3, 3]);
+                    ctx.beginPath();
+                    for (var i = 0; i < result.ballPositions.length; i++) {
+                        var p = result.ballPositions[i];
+                        if (i === 0) ctx.moveTo(p.x + BALL_SZ / 2, p.y + BALL_SZ / 2);
+                        else ctx.lineTo(p.x + BALL_SZ / 2, p.y + BALL_SZ / 2);
+                    }
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+                }
+
+                // Leaf marker (circle at end)
+                if (result.ballPositions.length > 0) {
+                    var last = result.ballPositions[result.ballPositions.length - 1];
+                    ctx.globalAlpha = isChosen ? 0.7 : 0.3;
+                    ctx.fillStyle = color;
+                    ctx.beginPath();
+                    ctx.arc(last.x + BALL_SZ / 2, last.y + BALL_SZ / 2, isChosen ? 5 : 3, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+
+                // Score label at leaf
+                if (result.ballPositions.length > 0) {
+                    var endP = result.ballPositions[result.ballPositions.length - 1];
+                    var sR = result.simReward.toFixed(1);
+                    var vR = result.leafValue.toFixed(1);
+                    var cR = result.combinedScore.toFixed(1);
+                    var text = sR + ' + ' + vR + 'V = ' + cR;
+                    if (isChosen) text += ' \u25C0';
+
+                    var labelX = endP.x + BALL_SZ + 4;
+                    var labelY = endP.y + BALL_SZ / 2;
+                    // Clamp label to canvas
+                    ctx.font = (isChosen ? 'bold ' : '') + '9px sans-serif';
+                    var tw = ctx.measureText(text).width;
+                    if (labelX + tw > CW - 4) labelX = endP.x - tw - 4;
+
+                    // Badge background
+                    ctx.globalAlpha = isChosen ? 0.12 : 0.06;
+                    ctx.fillStyle = color;
+                    var bPad = 3;
+                    ctx.fillRect(labelX - bPad, labelY - 6, tw + bPad * 2, 12);
+
+                    // Badge text
+                    ctx.globalAlpha = isChosen ? 0.85 : 0.5;
+                    ctx.fillStyle = color;
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText(text, labelX, labelY);
+                }
+            }
+        }
+
+        // Decision badge below paddle
+        var chosen = viz.chosenAction;
+        var chosenColor = COLORS[chosen];
+        var chosenR = viz.results[chosen];
+        var dText = '\u2192 ' + NAMES[chosen] + '  sim:' + chosenR.simReward.toFixed(1) +
+            ' val:' + chosenR.leafValue.toFixed(1) + ' = ' + chosenR.combinedScore.toFixed(1);
+        ctx.font = 'bold 11px sans-serif';
+        ctx.textBaseline = 'middle';
+        var dMet = ctx.measureText(dText);
+        var dX = viz.paddleX + viz.padW / 2 - dMet.width / 2;
+        var dY = PAD_Y + 26;
+        ctx.globalAlpha = 0.15;
+        ctx.fillStyle = chosenColor;
+        ctx.fillRect(dX - 5, dY - 7, dMet.width + 10, 14);
+        ctx.globalAlpha = 0.9;
+        ctx.fillStyle = chosenColor;
+        ctx.fillText(dText, dX, dY);
+
+        ctx.globalAlpha = 1;
+        ctx.restore();
+    }
+
+    // ── Hybrid Loss Chart ────────────────────────────────────────────
+    function drawHybridChart() {
+        var cc = document.getElementById('hybrid-chart');
+        if (!cc) return;
+        var c = cc.getContext('2d');
+        var w = cc.width, h = cc.height;
+        c.fillStyle = '#fff'; c.fillRect(0, 0, w, h);
+
+        var data = hybridAI._lossHistory;
+        if (data.length < 2) return;
+        var pad = 40;
+        var pw = w - pad * 2, ph = h - pad * 2;
+
+        var yMin = 0, yMax = Math.max(0.01, data[0] * 1.2);
+        for (var i = 0; i < data.length; i++) if (data[i] > yMax) yMax = data[i] * 1.1;
+
+        c.strokeStyle = '#e8e8e8'; c.lineWidth = 1;
+        for (var step = 0; step < 5; step++) {
+            var y = yMin + (yMax - yMin) * step / 4;
+            var py = pad + ph - (y - yMin) / (yMax - yMin) * ph;
+            c.beginPath(); c.moveTo(pad, py); c.lineTo(w - pad, py); c.stroke();
+            c.fillStyle = '#86868b'; c.font = '10px "Courier New"';
+            c.textAlign = 'right'; c.fillText(y.toFixed(3), pad - 4, py + 3);
+        }
+
+        // Loss line
+        c.strokeStyle = '#ff9f0a'; c.lineWidth = 2;
+        c.beginPath();
+        for (var i = 0; i < data.length; i++) {
+            var px = pad + (i / (data.length - 1)) * pw;
+            var py = pad + ph - (data[i] - yMin) / (yMax - yMin) * ph;
+            if (i === 0) c.moveTo(px, py); else c.lineTo(px, py);
+        }
+        c.stroke();
+
+        c.fillStyle = '#535353'; c.font = '10px "Courier New"';
+        c.textAlign = 'center';
+        c.fillText('Epoch', w / 2, h - 5);
+        c.textAlign = 'left';
+    }
+
+    // ═════════════════════════════════════════════════════════════════
+    //  DP AI — Generic recursive backward-induction over (frame, paddleX)
+    //  Ball trajectory is deterministic and paddle-independent during
+    //  free flight. The DP naturally discovers that only paddle position
+    //  matters, and handles multi-bounce planning via recursion.
+    // ═════════════════════════════════════════════════════════════════
+    var breakoutDPAI = {
+        enabled: false,
+        _vizEnabled: false,
+        _vizData: null,
+        HORIZON: 120,
+        MAX_DEPTH: 2,
+        _lastAction: 1,
+        _lastMs: 0,
+        _skipFrames: 0,
+        _skipCount: 0,
+
+        update: function (game) {
+            if (game.stuck || game.gameOver) return 1;
+            var el = document.getElementById('dp-horizon');
+            if (el) this.HORIZON = parseInt(el.value) || 120;
+
+            // Auto-tuned frame skipping: game runs at full speed,
+            // DP recomputes only when skip counter expires
+            if (this._skipCount > 0) {
+                this._skipCount--;
+                return this._lastAction;
+            }
+
+            var t0 = performance.now();
+            var dec = this._dpDecide(game);
+            var elapsed = performance.now() - t0;
+
+            // Target: recompute takes at most ~16ms (one 60fps frame)
+            // If it takes longer, skip proportionally many frames before next recompute
+            this._skipFrames = Math.max(0, Math.floor(elapsed / 16) - 1);
+            this._skipCount = this._skipFrames;
+            this._lastMs = elapsed;
+            this._lastAction = dec.action;
+
+            if (this._vizEnabled) this._vizData = dec.viz;
+            return dec.action;
+        },
+
+        // Does the ball overlap a paddle at position px?
+        _canCatch: function (bs, px, padW) {
+            return bs.bvy > 0 &&
+                bs.by + BALL_SZ >= PAD_Y &&
+                bs.by + BALL_SZ <= PAD_Y + PAD_H + 6 &&
+                bs.bx + BALL_SZ > px && bs.bx < px + padW;
+        },
+
+        // Is the ball in the paddle interaction zone?
+        _inZone: function (bs) {
+            return bs.bvy > 0 &&
+                bs.by + BALL_SZ >= PAD_Y &&
+                bs.by + BALL_SZ <= PAD_Y + PAD_H + 6;
+        },
+
+        // Ball state after paddle bounce
+        _bounce: function (bs, px, padW, sm) {
+            var hit = (bs.bx + BALL_SZ / 2 - px) / padW;
+            return {
+                bx: bs.bx, by: PAD_Y - BALL_SZ,
+                bvx: BALL_SPEED * sm * (hit - 0.5) * 2.5,
+                bvy: -Math.abs(bs.bvy)
+            };
+        },
+
+        // Fast recursive evaluation for depth >= 1. The paddle can reach any
+        // position before the ball returns (~200+ frames vs ~90 to saturate),
+        // so no backward induction is needed. Just simulate ball forward,
+        // find next catch opportunity, try a few bounce angles, and recurse.
+        _quickEval: function (bx, by, bvx, bvy, bricks, padW, sm, budget, depth) {
+            var br = [];
+            for (var r = 0; r < ROWS; r++) {
+                br[r] = [];
+                for (var c = 0; c < COLS; c++) br[r][c] = bricks[r][c];
+            }
+            var cumReward = 0;
+            for (var f = 0; f < budget; f++) {
+                var spd = Math.max(Math.abs(bvx), Math.abs(bvy));
+                var nSub = Math.max(1, Math.ceil(spd / (BALL_SZ * 0.8)));
+                var dxS = bvx / nSub, dyS = bvy / nSub;
+                for (var s = 0; s < nSub; s++) {
+                    bx += dxS; by += dyS;
+                    if (bx < 0) { bx = -bx; bvx = Math.abs(bvx); dxS = Math.abs(dxS); }
+                    if (bx > CW - BALL_SZ) { bx = 2 * (CW - BALL_SZ) - bx; bvx = -Math.abs(bvx); dxS = -Math.abs(dxS); }
+                    if (by < 0) { by = -by; bvy = Math.abs(bvy); dyS = Math.abs(dyS); }
+                    for (var r2 = 0; r2 < ROWS; r2++) {
+                        for (var c = 0; c < COLS; c++) {
+                            if (!br[r2][c]) continue;
+                            var rect = brickRect(r2, c);
+                            if (bx + BALL_SZ > rect.x && bx < rect.x + rect.w &&
+                                by + BALL_SZ > rect.y && by < rect.y + rect.h) {
+                                br[r2][c] = false;
+                                cumReward += ROW_POINTS[r2] / 30;
+                                var oL = (bx + BALL_SZ) - rect.x, oR = (rect.x + rect.w) - bx;
+                                var oT = (by + BALL_SZ) - rect.y, oB = (rect.y + rect.h) - by;
+                                if (Math.min(oT, oB) < Math.min(oL, oR)) { bvy = -bvy; dyS = -dyS; }
+                                else { bvx = -bvx; dxS = -dxS; }
+                                r2 = ROWS; break;
+                            }
+                        }
+                    }
+                }
+                if (by > CH + 20) return cumReward - 5;
+                // Ball in paddle zone — evaluate catch with a few representative angles
+                if (bvy > 0 && by + BALL_SZ >= PAD_Y && by + BALL_SZ <= PAD_Y + PAD_H + 6) {
+                    var remain = budget - f - 1;
+                    var bestCatch = -5;
+                    var angles = [0.25, 0.5, 0.75];
+                    for (var ai = 0; ai < angles.length; ai++) {
+                        var newBvx = BALL_SPEED * sm * (angles[ai] - 0.5) * 2.5;
+                        var newBvy = -Math.abs(bvy);
+                        var cv = 1.0;
+                        if (remain > 0 && depth < this.MAX_DEPTH) {
+                            cv += this._quickEval(bx, PAD_Y - BALL_SZ, newBvx, newBvy,
+                                br, padW, sm, remain, depth + 1);
+                        } else if (remain > 0) {
+                            // Leaf: inline forward sim
+                            var lx = bx, ly = PAD_Y - BALL_SZ, lvx = newBvx, lvy = newBvy;
+                            var lr = 0, lsafe = true;
+                            var lbr = [];
+                            for (var r3 = 0; r3 < ROWS; r3++) {
+                                lbr[r3] = [];
+                                for (var c2 = 0; c2 < COLS; c2++) lbr[r3][c2] = br[r3][c2];
+                            }
+                            for (var lf = 0; lf < Math.min(remain, 60); lf++) {
+                                lx += lvx; ly += lvy;
+                                if (lx < 0) { lx = -lx; lvx = Math.abs(lvx); }
+                                if (lx > CW - BALL_SZ) { lx = 2 * (CW - BALL_SZ) - lx; lvx = -Math.abs(lvx); }
+                                if (ly < 0) { ly = -ly; lvy = Math.abs(lvy); }
+                                if (ly > CH) { lsafe = false; break; }
+                                for (var r4 = 0; r4 < ROWS; r4++) {
+                                    for (var c3 = 0; c3 < COLS; c3++) {
+                                        if (!lbr[r4][c3]) continue;
+                                        var rect2 = brickRect(r4, c3);
+                                        if (lx + BALL_SZ > rect2.x && lx < rect2.x + rect2.w &&
+                                            ly + BALL_SZ > rect2.y && ly < rect2.y + rect2.h) {
+                                            lbr[r4][c3] = false;
+                                            lr += ROW_POINTS[r4] / 30;
+                                            var oL2 = (lx + BALL_SZ) - rect2.x, oR2 = (rect2.x + rect2.w) - lx;
+                                            var oT2 = (ly + BALL_SZ) - rect2.y, oB2 = (rect2.y + rect2.h) - ly;
+                                            if (Math.min(oT2, oB2) < Math.min(oL2, oR2)) lvy = -lvy;
+                                            else lvx = -lvx;
+                                            r4 = ROWS; break;
+                                        }
+                                    }
+                                }
+                            }
+                            cv += lr + (lsafe ? 0.5 : -2);
+                        }
+                        if (cv > bestCatch) bestCatch = cv;
+                    }
+                    return cumReward + bestCatch;
+                }
+            }
+            return cumReward; // ball never reached paddle zone
+        },
+
+        // Simulate ball free-flight (no paddle). Returns array of frame states.
+        _simFlight: function (bx, by, bvx, bvy, bricks, maxFrames) {
+            var br = [];
+            for (var r = 0; r < ROWS; r++) {
+                br[r] = [];
+                for (var c = 0; c < COLS; c++) br[r][c] = bricks[r][c];
+            }
+            var frames = [];
+            var cumReward = 0;
+            for (var f = 0; f < maxFrames; f++) {
+                var spd = Math.max(Math.abs(bvx), Math.abs(bvy));
+                var nSub = Math.max(1, Math.ceil(spd / (BALL_SZ * 0.8)));
+                var dxS = bvx / nSub, dyS = bvy / nSub;
+                for (var s = 0; s < nSub; s++) {
+                    bx += dxS; by += dyS;
+                    if (bx < 0) { bx = -bx; bvx = Math.abs(bvx); dxS = Math.abs(dxS); }
+                    if (bx > CW - BALL_SZ) { bx = 2 * (CW - BALL_SZ) - bx; bvx = -Math.abs(bvx); dxS = -Math.abs(dxS); }
+                    if (by < 0) { by = -by; bvy = Math.abs(bvy); dyS = Math.abs(dyS); }
+                    for (var r2 = 0; r2 < ROWS; r2++) {
+                        for (var c = 0; c < COLS; c++) {
+                            if (!br[r2][c]) continue;
+                            var rect = brickRect(r2, c);
+                            if (bx + BALL_SZ > rect.x && bx < rect.x + rect.w &&
+                                by + BALL_SZ > rect.y && by < rect.y + rect.h) {
+                                br[r2][c] = false;
+                                cumReward += ROW_POINTS[r2] / 30;
+                                var oL = (bx + BALL_SZ) - rect.x, oR = (rect.x + rect.w) - bx;
+                                var oT = (by + BALL_SZ) - rect.y, oB = (rect.y + rect.h) - by;
+                                if (Math.min(oT, oB) < Math.min(oL, oR)) { bvy = -bvy; dyS = -dyS; }
+                                else { bvx = -bvx; dxS = -dxS; }
+                                r2 = ROWS; break;
+                            }
+                        }
+                    }
+                }
+                var snap = null;
+                if (bvy > 0 && by + BALL_SZ >= PAD_Y - 20) {
+                    snap = [];
+                    for (var r2 = 0; r2 < ROWS; r2++) {
+                        snap[r2] = [];
+                        for (var c = 0; c < COLS; c++) snap[r2][c] = br[r2][c];
+                    }
+                }
+                frames.push({ bx: bx, by: by, bvx: bvx, bvy: bvy, bricks: snap, cumReward: cumReward });
+                if (by > CH + 20) break;
+            }
+            return frames;
+        },
+
+        // Core recursive DP: V(frame, paddleX) with multi-bounce via recursion
+        _solve: function (flight, startPx, padW, sm, budget, depth) {
+            var N = flight.length;
+            if (N === 0) return { bestVal: 0, vals: {}, catching: {}, critFrame: -1 };
+            var minPx = 0, maxPx = CW - padW;
+
+            // Build reachable paddle positions with saturation detection
+            var reachable = [{}];
+            reachable[0][startPx] = true;
+            var saturated = null;
+            for (var f = 1; f < N; f++) {
+                if (saturated) { reachable[f] = saturated; continue; }
+                reachable[f] = {};
+                var prev = reachable[f - 1];
+                var anyNew = false;
+                for (var px in prev) {
+                    var p = +px;
+                    reachable[f][p] = true;
+                    var lp = Math.max(minPx, p - PAD_SPEED);
+                    if (!prev[lp]) anyNew = true;
+                    reachable[f][lp] = true;
+                    var rp = Math.min(maxPx, p + PAD_SPEED);
+                    if (!prev[rp]) anyNew = true;
+                    reachable[f][rp] = true;
+                }
+                if (!anyNew) saturated = reachable[f];
+            }
+
+            // Initialize boundary values
+            var lastF = N - 1;
+            var boundaryVal = flight[lastF].by > CH ? -5 : 0;
+            var vals = {};
+            var lastReach = reachable[lastF];
+            for (var px in lastReach) {
+                var p = +px;
+                vals[p] = boundaryVal;
+                vals[Math.max(minPx, p - PAD_SPEED)] = boundaryVal;
+                vals[Math.min(maxPx, p + PAD_SPEED)] = boundaryVal;
+            }
+
+            var catching = {};
+            var firstCritFrame = -1;
+            // Cache recursive evaluations by quantized bounce angle (~9 bins).
+            // Similar paddle positions produce similar bounce angles and nearly
+            // identical post-bounce trajectories, so this collapses ~40 expensive
+            // evaluations down to ~9 unique ones per zone traversal.
+            var angleCache = {};
+
+            // Backward induction: V(f, px) = max over actions of V(f+1, newPx)
+            // Catches and bounces emerge from the physics check at each state
+            for (var f = lastF; f >= 1; f--) {
+                var bs = flight[f];
+                var reach = reachable[f];
+                var newVals = {};
+                var zone = this._inZone(bs);
+
+                for (var px in reach) {
+                    var p = +px;
+                    var vStay = vals[p] !== undefined ? vals[p] : -5;
+                    var vLeft = vals[Math.max(minPx, p - PAD_SPEED)];
+                    var vRight = vals[Math.min(maxPx, p + PAD_SPEED)];
+                    if (vLeft === undefined) vLeft = -5;
+                    if (vRight === undefined) vRight = -5;
+                    var bestCont = Math.max(vStay, vLeft, vRight);
+
+                    if (zone && this._canCatch(bs, p, padW)) {
+                        var bounced = this._bounce(bs, p, padW, sm);
+                        var remain = budget - f - 1;
+                        var catchVal = 1.0;
+                        var postBall = [];
+
+                        if (remain > 0) {
+                            var brickState = bs.bricks;
+                            var val;
+                            // At depth 0: exact per-position eval (no quantization)
+                            // At depth 1+: quantize bounce angle to 9 bins for speed
+                            var useCache = depth > 0;
+                            var qKey;
+                            if (useCache) {
+                                var hit = Math.max(0, Math.min(1, (bs.bx + BALL_SZ / 2 - p) / padW));
+                                qKey = Math.round(hit * 8);
+                            }
+
+                            if (useCache && angleCache[qKey] !== undefined) {
+                                catchVal += angleCache[qKey].value;
+                                postBall = angleCache[qKey].postBall;
+                            } else {
+                                if (depth + 1 < this.MAX_DEPTH) {
+                                    // Recursive solve with full backward induction
+                                    var postFlight2 = this._simFlight(bounced.bx, bounced.by,
+                                        bounced.bvx, bounced.bvy, brickState, remain);
+                                    var postResult = this._solve(postFlight2, p, padW, sm, remain, depth + 1);
+                                    var flBricks2 = postFlight2.length > 0 ?
+                                        postFlight2[postFlight2.length - 1].cumReward : 0;
+                                    val = flBricks2 + postResult.bestVal;
+                                } else if (depth < this.MAX_DEPTH) {
+                                    // Fast forward eval at deepest planned level
+                                    val = this._quickEval(bounced.bx, bounced.by,
+                                        bounced.bvx, bounced.bvy, brickState, padW, sm, remain, depth + 1);
+                                } else {
+                                    var postFlight = this._simFlight(bounced.bx, bounced.by,
+                                        bounced.bvx, bounced.bvy, brickState, Math.min(remain, 60));
+                                    var flBricks = postFlight.length > 0 ?
+                                        postFlight[postFlight.length - 1].cumReward : 0;
+                                    var safe = postFlight.length === 0 ||
+                                        postFlight[postFlight.length - 1].by <= CH;
+                                    val = flBricks + (safe ? 0.5 : -2);
+                                }
+                                catchVal += val;
+                                // Lightweight viz trajectory (forward sim up to 80 frames)
+                                var vbx = bounced.bx, vby = bounced.by, vvx = bounced.bvx, vvy = bounced.bvy;
+                                for (var vi = 0; vi < Math.min(remain, 80); vi++) {
+                                    vbx += vvx; vby += vvy;
+                                    if (vbx < 0) { vbx = -vbx; vvx = Math.abs(vvx); }
+                                    if (vbx > CW - BALL_SZ) { vbx = 2 * (CW - BALL_SZ) - vbx; vvx = -Math.abs(vvx); }
+                                    if (vby < 0) { vby = -vby; vvy = Math.abs(vvy); }
+                                    postBall.push({ x: vbx, y: vby });
+                                    if (vby > CH) break;
+                                }
+                                if (useCache) angleCache[qKey] = { value: val, postBall: postBall };
+                            }
+                        }
+
+                        newVals[p] = Math.max(bestCont, catchVal);
+                        if (catchVal > bestCont) {
+                            catching[p] = { catchVal: catchVal, postBall: postBall };
+                            if (firstCritFrame < 0) firstCritFrame = f;
+                        }
+                    } else if (zone && bs.by > CH) {
+                        newVals[p] = -5;
+                    } else {
+                        newVals[p] = bestCont;
+                    }
+                }
+                vals = newVals;
+            }
+
+            // Best value achievable from starting position
+            var actL = Math.max(minPx, startPx - PAD_SPEED);
+            var actR = Math.min(maxPx, startPx + PAD_SPEED);
+            var vL = vals[actL] !== undefined ? vals[actL] : -5;
+            var vS = vals[startPx] !== undefined ? vals[startPx] : -5;
+            var vR = vals[actR] !== undefined ? vals[actR] : -5;
+            var bestVal = Math.max(vL, vS, vR);
+
+            return { bestVal: bestVal, vals: vals, catching: catching, critFrame: firstCritFrame };
+        },
+
+        _dpDecide: function (game) {
+            var N = this.HORIZON;
+            var startPx = game.px, padW = game.padW, sm = game._speedMult;
+            var minPx = 0, maxPx = CW - padW;
+
+            // Simulate ball free-flight
+            var flight = this._simFlight(game.bx, game.by, game.bvx, game.bvy, game.bricks, N);
+
+            // Solve via recursive backward induction
+            var result = this._solve(flight, startPx, padW, sm, N, 0);
+
+            // Pick best action with tiebreaker
+            var actLeft = Math.max(minPx, startPx - PAD_SPEED);
+            var actRight = Math.min(maxPx, startPx + PAD_SPEED);
+            var vL = result.vals[actLeft] !== undefined ? result.vals[actLeft] : -5;
+            var vS = result.vals[startPx] !== undefined ? result.vals[startPx] : -5;
+            var vR = result.vals[actRight] !== undefined ? result.vals[actRight] : -5;
+
+            // Tiebreaker: prefer moving toward ball's predicted landing spot
+            var simLen = flight.length;
+            var landX = startPx;
+            for (var fi = 0; fi < simLen; fi++) {
+                if (flight[fi].bvy > 0 && flight[fi].by + BALL_SZ >= PAD_Y - 20) {
+                    landX = flight[fi].bx + BALL_SZ / 2 - padW / 2;
+                    break;
+                }
+            }
+            if (landX === startPx && simLen > 0)
+                landX = flight[simLen - 1].bx + BALL_SZ / 2 - padW / 2;
+            if (landX > startPx + 3) vR += 0.01;
+            else if (landX < startPx - 3) vL += 0.01;
+
+            var action = 1, bestV = vS;
+            if (vL > bestV + 0.001) { action = 0; bestV = vL; }
+            if (vR > bestV + 0.001) { action = 2; bestV = vR; }
+
+            // Trace optimal path for viz
+            var critFrame = result.critFrame >= 0 ? result.critFrame : simLen - 1;
+            var optPath = this._tracePath(startPx, action, critFrame, flight, padW);
+
+            return {
+                action: action,
+                viz: {
+                    flight: flight,
+                    critFrame: result.critFrame,
+                    optPath: optPath,
+                    action: action,
+                    startPx: startPx,
+                    padW: padW,
+                    values: [vL, vS, vR],
+                    catching: result.catching
+                }
+            };
+        },
+
+        _tracePath: function (startPx, firstAction, critFrame, flight, padW) {
+            var path = [startPx];
+            var minPx = 0, maxPx = CW - padW;
+            var px = startPx;
+            if (firstAction === 0) px = Math.max(minPx, px - PAD_SPEED);
+            if (firstAction === 2) px = Math.min(maxPx, px + PAD_SPEED);
+            path.push(px);
+            if (critFrame < 0 || critFrame >= flight.length) return path;
+            var bs = flight[critFrame];
+            var targetX = bs.bx + BALL_SZ / 2 - padW / 2;
+            targetX = Math.max(minPx, Math.min(maxPx, targetX));
+            for (var f = 2; f <= critFrame; f++) {
+                if (px < targetX - PAD_SPEED / 2) px = Math.min(maxPx, px + PAD_SPEED);
+                else if (px > targetX + PAD_SPEED / 2) px = Math.max(minPx, px - PAD_SPEED);
+                path.push(px);
+            }
+            return path;
+        }
+    };
+
+    // ── DP Visualization ─────────────────────────────────────────────
+    function drawDPViz(ctx) {
+        var viz = breakoutDPAI._vizData;
+        if (!viz) return;
+        ctx.save();
+
+        var COLORS = ['#0071e3', '#8e8e93', '#ff9f0a'];
+        var NAMES = ['LEFT', 'STAY', 'RIGHT'];
+
+        // Draw predicted ball trajectory
+        if (viz.flight && viz.flight.length > 1) {
+            ctx.strokeStyle = 'rgba(83,83,83,0.2)';
+            ctx.setLineDash([3, 3]);
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            for (var i = 0; i < viz.flight.length; i++) {
+                var p = viz.flight[i];
+                if (i === 0) ctx.moveTo(p.bx + BALL_SZ / 2, p.by + BALL_SZ / 2);
+                else ctx.lineTo(p.bx + BALL_SZ / 2, p.by + BALL_SZ / 2);
+            }
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
+
+        // Draw critical frame indicator
+        if (viz.critFrame >= 0 && viz.flight[viz.critFrame]) {
+            var cb = viz.flight[viz.critFrame];
+            ctx.globalAlpha = 0.3;
+            ctx.strokeStyle = '#ff3b30';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([4, 4]);
+            ctx.beginPath();
+            ctx.moveTo(0, PAD_Y);
+            ctx.lineTo(CW, PAD_Y);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            ctx.fillStyle = '#ff3b30';
+            ctx.globalAlpha = 0.5;
+            ctx.beginPath();
+            ctx.arc(cb.bx + BALL_SZ / 2, cb.by + BALL_SZ / 2, 6, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        // Draw optimal paddle path
+        if (viz.optPath && viz.optPath.length > 1) {
+            var baseY = PAD_Y + 5;
+            var spacing = 1.5;
+            var color = COLORS[viz.action];
+
+            ctx.globalAlpha = 0.7;
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            for (var i = 0; i < viz.optPath.length; i++) {
+                var px = viz.optPath[i] + viz.padW / 2;
+                var py = baseY - i * spacing;
+                if (py < 60) break;
+                if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+            }
+            ctx.stroke();
+
+            for (var i = 0; i < viz.optPath.length; i += 3) {
+                var px = viz.optPath[i] + viz.padW / 2;
+                var py = baseY - i * spacing;
+                if (py < 60) break;
+                ctx.fillStyle = color;
+                ctx.globalAlpha = 0.6;
+                ctx.beginPath();
+                ctx.arc(px, py, 2.5, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        // Draw post-bounce trajectory for best catching position
+        if (viz.catching) {
+            var bestPx = null, bestVal = -999;
+            for (var px in viz.catching) {
+                if (viz.catching[px].catchVal > bestVal) {
+                    bestVal = viz.catching[px].catchVal;
+                    bestPx = px;
+                }
+            }
+            if (bestPx !== null && viz.catching[bestPx].postBall) {
+                var post = viz.catching[bestPx].postBall;
+                ctx.strokeStyle = '#30d158';
+                ctx.globalAlpha = 0.4;
+                ctx.lineWidth = 1.5;
+                ctx.setLineDash([2, 2]);
+                ctx.beginPath();
+                for (var i = 0; i < post.length; i++) {
+                    if (i === 0) ctx.moveTo(post[i].x + BALL_SZ / 2, post[i].y + BALL_SZ / 2);
+                    else ctx.lineTo(post[i].x + BALL_SZ / 2, post[i].y + BALL_SZ / 2);
+                }
+                ctx.stroke();
+                ctx.setLineDash([]);
+            }
+        }
+
+        // Decision badge
+        var chosenColor = COLORS[viz.action];
+        var dText = '\u2192 ' + NAMES[viz.action];
+        if (viz.values) {
+            dText += '  [' + viz.values.map(function (v) { return v.toFixed(1); }).join('/') + ']';
+        }
+        if (viz.critFrame >= 0) dText += '  f=' + viz.critFrame;
+        dText += '  h=' + breakoutDPAI.HORIZON;
+        if (breakoutDPAI._lastMs > 0) {
+            dText += '  ' + breakoutDPAI._lastMs.toFixed(0) + 'ms';
+            if (breakoutDPAI._skipFrames > 0) dText += '(skip' + breakoutDPAI._skipFrames + ')';
+        }
+
+        ctx.font = 'bold 11px sans-serif';
+        ctx.textBaseline = 'middle';
+        var dMet = ctx.measureText(dText);
+        var dX = Math.max(5, Math.min(CW - dMet.width - 15,
+            viz.startPx + viz.padW / 2 - dMet.width / 2));
+        var dY = PAD_Y + 26;
+        ctx.globalAlpha = 0.15;
+        ctx.fillStyle = chosenColor;
+        ctx.fillRect(dX - 5, dY - 7, dMet.width + 10, 14);
+        ctx.globalAlpha = 0.9;
+        ctx.fillStyle = chosenColor;
+        ctx.fillText(dText, dX, dY);
+
+        ctx.globalAlpha = 1;
+        ctx.restore();
+    }
+
+    // ═════════════════════════════════════════════════════════════════
+    //  SECTION 1: PLAYABLE GAME (single board, with AI toggle)
+    // ═════════════════════════════════════════════════════════════════
+    var playCanvas = document.getElementById('game-canvas');
+    var playCtx = playCanvas.getContext('2d');
+    var playGame = new BreakoutGame();
+    window.playGame = playGame;
+    var playKeys = {};
+    var playAnim = 0, playFrame = 0, playLastAction = 1, playLastDir = 2;
+    var gameStarted = false;
+    var paused = false;
+    var aiMode = 'off';
+
+    // Day/night
+    var inverted = false, dayTimer = 0, nightOpacity = 0;
+    var moonPhase = 0, moonX = CW - 50, moonY = 25;
+    var nightStars = [];
+    function placeStars() {
+        nightStars = [];
+        for (var i = 0; i < 10; i++)
+            nightStars.push({ x: Math.random() * CW, y: Math.random() * CH * 0.4,
+                              sourceY: STAR_SPRITE.y + STAR_SPRITE.size * (i % 2) });
+    }
+    placeStars();
+
+    window.resetPlayGame = function () {
+        playGame.reset();
+        gameStarted = false;
+        inverted = false; dayTimer = 0; nightOpacity = 0; placeStars();
+        breakoutSimAI._vizData = null;
+        hybridAI._vizData = null;
+        breakoutDPAI._vizData = null;
+        paused = false;
+        document.getElementById('pause-btn').textContent = 'Pause';
+        document.getElementById('pause-btn').classList.remove('active');
+    };
+
+    function setAIMode(mode) {
+        aiMode = mode;
+        breakoutSimAI.enabled = (mode === 'rules');
+        breakoutSimAI._vizEnabled = (mode === 'rules');
+        if (mode !== 'rules') breakoutSimAI._vizData = null;
+        hybridAI.enabled = (mode === 'hybrid');
+        hybridAI._vizEnabled = (mode === 'hybrid');
+        if (mode !== 'hybrid') hybridAI._vizData = null;
+        breakoutDPAI.enabled = (mode === 'dp');
+        breakoutDPAI._vizEnabled = (mode === 'dp');
+        if (mode !== 'dp') breakoutDPAI._vizData = null;
+        document.getElementById('rules-btn').classList.toggle('active', mode === 'rules');
+        document.getElementById('hybrid-btn').classList.toggle('active', mode === 'hybrid');
+        document.getElementById('dp-btn').classList.toggle('active', mode === 'dp');
+        document.getElementById('dqn-btn').classList.toggle('active', mode === 'dqn');
+        document.getElementById('dp-horizon-box').style.display = mode === 'dp' ? '' : 'none';
+        if (mode !== 'off') {
+            gameStarted = true;
+            if (playGame.gameOver) resetPlayGame();
+            gameStarted = true;
+        }
+    }
+
+    window.toggleRulesAI = function () {
+        setAIMode(aiMode === 'rules' ? 'off' : 'rules');
+    };
+
+    window.toggleHybridAI = function () {
+        setAIMode(aiMode === 'hybrid' ? 'off' : 'hybrid');
+    };
+
+    window.toggleDqnAI = function () {
+        setAIMode(aiMode === 'dqn' ? 'off' : 'dqn');
+    };
+
+    window.toggleDPAI = function () {
+        setAIMode(aiMode === 'dp' ? 'off' : 'dp');
+    };
+
+    window.togglePause = function () {
+        if (!gameStarted || playGame.gameOver) return;
+        paused = !paused;
+        document.getElementById('pause-btn').textContent = paused ? 'Resume' : 'Pause';
+        document.getElementById('pause-btn').classList.toggle('active', paused);
+    };
+
+    function updateDayNight() {
+        dayTimer++;
+        if (!inverted && dayTimer >= 1800) { inverted = true; dayTimer = 0; moonPhase = (moonPhase + 1) % 7; }
+        else if (inverted && dayTimer >= 720) { inverted = false; dayTimer = 0; }
+        if (inverted) nightOpacity = Math.min(1, nightOpacity + 0.035);
+        else nightOpacity = Math.max(0, nightOpacity - 0.035);
+        if (nightOpacity > 0) {
+            moonX -= 0.25; if (moonX < -20) moonX = CW;
+            for (var i = 0; i < nightStars.length; i++) {
+                nightStars[i].x -= 0.3;
+                if (nightStars[i].x < -9) nightStars[i].x = CW;
+            }
+        } else placeStars();
+    }
+
+    function playUpdate() {
+        if (!gameStarted || paused) return;
+        if (playGame.gameOver) {
+            if (aiMode !== 'off') {
+                resetPlayGame();
+                gameStarted = true;
+            }
+            return;
+        }
+        playFrame++; playAnim = Math.floor(playFrame / 10) % 2;
+
+        var action = 1;
+        if (aiMode === 'rules') {
+            action = breakoutSimAI.update(playGame);
+        } else if (aiMode === 'hybrid') {
+            action = hybridAI.update(playGame);
+            if (playGame.stuck) playGame.launch();
+        } else if (aiMode === 'dp') {
+            action = breakoutDPAI.update(playGame);
+            if (playGame.stuck) playGame.launch();
+        } else if (aiMode === 'dqn') {
+            var features = playGame.getFeatures();
+            var q = policy.forward(features);
+            action = argmax(q);
+            if (playGame.stuck) playGame.launch();
+        } else {
+            if (playKeys[37] || playKeys[65]) action = 0;
+            if (playKeys[39] || playKeys[68]) action = 2;
+            if (playKeys[32] && playGame.stuck) playGame.launch();
+        }
+        playLastAction = action;
+        if (action !== 1) playLastDir = action;
+        playGame.step(action);
+        updateDayNight();
+    }
+
+    function drawNightElements(ctx) {
+        if (nightOpacity <= 0 || !spriteImg || !spriteImg.complete) return;
+        ctx.save(); ctx.globalAlpha = nightOpacity;
+        for (var i = 0; i < nightStars.length; i++) {
+            var s = nightStars[i];
+            ctx.drawImage(spriteImg, STAR_SPRITE.x, s.sourceY, 9, 9,
+                Math.round(s.x), s.y, 9, 9);
+        }
+        var mx = MOON_SPRITE.x + MOON_PHASES[moonPhase];
+        var mw = moonPhase === 3 ? 40 : 20;
+        ctx.drawImage(spriteImg, mx, MOON_SPRITE.y, mw, 40,
+            Math.round(moonX), moonY, mw, 40);
+        ctx.globalAlpha = 1; ctx.restore();
+    }
+
+    function playDraw() {
+        drawBreakoutGame(playCtx, playGame, playAnim, playLastAction, playLastDir);
+        drawNightElements(playCtx);
+        if (inverted) {
+            playCtx.globalCompositeOperation = 'difference';
+            playCtx.fillStyle = '#fff';
+            playCtx.fillRect(0, 0, CW, CH);
+            playCtx.globalCompositeOperation = 'source-over';
+        }
+        // Draw viz AFTER inversion so colors stay correct
+        if (aiMode === 'rules' && breakoutSimAI._vizEnabled) drawBreakoutSimViz(playCtx);
+        if (aiMode === 'hybrid' && hybridAI._vizEnabled) drawHybridViz(playCtx);
+        if (aiMode === 'dp' && breakoutDPAI._vizEnabled) drawDPViz(playCtx);
+        if (!gameStarted && !playGame.gameOver) {
+            playCtx.fillStyle = 'rgba(247,247,247,0.8)';
+            playCtx.fillRect(0, CH / 2 - 20, CW, 40);
+            playCtx.fillStyle = '#535353';
+            playCtx.font = '600 16px "Courier New", monospace';
+            playCtx.textAlign = 'center';
+            playCtx.fillText('Press Space to start', CW / 2, CH / 2 + 5);
+            playCtx.textAlign = 'left';
+        }
+        if (playGame.gameOver) {
+            playCtx.fillStyle = 'rgba(247,247,247,0.8)';
+            playCtx.fillRect(0, CH / 2 - 40, CW, 80);
+            playCtx.fillStyle = '#535353';
+            playCtx.font = '600 20px "Courier New", monospace';
+            playCtx.textAlign = 'center';
+            playCtx.fillText(playGame.won ? 'YOU WIN!' : 'GAME OVER', CW / 2, CH / 2 - 5);
+            playCtx.font = '13px "Courier New", monospace';
+            playCtx.fillText('Score: ' + padScore(playGame.score), CW / 2, CH / 2 + 16);
+            playCtx.font = '11px "Courier New", monospace';
+            playCtx.fillStyle = '#86868b';
+            playCtx.fillText('Press R or ENTER to restart', CW / 2, CH / 2 + 32);
+            playCtx.textAlign = 'left';
+        }
+        if (paused && !playGame.gameOver) {
+            playCtx.fillStyle = 'rgba(247,247,247,0.8)';
+            playCtx.fillRect(0, CH / 2 - 20, CW, 40);
+            playCtx.fillStyle = '#535353';
+            playCtx.font = '600 16px "Courier New", monospace';
+            playCtx.textAlign = 'center';
+            playCtx.fillText('PAUSED', CW / 2, CH / 2 + 5);
+            playCtx.textAlign = 'left';
+        }
+    }
+
+    function playLoop() {
+        // FRAME_SKIP=1 for playable game (smooth speed)
+        playUpdate();
+        playDraw();
+        requestAnimationFrame(playLoop);
+    }
+
+    document.addEventListener('keydown', function (e) {
+        playKeys[e.keyCode] = true;
+        if ([32, 37, 38, 39, 40, 65, 68].indexOf(e.keyCode) !== -1) e.preventDefault();
+        // First keypress starts the game
+        if (!gameStarted && [32, 37, 39, 65, 68].indexOf(e.keyCode) !== -1) {
+            gameStarted = true;
+        }
+        if (e.keyCode === 80) togglePause(); // P key
+        if (playGame.gameOver && (e.keyCode === 82 || e.keyCode === 13)) {
+            resetPlayGame();
+            gameStarted = true;
+        }
+    });
+    document.addEventListener('keyup', function (e) { playKeys[e.keyCode] = false; });
+
+    // --- Touch controls ---
+    (function () {
+        var canvas = document.getElementById('game-canvas');
+        function touchX(e) {
+            var t = e.touches[0];
+            var rect = canvas.getBoundingClientRect();
+            return (t.clientX - rect.left) * (canvas.width / rect.width);
+        }
+        canvas.addEventListener('touchstart', function (e) {
+            e.preventDefault();
+            if (!gameStarted) gameStarted = true;
+            if (playGame.gameOver) { resetPlayGame(); gameStarted = true; return; }
+            if (playGame.stuck) playGame.launch();
+            var x = touchX(e);
+            var padCenter = playGame.px + playGame.padW / 2;
+            playKeys[37] = x < padCenter;
+            playKeys[39] = x >= padCenter;
+        }, { passive: false });
+        canvas.addEventListener('touchmove', function (e) {
+            e.preventDefault();
+            var x = touchX(e);
+            var padCenter = playGame.px + playGame.padW / 2;
+            playKeys[37] = x < padCenter - 10;
+            playKeys[39] = x > padCenter + 10;
+            if (!playKeys[37] && !playKeys[39]) { playKeys[37] = false; playKeys[39] = false; }
+        }, { passive: false });
+        canvas.addEventListener('touchend', function (e) {
+            e.preventDefault();
+            playKeys[37] = false;
+            playKeys[39] = false;
+        }, { passive: false });
+    })();
+
+    resetPlayGame();
+    playLoop();
+
+    // ═════════════════════════════════════════════════════════════════
+    //  MLP — forward + backward + Adam (vanilla JS, no deps)
+    // ═════════════════════════════════════════════════════════════════
+    function randn() {
+        var u = 0, v = 0;
+        while (!u) u = Math.random();
+        while (!v) v = Math.random();
+        return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+    }
+
+    function MLP(sizes) {
+        this.n = sizes.length - 1;
+        this.W = []; this.b = []; this.dims = [];
+        this.mW = []; this.vW = []; this.mb = []; this.vb = [];
+        this.t = 0;
+        for (var l = 0; l < this.n; l++) {
+            var ni = sizes[l], no = sizes[l + 1];
+            this.dims.push({ i: ni, o: no });
+            var w = new Float64Array(no * ni);
+            var std = Math.sqrt(2.0 / ni);
+            for (var j = 0; j < w.length; j++) w[j] = randn() * std;
+            this.W.push(w);
+            this.b.push(new Float64Array(no));
+            this.mW.push(new Float64Array(no * ni));
+            this.vW.push(new Float64Array(no * ni));
+            this.mb.push(new Float64Array(no));
+            this.vb.push(new Float64Array(no));
+        }
+    }
+
+    MLP.prototype.forward = function (x) {
+        this._x = [x.slice ? x.slice() : x.concat()];
+        this._z = [];
+        var a = this._x[0];
+        for (var l = 0; l < this.n; l++) {
+            var d = this.dims[l], z = new Float64Array(d.o);
+            for (var i = 0; i < d.o; i++) {
+                var s = this.b[l][i];
+                for (var j = 0; j < d.i; j++) s += this.W[l][i * d.i + j] * a[j];
+                z[i] = s;
+            }
+            this._z.push(z);
+            if (l < this.n - 1) {
+                a = new Float64Array(d.o);
+                for (var i = 0; i < d.o; i++) a[i] = z[i] > 0 ? z[i] : 0;
+            } else a = z;
+            this._x.push(a instanceof Float64Array ? new Float64Array(a) : a.slice());
+        }
+        return a;
+    };
+
+    MLP.prototype.zeroGrad = function () {
+        this._dW = []; this._db = [];
+        for (var l = 0; l < this.n; l++) {
+            this._dW.push(new Float64Array(this.dims[l].o * this.dims[l].i));
+            this._db.push(new Float64Array(this.dims[l].o));
+        }
+    };
+
+    MLP.prototype.backward = function (grad) {
+        var delta = grad;
+        for (var l = this.n - 1; l >= 0; l--) {
+            var d = this.dims[l], inp = this._x[l], z = this._z[l];
+            if (l < this.n - 1) {
+                var dz = new Float64Array(d.o);
+                for (var i = 0; i < d.o; i++) dz[i] = z[i] > 0 ? delta[i] : 0;
+                delta = dz;
+            }
+            for (var i = 0; i < d.o; i++) {
+                this._db[l][i] += delta[i];
+                for (var j = 0; j < d.i; j++)
+                    this._dW[l][i * d.i + j] += delta[i] * inp[j];
+            }
+            if (l > 0) {
+                var gi = new Float64Array(d.i);
+                for (var j = 0; j < d.i; j++) {
+                    var s = 0;
+                    for (var i = 0; i < d.o; i++) s += this.W[l][i * d.i + j] * delta[i];
+                    gi[j] = s;
+                }
+                delta = gi;
+            }
+        }
+    };
+
+    MLP.prototype.update = function (lr, batchSize) {
+        this.t++;
+        var b1 = 0.9, b2 = 0.999, eps = 1e-8;
+        var bc1 = 1 - Math.pow(b1, this.t), bc2 = 1 - Math.pow(b2, this.t);
+        for (var l = 0; l < this.n; l++) {
+            for (var i = 0; i < this.W[l].length; i++) {
+                var g = this._dW[l][i] / batchSize;
+                g = Math.max(-5, Math.min(5, g));
+                this.mW[l][i] = b1 * this.mW[l][i] + (1 - b1) * g;
+                this.vW[l][i] = b2 * this.vW[l][i] + (1 - b2) * g * g;
+                this.W[l][i] -= lr * (this.mW[l][i] / bc1) / (Math.sqrt(this.vW[l][i] / bc2) + eps);
+            }
+            for (var i = 0; i < this.b[l].length; i++) {
+                var g = this._db[l][i] / batchSize;
+                g = Math.max(-5, Math.min(5, g));
+                this.mb[l][i] = b1 * this.mb[l][i] + (1 - b1) * g;
+                this.vb[l][i] = b2 * this.vb[l][i] + (1 - b2) * g * g;
+                this.b[l][i] -= lr * (this.mb[l][i] / bc1) / (Math.sqrt(this.vb[l][i] / bc2) + eps);
+            }
+        }
+    };
+
+    MLP.prototype.copyFrom = function (other) {
+        for (var l = 0; l < this.n; l++) {
+            this.W[l].set(other.W[l]);
+            this.b[l].set(other.b[l]);
+        }
+    };
+
+    MLP.prototype.serialize = function () {
+        var data = { W: [], b: [] };
+        for (var l = 0; l < this.n; l++) {
+            data.W.push(Array.from(this.W[l]));
+            data.b.push(Array.from(this.b[l]));
+        }
+        return data;
+    };
+
+    MLP.prototype.deserialize = function (data) {
+        for (var l = 0; l < this.n; l++) {
+            this.W[l].set(data.W[l]);
+            this.b[l].set(data.b[l]);
+        }
+    };
+
+    // ═════════════════════════════════════════════════════════════════
+    //  REPLAY BUFFER
+    // ═════════════════════════════════════════════════════════════════
+    function ReplayBuffer(cap) { this.cap = cap; this.buf = []; this.pos = 0; }
+    ReplayBuffer.prototype.push = function (s, a, r, ns, d) {
+        var item = { s: s, a: a, r: r, ns: ns, d: d };
+        if (this.buf.length < this.cap) this.buf.push(item);
+        else this.buf[this.pos] = item;
+        this.pos = (this.pos + 1) % this.cap;
+    };
+    ReplayBuffer.prototype.sample = function (n) {
+        var out = [];
+        for (var i = 0; i < n; i++) out.push(this.buf[Math.floor(Math.random() * this.buf.length)]);
+        return out;
+    };
+
+    // ═════════════════════════════════════════════════════════════════
+    //  DQN AGENT (headless training, AI toggle for playable game)
+    // ═════════════════════════════════════════════════════════════════
+    var N_FEAT = 7, N_ACT = 3;
+    var GAMMA = 0.99, LR = 0.001;
+    var BATCH_SZ = 32, BUF_CAP = 20000, WARMUP = 500;
+    var TGT_SYNC = 500;
+    var EPS_START = 1.0, EPS_END = 0.05, EPS_DECAY = 20000;
+
+    var policy, target, buf;
+    var dqnGame;
+    var dqnStep, dqnEp, dqnScores, dqnBest;
+    var dqnTraining = false;
+
+    function argmax(arr) {
+        var b = 0;
+        for (var i = 1; i < arr.length; i++) if (arr[i] > arr[b]) b = i;
+        return b;
+    }
+
+    function initDQN() {
+        policy = new MLP([N_FEAT, 64, 64, N_ACT]);
+        target = new MLP([N_FEAT, 64, 64, N_ACT]);
+        target.copyFrom(policy);
+        buf = new ReplayBuffer(BUF_CAP);
+        dqnGame = new BreakoutGame();
+        dqnGame.reset(3); // train at base difficulty
+        dqnGame.launch();
+        dqnStep = 0; dqnEp = 0;
+        dqnScores = []; dqnBest = -99;
+        dqnTraining = false;
+        document.getElementById('dqn-train-btn').textContent = 'Train';
+        document.getElementById('dqn-train-btn').classList.remove('active');
+        document.getElementById('dqn-stats').textContent = 'Ready to train';
+        document.getElementById('dqn-viz-box').style.display = 'none';
+    }
+
+    function getEpsilon() {
+        return Math.max(EPS_END, EPS_START - (EPS_START - EPS_END) * dqnStep / EPS_DECAY);
+    }
+
+    function dqnTrainTick() {
+        if (!dqnTraining) return;
+        var speed = parseInt(document.getElementById('dqn-speed').value) || 100;
+        document.getElementById('dqn-speed-val').textContent = speed;
+        var stepsThisTick = speed;
+        var t0 = performance.now();
+
+        for (var s = 0; s < stepsThisTick; s++) {
+            var eps = getEpsilon();
+            var features = dqnGame.getFeatures();
+
+            var action;
+            if (Math.random() < eps) {
+                action = Math.floor(Math.random() * N_ACT);
+            } else {
+                action = argmax(policy.forward(features));
+            }
+
+            // Auto-launch if stuck
+            if (dqnGame.stuck) dqnGame.launch();
+
+            var totalReward = 0, done = false;
+            for (var fs = 0; fs < FRAME_SKIP; fs++) {
+                var r = dqnGame.step(action);
+                totalReward += r.reward;
+                if (r.done) { done = true; break; }
+            }
+
+            var nextFeatures = dqnGame.getFeatures();
+            buf.push(features, action, totalReward, nextFeatures, done);
+            dqnStep++;
+
+            if (done) {
+                var score = dqnGame.score;
+                dqnScores.push(score);
+                dqnEp++;
+                if (score > dqnBest) dqnBest = score;
+                dqnGame.reset(3); // train at base difficulty
+                dqnGame.launch();
+            }
+
+            if (buf.buf.length >= WARMUP) {
+                var batch = buf.sample(BATCH_SZ);
+                policy.zeroGrad();
+                for (var b = 0; b < batch.length; b++) {
+                    var tr = batch[b];
+                    var q = policy.forward(tr.s);
+                    var qa = q[tr.a];
+                    var bestNextA = argmax(policy.forward(tr.ns));
+                    var nextQ = target.forward(tr.ns)[bestNextA];
+                    var tgt = tr.r + (tr.d ? 0 : GAMMA * nextQ);
+                    var td = Math.max(-1, Math.min(1, qa - tgt));
+                    policy.forward(tr.s);
+                    var grad = new Float64Array(N_ACT);
+                    grad[tr.a] = td;
+                    policy.backward(grad);
+                }
+                policy.update(LR, BATCH_SZ);
+            }
+
+            if (dqnStep % TGT_SYNC === 0) target.copyFrom(policy);
+        }
+
+        var elapsed = (performance.now() - t0) / 1000;
+        var sps = stepsThisTick / Math.max(0.001, elapsed);
+        var avg = 0;
+        if (dqnScores.length > 0) {
+            var last50 = dqnScores.slice(-50);
+            for (var i = 0; i < last50.length; i++) avg += last50[i];
+            avg /= last50.length;
+        }
+        document.getElementById('dqn-stats').textContent =
+            'Ep ' + dqnEp + ' | Step ' + dqnStep +
+            ' | Avg50: ' + avg.toFixed(0) +
+            ' | Best: ' + dqnBest +
+            ' | Eps: ' + getEpsilon().toFixed(2) +
+            ' | ' + Math.round(sps) + ' s/s';
+
+        if (dqnScores.length > 0) {
+            document.getElementById('dqn-viz-box').style.display = '';
+            drawChart();
+        }
+
+        setTimeout(dqnTrainTick, 0);
+    }
+
+    // ── Chart ────────────────────────────────────────────────────────
+    function drawChart() {
+        var cc = document.getElementById('dqn-chart');
+        var c = cc.getContext('2d');
+        var w = cc.width, h = cc.height;
+        c.fillStyle = '#fff'; c.fillRect(0, 0, w, h);
+
+        if (dqnScores.length < 2) return;
+        var data = dqnScores;
+        var pad = 40;
+        var pw = w - pad * 2, ph = h - pad * 2;
+
+        var yMin = 0, yMax = Math.max(200, Math.max.apply(null, data) * 1.1);
+
+        c.strokeStyle = '#e8e8e8'; c.lineWidth = 1;
+        for (var y = 0; y <= yMax; y += Math.max(50, Math.round(yMax / 4))) {
+            var py = pad + ph - (y - yMin) / (yMax - yMin) * ph;
+            c.beginPath(); c.moveTo(pad, py); c.lineTo(w - pad, py); c.stroke();
+            c.fillStyle = '#86868b'; c.font = '10px "Courier New"';
+            c.textAlign = 'right'; c.fillText(y, pad - 4, py + 3);
+        }
+
+        c.fillStyle = 'rgba(0,113,227,0.15)';
+        for (var i = 0; i < data.length; i++) {
+            var px = pad + (i / (data.length - 1)) * pw;
+            var py = pad + ph - (data[i] - yMin) / (yMax - yMin) * ph;
+            c.fillRect(px - 1, py - 1, 3, 3);
+        }
+
+        if (data.length >= 10) {
+            c.strokeStyle = '#0071e3'; c.lineWidth = 2;
+            c.beginPath();
+            var winSz = Math.min(50, Math.floor(data.length / 3));
+            if (winSz < 2) winSz = 2;
+            for (var i = winSz; i < data.length; i++) {
+                var sum = 0;
+                for (var j = i - winSz; j < i; j++) sum += data[j];
+                var avg = sum / winSz;
+                var px = pad + (i / (data.length - 1)) * pw;
+                var py = pad + ph - (avg - yMin) / (yMax - yMin) * ph;
+                if (i === winSz) c.moveTo(px, py); else c.lineTo(px, py);
+            }
+            c.stroke();
+        }
+
+        c.fillStyle = '#535353'; c.font = '10px "Courier New"';
+        c.textAlign = 'center';
+        c.fillText('Episode', w / 2, h - 5);
+        c.textAlign = 'left';
+    }
+
+    // ── UI Handlers ──────────────────────────────────────────────────
+    window.toggleTrain = function () {
+        dqnTraining = !dqnTraining;
+        var btn = document.getElementById('dqn-train-btn');
+        if (dqnTraining) {
+            btn.textContent = 'Pause';
+            btn.classList.add('active');
+            dqnTrainTick();
+        } else {
+            btn.textContent = 'Train';
+            btn.classList.remove('active');
+        }
+    };
+
+    window.resetDQN = function () {
+        dqnTraining = false;
+        initDQN();
+    };
+
+    window.loadCached = function () {
+        if (typeof BREAKOUT_CACHED_WEIGHTS === 'undefined' || !BREAKOUT_CACHED_WEIGHTS) {
+            alert('No cached weights available yet.');
+            return;
+        }
+        if (dqnTraining) toggleTrain();
+        policy.deserialize(BREAKOUT_CACHED_WEIGHTS);
+        target.copyFrom(policy);
+        document.getElementById('dqn-stats').textContent = 'Pre-trained model loaded';
+        setAIMode('dqn');
+        gameStarted = true;
+    };
+
+    window.getWeights = function () { return policy.serialize(); };
+
+    // ── Hybrid AI UI Handlers ────────────────────────────────────────
+    window.hybridCollect = function () {
+        if (hybridAI._collectingData) {
+            hybridAI._collectingData = false;
+            document.getElementById('hybrid-collect-btn').textContent = '1. Collect Data';
+            document.getElementById('hybrid-collect-btn').classList.remove('active');
+            return;
+        }
+        hybridAI.collectData();
+    };
+
+    window.hybridTrain = function () {
+        hybridAI.trainValueNet();
+    };
+
+    window.hybridPlay = function () {
+        if (!hybridAI.trained) {
+            document.getElementById('hybrid-stats').textContent =
+                'Train the value network first (steps 1 & 2)!';
+            return;
+        }
+        setAIMode('hybrid');
+        gameStarted = true;
+    };
+
+    window.hybridReset = function () {
+        hybridAI._collectingData = false;
+        hybridAI.init();
+        if (aiMode === 'hybrid') setAIMode('off');
+        document.getElementById('hybrid-collect-btn').textContent = '1. Collect Data';
+        document.getElementById('hybrid-collect-btn').classList.remove('active');
+        document.getElementById('hybrid-train-btn').textContent = '2. Train Value Net';
+        document.getElementById('hybrid-train-btn').classList.remove('active');
+        document.getElementById('hybrid-stats').textContent = 'Value network not trained \u2014 collect data first';
+        document.getElementById('hybrid-viz-box').style.display = 'none';
+    };
+
+    window.hybridLoadCached = function () {
+        if (typeof HYBRID_CACHED_WEIGHTS === 'undefined' || !HYBRID_CACHED_WEIGHTS) {
+            alert('No cached hybrid weights available yet.');
+            return;
+        }
+        hybridAI.valueNet = new MLP([24, 32, 16, 1]);
+        hybridAI.valueNet.deserialize(HYBRID_CACHED_WEIGHTS);
+        hybridAI._returnMean = HYBRID_CACHED_WEIGHTS.mean || 0;
+        hybridAI._returnStd = HYBRID_CACHED_WEIGHTS.std || 1;
+        hybridAI.trained = true;
+        document.getElementById('hybrid-stats').textContent =
+            'Pre-trained value network loaded — ready to play!';
+        setAIMode('hybrid');
+        gameStarted = true;
+    };
+
+    window.getHybridWeights = function () {
+        return {
+            weights: hybridAI.valueNet.serialize(),
+            mean: hybridAI._returnMean || 0,
+            std: hybridAI._returnStd || 1
+        };
+    };
+
+    // ── Expose for page-level wrappers ──
+    window.breakoutSimAI = breakoutSimAI;
+    window.breakoutSetAIMode = setAIMode;
+
+    // Initialize both agents
+    hybridAI.init();
+    initDQN();
+})();
+</script>
+
+<!-- ═══ Page-level wrappers ═══ -->
+<script>
+(function () {
+    // --- setMode: Human/AI toggle ---
+    var origResetPlayGame = window.resetPlayGame;
+    var origTogglePause = window.togglePause;
+
+    window.setMode = function (mode) {
+        window.breakoutSetAIMode(mode === 'rules' ? 'rules' : 'off');
+
+        // Update button states
+        document.getElementById('human-btn').classList.toggle('active', mode === 'off');
+        // rules-btn active state handled by setAIMode
+
+        // Set difficulty defaults: Human=1, AI=6
+        var slider = document.getElementById('play-diff');
+        var val = mode === 'rules' ? 6 : 1;
+        slider.value = val;
+        document.getElementById('play-diff-val').textContent = val;
+
+        // Viz off by default when entering AI mode
+        if (mode === 'rules' && window.breakoutSimAI) {
+            window.breakoutSimAI._vizEnabled = false;
+            document.getElementById('viz-btn').classList.remove('active');
+        }
+
+        // Clear pause state
+        document.getElementById('pause-btn').textContent = 'Pause';
+        document.getElementById('pause-btn').classList.remove('active');
+    };
+
+    // --- toggleViz ---
+    window.toggleViz = function () {
+        var ai = window.breakoutSimAI;
+        if (!ai) return;
+        ai._vizEnabled = !ai._vizEnabled;
+        document.getElementById('viz-btn').classList.toggle('active', ai._vizEnabled);
+    };
+
+    // --- restartGame ---
+    window.restartGame = function () {
+        origResetPlayGame();
+    };
+
+    // --- Slider live update ---
+    document.getElementById('play-diff').addEventListener('input', function () {
+        document.getElementById('play-diff-val').textContent = this.value;
+    });
+
+    // --- R key restart (enhanced) ---
+    document.addEventListener('keydown', function (e) {
+        if (e.keyCode !== 82) return;
+        var el = document.activeElement;
+        if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) return;
+        window.restartGame();
+    });
+
+    // --- Sound hooks ---
+    var g = window.playGame;
+    if (g) {
+        var prevScore = 0, prevLives = g.lives, prevLevel = 1;
+        var origPlayUpdate = window.playUpdate || null;
+        // Patch the step method to detect changes
+        var origStep = g.step.bind(g);
+        g.step = function (action) {
+            prevScore = g.score;
+            prevLives = g.lives;
+            prevLevel = g.level;
+            var r = origStep(action);
+            if (g.score > prevScore) DinoSounds.press();    // brick hit
+            if (g.lives < prevLives) DinoSounds.hit();       // life lost
+            if (g.level > prevLevel) DinoSounds.reached();   // level complete
+            return r;
+        };
+    }
+})();
+</script>
+</body>
+</html>
