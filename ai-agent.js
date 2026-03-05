@@ -602,10 +602,16 @@
                 this._jumpDurationSpeed = Math.floor(speed);
             }
 
-            // Simulation window: 2x jump duration covers the current
-            // obstacle plus the next one. This lets the AI "see" whether
-            // landing from a jump leaves enough time for the next action.
-            var N = this._jumpDuration * 2;
+            // Simulation window: cover ALL knowable (on-screen) obstacles.
+            // Extend horizon so the farthest real obstacle has time to
+            // pass the dino, plus one jump duration for post-pass safety.
+            var baseN = this._jumpDuration * 2;
+            var N = baseN;
+            if (ahead.length > 0) {
+                var farthestX = ahead[ahead.length - 1].xPos - tRex.xPos;
+                var framesToPass = Math.ceil(farthestX / speed) + this._jumpDuration;
+                if (framesToPass > N) N = framesToPass;
+            }
 
             // --- MID-JUMP ---
             if (tRex.jumping) {
