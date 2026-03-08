@@ -390,31 +390,43 @@ function computeAI() {
         }
     }
 
-    // ── 3. Iterative lead-shot prediction (4 passes, wrap-aware) ─────────────
-    // Each pass: project target forward by flight time, recompute flight time.
-    // Bullet effective speed accounts for ship velocity component along aim.
+    // ── 3. Exact lead-shot via quadratic formula (wrap-aware) ────────────────
+    // In the relative frame (ship = origin), bullet travels at B_SPD in aim dir.
+    // Target moves at (tgt.vel - ship.vel). Solve for intercept time t:
+    //   |aim * B_SPD * t|² = |r + rv*t|²  →  quadratic in t.
     var leadX=null, leadY=null, aimA=null, aimDiff=null;
     if (tgt) {
-        var tt=wdst(p.x,p.y,tgt.x,tgt.y)/B_SPD;
-        var px=tgt.x, py=tgt.y;
-        for (var it=0; it<5; it++) {
-            // Wrap the predicted position so we can measure distance correctly
-            px=wrp(tgt.x+(tgt.vx||0)*tt, CW);
-            py=wrp(tgt.y+(tgt.vy||0)*tt, CH);
-            // Wrap-corrected vector from ship to lead point
-            var lx=wdx(px,p.x), ly=wdy(py,p.y);
-            var ld=Math.sqrt(lx*lx+ly*ly)||1;
-            // Effective bullet speed: B_SPD plus ship velocity projected onto aim
-            var effSpd=B_SPD+Math.max(0, (p.vx*lx+p.vy*ly)/ld);
-            tt=ld/effSpd;
+        var rx=wdx(tgt.x,p.x), ry=wdy(tgt.y,p.y);        // ship→target (wrapped)
+        var rvx=(tgt.vx||0)-p.vx, rvy=(tgt.vy||0)-p.vy;   // relative velocity
+        var qa=rvx*rvx+rvy*rvy-B_SPD*B_SPD;
+        var qb=2*(rx*rvx+ry*rvy);
+        var qc=rx*rx+ry*ry;
+        var tt=null;
+        if (Math.abs(qa)<0.001) {
+            if (qb<-0.001) tt=-qc/qb;          // linear case
+        } else {
+            var disc=qb*qb-4*qa*qc;
+            if (disc>=0) {
+                var sq=Math.sqrt(disc);
+                var t1=(-qb-sq)/(2*qa), t2=(-qb+sq)/(2*qa);
+                if(t1>0&&t2>0) tt=Math.min(t1,t2);
+                else if(t1>0)  tt=t1;
+                else if(t2>0)  tt=t2;
+            }
         }
-        // Express lead as canvas coords nearest to ship (for aimA & drawing)
-        leadX=p.x+wdx(px,p.x);
-        leadY=p.y+wdy(py,p.y);
-        aimA=Math.atan2(leadY-p.y, leadX-p.x);
+        if (tt!==null&&tt<B_LIFE) {
+            // Aim direction = relative intercept vector (accounts for ship vel)
+            var ix=rx+rvx*tt, iy=ry+rvy*tt;
+            aimA=Math.atan2(iy,ix);
+            // Lead dot = where the target will actually be (world coords)
+            leadX=p.x+rx+(tgt.vx||0)*tt;
+            leadY=p.y+ry+(tgt.vy||0)*tt;
+        } else {
+            aimA=Math.atan2(ry,rx);             // fallback: aim at target now
+        }
         aimDiff=normA(aimA-p.angle);
         // Fire when aligned, even while dodging
-        if (Math.abs(aimDiff)<0.15&&p.cooldown===0){fireBullet();p.cooldown=6;}
+        if(Math.abs(aimDiff)<0.15&&p.cooldown===0){fireBullet();p.cooldown=6;}
     }
 
     // ── 4. Rotation & thrust ──────────────────────────────────────────────────
