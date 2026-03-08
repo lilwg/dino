@@ -53,22 +53,43 @@ var ROCK_SCALE = 2;
 
 function buildRockTex(a) {
     var pad = 4;
-    var sz  = Math.ceil((a.r * 2 + pad * 2) / ROCK_SCALE);
+    var full = Math.ceil(a.r * 2 + pad * 2);   // full-res size
+    var sz   = Math.ceil(full / ROCK_SCALE);    // small canvas size
+
+    // 1. Draw polygon at full resolution (avoids tiny-canvas precision loss)
+    var big = document.createElement('canvas');
+    big.width = big.height = full;
+    var bc = big.getContext('2d');
+    bc.translate(full / 2, full / 2);
+    var sh = SHAPES[a.sh];
+    bc.strokeStyle = '#535353'; bc.lineWidth = 1.5; bc.fillStyle = '#e0e0e0';
+    bc.beginPath();
+    for (var i = 0; i < sh.length; i += 2) {
+        if (i === 0) bc.moveTo(sh[i] * a.r, sh[i + 1] * a.r);
+        else         bc.lineTo(sh[i] * a.r, sh[i + 1] * a.r);
+    }
+    bc.closePath(); bc.fill(); bc.stroke();
+
+    // 2. Quantize: snap every pixel to solid fill, solid stroke, or transparent.
+    //    This removes canvas anti-aliasing so the downscaled texture has hard edges.
+    var id = bc.getImageData(0, 0, full, full), d = id.data;
+    for (var p = 0; p < d.length; p += 4) {
+        if (d[p + 3] < 64) {                      // transparent — clear fully
+            d[p] = d[p+1] = d[p+2] = d[p+3] = 0;
+        } else if (d[p] < 150) {                   // dark → stroke #535353
+            d[p] = d[p+1] = d[p+2] = 83; d[p+3] = 255;
+        } else {                                    // light → fill #e0e0e0
+            d[p] = d[p+1] = d[p+2] = 224; d[p+3] = 255;
+        }
+    }
+    bc.putImageData(id, 0, 0);
+
+    // 3. Downscale to the small canvas with nearest-neighbor — picks one pixel per block
     var tmp = document.createElement('canvas');
     tmp.width = tmp.height = sz;
     var tc = tmp.getContext('2d');
-    tc.save();
-    tc.translate(sz / 2, sz / 2);
-    tc.scale(1 / ROCK_SCALE, 1 / ROCK_SCALE);
-    var sh = SHAPES[a.sh];
-    tc.strokeStyle = '#535353'; tc.lineWidth = 1.5; tc.fillStyle = '#e0e0e0';
-    tc.beginPath();
-    for (var i = 0; i < sh.length; i += 2) {
-        if (i === 0) tc.moveTo(sh[i] * a.r, sh[i + 1] * a.r);
-        else         tc.lineTo(sh[i] * a.r, sh[i + 1] * a.r);
-    }
-    tc.closePath(); tc.fill(); tc.stroke();
-    tc.restore();
+    tc.imageSmoothingEnabled = false;
+    tc.drawImage(big, 0, 0, sz, sz);
     return tmp;
 }
 var spr = document.getElementById('offline-resources-1x');
