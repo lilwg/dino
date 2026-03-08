@@ -440,8 +440,8 @@ function computeAI() {
             var primTol = Math.atan2((tgt.r||15) * 1.5, B_SPD * ic.tt);
             if (Math.abs(aimDiff) < primTol) { fireBullet(); p.cooldown=6; fired=true; }
         }
-        // Opportunistic shots only when not in a hard-dodge (no wasted bullets while evading)
-        if (!fired && !hardThreat) {
+        // Opportunistic shots — fire at any rock already in crosshairs, even while dodging
+        if (!fired) {
             var opps = ufo ? rocks.concat([ufo]) : rocks;
             for (var i=0; i<opps.length&&!fired; i++) {
                 if (opps[i]===tgt) continue;
