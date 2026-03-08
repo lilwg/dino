@@ -158,7 +158,9 @@ function stepPlayer() {
     var left  = ai ? (aiIn.rot < 0) : !!keys[37];
     var right = ai ? (aiIn.rot > 0) : !!keys[39];
     var thr   = ai ? aiIn.thrust     : !!(keys[38]||keys[87]);
-    var fire  = !ai && (keys[32]||keys[90]);
+    var fireDown = !ai && (keys[32]||keys[90]);
+    var fireTap  = fireDown && !keys._fh;  // edge trigger: tap only
+    keys._fh = fireDown;
 
     if (left)  p.angle -= TURN;
     if (right) p.angle += TURN;
@@ -174,7 +176,7 @@ function stepPlayer() {
     p.x = wrp(p.x+p.vx, CW); p.y = wrp(p.y+p.vy, CH);
 
     if (p.cooldown > 0) p.cooldown--;
-    if (fire && p.cooldown === 0) { fireBullet(); p.cooldown = 8; }
+    if (fireTap && p.cooldown === 0) { fireBullet(); p.cooldown = 4; }
 
     // Hyperspace
     if ((keys[72]||keys[83]) && !keys._hH) {
@@ -196,6 +198,9 @@ function stepPlayer() {
 
 function fireBullet() {
     var p = player;
+    // Authentic Atari limit: max 4 player bullets on screen
+    var own = 0; for (var i=0; i<bullets.length; i++) if (bullets[i].own) own++;
+    if (own >= 4) return;
     bullets.push({ x:p.x+Math.cos(p.angle)*(SHIP_R+3),
                    y:p.y+Math.sin(p.angle)*(SHIP_R+3),
                    vx:p.vx+Math.cos(p.angle)*B_SPD,
@@ -479,7 +484,7 @@ function drawUFO(u) {
         var sp = PTERO[u.frame];
         var sc2 = u.big ? 0.68 : 0.44;
         var sw = sp.w*sc2, sh2 = sp.h*sc2;
-        if (u.vx < 0) ctx.scale(-1, 1);
+        if (u.vx > 0) ctx.scale(-1, 1);  // sprite faces left; flip when flying right
         ctx.drawImage(spr, sp.x,sp.y,sp.w,sp.h, -sw/2,-sh2/2, sw,sh2);
     } else {
         ctx.strokeStyle='#535353'; ctx.lineWidth=1.5; ctx.fillStyle='#d8d8d8';
