@@ -196,15 +196,19 @@ function stepPlayer() {
     if (p.cooldown > 0) p.cooldown--;
     if (fireTap && p.cooldown === 0) { fireBullet(); p.cooldown = 4; }
 
-    // Hyperspace
+    // Hyperspace — Atari authentic:
+    // velocity is preserved; death occurs if you materialise inside a rock
     if ((keys[72]||keys[83]) && !keys._hH) {
         keys._hH = true;
-        p.vx = 0; p.vy = 0;
         addSparks(p.x, p.y, 8, 1);
         p.x = 20+Math.random()*(CW-40);
         p.y = 20+Math.random()*(CH-40);
         addSparks(p.x, p.y, 8, 1);
-        if (Math.random() < 0.1) killPlayer();
+        // Die if spawned overlapping any rock (Atari's real death mechanic)
+        for (var hi=0; hi<rocks.length; hi++) {
+            var hr=rocks[hi];
+            if (dst(p.x,p.y,hr.x,hr.y) < hr.r+SHIP_R) { killPlayer(); break; }
+        }
     }
     if (!keys[72] && !keys[83]) keys._hH = false;
 
@@ -426,16 +430,25 @@ function computeAI() {
 
     // Fire at primary target if aligned; then scan every other object
     // for opportunistic shots — anything the crosshairs sweep through.
+    // Tolerance = angular half-size of the target at intercept distance,
+    // so a bullet on the edge of the window still clips the rock.
     if (p.cooldown===0) {
         var fired=false;
-        if (aimDiff!==null && Math.abs(aimDiff)<0.15) { fireBullet(); p.cooldown=6; fired=true; }
-        if (!fired) {
+        if (ic && aimDiff!==null) {
+            var primTol = Math.atan2((tgt.r||15) * 1.5, B_SPD * ic.tt);
+            if (Math.abs(aimDiff) < primTol) { fireBullet(); p.cooldown=6; fired=true; }
+        }
+        // Opportunistic shots only when not in a hard-dodge (no wasted bullets while evading)
+        if (!fired && !hardThreat) {
             var opps = ufo ? rocks.concat([ufo]) : rocks;
             for (var i=0; i<opps.length&&!fired; i++) {
                 if (opps[i]===tgt) continue;
                 var oic=interceptA(opps[i]);
-                if (oic && Math.abs(normA(oic.a-p.angle))<0.15) {
-                    fireBullet(); p.cooldown=6; fired=true;
+                if (oic) {
+                    var oppTol = Math.atan2((opps[i].r||15), B_SPD * oic.tt);
+                    if (Math.abs(normA(oic.a-p.angle)) < oppTol) {
+                        fireBullet(); p.cooldown=6; fired=true;
+                    }
                 }
             }
         }
