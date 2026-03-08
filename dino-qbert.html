@@ -127,9 +127,9 @@ function cubeXY(row, col) {
 var CUBE_DEPTH = TILE_H / 2;  // = 14 = hh, ensures perfect interlocking diamonds
 
 function drawCube(c, cx, cy, state) {
-    var tops   = ['#e0e0e0', '#535353', '#888888'];
-    var lefts  = ['#c8c8c8', '#404040', '#666666'];
-    var rights = ['#b0b0b0', '#303030', '#555555'];
+    var tops   = ['#ebebeb', '#535353', '#909090'];
+    var lefts  = ['#d4d4d4', '#383838', '#6e6e6e'];
+    var rights = ['#bcbcbc', '#1e1e1e', '#505050'];
     var hw = TILE_W / 2, hh = TILE_H / 2;
     // Top face (diamond)
     c.beginPath();
@@ -803,17 +803,17 @@ function drawDiscs() {
         // Outer disc
         ctx.beginPath();
         ctx.ellipse(0, 0, 20, 10, 0, 0, Math.PI * 2);
-        ctx.fillStyle = '#c8c8c8'; ctx.fill();
+        ctx.fillStyle = '#d4d4d4'; ctx.fill();
         ctx.strokeStyle = '#535353'; ctx.lineWidth = 1.5; ctx.stroke();
         // Middle ring
         ctx.beginPath();
         ctx.ellipse(0, 0, 13, 6, 0, 0, Math.PI * 2);
-        ctx.fillStyle = '#909090'; ctx.fill();
-        ctx.strokeStyle = '#535353'; ctx.lineWidth = 0.8; ctx.stroke();
+        ctx.fillStyle = '#535353'; ctx.fill();
+        ctx.strokeStyle = '#1e1e1e'; ctx.lineWidth = 0.8; ctx.stroke();
         // Inner dot
         ctx.beginPath();
         ctx.ellipse(0, 0, 5, 2.5, 0, 0, Math.PI * 2);
-        ctx.fillStyle = '#535353'; ctx.fill();
+        ctx.fillStyle = '#1e1e1e'; ctx.fill();
         ctx.restore();
     }
 }
