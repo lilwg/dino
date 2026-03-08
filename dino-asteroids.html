@@ -81,6 +81,7 @@ var gs, player, bullets, rocks, sparks, ufo;
 var sc, hi, lv, lives, ufoT, tick;
 var aiMode = 'off', aiIn = { rot:0, thrust:false };
 var aiViz = false, aiVizData = null;
+var isTouchDevice = ('ontouchstart' in window || navigator.maxTouchPoints > 0);
 var keys = {}, paused = false;
 var inv, dayT, nightA, moonPh, moonX, stars;
 
@@ -521,7 +522,7 @@ function draw() {
         ctx.fillStyle = '#535353';
         ctx.font = '600 17px "Courier New",monospace';
         ctx.textAlign = 'center';
-        ctx.fillText('Press Space to start', CW/2, CH/2+6);
+        ctx.fillText(isTouchDevice ? 'Tap to start' : 'Press Space to start', CW/2, CH/2+6);
         ctx.textAlign = 'left';
     } else if (gs === 'gameover') {
         ctx.fillStyle = 'rgba(247,247,247,.88)';
@@ -531,7 +532,7 @@ function draw() {
         ctx.textAlign = 'center';
         ctx.fillText('GAME OVER', CW/2, CH/2-4);
         ctx.font = '13px "Courier New",monospace';
-        ctx.fillText('Score: ' + sc + '   |   R to restart', CW/2, CH/2+19);
+        ctx.fillText(isTouchDevice ? 'Score: ' + sc + '   |   Tap to restart' : 'Score: ' + sc + '   |   R to restart', CW/2, CH/2+19);
         ctx.textAlign = 'left';
     }
 }
@@ -650,9 +651,18 @@ window.toggleViz = function() {
 // ─── Mobile touch controls ────────────────────────────────────────────────────
 (function() {
     // Show touch controls on touch devices
-    if ('ontouchstart' in window || navigator.maxTouchPoints > 0) {
+    if (isTouchDevice) {
         document.getElementById('touch-controls').style.display = 'block';
     }
+    // Tap canvas to start / restart / fire
+    canvas.addEventListener('touchstart', function(e) {
+        e.preventDefault();
+        if (gs === 'start' || gs === 'gameover') { initGame(); return; }
+        if (gs === 'playing' && player && !player.dead) {
+            keys[32] = true;
+            setTimeout(function(){ keys[32] = false; }, 80);
+        }
+    }, {passive: false});
     function bindBtn(id, keyCode) {
         var el = document.getElementById(id);
         if (!el) return;
