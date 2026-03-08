@@ -46,6 +46,13 @@
 var CW = 600, CH = 400;
 var canvas = document.getElementById('game-canvas');
 var ctx = canvas.getContext('2d');
+
+// Off-screen rock canvas — drawn at 1/ROCK_SCALE then upscaled (pixelated look)
+var ROCK_SCALE = 2;
+var rockCvs = document.createElement('canvas');
+rockCvs.width  = CW / ROCK_SCALE;
+rockCvs.height = CH / ROCK_SCALE;
+var rockCtx = rockCvs.getContext('2d');
 var spr = document.getElementById('offline-resources-1x');
 
 var TREX = [{ x:892, y:2, w:44, h:47 }, { x:936, y:2, w:44, h:47 }, { x:980, y:2, w:44, h:47 }];
@@ -540,7 +547,15 @@ function draw() {
         ctx.beginPath(); ctx.moveTo(0,CH-8); ctx.lineTo(CW,CH-8); ctx.stroke();
     }
 
-    for (var i = 0; i < rocks.length; i++) drawRock(rocks[i]);
+    // Render rocks to half-res canvas then upscale — gives chunky pixelated edges
+    rockCtx.clearRect(0, 0, rockCvs.width, rockCvs.height);
+    rockCtx.save();
+    rockCtx.scale(1 / ROCK_SCALE, 1 / ROCK_SCALE);
+    for (var i = 0; i < rocks.length; i++) drawRock(rocks[i], rockCtx);
+    rockCtx.restore();
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(rockCvs, 0, 0, CW, CH);
+    ctx.imageSmoothingEnabled = true;
     if (ufo) drawUFO(ufo);
 
     for (var i = 0; i < bullets.length; i++) {
@@ -617,18 +632,19 @@ function drawShip(p) {
     ctx.restore();
 }
 
-function drawRock(a) {
+function drawRock(a, c) {
+    c = c || ctx;
     var sh = SHAPES[a.sh];
-    ctx.save();
-    ctx.translate(a.x, a.y); ctx.rotate(a.rot);
-    ctx.strokeStyle = '#535353'; ctx.lineWidth = 1.5; ctx.fillStyle = '#e0e0e0';
-    ctx.beginPath();
+    c.save();
+    c.translate(a.x, a.y); c.rotate(a.rot);
+    c.strokeStyle = '#535353'; c.lineWidth = 1.5; c.fillStyle = '#e0e0e0';
+    c.beginPath();
     for (var i = 0; i < sh.length; i += 2) {
-        if (i===0) ctx.moveTo(sh[i]*a.r, sh[i+1]*a.r);
-        else       ctx.lineTo(sh[i]*a.r, sh[i+1]*a.r);
+        if (i===0) c.moveTo(sh[i]*a.r, sh[i+1]*a.r);
+        else       c.lineTo(sh[i]*a.r, sh[i+1]*a.r);
     }
-    ctx.closePath(); ctx.fill(); ctx.stroke();
-    ctx.restore();
+    c.closePath(); c.fill(); c.stroke();
+    c.restore();
 }
 
 function drawUFO(u) {

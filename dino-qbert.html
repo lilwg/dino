@@ -17,7 +17,7 @@
         <p class="si-subtitle">Stomp every rock before the raptors get you</p>
 
         <div class="si-game-box">
-            <canvas id="game-canvas" width="600" height="400"></canvas>
+            <canvas id="game-canvas" width="600" height="440"></canvas>
             <div class="si-controls" style="margin-top:12px;">
                 <button class="si-btn active" id="human-btn" onclick="setMode('off')">Human</button>
                 <button class="si-btn" id="rules-btn" onclick="setMode('rules')">AI</button>
@@ -30,7 +30,7 @@
 
         <h2 style="margin-top:16px;">How it works</h2>
         <p class="si-prose">DinoQbert recreates the 1982 Gottlieb arcade original: hop-based movement, one jump per keypress with a 150ms arc animation, and the classic @!#?@! swear bubble on death. Coily spawns as an egg, bounces randomly down the pyramid, then hatches and chases the player. Slick hops down uncoloring cubes. Two teleport discs on each side let Q*bert escape and kill Coily for a bonus.</p>
-        <p class="si-prose">Tap <strong>Viz</strong> to see the AI&rsquo;s planned BFS path drawn across the pyramid. The AI avoids enemy-adjacent cubes and will dive for a disc if Coily gets close.</p>
+        <p class="si-prose">Tap <strong>Viz</strong> to reveal the AI&rsquo;s plan: a dashed line traces the BFS-shortest path to its next target, with faint dots marking the rest of its queued tour stops. The AI builds a greedy nearest-neighbour tour over all uncolored cubes, then uses BFS to navigate each leg while avoiding tiles adjacent to enemies. If Coily closes to within two hops, the AI abandons the tour and leaps for a disc to reset him.</p>
 
         <p style="margin-top:20px;"><a href="/" style="color:#0071e3;font-size:14px;text-decoration:none;">&larr; Back</a></p>
     </div>
@@ -43,7 +43,14 @@
 // ─── Canvas & constants ───────────────────────────────────────────────────────
 var canvas = document.getElementById('game-canvas');
 var ctx    = canvas.getContext('2d');
-var CW = 600, CH = 400;
+var CW = 600, CH = 440;
+
+// Low-resolution pyramid canvas — rendered at 1/PYR_SCALE then upscaled for pixelated look
+var PYR_SCALE = 2;
+var pyrCvs = document.createElement('canvas');
+pyrCvs.width  = CW / PYR_SCALE;   // 300
+pyrCvs.height = CH / PYR_SCALE;   // 220
+var pyrCtx = pyrCvs.getContext('2d');
 
 // ─── Sprites ─────────────────────────────────────────────────────────────────
 var SPRITES = {
@@ -57,7 +64,32 @@ var SPRITES = {
 var STAR_SPRITE  = { x:645, y:2, size:9 };
 var MOON_SPRITE  = { x:484, y:2, w:20, h:40 };
 var MOON_PHASES  = [140, 120, 100, 60, 40, 20, 0];
-var spriteImg    = document.getElementById('offline-resources-1x');
+var spriteImg   = document.getElementById('offline-resources-1x');
+var spriteClean = null;   // white→transparent, for HUD icons
+var spriteDark  = null;   // white→black, for game sprites (black outline day, white at night)
+var outlineCache = {};    // key → white-silhouette canvas, for dino outline
+
+function buildSpriteVariants() {
+    var w = spriteImg.naturalWidth || spriteImg.width;
+    var h = spriteImg.naturalHeight || spriteImg.height;
+    function process(replaceFn) {
+        var oc = document.createElement('canvas');
+        oc.width = w; oc.height = h;
+        var ox = oc.getContext('2d');
+        ox.drawImage(spriteImg, 0, 0);
+        var d = ox.getImageData(0, 0, w, h);
+        for (var i = 0; i < d.data.length; i += 4)
+            if (d.data[i] > 200 && d.data[i+1] > 200 && d.data[i+2] > 200)
+                replaceFn(d.data, i);
+        ox.putImageData(d, 0, 0);
+        return oc;
+    }
+    spriteClean = process(function(d, i) { d[i+3] = 0; });
+    spriteDark  = process(function(d, i) { d[i]=0; d[i+1]=0; d[i+2]=0; });
+}
+if (spriteImg.complete) buildSpriteVariants();
+else spriteImg.addEventListener('load', buildSpriteVariants);
+
 function padScore(n) { var s = '' + n; while (s.length < 5) s = '0' + s; return s; }
 
 // ─── Day / Night ─────────────────────────────────────────────────────────────
@@ -114,48 +146,41 @@ function applyNight(c) {
 
 // ─── Isometric pyramid ───────────────────────────────────────────────────────
 var ROWS    = 7;
-var TILE_W  = 72, TILE_H = 36;
-var PYR_CX  = 300, PYR_TOP_Y = 95;
+var TILE_W  = 64, TILE_H = 32;          // diamond: 64×32 (hw=32, hh=16)
+var CUBE_DEPTH = TILE_W / 2;            // = 32; side face is 32×32 → equal area to top diamond ✓
+var ROW_STEP   = TILE_H / 2 + CUBE_DEPTH; // = 48; perfect interlocking: face bottom = next row's diamond top
+var PYR_CX  = 300, PYR_TOP_Y = 80;
 
 function cubeXY(row, col) {
     return {
         cx: PYR_CX + (col - row / 2) * TILE_W,
-        cy: PYR_TOP_Y + row * TILE_H
+        cy: PYR_TOP_Y + row * ROW_STEP
     };
 }
 
-var CUBE_DEPTH = TILE_H / 2;  // = 14 = hh, ensures perfect interlocking diamonds
-
 function drawCube(c, cx, cy, state) {
-    var tops   = ['#ebebeb', '#535353', '#909090'];
-    var lefts  = ['#d4d4d4', '#383838', '#6e6e6e'];
-    var rights = ['#bcbcbc', '#1e1e1e', '#505050'];
     var hw = TILE_W / 2, hh = TILE_H / 2;
-    // Top face (diamond)
-    c.beginPath();
-    c.moveTo(cx,      cy - hh);
-    c.lineTo(cx + hw, cy);
-    c.lineTo(cx,      cy + hh);
-    c.lineTo(cx - hw, cy);
-    c.closePath();
-    c.fillStyle = tops[state]; c.fill();
-    c.strokeStyle = '#535353'; c.lineWidth = 0.5; c.stroke();
-    // Left face
-    c.beginPath();
-    c.moveTo(cx - hw, cy);
-    c.lineTo(cx,      cy + hh);
-    c.lineTo(cx,      cy + hh + CUBE_DEPTH);
-    c.lineTo(cx - hw, cy      + CUBE_DEPTH);
-    c.closePath();
-    c.fillStyle = lefts[state]; c.fill(); c.stroke();
-    // Right face
-    c.beginPath();
-    c.moveTo(cx + hw, cy);
-    c.lineTo(cx,      cy + hh);
-    c.lineTo(cx,      cy + hh + CUBE_DEPTH);
-    c.lineTo(cx + hw, cy      + CUBE_DEPTH);
-    c.closePath();
-    c.fillStyle = rights[state]; c.fill(); c.stroke();
+    // [top, left, right] colours per state
+    var cols = [
+        ['#ebebeb', '#d4d4d4', '#bcbcbc'],  // state 0: uncolored (near-white)
+        ['#b8b8b8', '#989898', '#787878'],  // state 1: colored (medium-light)
+        ['#787878', '#585858', '#404040']   // state 2: fully colored (medium-dark)
+    ][state] || ['#ebebeb', '#d4d4d4', '#bcbcbc'];
+
+    // Stroke blends with each state's face tone
+    var stroke = state === 0 ? '#cccccc' : state === 1 ? '#888888' : '#535353';
+
+    function face(pts, fi) {
+        c.beginPath();
+        c.moveTo(pts[0], pts[1]);
+        for (var i = 2; i < pts.length; i += 2) c.lineTo(pts[i], pts[i + 1]);
+        c.closePath();
+        c.fillStyle = cols[fi]; c.fill();
+        c.strokeStyle = stroke; c.lineWidth = 0.5; c.stroke();
+    }
+    face([cx, cy-hh, cx+hw, cy, cx, cy+hh, cx-hw, cy], 0);                              // top
+    face([cx-hw, cy, cx, cy+hh, cx, cy+hh+CUBE_DEPTH, cx-hw, cy+CUBE_DEPTH], 1);        // left
+    face([cx+hw, cy, cx, cy+hh, cx, cy+hh+CUBE_DEPTH, cx+hw, cy+CUBE_DEPTH], 2);        // right
 }
 
 // ─── Game state ───────────────────────────────────────────────────────────────
@@ -163,6 +188,7 @@ var gameMode = 'off';   // 'off' | 'rules'
 var vizOn    = false;
 var paused   = false;
 var gameOver = false;
+var levelWon = false;
 
 var score, hiScore, lives, round;
 var extraLifeGiven;
@@ -173,8 +199,12 @@ var discs;
 var frameCount;
 var roundMsg;          // { text, timer }
 var swearBubble;       // { x, y, timer }
-var aiPath = [];
-var aiMoveTimer = 0;
+var aiDetailPath = [];  // BFS steps to current tour target (valid Q*bert moves)
+var aiTourDots   = [];  // remaining tour centres — drawn as dots only (no lines)
+var aiMoveTimer  = 0;
+var aiTour       = [];
+var aiTourIdx    = 0;
+var aiBoardSig   = '';
 var inputQueue  = [];
 
 // Direction deltas: UL=up-left, UR=up-right, DL=down-left, DR=down-right
@@ -241,6 +271,7 @@ function discScreenPos(side) {
 
 // ─── Init level ───────────────────────────────────────────────────────────────
 function initRound() {
+    levelWon = false;
     cubeStates = [];
     for (var r = 0; r < ROWS; r++)
         for (var c = 0; c <= r; c++)
@@ -273,8 +304,12 @@ function initRound() {
     frameCount = 0;
     roundMsg   = { text: 'ROUND ' + round, timer: 90 };
     swearBubble = null;
-    aiPath     = [];
-    aiMoveTimer= 0;
+    aiDetailPath = [];
+    aiTourDots   = [];
+    aiMoveTimer  = 0;
+    aiTour       = [];
+    aiTourIdx    = 0;
+    aiBoardSig   = '';
 
     // Schedule first Coily spawn after brief delay
     scheduleSpawn(180);
@@ -600,6 +635,7 @@ function updatePlayer() {
             if (!player.dead && allColored()) {
                 score += 1000; checkExtraLife();
                 round++;
+                levelWon = true;
                 DinoSounds.reached();
                 roundMsg = { text: 'ROUND ' + round, timer: 110 };
                 var savedRound = round;
@@ -618,10 +654,68 @@ function updatePlayer() {
 }
 
 // ─── AI ──────────────────────────────────────────────────────────────────────
+
+// BFS from (r1,c1) to (r2,c2); returns {dist, path} or null
+function bfsTo(r1, c1, r2, c2) {
+    if (r1 === r2 && c1 === c2) return { dist: 0, path: [] };
+    var visited = {}; visited[r1 + ',' + c1] = true;
+    var queue = [{ row: r1, col: c1, path: [] }];
+    while (queue.length > 0) {
+        var cur = queue.shift();
+        for (var k = 0; k < DIR_KEYS.length; k++) {
+            var dk = DIRS[DIR_KEYS[k]];
+            var nr = cur.row + dk.dr, nc = cur.col + dk.dc;
+            if (!isValidPos(nr, nc)) continue;
+            var key = nr + ',' + nc;
+            if (visited[key]) continue;
+            visited[key] = true;
+            var np = cur.path.concat([DIR_KEYS[k]]);
+            if (nr === r2 && nc === c2) return { dist: np.length, path: np };
+            queue.push({ row: nr, col: nc, path: np });
+        }
+    }
+    return null;
+}
+
+// Board state signature for change detection
+function boardSig() {
+    var s = '';
+    for (var i = 0; i < cubeStates.length; i++) s += cubeStates[i].state;
+    return s;
+}
+
+// Nearest-neighbour TSP tour over all uncolored tiles
+function buildTour() {
+    var tgt = targetState();
+    var remaining = [];
+    for (var i = 0; i < cubeStates.length; i++)
+        if (cubeStates[i].state < tgt)
+            remaining.push({ row: cubeStates[i].row, col: cubeStates[i].col });
+
+    var tour = [];
+    var cr = player.row, cc = player.col;
+    while (remaining.length > 0) {
+        var best = null, bestDist = Infinity, bestIdx = -1;
+        for (var i = 0; i < remaining.length; i++) {
+            var res = bfsTo(cr, cc, remaining[i].row, remaining[i].col);
+            if (res && res.dist < bestDist) {
+                bestDist = res.dist; best = remaining[i]; bestIdx = i;
+            }
+        }
+        if (!best) break;
+        tour.push(best);
+        remaining.splice(bestIdx, 1);
+        cr = best.row; cc = best.col;
+    }
+    aiTour    = tour;
+    aiTourIdx = 0;
+    aiBoardSig = boardSig();
+}
+
 function computeAIMove() {
     var tgt = targetState();
 
-    // Build danger map: squares occupied or adjacent to enemies
+    // Danger map: enemy tiles + all adjacent tiles
     var dangerSet = {};
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
@@ -634,7 +728,7 @@ function computeAIMove() {
         }
     }
 
-    // Check if Coily is close and disc is reachable
+    // Disc escape when Coily is close
     var coilyDist = 999;
     for (var i = 0; i < enemies.length; i++) {
         if (enemies[i].type === 'coily') {
@@ -647,51 +741,57 @@ function computeAIMove() {
         if (discs[1].active && player.col === player.row) return 'UR';
     }
 
-    // BFS to nearest uncolored cube, preferring safe paths
-    var start = { row: player.row, col: player.col };
-    var visited = {}; visited[start.row + ',' + start.col] = true;
-    var queue = [{ row: start.row, col: start.col, path: [] }];
-    var goal = null;
+    // Replan tour whenever board state changes
+    if (boardSig() !== aiBoardSig || aiTour.length === 0) buildTour();
 
-    while (queue.length > 0) {
-        var cur = queue.shift();
-        var cube = cubeAt(cur.row, cur.col);
-        if (cube && cube.state < tgt && (cur.row !== player.row || cur.col !== player.col)) {
-            goal = cur; break;
-        }
-        // Also stop at start if start cube needs coloring (already handled by stompCube on landing)
-        if (cur.path.length === 0 && cube && cube.state < tgt) {
-            // Current cube uncolored — any direction works, handled at landing
-        }
-        for (var k = 0; k < DIR_KEYS.length; k++) {
-            var dk2 = DIRS[DIR_KEYS[k]];
-            var nr2 = cur.row + dk2.dr, nc2 = cur.col + dk2.dc;
-            if (!isValidPos(nr2, nc2)) continue;
-            var key = nr2 + ',' + nc2;
-            if (visited[key]) continue;
-            visited[key] = true;
-            var newPath = cur.path.slice(); newPath.push(DIR_KEYS[k]);
-            queue.push({ row: nr2, col: nc2, path: newPath });
-        }
+    // Advance past targets already colored (e.g. by Slick's uncolor or our own stomps)
+    while (aiTourIdx < aiTour.length) {
+        var t = aiTour[aiTourIdx];
+        var tc = cubeAt(t.row, t.col);
+        if (tc && tc.state < tgt) break;
+        aiTourIdx++;
     }
 
-    if (!goal || goal.path.length === 0) { aiPath = []; return null; }
+    // Helper: try any safe valid move as a last resort (avoids AI freezing)
+    function fallbackMove() {
+        for (var fk = 0; fk < DIR_KEYS.length; fk++) {
+            var fd0 = DIRS[DIR_KEYS[fk]];
+            var fbr = player.row + fd0.dr, fbc = player.col + fd0.dc;
+            if (isValidPos(fbr, fbc) && !dangerSet[fbr + ',' + fbc]) return DIR_KEYS[fk];
+        }
+        return null;
+    }
 
-    // Build viz path
-    aiPath = [];
+    if (aiTourIdx >= aiTour.length) {
+        aiDetailPath = []; aiTourDots = [];
+        return fallbackMove();
+    }
+
+    // BFS to the current tour target
+    var target = aiTour[aiTourIdx];
+    var res = bfsTo(player.row, player.col, target.row, target.col);
+    if (!res || res.path.length === 0) {
+        aiDetailPath = []; aiTourDots = [];
+        return fallbackMove();
+    }
+
+    // Build viz: BFS steps as connected detail path, remaining tour as dots only
+    aiDetailPath = [];
     var pr = player.row, pc = player.col;
-    for (var i = 0; i < goal.path.length; i++) {
-        var dd = DIRS[goal.path[i]];
+    for (var i = 0; i < res.path.length; i++) {
+        var dd = DIRS[res.path[i]];
         pr += dd.dr; pc += dd.dc;
-        aiPath.push({ row: pr, col: pc });
+        aiDetailPath.push({ row: pr, col: pc });
     }
+    aiTourDots = [];
+    for (var i = aiTourIdx + 1; i < aiTour.length; i++)
+        aiTourDots.push({ row: aiTour[i].row, col: aiTour[i].col });
 
-    // Take first step — try to avoid danger
-    var firstDir = goal.path[0];
+    // Take first step; dodge danger if possible
+    var firstDir = res.path[0];
     var fd = DIRS[firstDir];
     var fnr = player.row + fd.dr, fnc = player.col + fd.dc;
     if (dangerSet[fnr + ',' + fnc]) {
-        // Find a safer alternative that still makes progress
         for (var k = 0; k < DIR_KEYS.length; k++) {
             if (DIR_KEYS[k] === firstDir) continue;
             var ad = DIRS[DIR_KEYS[k]];
@@ -719,6 +819,8 @@ function update() {
         roundMsg.timer--;
         if (roundMsg.timer <= 0) roundMsg = null;
     }
+
+    if (levelWon) return;   // freeze enemies / player / AI during level-complete delay
 
     updatePlayer();
     updateEnemies();
@@ -756,26 +858,31 @@ function draw() {
         ctx.beginPath(); ctx.moveTo(0, CH - 12); ctx.lineTo(CW, CH - 12); ctx.stroke();
     }
 
-    // Draw pyramid top-to-bottom: row 0 (apex) first so lower rows' diamonds
-    // overlap the side faces of rows above — correct isometric painter's order
+    // Draw pyramid at 1/PYR_SCALE resolution then scale up → pixelated cube faces
+    pyrCtx.clearRect(0, 0, pyrCvs.width, pyrCvs.height);
+    pyrCtx.save();
+    pyrCtx.scale(1 / PYR_SCALE, 1 / PYR_SCALE);
     for (var r = 0; r < ROWS; r++) {
         for (var c = 0; c <= r; c++) {
             var cube = cubeAt(r, c);
             var pos  = cubeXY(r, c);
-            drawCube(ctx, pos.cx, pos.cy, cube ? cube.state : 0);
+            drawCube(pyrCtx, pos.cx, pos.cy, cube ? cube.state : 0);
         }
     }
+    pyrCtx.restore();
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(pyrCvs, 0, 0, CW, CH);
+    ctx.imageSmoothingEnabled = true;
 
     // Discs
     drawDiscs();
 
     // AI viz path (before inversion — color elements excluded from inversion)
-    if (vizOn && aiPath.length > 0) drawVizPath();
+    if (vizOn && (aiDetailPath.length > 0 || aiTourDots.length > 0)) drawVizPath();
 
-    // Enemies
+    // Enemies and player (before inversion so they invert with scene, like dino-runner)
+    // White outline becomes black outline at night automatically
     for (var i = 0; i < enemies.length; i++) drawEnemy(enemies[i]);
-
-    // Player
     drawPlayer();
 
     // Night inversion
@@ -819,26 +926,39 @@ function drawDiscs() {
 }
 
 function drawVizPath() {
-    if (aiPath.length === 0) return;
+    if (aiDetailPath.length === 0 && aiTourDots.length === 0) return;
     ctx.save();
-    ctx.setLineDash([4, 4]);
-    ctx.strokeStyle = 'rgba(255,200,0,0.80)';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    var sp = cubeXY(player.row, player.col);
-    ctx.moveTo(sp.cx, sp.cy);
-    for (var i = 0; i < aiPath.length; i++) {
-        var pt = cubeXY(aiPath[i].row, aiPath[i].col);
-        ctx.lineTo(pt.cx, pt.cy);
-    }
-    ctx.stroke();
-    ctx.setLineDash([]);
-    for (var i = 0; i < aiPath.length; i++) {
-        var pt2 = cubeXY(aiPath[i].row, aiPath[i].col);
+
+    // Dashed line + large dots for the valid BFS path to the next target
+    if (aiDetailPath.length > 0) {
+        ctx.setLineDash([4, 4]);
+        ctx.strokeStyle = 'rgba(255,200,0,0.80)';
+        ctx.lineWidth = 2;
         ctx.beginPath();
-        ctx.arc(pt2.cx, pt2.cy, 4, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(255,200,0,0.90)'; ctx.fill();
+        var sp = cubeXY(player.row, player.col);
+        ctx.moveTo(sp.cx, sp.cy);
+        for (var i = 0; i < aiDetailPath.length; i++) {
+            var pt = cubeXY(aiDetailPath[i].row, aiDetailPath[i].col);
+            ctx.lineTo(pt.cx, pt.cy);
+        }
+        ctx.stroke();
+        ctx.setLineDash([]);
+        for (var i = 0; i < aiDetailPath.length; i++) {
+            var pt2 = cubeXY(aiDetailPath[i].row, aiDetailPath[i].col);
+            ctx.beginPath();
+            ctx.arc(pt2.cx, pt2.cy, 4, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(255,200,0,0.90)'; ctx.fill();
+        }
     }
+
+    // Small dots only (no connecting lines) for the rest of the tour
+    for (var j = 0; j < aiTourDots.length; j++) {
+        var dp = cubeXY(aiTourDots[j].row, aiTourDots[j].col);
+        ctx.beginPath();
+        ctx.arc(dp.cx, dp.cy, 3, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255,200,0,0.45)'; ctx.fill();
+    }
+
     ctx.restore();
 }
 
@@ -859,12 +979,33 @@ function drawPlayer() {
 }
 
 function _drawTrex(px, py, sp, sc) {
-    if (spriteImg && spriteImg.complete) {
-        ctx.drawImage(spriteImg, sp.x, sp.y, sp.w, sp.h,
-            Math.round(px - sp.w * sc / 2),
-            Math.round(py - sp.h * sc - TILE_H / 2 + 2),
-            sp.w * sc, sp.h * sc);
+    var src = spriteClean || spriteImg;
+    if (!src) return;
+    var dw = Math.round(sp.w * sc), dh = Math.round(sp.h * sc);
+    var dx = Math.round(px - dw / 2);
+    var dy = Math.round(py - dh - TILE_H / 2 + 2);
+
+    // White outline: draw cached white silhouette at 4 cardinal offsets
+    if (spriteClean) {
+        var key = sp.x + ',' + sp.y + ',' + sc;
+        if (!outlineCache[key]) {
+            var tmp = document.createElement('canvas');
+            tmp.width = dw; tmp.height = dh;
+            var tc = tmp.getContext('2d');
+            tc.drawImage(spriteClean, sp.x, sp.y, sp.w, sp.h, 0, 0, dw, dh);
+            tc.globalCompositeOperation = 'source-in';
+            tc.fillStyle = '#ffffff';
+            tc.fillRect(0, 0, dw, dh);
+            outlineCache[key] = tmp;
+        }
+        var sil = outlineCache[key];
+        ctx.drawImage(sil, dx - 1, dy);
+        ctx.drawImage(sil, dx + 1, dy);
+        ctx.drawImage(sil, dx, dy - 1);
+        ctx.drawImage(sil, dx, dy + 1);
     }
+
+    ctx.drawImage(src, sp.x, sp.y, sp.w, sp.h, dx, dy, dw, dh);
 }
 
 function drawEnemy(e) {
@@ -873,6 +1014,7 @@ function drawEnemy(e) {
     if (e.type === 'egg') {
         ctx.save();
         ctx.translate(Math.round(e.px), Math.round(e.py - TILE_H / 2 - 6));
+        ctx.scale(1.25, 1.25);
         // Egg body
         ctx.beginPath();
         ctx.ellipse(0, 0, 8, 13, 0, 0, Math.PI * 2);
@@ -888,11 +1030,11 @@ function drawEnemy(e) {
         ctx.restore();
 
     } else if (e.type === 'coily') {
-        // Pterodactyl sprite as raptor pursuer
         var sp = e.frame ? SPRITES.PTERO2 : SPRITES.PTERO1;
-        var sc = 0.55;
-        if (spriteImg && spriteImg.complete) {
-            ctx.drawImage(spriteImg, sp.x, sp.y, sp.w, sp.h,
+        var sc = 0.80;
+        var src = spriteClean || spriteImg;
+        if (src) {
+            ctx.drawImage(src, sp.x, sp.y, sp.w, sp.h,
                 Math.round(e.px - sp.w * sc / 2),
                 Math.round(e.py - sp.h * sc - TILE_H / 2),
                 sp.w * sc, sp.h * sc);
@@ -900,9 +1042,10 @@ function drawEnemy(e) {
 
     } else if (e.type === 'slick') {
         var sp2 = SPRITES.CACTUS_SM;
-        var sc2 = 0.55;
-        if (spriteImg && spriteImg.complete) {
-            ctx.drawImage(spriteImg, sp2.x, sp2.y, sp2.w, sp2.h,
+        var sc2 = 0.80;
+        var src2 = spriteClean || spriteImg;
+        if (src2) {
+            ctx.drawImage(src2, sp2.x, sp2.y, sp2.w, sp2.h,
                 Math.round(e.px - sp2.w * sc2 / 2),
                 Math.round(e.py - sp2.h * sc2 - TILE_H / 2),
                 sp2.w * sc2, sp2.h * sc2);
@@ -953,10 +1096,10 @@ function drawHUD() {
 
     // Lives as small T-Rex sprites at top-right
     for (var i = 0; i < lives; i++) {
-        if (spriteImg && spriteImg.complete) {
+        if (spriteClean) {
             var sp = SPRITES.TREX_IDLE;
             var sc = 0.38;
-            ctx.drawImage(spriteImg, sp.x, sp.y, sp.w, sp.h,
+            ctx.drawImage(spriteClean, sp.x, sp.y, sp.w, sp.h,
                 CW - 8 - (i + 1) * 20, 4,
                 sp.w * sc, sp.h * sc);
         }
@@ -1017,8 +1160,9 @@ window.restartGame = function () {
     lives   = 3;
     round   = 1;
     extraLifeGiven = false;
-    gameOver = false;
-    paused   = false;
+    gameOver  = false;
+    paused    = false;
+    levelWon  = false;
     aiMoveTimer = 0;
     inputQueue  = [];
     inverted    = false;
@@ -1052,13 +1196,13 @@ document.addEventListener('keydown', function (e) {
     if (e.key === 'p' || e.key === 'P') { togglePause(); return; }
     if (gameOver || paused) return;
     if (gameMode !== 'off') return;
-    var prevent = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'q', 'Q', 'e', 'E', 'a', 'A', 'd', 'D', ' '];
+    var prevent = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'q', 'Q', 'w', 'W', 'e', 'E', 'a', 'A', 's', 'S', 'd', 'D', ' '];
     if (prevent.indexOf(e.key) !== -1) e.preventDefault();
     var dir = null;
     if (e.key === 'ArrowUp'    || e.key === 'q' || e.key === 'Q') dir = 'UL'; // up-left
-    if (e.key === 'ArrowRight' || e.key === 'e' || e.key === 'E') dir = 'UR'; // up-right
+    if (e.key === 'ArrowRight' || e.key === 'w' || e.key === 'W' || e.key === 'e' || e.key === 'E') dir = 'UR'; // up-right
     if (e.key === 'ArrowLeft'  || e.key === 'a' || e.key === 'A') dir = 'DL'; // down-left
-    if (e.key === 'ArrowDown'  || e.key === 'd' || e.key === 'D') dir = 'DR'; // down-right
+    if (e.key === 'ArrowDown'  || e.key === 's' || e.key === 'S' || e.key === 'd' || e.key === 'D') dir = 'DR'; // down-right
     if (dir) inputQueue.push(dir);
 });
 
