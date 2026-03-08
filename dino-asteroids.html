@@ -382,19 +382,7 @@ function computeAI() {
     var dodging=(fleeX*fleeX+fleeY*fleeY)>0.04;
     var fleeA=dodging?Math.atan2(fleeY,fleeX):0;
 
-    // ── 2. Target selection: UFO first, then lowest-score rock ────────────────
-    var tgt=null;
-    if (ufo && wdst(p.x,p.y,ufo.x,ufo.y)<350) {
-        tgt=ufo;
-    } else if (rocks.length>0) {
-        var bestS=Infinity;
-        for (var i=0; i<rocks.length; i++) {
-            var r=rocks[i], s=wdst(p.x,p.y,r.x,r.y)*r.sz*r.sz;
-            if(s<bestS){bestS=s;tgt=r;}
-        }
-    }
-
-    // ── 3. Intercept angle via quadratic formula (wrap-aware) ────────────────
+    // ── 2. Intercept helper + target selection ────────────────────────────────
     // Returns {a, tt, rx, ry} or null. Works in relative frame (ship = origin).
     function interceptA(t) {
         var rx=wdx(t.x,p.x), ry=wdy(t.y,p.y);
@@ -413,6 +401,20 @@ function computeAI() {
         }
         if (tt===null||tt>=B_LIFE) return null;
         return { a:Math.atan2(ry+rvy*tt, rx+rvx*tt), tt:tt, rx:rx, ry:ry };
+    }
+
+    // UFO first (it shoots back); otherwise pick the rock needing least rotation
+    var tgt=null;
+    if (ufo && wdst(p.x,p.y,ufo.x,ufo.y)<350) {
+        tgt=ufo;
+    } else if (rocks.length>0) {
+        var bestRot=Infinity;
+        for (var i=0; i<rocks.length; i++) {
+            var r=rocks[i];
+            var ric=interceptA(r);
+            var rot=ric ? Math.abs(normA(ric.a-p.angle)) : Math.PI; // fallback: worst
+            if(rot<bestRot){bestRot=rot;tgt=r;}
+        }
     }
 
     var leadX=null, leadY=null, aimA=null, aimDiff=null;
