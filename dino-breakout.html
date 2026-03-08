@@ -89,13 +89,13 @@
     var PAD_SPEED = 6;
     var BALL_SZ = 10, BALL_SPEED = 4;
 
-    var COLS = 8, ROWS = 6;
-    var BRICK_W = 60, BRICK_H = 16, BRICK_GAP = 4;
+    var COLS = 14, ROWS = 8;
+    var BRICK_W = 41, BRICK_H = 14, BRICK_GAP = 2;
     var BRICK_TOP = 50;
     var BRICK_LEFT = (CW - COLS * (BRICK_W + BRICK_GAP) + BRICK_GAP) / 2;
-    var ROW_TYPES = ['PTERO', 'PTERO', 'CACTUS', 'CACTUS', 'CACTUS', 'CACTUS'];
-    var ROW_POINTS = [30, 30, 20, 20, 10, 10];
-    var ROW_COLORS = ['#c8c8c8', '#c8c8c8', '#d8d8d8', '#d8d8d8', '#e8e8e8', '#e8e8e8'];
+    var ROW_TYPES = ['PTERO', 'PTERO', 'PTERO', 'PTERO', 'CACTUS', 'CACTUS', 'CACTUS', 'CACTUS'];
+    var ROW_POINTS = [30, 30, 25, 25, 20, 20, 15, 15];
+    var ROW_COLORS = ['#404040', '#404040', '#565656', '#565656', '#6a6a6a', '#6a6a6a', '#848484', '#848484'];
     var MAX_LIVES = 3;
     var FRAME_SKIP = 3;
 
@@ -242,10 +242,18 @@
                         var overlapR = (br.x + br.w) - this.bx;
                         var overlapT = (this.by + BALL_SZ) - br.y;
                         var overlapB = (br.y + br.h) - this.by;
-                        if (Math.min(overlapT, overlapB) < Math.min(overlapL, overlapR)) {
+                        var hOv = this.bvx > 0 ? overlapL : overlapR;
+                        var vOv = this.bvy > 0 ? overlapT : overlapB;
+                        var hNorm = Math.abs(this.bvx) > 0.001 ? hOv / Math.abs(this.bvx) : 1e9;
+                        var vNorm = Math.abs(this.bvy) > 0.001 ? vOv / Math.abs(this.bvy) : 1e9;
+                        if (vNorm <= hNorm) {
                             this.bvy = -this.bvy; dySub = -dySub;
+                            if (overlapT < overlapB) { this.by = br.y - BALL_SZ; }
+                            else { this.by = br.y + br.h; }
                         } else {
                             this.bvx = -this.bvx; dxSub = -dxSub;
+                            if (overlapL < overlapR) { this.bx = br.x - BALL_SZ; }
+                            else { this.bx = br.x + br.w; }
                         }
 
                         this.totalBricks--;
@@ -356,22 +364,26 @@
                 var br = brickRect(r, c);
                 ctx.fillStyle = ROW_COLORS[r];
                 ctx.fillRect(br.x, br.y, br.w, br.h);
-                if (ROW_TYPES[r] === 'PTERO') {
-                    var pspr = anim === 0 ? SPRITES.PTERO1 : SPRITES.PTERO2;
-                    var pScale = Math.min(br.w / pspr.w, br.h / pspr.h) * 0.9;
-                    if (spriteImg && spriteImg.complete)
+                if (spriteImg && spriteImg.complete) {
+                    ctx.globalCompositeOperation = 'screen';
+                    ctx.filter = 'invert(1)';
+                    if (ROW_TYPES[r] === 'PTERO') {
+                        var pspr = anim === 0 ? SPRITES.PTERO1 : SPRITES.PTERO2;
+                        var pScale = Math.min(br.w / pspr.w, br.h / pspr.h) * 0.9;
                         ctx.drawImage(spriteImg, pspr.x, pspr.y, pspr.w, pspr.h,
                             br.x + (br.w - pspr.w * pScale) / 2,
                             br.y + (br.h - pspr.h * pScale) / 2,
                             pspr.w * pScale, pspr.h * pScale);
-                } else {
-                    var cspr = SPRITES.CACTUS_SM;
-                    var cScale = (br.h - 2) / cspr.h;
-                    if (spriteImg && spriteImg.complete)
+                    } else {
+                        var cspr = SPRITES.CACTUS_SM;
+                        var cScale = (br.h - 2) / cspr.h;
                         ctx.drawImage(spriteImg, cspr.x, cspr.y, cspr.w, cspr.h,
                             br.x + (br.w - cspr.w * cScale) / 2,
                             br.y + (br.h - cspr.h * cScale) / 2,
                             cspr.w * cScale, cspr.h * cScale);
+                    }
+                    ctx.filter = 'none';
+                    ctx.globalCompositeOperation = 'source-over';
                 }
             }
         }
@@ -667,8 +679,17 @@
                                 reward += ROW_POINTS[r] / 30;
                                 var oL = (bx + BALL_SZ) - br.x, oR = (br.x + br.w) - bx;
                                 var oT = (by + BALL_SZ) - br.y, oB = (br.y + br.h) - by;
-                                if (Math.min(oT, oB) < Math.min(oL, oR)) { bvy = -bvy; dyS = -dyS; }
-                                else { bvx = -bvx; dxS = -dxS; }
+                                var hOv = bvx > 0 ? oL : oR;
+                                var vOv = bvy > 0 ? oT : oB;
+                                var hNorm = Math.abs(bvx) > 0.001 ? hOv / Math.abs(bvx) : 1e9;
+                                var vNorm = Math.abs(bvy) > 0.001 ? vOv / Math.abs(bvy) : 1e9;
+                                if (vNorm <= hNorm) {
+                                    bvy = -bvy; dyS = -dyS;
+                                    if (oT < oB) { by = br.y - BALL_SZ; } else { by = br.y + br.h; }
+                                } else {
+                                    bvx = -bvx; dxS = -dxS;
+                                    if (oL < oR) { bx = br.x - BALL_SZ; } else { bx = br.x + br.w; }
+                                }
                                 if (hits >= initialBricks) { allCleared = true; path.push({ x: bx, y: by }); }
                                 r = ROWS; break;
                             }
@@ -737,8 +758,17 @@
                                 totalReward += ROW_POINTS[r] / 30;
                                 var oL = (bx + BALL_SZ) - br.x, oR = (br.x + br.w) - bx;
                                 var oT = (by + BALL_SZ) - br.y, oB = (br.y + br.h) - by;
-                                if (Math.min(oT, oB) < Math.min(oL, oR)) { bvy = -bvy; dyS = -dyS; }
-                                else { bvx = -bvx; dxS = -dxS; }
+                                var hOv = bvx > 0 ? oL : oR;
+                                var vOv = bvy > 0 ? oT : oB;
+                                var hNorm = Math.abs(bvx) > 0.001 ? hOv / Math.abs(bvx) : 1e9;
+                                var vNorm = Math.abs(bvy) > 0.001 ? vOv / Math.abs(bvy) : 1e9;
+                                if (vNorm <= hNorm) {
+                                    bvy = -bvy; dyS = -dyS;
+                                    if (oT < oB) { by = br.y - BALL_SZ; } else { by = br.y + br.h; }
+                                } else {
+                                    bvx = -bvx; dxS = -dxS;
+                                    if (oL < oR) { bx = br.x - BALL_SZ; } else { bx = br.x + br.w; }
+                                }
                                 r = ROWS; break;
                             }
                         }
@@ -1020,8 +1050,17 @@
                                 score += ROW_POINTS[r];
                                 var oL = (bx + BALL_SZ) - br.x, oR = (br.x + br.w) - bx;
                                 var oT = (by + BALL_SZ) - br.y, oB = (br.y + br.h) - by;
-                                if (Math.min(oT, oB) < Math.min(oL, oR)) { bvy = -bvy; dyS = -dyS; }
-                                else { bvx = -bvx; dxS = -dxS; }
+                                var hOv = bvx > 0 ? oL : oR;
+                                var vOv = bvy > 0 ? oT : oB;
+                                var hNorm = Math.abs(bvx) > 0.001 ? hOv / Math.abs(bvx) : 1e9;
+                                var vNorm = Math.abs(bvy) > 0.001 ? vOv / Math.abs(bvy) : 1e9;
+                                if (vNorm <= hNorm) {
+                                    bvy = -bvy; dyS = -dyS;
+                                    if (oT < oB) { by = br.y - BALL_SZ; } else { by = br.y + br.h; }
+                                } else {
+                                    bvx = -bvx; dxS = -dxS;
+                                    if (oL < oR) { bx = br.x - BALL_SZ; } else { bx = br.x + br.w; }
+                                }
                                 r = ROWS; break;
                             }
                         }
@@ -1497,8 +1536,13 @@
                                 cumReward += ROW_POINTS[r2] / 30;
                                 var oL = (bx + BALL_SZ) - rect.x, oR = (rect.x + rect.w) - bx;
                                 var oT = (by + BALL_SZ) - rect.y, oB = (rect.y + rect.h) - by;
-                                if (Math.min(oT, oB) < Math.min(oL, oR)) { bvy = -bvy; dyS = -dyS; }
-                                else { bvx = -bvx; dxS = -dxS; }
+                                if (Math.min(oT, oB) < Math.min(oL, oR)) {
+                                    bvy = -bvy; dyS = -dyS;
+                                    if (oT < oB) { by = br.y - BALL_SZ; } else { by = br.y + br.h; }
+                                } else {
+                                    bvx = -bvx; dxS = -dxS;
+                                    if (oL < oR) { bx = br.x - BALL_SZ; } else { bx = br.x + br.w; }
+                                }
                                 r2 = ROWS; break;
                             }
                         }
@@ -1587,8 +1631,13 @@
                                 cumReward += ROW_POINTS[r2] / 30;
                                 var oL = (bx + BALL_SZ) - rect.x, oR = (rect.x + rect.w) - bx;
                                 var oT = (by + BALL_SZ) - rect.y, oB = (rect.y + rect.h) - by;
-                                if (Math.min(oT, oB) < Math.min(oL, oR)) { bvy = -bvy; dyS = -dyS; }
-                                else { bvx = -bvx; dxS = -dxS; }
+                                if (Math.min(oT, oB) < Math.min(oL, oR)) {
+                                    bvy = -bvy; dyS = -dyS;
+                                    if (oT < oB) { by = br.y - BALL_SZ; } else { by = br.y + br.h; }
+                                } else {
+                                    bvx = -bvx; dxS = -dxS;
+                                    if (oL < oR) { bx = br.x - BALL_SZ; } else { bx = br.x + br.w; }
+                                }
                                 r2 = ROWS; break;
                             }
                         }
@@ -1979,8 +2028,8 @@
     var nightStars = [];
     function placeStars() {
         nightStars = [];
-        for (var i = 0; i < 10; i++)
-            nightStars.push({ x: Math.random() * CW, y: Math.random() * CH * 0.4,
+        for (var i = 0; i < 25; i++)
+            nightStars.push({ x: Math.random() * CW, y: Math.random() * CH * 0.8,
                               sourceY: STAR_SPRITE.y + STAR_SPRITE.size * (i % 2) });
     }
     placeStars();
