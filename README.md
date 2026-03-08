@@ -1,6 +1,6 @@
 # Dino Arcade
 
-Eight classic Atari-era games rebuilt in the visual style of the Chrome offline dinosaur — grayscale only, using the original Chrome Dino sprite sheet.
+Classic arcade games rebuilt in the visual style of the Chrome offline dinosaur — grayscale only, using the original Chrome Dino sprite sheet.
 
 **[Play at dino.lilwg.com](https://dino.lilwg.com)**
 
@@ -12,10 +12,6 @@ Eight classic Atari-era games rebuilt in the visual style of the Chrome offline 
 | DinoInvaders | Space Invaders |
 | DinoPong | Pong |
 | DinoBreakout | Breakout |
-| DinoBeamrider | Beamrider |
-| DinoEnduro | Enduro |
-| DinoQ\*bert | Q\*bert |
-| DinoSeaquest | Seaquest |
 
 Every game includes a rules-based AI mode and a day/night cycle.
 
