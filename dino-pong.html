@@ -52,7 +52,7 @@
         </p>
     </div>
 
-    <!-- Hidden elements for JS compatibility -->
+    <!-- Hidden elements for JS compatibility (original DQN/Evo) -->
     <div style="display:none">
         <button id="dqn-btn"></button>
         <button id="evo-btn"></button>
@@ -71,6 +71,68 @@
         <div id="match-viewer-box">
             <select id="match-left"></select>
             <select id="match-right"></select>
+        </div>
+    </div>
+
+    <!-- ═══ ML AGENTS ═══ -->
+    <h2 style="margin-top: 24px;">ML Agents</h2>
+    <p class="si-prose">Train reinforcement learning agents to play Pong. Each agent uses the 6-dimensional game state (paddle Y, ball X/Y, ball velocity X/Y, opponent paddle Y) and outputs one of three actions (up, stay, down).</p>
+
+    <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px;">
+        <button class="si-btn" id="ppo-play-btn" onclick="togglePpoAI()">PPO</button>
+        <button class="si-btn" id="spdqn-play-btn" onclick="toggleSpdqnAI()">Self-Play</button>
+        <button class="si-btn" id="neat-play-btn" onclick="toggleNeatAI()">NEAT</button>
+    </div>
+
+    <!-- PPO Section -->
+    <div class="si-game-box" style="margin-top: 12px;">
+        <h3 style="margin: 0 0 8px;">PPO <span style="font-weight: normal; font-size: 12px; color: #86868b;">(Proximal Policy Optimization)</span></h3>
+        <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center;">
+            <button class="si-btn" id="ppo-train-btn" onclick="togglePpoTrain()">Train</button>
+            <button class="si-btn" onclick="resetPpo()">Reset</button>
+            <div class="si-speed" style="font-size: 11px;">
+                Speed: <input type="range" id="ppo-speed" min="1" max="50" value="10">
+                <span id="ppo-speed-val">10</span>
+            </div>
+        </div>
+        <p id="ppo-stats" style="font-family: 'Courier New', monospace; font-size: 11px; color: #535353; margin: 8px 0 0;">Ready to train</p>
+        <div id="ppo-viz-box" style="display: none; margin-top: 8px;">
+            <canvas id="ppo-chart" width="500" height="200" style="width: 100%; height: auto; border: 1px solid #e8e8e8; border-radius: 4px;"></canvas>
+        </div>
+    </div>
+
+    <!-- Self-Play DQN Section -->
+    <div class="si-game-box" style="margin-top: 12px;">
+        <h3 style="margin: 0 0 8px;">Self-Play DQN <span style="font-weight: normal; font-size: 12px; color: #86868b;">(DQN vs Frozen Copies)</span></h3>
+        <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center;">
+            <button class="si-btn" id="spdqn-train-btn" onclick="toggleSpdqnTrain()">Train</button>
+            <button class="si-btn" onclick="resetSpdqn()">Reset</button>
+            <div class="si-speed" style="font-size: 11px;">
+                Speed: <input type="range" id="spdqn-speed" min="1" max="500" value="100">
+                <span id="spdqn-speed-val">100</span>
+            </div>
+        </div>
+        <p id="spdqn-stats" style="font-family: 'Courier New', monospace; font-size: 11px; color: #535353; margin: 8px 0 0;">Ready to train</p>
+        <div id="spdqn-viz-box" style="display: none; margin-top: 8px;">
+            <canvas id="spdqn-chart" width="500" height="200" style="width: 100%; height: auto; border: 1px solid #e8e8e8; border-radius: 4px;"></canvas>
+        </div>
+    </div>
+
+    <!-- NEAT Section -->
+    <div class="si-game-box" style="margin-top: 12px;">
+        <h3 style="margin: 0 0 8px;">NEAT <span style="font-weight: normal; font-size: 12px; color: #86868b;">(NeuroEvolution of Augmenting Topologies)</span></h3>
+        <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center;">
+            <button class="si-btn" id="neat-train-btn" onclick="toggleNeatTrain()">Train</button>
+            <button class="si-btn" onclick="resetNeat()">Reset</button>
+            <div class="si-speed" style="font-size: 11px;">
+                Speed: <input type="range" id="neat-speed" min="1" max="10" value="2">
+                <span id="neat-speed-val">2</span>
+            </div>
+        </div>
+        <p id="neat-stats" style="font-family: 'Courier New', monospace; font-size: 11px; color: #535353; margin: 8px 0 0;">Ready to train</p>
+        <div id="neat-viz-box" style="display: none; margin-top: 8px;">
+            <canvas id="neat-chart" width="500" height="200" style="width: 100%; height: auto; border: 1px solid #e8e8e8; border-radius: 4px;"></canvas>
+            <canvas id="neat-topo" width="500" height="300" style="width: 100%; height: auto; border: 1px solid #e8e8e8; border-radius: 4px; margin-top: 8px;"></canvas>
         </div>
     </div>
 
@@ -724,7 +786,7 @@
     var gameStarted = false;
     var paused = false;
     var agentMoving = false, oppMoving = false;
-    var aiMode = 'off'; // 'off', 'rules', 'dqn', 'evo', 'spectate'
+    var aiMode = 'off'; // 'off', 'rules', 'dqn', 'evo', 'ppo', 'spdqn', 'neat', 'spectate'
     var scorePauseTimer = 0;   // frames to freeze after a point is scored
     var scoreFlashSide = 0;    // +1 = T-Rex scored, -1 = Ptero scored
     var prevAPts = 0, prevOPts = 0; // track score changes
@@ -765,6 +827,12 @@
         document.getElementById('rules-btn').classList.toggle('active', mode === 'rules');
         document.getElementById('dqn-btn').classList.toggle('active', mode === 'dqn');
         document.getElementById('evo-btn').classList.toggle('active', mode === 'evo');
+        var ppBtn = document.getElementById('ppo-play-btn');
+        var spBtn = document.getElementById('spdqn-play-btn');
+        var ntBtn = document.getElementById('neat-play-btn');
+        if (ppBtn) ppBtn.classList.toggle('active', mode === 'ppo');
+        if (spBtn) spBtn.classList.toggle('active', mode === 'spdqn');
+        if (ntBtn) ntBtn.classList.toggle('active', mode === 'neat');
         if (mode !== 'off') {
             if (!gameStarted) gameStarted = true;
             if (playOver) { playGame.reset(); playOver = false; }
@@ -842,6 +910,24 @@
                 if (evoChampion) {
                     var features = playGame.getFeatures();
                     action = argmax(evoChampion.forward(features));
+                }
+            } else if (aiMode === 'ppo') {
+                if (ppoPolicyNet) {
+                    var features = playGame.getFeatures();
+                    var logits = ppoPolicyNet.forward(features);
+                    var probs = softmax(logits);
+                    action = argmax(probs);
+                }
+            } else if (aiMode === 'spdqn') {
+                if (spdqnPolicy) {
+                    var features = playGame.getFeatures();
+                    action = argmax(spdqnPolicy.forward(features));
+                }
+            } else if (aiMode === 'neat') {
+                if (neatAgent && neatAgent.champion) {
+                    var features = playGame.getFeatures();
+                    var outputs = neatAgent.activateGenome(neatAgent.champion, features);
+                    action = argmax(outputs);
                 }
             } else {
                 if (playKeys[38] || playKeys[87]) action = 0; // up
@@ -2099,15 +2185,1361 @@
         } catch (e) { return false; }
     }
 
+    // =================================================================
+    //  SOFTMAX HELPER
+    // =================================================================
+    function softmax(logits) {
+        var maxL = logits[0];
+        for (var i = 1; i < logits.length; i++) if (logits[i] > maxL) maxL = logits[i];
+        var exps = new Float64Array(logits.length);
+        var sum = 0;
+        for (var i = 0; i < logits.length; i++) {
+            exps[i] = Math.exp(logits[i] - maxL);
+            sum += exps[i];
+        }
+        for (var i = 0; i < logits.length; i++) exps[i] /= sum;
+        return exps;
+    }
+
+    // =================================================================
+    //  PPO (Proximal Policy Optimization)
+    // =================================================================
+    var ppoPolicyNet = null;
+    var ppoValueNet = null;
+    var ppoTraining = false;
+    var ppoEp = 0;
+    var ppoScores = [];
+    var ppoBest = -99;
+    var _ppoSaveCounter = 0;
+    var SAVE_KEY_PPO = 'pong_ppo_state';
+    var PPO_GAMMA = 0.99;
+    var PPO_CLIP_EPS = 0.2;
+    var PPO_EPOCHS = 4;
+    var PPO_LR_POLICY = 0.0003;
+    var PPO_LR_VALUE = 0.001;
+
+    function initPpo() {
+        ppoPolicyNet = new MLP([N_FEAT, 64, 32, N_ACT]);
+        ppoValueNet = new MLP([N_FEAT, 64, 32, 1]);
+        ppoEp = 0;
+        ppoScores = [];
+        ppoBest = -99;
+        ppoTraining = false;
+        document.getElementById('ppo-train-btn').textContent = 'Train';
+        document.getElementById('ppo-train-btn').classList.remove('active');
+        document.getElementById('ppo-stats').textContent = 'Ready to train';
+        document.getElementById('ppo-viz-box').style.display = 'none';
+    }
+
+    function ppoCollectEpisode() {
+        var g = new PongGame();
+        g.reset(OPP_SPEED_BASE);
+        var states = [], actions = [], rewards = [], logProbs = [];
+        var maxSteps = 4000;
+        for (var s = 0; s < maxSteps; s++) {
+            if (g.needsServe) g._serve();
+            var feat = g.getFeatures();
+            var logits = ppoPolicyNet.forward(feat);
+            var probs = softmax(logits);
+            // Sample action from distribution
+            var r = Math.random(), cumul = 0, action = 0;
+            for (var i = 0; i < N_ACT; i++) {
+                cumul += probs[i];
+                if (r <= cumul) { action = i; break; }
+            }
+            var logP = Math.log(Math.max(probs[action], 1e-8));
+            states.push(feat.slice ? feat.slice() : Array.from(feat));
+            actions.push(action);
+            logProbs.push(logP);
+            // Step with frame skip
+            var totalReward = 0, done = false;
+            for (var fs = 0; fs < FRAME_SKIP; fs++) {
+                var result = g.step(action);
+                totalReward += result.reward;
+                if (result.done) { done = true; break; }
+            }
+            rewards.push(totalReward);
+            if (done) break;
+        }
+        return { states: states, actions: actions, rewards: rewards, logProbs: logProbs, score: g.aPts - g.oPts };
+    }
+
+    function ppoTrainOnEpisode(ep) {
+        var T = ep.states.length;
+        // Compute discounted returns
+        var returns = new Float64Array(T);
+        var G = 0;
+        for (var t = T - 1; t >= 0; t--) {
+            G = ep.rewards[t] + PPO_GAMMA * G;
+            returns[t] = G;
+        }
+        // Compute advantages
+        var advantages = new Float64Array(T);
+        for (var t = 0; t < T; t++) {
+            var v = ppoValueNet.forward(ep.states[t])[0];
+            advantages[t] = returns[t] - v;
+        }
+        // Normalize advantages
+        var advMean = 0, advStd = 0;
+        for (var t = 0; t < T; t++) advMean += advantages[t];
+        advMean /= T;
+        for (var t = 0; t < T; t++) advStd += (advantages[t] - advMean) * (advantages[t] - advMean);
+        advStd = Math.sqrt(advStd / T + 1e-8);
+        for (var t = 0; t < T; t++) advantages[t] = (advantages[t] - advMean) / advStd;
+
+        // PPO epochs
+        for (var epoch = 0; epoch < PPO_EPOCHS; epoch++) {
+            // Policy update
+            ppoPolicyNet.zeroGrad();
+            for (var t = 0; t < T; t++) {
+                var logits = ppoPolicyNet.forward(ep.states[t]);
+                var probs = softmax(logits);
+                var newLogP = Math.log(Math.max(probs[ep.actions[t]], 1e-8));
+                var ratio = Math.exp(newLogP - ep.logProbs[t]);
+                var adv = advantages[t];
+                var clipped = Math.max(1 - PPO_CLIP_EPS, Math.min(1 + PPO_CLIP_EPS, ratio));
+                var surrogate = Math.min(ratio * adv, clipped * adv);
+                // Gradient of policy loss: we want to maximize surrogate
+                // backward does descent, so negate the gradient
+                // dL/dlogit_i = -advantage * (1(i==a) - prob_i) (for the surrogate term)
+                // Apply clipping: only apply gradient if the un-clipped version is used
+                var useGrad = (ratio * adv <= clipped * adv) ? 1 : 0;
+                if (adv < 0) useGrad = (ratio * adv >= clipped * adv) ? 1 : 0;
+                var grad = new Float64Array(N_ACT);
+                for (var i = 0; i < N_ACT; i++) {
+                    var indicator = (i === ep.actions[t]) ? 1 : 0;
+                    grad[i] = -adv * (indicator - probs[i]) * useGrad;
+                }
+                ppoPolicyNet.backward(grad);
+            }
+            ppoPolicyNet.update(PPO_LR_POLICY, T);
+
+            // Value update
+            ppoValueNet.zeroGrad();
+            for (var t = 0; t < T; t++) {
+                var v = ppoValueNet.forward(ep.states[t])[0];
+                var vGrad = new Float64Array(1);
+                vGrad[0] = v - returns[t]; // MSE gradient
+                ppoValueNet.backward(vGrad);
+            }
+            ppoValueNet.update(PPO_LR_VALUE, T);
+        }
+    }
+
+    function ppoTrainTick() {
+        if (!ppoTraining) return;
+        var speed = parseInt(document.getElementById('ppo-speed').value) || 10;
+        document.getElementById('ppo-speed-val').textContent = speed;
+        var t0 = performance.now();
+
+        for (var s = 0; s < speed; s++) {
+            var ep = ppoCollectEpisode();
+            ppoTrainOnEpisode(ep);
+            ppoScores.push(ep.score);
+            ppoEp++;
+            if (ep.score > ppoBest) ppoBest = ep.score;
+        }
+
+        var elapsed = (performance.now() - t0) / 1000;
+        var avg = 0;
+        if (ppoScores.length > 0) {
+            var last50 = ppoScores.slice(-50);
+            for (var i = 0; i < last50.length; i++) avg += last50[i];
+            avg /= last50.length;
+        }
+        document.getElementById('ppo-stats').textContent =
+            'Ep ' + ppoEp +
+            ' | Avg50: ' + avg.toFixed(1) +
+            ' | Best: ' + (ppoBest > 0 ? '+' : '') + ppoBest +
+            ' | ' + Math.round(elapsed * 1000) + 'ms';
+
+        if (ppoScores.length > 0) {
+            document.getElementById('ppo-viz-box').style.display = '';
+            drawPpoChart();
+        }
+
+        if (++_ppoSaveCounter % 10 === 0) savePpo();
+        if (ppoTraining) setTimeout(ppoTrainTick, 0);
+    }
+
+    function drawPpoChart() {
+        var cc = document.getElementById('ppo-chart');
+        var c = cc.getContext('2d');
+        var w = cc.width, h = cc.height;
+        c.fillStyle = '#fff'; c.fillRect(0, 0, w, h);
+        if (ppoScores.length < 2) return;
+        var data = ppoScores;
+        var pad = 40;
+        var pw = w - pad * 2, ph = h - pad * 2;
+        var yMin = -21, yMax = 21;
+        c.strokeStyle = '#e8e8e8'; c.lineWidth = 1;
+        for (var y = -20; y <= 20; y += 10) {
+            var py = pad + ph - (y - yMin) / (yMax - yMin) * ph;
+            c.beginPath(); c.moveTo(pad, py); c.lineTo(w - pad, py); c.stroke();
+            c.fillStyle = '#86868b'; c.font = '10px "Courier New"';
+            c.textAlign = 'right'; c.fillText(y, pad - 4, py + 3);
+        }
+        var zy = pad + ph - (0 - yMin) / (yMax - yMin) * ph;
+        c.strokeStyle = '#d2d2d7'; c.setLineDash([4, 4]);
+        c.beginPath(); c.moveTo(pad, zy); c.lineTo(w - pad, zy); c.stroke();
+        c.setLineDash([]);
+        c.fillStyle = 'rgba(52,199,89,0.15)';
+        for (var i = 0; i < data.length; i++) {
+            var px = pad + (i / (data.length - 1)) * pw;
+            var py = pad + ph - (data[i] - yMin) / (yMax - yMin) * ph;
+            c.fillRect(px - 1, py - 1, 3, 3);
+        }
+        if (data.length >= 10) {
+            c.strokeStyle = '#34c759'; c.lineWidth = 2;
+            c.beginPath();
+            var winSz = Math.min(50, Math.floor(data.length / 3));
+            if (winSz < 2) winSz = 2;
+            for (var i = winSz; i < data.length; i++) {
+                var sum = 0;
+                for (var j = i - winSz; j < i; j++) sum += data[j];
+                var avg = sum / winSz;
+                var px = pad + (i / (data.length - 1)) * pw;
+                var py = pad + ph - (avg - yMin) / (yMax - yMin) * ph;
+                if (i === winSz) c.moveTo(px, py); else c.lineTo(px, py);
+            }
+            c.stroke();
+        }
+        c.fillStyle = '#535353'; c.font = '10px "Courier New"';
+        c.textAlign = 'center';
+        c.fillText('Episode', w / 2, h - 5);
+        c.textAlign = 'left';
+    }
+
+    window.togglePpoAI = function () {
+        if (!ppoPolicyNet || ppoScores.length === 0) {
+            document.getElementById('ppo-stats').textContent = 'Train first to get a policy!';
+            return;
+        }
+        setAIMode(aiMode === 'ppo' ? 'off' : 'ppo');
+    };
+
+    window.togglePpoTrain = function () {
+        if (!ppoPolicyNet) initPpo();
+        ppoTraining = !ppoTraining;
+        var btn = document.getElementById('ppo-train-btn');
+        if (ppoTraining) {
+            btn.textContent = 'Pause';
+            btn.classList.add('active');
+            ppoTrainTick();
+        } else {
+            btn.textContent = 'Train';
+            btn.classList.remove('active');
+            savePpo();
+        }
+    };
+
+    window.resetPpo = function () {
+        ppoTraining = false;
+        initPpo();
+        if (aiMode === 'ppo') setAIMode('off');
+        try { localStorage.removeItem(SAVE_KEY_PPO); } catch (e) {}
+    };
+
+    function savePpo() {
+        try {
+            var state = {
+                policy: ppoPolicyNet.serialize(),
+                value: ppoValueNet.serialize(),
+                ep: ppoEp,
+                scores: ppoScores,
+                best: ppoBest
+            };
+            localStorage.setItem(SAVE_KEY_PPO, JSON.stringify(state));
+        } catch (e) {}
+    }
+
+    function loadPpo() {
+        try {
+            var raw = localStorage.getItem(SAVE_KEY_PPO);
+            if (!raw) return false;
+            var state = JSON.parse(raw);
+            ppoPolicyNet.deserialize(state.policy);
+            ppoValueNet.deserialize(state.value);
+            ppoEp = state.ep || 0;
+            ppoScores = state.scores || [];
+            ppoBest = state.best || -99;
+            document.getElementById('ppo-stats').textContent =
+                'Restored: Ep ' + ppoEp + ' | Best: ' + (ppoBest > 0 ? '+' : '') + ppoBest;
+            if (ppoScores.length > 0) {
+                document.getElementById('ppo-viz-box').style.display = '';
+                drawPpoChart();
+            }
+            return true;
+        } catch (e) { return false; }
+    }
+
+    // =================================================================
+    //  SELF-PLAY DQN
+    // =================================================================
+    var spdqnPolicy = null;
+    var spdqnTarget = null;
+    var spdqnOpponent = null;
+    var spdqnBuf = null;
+    var spdqnGame = null;
+    var spdqnStep = 0;
+    var spdqnEp = 0;
+    var spdqnScores = [];
+    var spdqnBest = -99;
+    var spdqnTraining = false;
+    var spdqnOpponentUpdateInterval = 50; // episodes between opponent updates
+    var _spdqnSaveCounter = 0;
+    var SAVE_KEY_SPDQN = 'pong_spdqn_state';
+    var SPDQN_GAMMA = 0.99;
+    var SPDQN_LR = 0.001;
+    var SPDQN_BATCH_SZ = 32;
+    var SPDQN_BUF_CAP = 20000;
+    var SPDQN_WARMUP = 500;
+    var SPDQN_TGT_SYNC = 500;
+    var SPDQN_EPS_START = 1.0;
+    var SPDQN_EPS_END = 0.05;
+    var SPDQN_EPS_DECAY = 15000;
+
+    function initSpdqn() {
+        spdqnPolicy = new MLP([N_FEAT, 64, 64, N_ACT]);
+        spdqnTarget = new MLP([N_FEAT, 64, 64, N_ACT]);
+        spdqnTarget.copyFrom(spdqnPolicy);
+        spdqnOpponent = new MLP([N_FEAT, 64, 64, N_ACT]);
+        spdqnOpponent.copyFrom(spdqnPolicy);
+        spdqnBuf = new ReplayBuffer(SPDQN_BUF_CAP);
+        spdqnGame = new PongGame();
+        spdqnGame.reset();
+        spdqnStep = 0;
+        spdqnEp = 0;
+        spdqnScores = [];
+        spdqnBest = -99;
+        spdqnTraining = false;
+        document.getElementById('spdqn-train-btn').textContent = 'Train';
+        document.getElementById('spdqn-train-btn').classList.remove('active');
+        document.getElementById('spdqn-stats').textContent = 'Ready to train';
+        document.getElementById('spdqn-viz-box').style.display = 'none';
+    }
+
+    function getSpdqnEpsilon() {
+        return Math.max(SPDQN_EPS_END, SPDQN_EPS_START - (SPDQN_EPS_START - SPDQN_EPS_END) * spdqnStep / SPDQN_EPS_DECAY);
+    }
+
+    function spdqnTrainTick() {
+        if (!spdqnTraining) return;
+        var speed = parseInt(document.getElementById('spdqn-speed').value) || 100;
+        document.getElementById('spdqn-speed-val').textContent = speed;
+        var t0 = performance.now();
+
+        for (var s = 0; s < speed; s++) {
+            var eps = getSpdqnEpsilon();
+            var featA = spdqnGame.getFeatures();
+            var featB = spdqnGame.getFeaturesB();
+
+            // Agent action (epsilon-greedy)
+            var actionA;
+            if (Math.random() < eps) {
+                actionA = Math.floor(Math.random() * N_ACT);
+            } else {
+                actionA = argmax(spdqnPolicy.forward(featA));
+            }
+
+            // Opponent action (greedy from frozen opponent)
+            var actionB = argmax(spdqnOpponent.forward(featB));
+
+            // Step game
+            if (spdqnGame.needsServe) spdqnGame._serve();
+            var totalReward = 0, done = false;
+            for (var fs = 0; fs < FRAME_SKIP; fs++) {
+                var r = spdqnGame.stepSelfPlay(actionA, actionB);
+                totalReward += r.reward;
+                if (r.done) { done = true; break; }
+            }
+
+            var nextFeatA = spdqnGame.getFeatures();
+            spdqnBuf.push(featA, actionA, totalReward, nextFeatA, done);
+            spdqnStep++;
+
+            if (done) {
+                var score = spdqnGame.aPts - spdqnGame.oPts;
+                spdqnScores.push(score);
+                spdqnEp++;
+                if (score > spdqnBest) spdqnBest = score;
+
+                // Update frozen opponent every N episodes
+                if (spdqnEp % spdqnOpponentUpdateInterval === 0) {
+                    spdqnOpponent.copyFrom(spdqnPolicy);
+                }
+
+                spdqnGame.reset();
+            }
+
+            // Train on batch
+            if (spdqnBuf.buf.length >= SPDQN_WARMUP) {
+                var batch = spdqnBuf.sample(SPDQN_BATCH_SZ);
+                spdqnPolicy.zeroGrad();
+                for (var b = 0; b < batch.length; b++) {
+                    var tr = batch[b];
+                    var q = spdqnPolicy.forward(tr.s);
+                    var qa = q[tr.a];
+                    var bestNextA = argmax(spdqnPolicy.forward(tr.ns));
+                    var nextQ = spdqnTarget.forward(tr.ns)[bestNextA];
+                    var tgt = tr.r + (tr.d ? 0 : SPDQN_GAMMA * nextQ);
+                    var td = Math.max(-1, Math.min(1, qa - tgt));
+                    spdqnPolicy.forward(tr.s);
+                    var grad = new Float64Array(N_ACT);
+                    grad[tr.a] = td;
+                    spdqnPolicy.backward(grad);
+                }
+                spdqnPolicy.update(SPDQN_LR, SPDQN_BATCH_SZ);
+            }
+
+            if (spdqnStep % SPDQN_TGT_SYNC === 0) spdqnTarget.copyFrom(spdqnPolicy);
+        }
+
+        var elapsed = (performance.now() - t0) / 1000;
+        var sps = speed / Math.max(0.001, elapsed);
+        var avg = 0;
+        if (spdqnScores.length > 0) {
+            var last50 = spdqnScores.slice(-50);
+            for (var i = 0; i < last50.length; i++) avg += last50[i];
+            avg /= last50.length;
+        }
+        document.getElementById('spdqn-stats').textContent =
+            'Ep ' + spdqnEp + ' | Step ' + spdqnStep +
+            ' | Avg50: ' + avg.toFixed(1) +
+            ' | Best: ' + (spdqnBest > 0 ? '+' : '') + spdqnBest +
+            ' | Eps: ' + getSpdqnEpsilon().toFixed(2) +
+            ' | ' + Math.round(sps) + ' s/s';
+
+        if (spdqnScores.length > 0) {
+            document.getElementById('spdqn-viz-box').style.display = '';
+            drawSpdqnChart();
+        }
+
+        if (++_spdqnSaveCounter % 10 === 0) saveSpdqn();
+        if (spdqnTraining) setTimeout(spdqnTrainTick, 0);
+    }
+
+    function drawSpdqnChart() {
+        var cc = document.getElementById('spdqn-chart');
+        var c = cc.getContext('2d');
+        var w = cc.width, h = cc.height;
+        c.fillStyle = '#fff'; c.fillRect(0, 0, w, h);
+        if (spdqnScores.length < 2) return;
+        var data = spdqnScores;
+        var pad = 40;
+        var pw = w - pad * 2, ph = h - pad * 2;
+        var yMin = -21, yMax = 21;
+        c.strokeStyle = '#e8e8e8'; c.lineWidth = 1;
+        for (var y = -20; y <= 20; y += 10) {
+            var py = pad + ph - (y - yMin) / (yMax - yMin) * ph;
+            c.beginPath(); c.moveTo(pad, py); c.lineTo(w - pad, py); c.stroke();
+            c.fillStyle = '#86868b'; c.font = '10px "Courier New"';
+            c.textAlign = 'right'; c.fillText(y, pad - 4, py + 3);
+        }
+        var zy = pad + ph - (0 - yMin) / (yMax - yMin) * ph;
+        c.strokeStyle = '#d2d2d7'; c.setLineDash([4, 4]);
+        c.beginPath(); c.moveTo(pad, zy); c.lineTo(w - pad, zy); c.stroke();
+        c.setLineDash([]);
+        c.fillStyle = 'rgba(255,159,10,0.15)';
+        for (var i = 0; i < data.length; i++) {
+            var px = pad + (i / (data.length - 1)) * pw;
+            var py = pad + ph - (data[i] - yMin) / (yMax - yMin) * ph;
+            c.fillRect(px - 1, py - 1, 3, 3);
+        }
+        if (data.length >= 10) {
+            c.strokeStyle = '#ff9f0a'; c.lineWidth = 2;
+            c.beginPath();
+            var winSz = Math.min(50, Math.floor(data.length / 3));
+            if (winSz < 2) winSz = 2;
+            for (var i = winSz; i < data.length; i++) {
+                var sum = 0;
+                for (var j = i - winSz; j < i; j++) sum += data[j];
+                var avg = sum / winSz;
+                var px = pad + (i / (data.length - 1)) * pw;
+                var py = pad + ph - (avg - yMin) / (yMax - yMin) * ph;
+                if (i === winSz) c.moveTo(px, py); else c.lineTo(px, py);
+            }
+            c.stroke();
+        }
+        c.fillStyle = '#535353'; c.font = '10px "Courier New"';
+        c.textAlign = 'center';
+        c.fillText('Episode', w / 2, h - 5);
+        c.textAlign = 'left';
+    }
+
+    window.toggleSpdqnAI = function () {
+        if (!spdqnPolicy || spdqnScores.length === 0) {
+            document.getElementById('spdqn-stats').textContent = 'Train first to get a policy!';
+            return;
+        }
+        setAIMode(aiMode === 'spdqn' ? 'off' : 'spdqn');
+    };
+
+    window.toggleSpdqnTrain = function () {
+        if (!spdqnPolicy) initSpdqn();
+        spdqnTraining = !spdqnTraining;
+        var btn = document.getElementById('spdqn-train-btn');
+        if (spdqnTraining) {
+            btn.textContent = 'Pause';
+            btn.classList.add('active');
+            spdqnTrainTick();
+        } else {
+            btn.textContent = 'Train';
+            btn.classList.remove('active');
+            saveSpdqn();
+        }
+    };
+
+    window.resetSpdqn = function () {
+        spdqnTraining = false;
+        initSpdqn();
+        if (aiMode === 'spdqn') setAIMode('off');
+        try { localStorage.removeItem(SAVE_KEY_SPDQN); } catch (e) {}
+    };
+
+    function saveSpdqn() {
+        try {
+            var state = {
+                policy: spdqnPolicy.serialize(),
+                opponent: spdqnOpponent.serialize(),
+                step: spdqnStep,
+                ep: spdqnEp,
+                scores: spdqnScores,
+                best: spdqnBest
+            };
+            localStorage.setItem(SAVE_KEY_SPDQN, JSON.stringify(state));
+        } catch (e) {}
+    }
+
+    function loadSpdqn() {
+        try {
+            var raw = localStorage.getItem(SAVE_KEY_SPDQN);
+            if (!raw) return false;
+            var state = JSON.parse(raw);
+            spdqnPolicy.deserialize(state.policy);
+            spdqnTarget.copyFrom(spdqnPolicy);
+            if (state.opponent) spdqnOpponent.deserialize(state.opponent);
+            spdqnStep = state.step || 0;
+            spdqnEp = state.ep || 0;
+            spdqnScores = state.scores || [];
+            spdqnBest = state.best || -99;
+            document.getElementById('spdqn-stats').textContent =
+                'Restored: Ep ' + spdqnEp + ' | Step ' + spdqnStep + ' | Best: ' + (spdqnBest > 0 ? '+' : '') + spdqnBest;
+            if (spdqnScores.length > 0) {
+                document.getElementById('spdqn-viz-box').style.display = '';
+                drawSpdqnChart();
+            }
+            return true;
+        } catch (e) { return false; }
+    }
+
+    // =================================================================
+    //  NEAT (NeuroEvolution of Augmenting Topologies)
+    // =================================================================
+    var NEAT_INPUTS = 6;
+    var NEAT_OUTPUTS = 3;
+    var NEAT_POP_SIZE = 100;
+
+    function NEATGenome() {
+        this.nodes = [];
+        this.connections = [];
+        this.fitness = 0;
+        this.adjustedFitness = 0;
+        this.species = -1;
+        this._sortedNodes = null;
+        this._connByTarget = null;
+    }
+
+    function NEATAgent() {
+        this.popSize = NEAT_POP_SIZE;
+        this.population = [];
+        this.species = [];
+        this.generation = 0;
+        this.champion = null;
+
+        this.innovationCounter = 0;
+        this.generationInnovations = {};
+        this.nextNodeId = 0;
+
+        // Hyperparameters
+        this.c1 = 1.0;
+        this.c2 = 1.0;
+        this.c3 = 0.4;
+        this.compatThreshold = 3.0;
+        this.weightMutateRate = 0.8;
+        this.weightPerturbRate = 0.9;
+        this.weightPerturbScale = 0.2;
+        this.addConnRate = 0.05;
+        this.addNodeRate = 0.03;
+        this.crossoverRate = 0.75;
+        this.stagnationLimit = 15;
+        this.survivalRate = 0.2;
+
+        this.episodeRewards = [];
+        this.bestReward = -99;
+
+        this._initPopulation();
+    }
+
+    NEATAgent.prototype._initPopulation = function () {
+        var inputIds = [];
+        for (var i = 0; i < NEAT_INPUTS; i++) inputIds.push(i);
+        var biasId = NEAT_INPUTS;
+        var outputIds = [];
+        for (var i = 0; i < NEAT_OUTPUTS; i++) outputIds.push(NEAT_INPUTS + 1 + i);
+        this.nextNodeId = NEAT_INPUTS + 1 + NEAT_OUTPUTS;
+
+        var innov = 0;
+        var initialInnovations = {};
+        var allInputs = inputIds.concat([biasId]);
+        for (var ii = 0; ii < allInputs.length; ii++) {
+            for (var oi = 0; oi < outputIds.length; oi++) {
+                initialInnovations[allInputs[ii] + '->' + outputIds[oi]] = innov++;
+            }
+        }
+        this.innovationCounter = innov;
+
+        for (var p = 0; p < this.popSize; p++) {
+            var genome = new NEATGenome();
+            for (var ii = 0; ii < inputIds.length; ii++)
+                genome.nodes.push({ id: inputIds[ii], type: 'input', depth: 0 });
+            genome.nodes.push({ id: biasId, type: 'bias', depth: 0 });
+            for (var oi = 0; oi < outputIds.length; oi++)
+                genome.nodes.push({ id: outputIds[oi], type: 'output', depth: 1 });
+
+            for (var ii = 0; ii < allInputs.length; ii++) {
+                for (var oi = 0; oi < outputIds.length; oi++) {
+                    genome.connections.push({
+                        inNode: allInputs[ii], outNode: outputIds[oi],
+                        weight: (Math.random() - 0.5) * 2,
+                        enabled: true,
+                        innovation: initialInnovations[allInputs[ii] + '->' + outputIds[oi]]
+                    });
+                }
+            }
+            this.population.push(genome);
+        }
+
+        this.species = [{
+            id: 0, representative: this.cloneGenome(this.population[0]),
+            members: this.population.slice(), bestFitness: 0, stagnation: 0, lastBestFitness: 0
+        }];
+        for (var i = 0; i < this.population.length; i++) this.population[i].species = 0;
+        this.champion = this.cloneGenome(this.population[0]);
+    };
+
+    NEATAgent.prototype.activateGenome = function (genome, inputs) {
+        var values = {};
+        for (var i = 0; i < genome.nodes.length; i++) values[genome.nodes[i].id] = 0;
+        for (var i = 0; i < NEAT_INPUTS; i++) values[i] = inputs[i];
+        values[NEAT_INPUTS] = 1.0; // bias
+
+        if (!genome._sortedNodes) {
+            var nonInput = [];
+            for (var i = 0; i < genome.nodes.length; i++) {
+                if (genome.nodes[i].type !== 'input' && genome.nodes[i].type !== 'bias')
+                    nonInput.push(genome.nodes[i]);
+            }
+            nonInput.sort(function (a, b) { return a.depth - b.depth; });
+            genome._sortedNodes = [];
+            for (var i = 0; i < nonInput.length; i++) genome._sortedNodes.push(nonInput[i].id);
+        }
+        if (!genome._connByTarget) {
+            genome._connByTarget = {};
+            for (var i = 0; i < genome.connections.length; i++) {
+                var conn = genome.connections[i];
+                if (!conn.enabled) continue;
+                if (!genome._connByTarget[conn.outNode]) genome._connByTarget[conn.outNode] = [];
+                genome._connByTarget[conn.outNode].push(conn);
+            }
+        }
+
+        for (var ni = 0; ni < genome._sortedNodes.length; ni++) {
+            var nodeId = genome._sortedNodes[ni];
+            var conns = genome._connByTarget[nodeId];
+            if (!conns) continue;
+            var sum = 0;
+            for (var ci = 0; ci < conns.length; ci++) sum += values[conns[ci].inNode] * conns[ci].weight;
+            values[nodeId] = 1 / (1 + Math.exp(-sum)); // sigmoid
+        }
+
+        this._lastNodeValues = values;
+        var outStart = NEAT_INPUTS + 1;
+        var result = [];
+        for (var i = 0; i < NEAT_OUTPUTS; i++) result.push(values[outStart + i]);
+        return result;
+    };
+
+    NEATAgent.prototype.evaluateGenome = function (genome) {
+        var g = new PongGame();
+        g.reset(OPP_SPEED_BASE);
+        var maxSteps = 3000;
+        for (var s = 0; s < maxSteps; s++) {
+            if (g.needsServe) g._serve();
+            var feat = g.getFeatures();
+            var outputs = this.activateGenome(genome, feat);
+            var action = argmax(outputs);
+            var r = g.step(action);
+            if (r.done) break;
+        }
+        // fitness = aPts - oPts + 21 (shift to positive)
+        return (g.aPts - g.oPts) + 21;
+    };
+
+    NEATAgent.prototype.trainGeneration = function () {
+        this.generationInnovations = {};
+        var self = this;
+
+        // Evaluate all genomes
+        for (var i = 0; i < this.population.length; i++) {
+            this.population[i].fitness = this.evaluateGenome(this.population[i]);
+        }
+
+        // Find champion
+        var bestFitness = -999, bestGenome = this.population[0];
+        for (var i = 0; i < this.population.length; i++) {
+            if (this.population[i].fitness > bestFitness) {
+                bestFitness = this.population[i].fitness;
+                bestGenome = this.population[i];
+            }
+        }
+        this.champion = this.cloneGenome(bestGenome);
+
+        // Speciate, reproduce
+        this._speciate();
+        this.population = this._reproduce();
+        this.generation++;
+
+        this.episodeRewards.push(bestFitness);
+        if (bestFitness > this.bestReward) this.bestReward = bestFitness;
+
+        return bestFitness;
+    };
+
+    NEATAgent.prototype._speciate = function () {
+        var i, j;
+        for (i = 0; i < this.species.length; i++) this.species[i].members = [];
+
+        for (i = 0; i < this.population.length; i++) {
+            var genome = this.population[i];
+            var placed = false;
+            for (j = 0; j < this.species.length; j++) {
+                if (this._compatDistance(genome, this.species[j].representative) < this.compatThreshold) {
+                    this.species[j].members.push(genome);
+                    genome.species = this.species[j].id;
+                    placed = true;
+                    break;
+                }
+            }
+            if (!placed) {
+                var maxId = 0;
+                for (j = 0; j < this.species.length; j++)
+                    if (this.species[j].id > maxId) maxId = this.species[j].id;
+                var newSp = {
+                    id: maxId + 1, representative: this.cloneGenome(genome),
+                    members: [genome], bestFitness: 0, stagnation: 0, lastBestFitness: 0
+                };
+                this.species.push(newSp);
+                genome.species = newSp.id;
+            }
+        }
+
+        // Remove empty species
+        var active = [];
+        for (i = 0; i < this.species.length; i++) {
+            if (this.species[i].members.length > 0) active.push(this.species[i]);
+        }
+        this.species = active;
+
+        for (i = 0; i < this.species.length; i++) {
+            var sp = this.species[i];
+            sp.representative = this.cloneGenome(sp.members[Math.floor(Math.random() * sp.members.length)]);
+            var best = -999;
+            for (j = 0; j < sp.members.length; j++)
+                if (sp.members[j].fitness > best) best = sp.members[j].fitness;
+            if (best > sp.lastBestFitness) {
+                sp.lastBestFitness = best;
+                sp.bestFitness = best;
+                sp.stagnation = 0;
+            } else {
+                sp.stagnation++;
+            }
+        }
+
+        // Dynamic threshold
+        if (this.species.length < 3) this.compatThreshold -= 0.3;
+        else if (this.species.length > 10) this.compatThreshold += 0.3;
+        this.compatThreshold = Math.max(0.5, this.compatThreshold);
+    };
+
+    NEATAgent.prototype._compatDistance = function (g1, g2) {
+        var c1 = g1.connections, c2 = g2.connections;
+        if (c1.length === 0 && c2.length === 0) return 0;
+        var s1 = c1.slice().sort(function (a, b) { return a.innovation - b.innovation; });
+        var s2 = c2.slice().sort(function (a, b) { return a.innovation - b.innovation; });
+        var excess = 0, disjoint = 0, matchCount = 0, weightDiff = 0;
+        var i = 0, j = 0;
+        while (i < s1.length && j < s2.length) {
+            if (s1[i].innovation === s2[j].innovation) {
+                matchCount++; weightDiff += Math.abs(s1[i].weight - s2[j].weight);
+                i++; j++;
+            } else if (s1[i].innovation < s2[j].innovation) { disjoint++; i++; }
+            else { disjoint++; j++; }
+        }
+        excess = (s1.length - i) + (s2.length - j);
+        var N = Math.max(c1.length, c2.length);
+        var normN = N < 20 ? 1 : N;
+        var avgW = matchCount > 0 ? weightDiff / matchCount : 0;
+        return (this.c1 * excess / normN) + (this.c2 * disjoint / normN) + (this.c3 * avgW);
+    };
+
+    NEATAgent.prototype._reproduce = function () {
+        var newPop = [];
+        var i, j;
+
+        // Fitness sharing
+        for (i = 0; i < this.species.length; i++) {
+            var sp = this.species[i];
+            for (j = 0; j < sp.members.length; j++)
+                sp.members[j].adjustedFitness = sp.members[j].fitness / sp.members.length;
+        }
+
+        // Remove stagnant species (keep best)
+        var bestSp = this.species[0];
+        for (i = 1; i < this.species.length; i++)
+            if (this.species[i].bestFitness > bestSp.bestFitness) bestSp = this.species[i];
+        var active = [];
+        for (i = 0; i < this.species.length; i++) {
+            if (this.species[i].stagnation < this.stagnationLimit || this.species[i] === bestSp)
+                active.push(this.species[i]);
+        }
+
+        // Elitism: champion of each species with 5+ members
+        for (i = 0; i < active.length; i++) {
+            active[i].members.sort(function (a, b) { return b.fitness - a.fitness; });
+            if (active[i].members.length >= 5) newPop.push(this.cloneGenome(active[i].members[0]));
+        }
+
+        // Fill rest with offspring
+        var self = this;
+        while (newPop.length < this.popSize) {
+            var sp = this._pickSpecies(active);
+            var survivalCut = Math.max(1, Math.floor(sp.members.length * this.survivalRate));
+            var parents = sp.members.slice(0, survivalCut);
+            var child;
+            if (Math.random() < this.crossoverRate && parents.length >= 2) {
+                var p1 = parents[Math.floor(Math.random() * parents.length)];
+                var p2 = parents[Math.floor(Math.random() * parents.length)];
+                child = this._crossover(p1, p2);
+            } else {
+                child = this.cloneGenome(parents[Math.floor(Math.random() * parents.length)]);
+            }
+            this._mutate(child);
+            newPop.push(child);
+        }
+
+        return newPop.slice(0, this.popSize);
+    };
+
+    NEATAgent.prototype._pickSpecies = function (active) {
+        var totals = [];
+        for (var i = 0; i < active.length; i++) {
+            var sum = 0;
+            for (var j = 0; j < active[i].members.length; j++) sum += active[i].members[j].adjustedFitness;
+            totals.push(sum);
+        }
+        var sum = 0;
+        for (var i = 0; i < totals.length; i++) sum += totals[i];
+        var r = Math.random() * sum;
+        for (var i = 0; i < active.length; i++) {
+            r -= totals[i];
+            if (r <= 0) return active[i];
+        }
+        return active[active.length - 1];
+    };
+
+    NEATAgent.prototype._crossover = function (p1, p2) {
+        if (p2.fitness > p1.fitness) { var tmp = p1; p1 = p2; p2 = tmp; }
+        var child = new NEATGenome();
+        var map1 = {}, map2 = {};
+        var i;
+        for (i = 0; i < p1.connections.length; i++) map1[p1.connections[i].innovation] = p1.connections[i];
+        for (i = 0; i < p2.connections.length; i++) map2[p2.connections[i].innovation] = p2.connections[i];
+        var allInnov = {};
+        for (i = 0; i < p1.connections.length; i++) allInnov[p1.connections[i].innovation] = true;
+        for (i = 0; i < p2.connections.length; i++) allInnov[p2.connections[i].innovation] = true;
+        var usedNodes = {};
+
+        for (var innov in allInnov) {
+            var c1x = map1[innov], c2x = map2[innov];
+            if (c1x && c2x) {
+                var chosen = Math.random() < 0.5 ? c1x : c2x;
+                var enabled = (!c1x.enabled || !c2x.enabled) ? (Math.random() > 0.25) : chosen.enabled;
+                child.connections.push({ inNode: chosen.inNode, outNode: chosen.outNode,
+                    weight: chosen.weight, enabled: enabled, innovation: chosen.innovation });
+            } else if (c1x) {
+                child.connections.push({ inNode: c1x.inNode, outNode: c1x.outNode,
+                    weight: c1x.weight, enabled: c1x.enabled, innovation: c1x.innovation });
+            }
+            if (child.connections.length > 0) {
+                var last = child.connections[child.connections.length - 1];
+                usedNodes[last.inNode] = true;
+                usedNodes[last.outNode] = true;
+            }
+        }
+
+        var childNodeIds = {};
+        for (i = 0; i < p1.nodes.length; i++) {
+            var node = p1.nodes[i];
+            if (usedNodes[node.id] || node.type === 'input' || node.type === 'bias' || node.type === 'output') {
+                child.nodes.push({ id: node.id, type: node.type, depth: node.depth });
+                childNodeIds[node.id] = true;
+            }
+        }
+        for (i = 0; i < p2.nodes.length; i++) {
+            var node = p2.nodes[i];
+            if (usedNodes[node.id] && !childNodeIds[node.id]) {
+                child.nodes.push({ id: node.id, type: node.type, depth: node.depth });
+            }
+        }
+        return child;
+    };
+
+    NEATAgent.prototype._mutate = function (genome) {
+        genome._sortedNodes = null;
+        genome._connByTarget = null;
+
+        if (Math.random() < this.weightMutateRate) {
+            for (var i = 0; i < genome.connections.length; i++) {
+                if (Math.random() < this.weightPerturbRate) {
+                    genome.connections[i].weight += (Math.random() - 0.5) * 2 * this.weightPerturbScale;
+                } else {
+                    genome.connections[i].weight = (Math.random() - 0.5) * 2;
+                }
+            }
+        }
+        if (Math.random() < this.addConnRate) this._mutateAddConnection(genome);
+        if (Math.random() < this.addNodeRate) this._mutateAddNode(genome);
+    };
+
+    NEATAgent.prototype._mutateAddConnection = function (genome) {
+        var possibleIn = [], possibleOut = [];
+        for (var i = 0; i < genome.nodes.length; i++) {
+            if (genome.nodes[i].type !== 'output') possibleIn.push(genome.nodes[i]);
+            if (genome.nodes[i].type !== 'input' && genome.nodes[i].type !== 'bias') possibleOut.push(genome.nodes[i]);
+        }
+        for (var attempt = 0; attempt < 20; attempt++) {
+            var inNode = possibleIn[Math.floor(Math.random() * possibleIn.length)];
+            var outNode = possibleOut[Math.floor(Math.random() * possibleOut.length)];
+            if (inNode.id === outNode.id) continue;
+            if (inNode.depth >= outNode.depth) continue;
+            var exists = false;
+            for (var i = 0; i < genome.connections.length; i++) {
+                if (genome.connections[i].inNode === inNode.id && genome.connections[i].outNode === outNode.id) {
+                    exists = true; break;
+                }
+            }
+            if (exists) continue;
+
+            var key = inNode.id + '->' + outNode.id;
+            if (this.generationInnovations[key] === undefined) {
+                this.generationInnovations[key] = this.innovationCounter++;
+            }
+            genome.connections.push({
+                inNode: inNode.id, outNode: outNode.id,
+                weight: (Math.random() - 0.5) * 2, enabled: true,
+                innovation: this.generationInnovations[key]
+            });
+            return;
+        }
+    };
+
+    NEATAgent.prototype._mutateAddNode = function (genome) {
+        var enabled = [];
+        for (var i = 0; i < genome.connections.length; i++) {
+            if (genome.connections[i].enabled) enabled.push(genome.connections[i]);
+        }
+        if (enabled.length === 0) return;
+        var conn = enabled[Math.floor(Math.random() * enabled.length)];
+        conn.enabled = false;
+
+        var inObj = null, outObj = null;
+        for (var i = 0; i < genome.nodes.length; i++) {
+            if (genome.nodes[i].id === conn.inNode) inObj = genome.nodes[i];
+            if (genome.nodes[i].id === conn.outNode) outObj = genome.nodes[i];
+        }
+        var newDepth = (inObj.depth + outObj.depth) / 2;
+        var newId = this.nextNodeId++;
+        genome.nodes.push({ id: newId, type: 'hidden', depth: newDepth });
+
+        var key1 = conn.inNode + '->' + newId;
+        var key2 = newId + '->' + conn.outNode;
+        if (this.generationInnovations[key1] === undefined)
+            this.generationInnovations[key1] = this.innovationCounter++;
+        if (this.generationInnovations[key2] === undefined)
+            this.generationInnovations[key2] = this.innovationCounter++;
+
+        genome.connections.push({
+            inNode: conn.inNode, outNode: newId, weight: 1.0, enabled: true,
+            innovation: this.generationInnovations[key1]
+        });
+        genome.connections.push({
+            inNode: newId, outNode: conn.outNode, weight: conn.weight, enabled: true,
+            innovation: this.generationInnovations[key2]
+        });
+    };
+
+    NEATAgent.prototype.cloneGenome = function (genome) {
+        var clone = new NEATGenome();
+        for (var i = 0; i < genome.nodes.length; i++) {
+            var n = genome.nodes[i];
+            clone.nodes.push({ id: n.id, type: n.type, depth: n.depth });
+        }
+        for (var i = 0; i < genome.connections.length; i++) {
+            var c = genome.connections[i];
+            clone.connections.push({ inNode: c.inNode, outNode: c.outNode,
+                weight: c.weight, enabled: c.enabled, innovation: c.innovation });
+        }
+        clone.fitness = genome.fitness;
+        clone.species = genome.species;
+        return clone;
+    };
+
+    NEATAgent.prototype.serializeGenome = function (genome) {
+        return {
+            nodes: genome.nodes.map(function (n) { return { id: n.id, type: n.type, depth: n.depth }; }),
+            connections: genome.connections.map(function (c) {
+                return { i: c.inNode, o: c.outNode, w: c.weight, e: c.enabled ? 1 : 0, n: c.innovation };
+            }),
+            fitness: genome.fitness, species: genome.species
+        };
+    };
+
+    NEATAgent.prototype.deserializeGenome = function (data) {
+        var g = new NEATGenome();
+        g.nodes = data.nodes;
+        g.connections = data.connections.map(function (c) {
+            return { inNode: c.i, outNode: c.o, weight: c.w, enabled: !!c.e, innovation: c.n };
+        });
+        g.fitness = data.fitness || 0;
+        g.species = data.species || -1;
+        return g;
+    };
+
+    NEATAgent.prototype.serialize = function () {
+        var self = this;
+        return {
+            generation: this.generation,
+            innovationCounter: this.innovationCounter,
+            nextNodeId: this.nextNodeId,
+            compatThreshold: this.compatThreshold,
+            champion: this.champion ? this.serializeGenome(this.champion) : null,
+            population: this.population.map(function (g) { return self.serializeGenome(g); }),
+            species: this.species.map(function (sp) {
+                return {
+                    id: sp.id, representative: self.serializeGenome(sp.representative),
+                    bestFitness: sp.bestFitness, stagnation: sp.stagnation, lastBestFitness: sp.lastBestFitness
+                };
+            }),
+            episodeRewards: this.episodeRewards,
+            bestReward: this.bestReward
+        };
+    };
+
+    NEATAgent.prototype.load = function (data) {
+        var self = this;
+        this.generation = data.generation || 0;
+        this.innovationCounter = data.innovationCounter || 0;
+        this.nextNodeId = data.nextNodeId || 0;
+        this.compatThreshold = data.compatThreshold || 3.0;
+        if (data.champion) this.champion = this.deserializeGenome(data.champion);
+        if (data.population) {
+            this.population = data.population.map(function (g) { return self.deserializeGenome(g); });
+        }
+        if (data.species) {
+            this.species = data.species.map(function (sp) {
+                return {
+                    id: sp.id, representative: self.deserializeGenome(sp.representative),
+                    members: [], bestFitness: sp.bestFitness, stagnation: sp.stagnation, lastBestFitness: sp.lastBestFitness
+                };
+            });
+            for (var i = 0; i < this.population.length; i++) {
+                var g = this.population[i];
+                for (var j = 0; j < this.species.length; j++) {
+                    if (this.species[j].id === g.species) {
+                        this.species[j].members.push(g);
+                        break;
+                    }
+                }
+            }
+        }
+        this.episodeRewards = data.episodeRewards || [];
+        this.bestReward = data.bestReward || -99;
+    };
+
+    // -- NEAT globals --
+    var neatAgent = null;
+    var neatTraining = false;
+    var neatScores = [];
+    var _neatSaveCounter = 0;
+    var SAVE_KEY_NEAT = 'pong_neat_state';
+
+    function initNeat() {
+        neatAgent = new NEATAgent();
+        neatScores = [];
+        neatTraining = false;
+        document.getElementById('neat-train-btn').textContent = 'Train';
+        document.getElementById('neat-train-btn').classList.remove('active');
+        document.getElementById('neat-stats').textContent = 'Ready to train';
+        document.getElementById('neat-viz-box').style.display = 'none';
+    }
+
+    function neatTrainTick() {
+        if (!neatTraining) return;
+        var speed = parseInt(document.getElementById('neat-speed').value) || 2;
+        document.getElementById('neat-speed-val').textContent = speed;
+        var t0 = performance.now();
+
+        for (var s = 0; s < speed; s++) {
+            var bestFit = neatAgent.trainGeneration();
+            // Convert from shifted fitness (0-42) to score differential (-21 to +21)
+            neatScores.push(bestFit - 21);
+        }
+
+        var elapsed = (performance.now() - t0);
+        var lastScore = neatScores[neatScores.length - 1];
+        var avg = 0;
+        if (neatScores.length > 0) {
+            var last20 = neatScores.slice(-20);
+            for (var i = 0; i < last20.length; i++) avg += last20[i];
+            avg /= last20.length;
+        }
+        var nSpecies = neatAgent.species.length;
+        var nNodes = neatAgent.champion ? neatAgent.champion.nodes.length : 0;
+        var nConns = neatAgent.champion ? neatAgent.champion.connections.length : 0;
+        document.getElementById('neat-stats').textContent =
+            'Gen ' + neatAgent.generation +
+            ' | Best: ' + (lastScore > 0 ? '+' : '') + lastScore +
+            ' | Avg20: ' + avg.toFixed(1) +
+            ' | Species: ' + nSpecies +
+            ' | Topo: ' + nNodes + 'n/' + nConns + 'c' +
+            ' | ' + Math.round(elapsed) + 'ms';
+
+        if (neatScores.length > 0) {
+            document.getElementById('neat-viz-box').style.display = '';
+            drawNeatChart();
+            drawNeatTopology();
+        }
+
+        if (++_neatSaveCounter % 5 === 0) saveNeat();
+        if (neatTraining) setTimeout(neatTrainTick, 0);
+    }
+
+    function drawNeatChart() {
+        var cc = document.getElementById('neat-chart');
+        var c = cc.getContext('2d');
+        var w = cc.width, h = cc.height;
+        c.fillStyle = '#fff'; c.fillRect(0, 0, w, h);
+        if (neatScores.length < 2) return;
+        var data = neatScores;
+        var pad = 40;
+        var pw = w - pad * 2, ph = h - pad * 2;
+        var yMin = -21, yMax = 21;
+        c.strokeStyle = '#e8e8e8'; c.lineWidth = 1;
+        for (var y = -20; y <= 20; y += 10) {
+            var py = pad + ph - (y - yMin) / (yMax - yMin) * ph;
+            c.beginPath(); c.moveTo(pad, py); c.lineTo(w - pad, py); c.stroke();
+            c.fillStyle = '#86868b'; c.font = '10px "Courier New"';
+            c.textAlign = 'right'; c.fillText(y, pad - 4, py + 3);
+        }
+        var zy = pad + ph - (0 - yMin) / (yMax - yMin) * ph;
+        c.strokeStyle = '#d2d2d7'; c.setLineDash([4, 4]);
+        c.beginPath(); c.moveTo(pad, zy); c.lineTo(w - pad, zy); c.stroke();
+        c.setLineDash([]);
+        c.fillStyle = 'rgba(175,82,222,0.15)';
+        for (var i = 0; i < data.length; i++) {
+            var px = pad + (i / (data.length - 1)) * pw;
+            var py = pad + ph - (data[i] - yMin) / (yMax - yMin) * ph;
+            c.fillRect(px - 1, py - 1, 3, 3);
+        }
+        if (data.length >= 5) {
+            c.strokeStyle = '#af52de'; c.lineWidth = 2;
+            c.beginPath();
+            var winSz = Math.min(20, Math.floor(data.length / 3));
+            if (winSz < 2) winSz = 2;
+            for (var i = winSz; i < data.length; i++) {
+                var sum = 0;
+                for (var j = i - winSz; j < i; j++) sum += data[j];
+                var avg = sum / winSz;
+                var px = pad + (i / (data.length - 1)) * pw;
+                var py = pad + ph - (avg - yMin) / (yMax - yMin) * ph;
+                if (i === winSz) c.moveTo(px, py); else c.lineTo(px, py);
+            }
+            c.stroke();
+        }
+        c.fillStyle = '#535353'; c.font = '10px "Courier New"';
+        c.textAlign = 'center';
+        c.fillText('Generation', w / 2, h - 5);
+        c.textAlign = 'left';
+    }
+
+    function drawNeatTopology() {
+        var cc = document.getElementById('neat-topo');
+        var c = cc.getContext('2d');
+        var w = cc.width, h = cc.height;
+        c.fillStyle = '#fff'; c.fillRect(0, 0, w, h);
+
+        if (!neatAgent || !neatAgent.champion) return;
+        var genome = neatAgent.champion;
+
+        // Collect unique depths and assign layers
+        var depthSet = {};
+        for (var i = 0; i < genome.nodes.length; i++) depthSet[genome.nodes[i].depth] = true;
+        var depths = Object.keys(depthSet).map(Number).sort(function (a, b) { return a - b; });
+        var depthToX = {};
+        for (var i = 0; i < depths.length; i++) {
+            depthToX[depths[i]] = 50 + (i / Math.max(1, depths.length - 1)) * (w - 100);
+        }
+
+        // Group nodes by depth
+        var nodesByDepth = {};
+        for (var i = 0; i < depths.length; i++) nodesByDepth[depths[i]] = [];
+        for (var i = 0; i < genome.nodes.length; i++) {
+            nodesByDepth[genome.nodes[i].depth].push(genome.nodes[i]);
+        }
+
+        // Assign positions
+        var nodePos = {};
+        for (var di = 0; di < depths.length; di++) {
+            var d = depths[di];
+            var nodes = nodesByDepth[d];
+            var x = depthToX[d];
+            for (var ni = 0; ni < nodes.length; ni++) {
+                var y = 30 + (ni + 0.5) / nodes.length * (h - 60);
+                nodePos[nodes[ni].id] = { x: x, y: y };
+            }
+        }
+
+        // Draw connections
+        for (var i = 0; i < genome.connections.length; i++) {
+            var conn = genome.connections[i];
+            var from = nodePos[conn.inNode];
+            var to = nodePos[conn.outNode];
+            if (!from || !to) continue;
+            if (!conn.enabled) {
+                c.strokeStyle = 'rgba(200,200,200,0.3)';
+                c.setLineDash([2, 2]);
+            } else {
+                var absW = Math.min(Math.abs(conn.weight), 2);
+                var alpha = 0.3 + 0.7 * (absW / 2);
+                c.strokeStyle = conn.weight > 0
+                    ? 'rgba(52,199,89,' + alpha + ')'
+                    : 'rgba(255,59,48,' + alpha + ')';
+                c.setLineDash([]);
+            }
+            c.lineWidth = Math.max(0.5, Math.min(3, Math.abs(conn.weight)));
+            c.beginPath(); c.moveTo(from.x, from.y); c.lineTo(to.x, to.y); c.stroke();
+        }
+        c.setLineDash([]);
+
+        // Draw nodes
+        var labels = ['pY', 'bX', 'bY', 'vX', 'vY', 'oY', 'B'];
+        var outLabels = ['UP', 'STAY', 'DN'];
+        for (var i = 0; i < genome.nodes.length; i++) {
+            var node = genome.nodes[i];
+            var pos = nodePos[node.id];
+            if (!pos) continue;
+            var r = 12;
+            if (node.type === 'input') c.fillStyle = '#0071e3';
+            else if (node.type === 'bias') c.fillStyle = '#86868b';
+            else if (node.type === 'output') c.fillStyle = '#ff9f0a';
+            else c.fillStyle = '#af52de';
+            c.beginPath(); c.arc(pos.x, pos.y, r, 0, Math.PI * 2); c.fill();
+            c.fillStyle = '#fff'; c.font = 'bold 8px sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle';
+            if (node.type === 'input' && node.id < labels.length) c.fillText(labels[node.id], pos.x, pos.y);
+            else if (node.type === 'bias') c.fillText(labels[NEAT_INPUTS], pos.x, pos.y);
+            else if (node.type === 'output') c.fillText(outLabels[node.id - NEAT_INPUTS - 1], pos.x, pos.y);
+            else c.fillText('H' + node.id, pos.x, pos.y);
+        }
+
+        // Title
+        c.fillStyle = '#535353'; c.font = '10px "Courier New"'; c.textAlign = 'left'; c.textBaseline = 'top';
+        c.fillText('Champion Topology (Gen ' + neatAgent.generation + ')', 5, 5);
+    }
+
+    window.toggleNeatAI = function () {
+        if (!neatAgent || !neatAgent.champion || neatScores.length === 0) {
+            document.getElementById('neat-stats').textContent = 'Train first to get a champion!';
+            return;
+        }
+        setAIMode(aiMode === 'neat' ? 'off' : 'neat');
+    };
+
+    window.toggleNeatTrain = function () {
+        if (!neatAgent) initNeat();
+        neatTraining = !neatTraining;
+        var btn = document.getElementById('neat-train-btn');
+        if (neatTraining) {
+            btn.textContent = 'Pause';
+            btn.classList.add('active');
+            neatTrainTick();
+        } else {
+            btn.textContent = 'Train';
+            btn.classList.remove('active');
+            saveNeat();
+        }
+    };
+
+    window.resetNeat = function () {
+        neatTraining = false;
+        initNeat();
+        if (aiMode === 'neat') setAIMode('off');
+        try { localStorage.removeItem(SAVE_KEY_NEAT); } catch (e) {}
+    };
+
+    function saveNeat() {
+        try {
+            var state = {
+                agent: neatAgent.serialize(),
+                scores: neatScores
+            };
+            localStorage.setItem(SAVE_KEY_NEAT, JSON.stringify(state));
+        } catch (e) {}
+    }
+
+    function loadNeat() {
+        try {
+            var raw = localStorage.getItem(SAVE_KEY_NEAT);
+            if (!raw) return false;
+            var state = JSON.parse(raw);
+            neatAgent.load(state.agent);
+            neatScores = state.scores || [];
+            document.getElementById('neat-stats').textContent =
+                'Restored: Gen ' + neatAgent.generation + ' | Best: ' + (neatAgent.bestReward - 21);
+            if (neatScores.length > 0) {
+                document.getElementById('neat-viz-box').style.display = '';
+                drawNeatChart();
+                drawNeatTopology();
+            }
+            return true;
+        } catch (e) { return false; }
+    }
+
     // ── Expose for page-level wrappers ──
     window.pongSimAI = pongSimAI;
     window.pongSetAIMode = setAIMode;
 
     initDQN();
+    initPpo();
+    initSpdqn();
+    initNeat();
 
     // Auto-restore on load
     loadDQN();
     loadEvo();
+    loadPpo();
+    loadSpdqn();
+    loadNeat();
     updateMatchDropdowns(); // populate match viewer with available AIs
 })();
 </script>
@@ -2159,6 +3591,15 @@
     // --- Slider live update ---
     document.getElementById('play-diff').addEventListener('input', function () {
         document.getElementById('play-diff-val').textContent = this.value;
+    });
+    document.getElementById('ppo-speed').addEventListener('input', function () {
+        document.getElementById('ppo-speed-val').textContent = this.value;
+    });
+    document.getElementById('spdqn-speed').addEventListener('input', function () {
+        document.getElementById('spdqn-speed-val').textContent = this.value;
+    });
+    document.getElementById('neat-speed').addEventListener('input', function () {
+        document.getElementById('neat-speed-val').textContent = this.value;
     });
 
     // --- R key restart (enhanced) ---

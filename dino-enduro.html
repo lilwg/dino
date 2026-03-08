@@ -1,0 +1,745 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DinoEnduro</title>
+    <link rel="stylesheet" href="si-styles.css?v=2">
+    <style>#game-canvas { width: 100%; height: auto; max-width: none !important; }</style>
+</head>
+<body>
+    <img id="offline-resources-1x" src="assets/default_100_percent/100-offline-sprite.png" style="display:none;">
+    <div class="si-page" style="padding-bottom: 40px;">
+        <h1>DinoEnduro</h1>
+        <p class="si-subtitle">Race through the prehistoric desert</p>
+        <div class="si-game-box">
+            <canvas id="game-canvas" width="600" height="400"></canvas>
+            <div class="si-controls" style="margin-top:12px;">
+                <button class="si-btn active" id="human-btn" onclick="setMode('off')">Human</button>
+                <button class="si-btn" id="rules-btn" onclick="setMode('rules')">AI</button>
+                <button class="si-btn" id="viz-btn" onclick="toggleViz()">Viz</button>
+                <button class="si-btn" onclick="restartGame()">Restart</button>
+                <button class="si-btn" id="pause-btn" onclick="togglePause()">Pause</button>
+            </div>
+            <p class="si-help" style="text-align:center;">&larr;&rarr; change lanes &nbsp;|&nbsp; Pass 200 cars per day &nbsp;|&nbsp; R restart</p>
+        </div>
+        <h2 style="margin-top:16px;">How it works</h2>
+        <p class="si-prose">DinoEnduro recreates the 1983 Activision original: a curving desert road, day/night/snow cycles, and a 200-car-per-day target. The road vanishing point drifts left and right like a gentle curve. The AI uses a two-second lookahead to find the least-congested lane.</p>
+        <p class="si-prose">Tap <strong>Viz</strong> to see per-lane danger overlaid directly on the road surface.</p>
+        <p style="margin-top:20px;"><a href="/" style="color:#0071e3;font-size:14px;text-decoration:none;">&larr; Back</a></p>
+    </div>
+<script src="dino-sounds.js"></script>
+<script>
+(function(){
+'use strict';
+
+// ── Constants ────────────────────────────────────────────────────────────────
+var CW = 600, CH = 400;
+
+var SPRITES = {
+    TREX_RUN1: { x: 936, y: 2, w: 44, h: 47 },
+    TREX_RUN2: { x: 980, y: 2, w: 44, h: 47 },
+    TREX_IDLE: { x: 892, y: 2, w: 44, h: 47 },
+    PTERO1:    { x: 134, y: 2, w: 46, h: 40 },
+    PTERO2:    { x: 180, y: 2, w: 46, h: 40 },
+    CACTUS_SM: { x: 228, y: 2, w: 17, h: 35 }
+};
+var STAR_SPRITE  = { x: 645, y: 2, size: 9 };
+var MOON_SPRITE  = { x: 484, y: 2, w: 20, h: 40 };
+var MOON_PHASES  = [140, 120, 100, 60, 40, 20, 0];
+var spriteImg    = document.getElementById('offline-resources-1x');
+
+function padScore(n) {
+    var s = '' + Math.max(0, Math.floor(n));
+    while (s.length < 5) s = '0' + s;
+    return s;
+}
+
+var canvas = document.getElementById('game-canvas');
+var ctx    = canvas.getContext('2d');
+
+// ── Perspective / Road constants ─────────────────────────────────────────────
+var HORIZON_Y = 140;   // y of vanishing point
+var ROAD_BOT_Y = 380;  // y of bottom of road
+
+// Road curve: vanishX drifts sinusoidally
+var curvePeriod = 480; // frames per full cycle
+var curveTimer  = 0;
+var vanishX     = 300; // current vanishing point x (drifts 220–380)
+
+function updateCurve() {
+    curveTimer++;
+    vanishX = 300 + Math.sin(curveTimer * 2 * Math.PI / curvePeriod) * 80;
+}
+
+// t = 0 at horizon, t = 1 at bottom
+function getScreenY(t) { return HORIZON_Y + t * (ROAD_BOT_Y - HORIZON_Y); }
+function roadCenterX(t) { return vanishX + (300 - vanishX) * t; }
+function roadHalfWidth(t) { return 40 + t * 120; } // 40 at horizon, 160 at bottom
+
+// lane: 0=left, 1=center, 2=right
+function laneX(lane, t) {
+    var cx = roadCenterX(t);
+    var hw = roadHalfWidth(t);
+    return cx + (lane - 1) * hw * 0.66;
+}
+
+function depthScale(t) { return 0.1 + t * 0.9; }
+
+// ── Day/Night system (verbatim spec) ─────────────────────────────────────────
+var inverted = false, dayTimer = 0, nightOpacity = 0;
+var moonPhase = 0, moonX = CW - 50, moonY = 25;
+var nightStars = [];
+
+function placeStars() {
+    nightStars = [];
+    for (var i = 0; i < 20; i++)
+        nightStars.push({
+            x: Math.random() * CW,
+            y: Math.random() * CH * 0.85,
+            sourceY: STAR_SPRITE.y + STAR_SPRITE.size * (i % 2)
+        });
+}
+placeStars();
+
+function updateDayNight() {
+    dayTimer++;
+    if (!inverted && dayTimer >= 700)  { inverted = true;  dayTimer = 0; moonPhase = (moonPhase + 1) % 7; }
+    else if (inverted && dayTimer >= 400) { inverted = false; dayTimer = 0; }
+    if (inverted) nightOpacity = Math.min(1, nightOpacity + 0.035);
+    else          nightOpacity = Math.max(0, nightOpacity - 0.035);
+    if (nightOpacity > 0) {
+        moonX -= 0.25; if (moonX < -20) moonX = CW;
+        for (var i = 0; i < nightStars.length; i++) {
+            nightStars[i].x -= 0.3;
+            if (nightStars[i].x < -9) nightStars[i].x = CW;
+        }
+    } else placeStars();
+}
+
+function drawNightElements(ctx) {
+    if (nightOpacity <= 0 || !spriteImg || !spriteImg.complete) return;
+    ctx.save(); ctx.globalAlpha = nightOpacity;
+    for (var i = 0; i < nightStars.length; i++) {
+        var s = nightStars[i];
+        ctx.drawImage(spriteImg, STAR_SPRITE.x, s.sourceY, 9, 9,
+            Math.round(s.x), s.y, 9, 9);
+    }
+    var mx = MOON_SPRITE.x + MOON_PHASES[moonPhase];
+    var mw = moonPhase === 3 ? 40 : 20;
+    ctx.drawImage(spriteImg, mx, MOON_SPRITE.y, mw, 40,
+        Math.round(moonX), moonY, mw, 40);
+    ctx.globalAlpha = 1; ctx.restore();
+}
+
+function applyNight(ctx) {
+    if (!inverted) return;
+    ctx.globalCompositeOperation = 'difference';
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, CW, CH);
+    ctx.globalCompositeOperation = 'source-over';
+}
+
+// ── Game state ────────────────────────────────────────────────────────────────
+var gMode     = 'off';   // 'off' | 'rules'
+var gViz      = false;
+var gPaused   = false;
+var gGameOver = false;
+
+// Scoring
+var gScore       = 0;   // total cars passed all time
+var gDayPassed   = 0;   // cars passed today
+var gDay         = 1;
+var gLives       = 3;
+
+function dayGoal() { return gDay === 1 ? 200 : 300; }
+function opponentSpeed() { return 0.004 + (gDay - 1) * 0.0008; }
+
+// Timing / display
+var gFrame       = 0;
+var gDayMsgTimer = 0;   // frames to show "DAY N" banner
+
+// Road dash scroll (0..1, wraps)
+var gDashOff = 0;
+
+// Player
+var gPlayerLane   = 1;
+var gPlayerX      = laneX(1, 1.0); // smooth display x
+var gPlayerFrame  = 0;
+var gPlayerFTimer = 0;
+var gPlayerMoveT  = 0;  // lane-change cooldown frames
+var gCrashTimer   = 0;  // invincibility / flash frames after crash
+
+// Opponents: { lane, t, type:'trex'|'ptero', frame, ftimer, passed }
+var gOpponents  = [];
+var gSpawnTimer = 0;
+
+// Blizzard particles (day 3+)
+var gParticles  = [];
+
+// Input state
+var gLeftDown   = false;
+var gRightDown  = false;
+
+// ── Reset helpers ─────────────────────────────────────────────────────────────
+function resetNight() {
+    inverted = false; dayTimer = 0; nightOpacity = 0;
+    moonX = CW - 50; placeStars();
+}
+
+function restartGame() {
+    gGameOver    = false;
+    gScore       = 0;
+    gDayPassed   = 0;
+    gDay         = 1;
+    gLives       = 3;
+    gFrame       = 0;
+    gDayMsgTimer = 0;
+    gDashOff     = 0;
+    curveTimer   = 0;
+    vanishX      = 300;
+    gPlayerLane  = 1;
+    gPlayerX     = laneX(1, 1.0);
+    gPlayerFrame = 0;
+    gPlayerFTimer= 0;
+    gPlayerMoveT = 0;
+    gCrashTimer  = 0;
+    gOpponents   = [];
+    gSpawnTimer  = 0;
+    gParticles   = [];
+    gLeftDown    = false;
+    gRightDown   = false;
+    resetNight();
+}
+
+// ── Spawn opponents ───────────────────────────────────────────────────────────
+function spawnOpponent() {
+    var lane = Math.floor(Math.random() * 3);
+    var type = Math.random() < 0.4 ? 'ptero' : 'trex';
+    gOpponents.push({ lane: lane, t: 0.02, type: type, frame: 0, ftimer: 0, passed: false });
+}
+
+// ── AI: 2-second lookahead ────────────────────────────────────────────────────
+function findSafeLane() {
+    // Seconds per t unit: opponentSpeed() is t/frame, 60fps assumed
+    // 2 seconds = 120 frames * opponentSpeed() = lookahead in t
+    var lookahead = 120 * opponentSpeed();
+    var danger = [0, 0, 0];
+    for (var i = 0; i < gOpponents.length; i++) {
+        var r = gOpponents[i];
+        var futureT = r.t + lookahead;
+        if (r.t < 0.9 && futureT > 0.5) {
+            // Weight by proximity: t=0.9 is most dangerous
+            var d = Math.max(0, Math.min(1, r.t / 0.9));
+            if (d > danger[r.lane]) danger[r.lane] = d;
+        }
+    }
+    var best = 0;
+    for (var l = 1; l < 3; l++)
+        if (danger[l] < danger[best]) best = l;
+    return best;
+}
+
+// ── Crash ─────────────────────────────────────────────────────────────────────
+function triggerCrash() {
+    if (gCrashTimer > 0) return; // already invincible
+    gCrashTimer = 120;
+    gLives--;
+    DinoSounds.hit();
+    // Remove nearby opponents
+    gOpponents = gOpponents.filter(function(r) { return r.t < 0.75; });
+    if (gLives <= 0) gGameOver = true;
+}
+
+// ── Viz helpers ───────────────────────────────────────────────────────────────
+function laneDanger() {
+    var lookahead = 120 * opponentSpeed();
+    var danger = [0, 0, 0];
+    for (var i = 0; i < gOpponents.length; i++) {
+        var r = gOpponents[i];
+        if (r.t < 0.2 || r.t > 0.9) continue;
+        var futureT = r.t + lookahead;
+        if (futureT > 0.5) {
+            var d = Math.max(0, Math.min(1, r.t / 0.9));
+            if (d > danger[r.lane]) danger[r.lane] = d;
+        }
+    }
+    return danger;
+}
+
+// ── Update ────────────────────────────────────────────────────────────────────
+function update() {
+    if (gPaused || gGameOver) return;
+
+    gFrame++;
+
+    // Curve
+    updateCurve();
+
+    // Day/night
+    updateDayNight();
+
+    // Road dash scroll — bottom dash speed ~180px/s at 60fps = 3px/frame at day1
+    // Road bottom is 320px wide. Dashes span full height (t 0..1).
+    // We parameterize offset in t-space: move ~0.013 t/frame at day1
+    gDashOff += 0.013 + (gDay - 1) * 0.003;
+    if (gDashOff >= 1) gDashOff -= 1;
+
+    // Day-advance message timer
+    if (gDayMsgTimer > 0) gDayMsgTimer--;
+
+    // ── Input / lane changes ──────────────────────────────────────────────────
+    if (gCrashTimer === 0) {
+        if (gMode === 'rules') {
+            // AI: move one step toward safest lane every ~200ms (12 frames)
+            if (gPlayerMoveT <= 0) {
+                var safe = findSafeLane();
+                if (safe !== gPlayerLane) {
+                    gPlayerLane += safe > gPlayerLane ? 1 : -1;
+                    gPlayerMoveT = 12;
+                }
+            }
+        } else {
+            // Human: ~200ms cooldown = 12 frames
+            if ((gLeftDown) && gPlayerLane > 0 && gPlayerMoveT <= 0) {
+                gPlayerLane--; gPlayerMoveT = 12;
+            } else if ((gRightDown) && gPlayerLane < 2 && gPlayerMoveT <= 0) {
+                gPlayerLane++; gPlayerMoveT = 12;
+            }
+        }
+    }
+    if (gPlayerMoveT > 0) gPlayerMoveT--;
+
+    // Smooth player X (lerp toward target lane position)
+    var targetX = laneX(gPlayerLane, 1.0);
+    gPlayerX += (targetX - gPlayerX) * 0.18;
+
+    // Player animation
+    gPlayerFTimer++;
+    if (gPlayerFTimer >= 8) { gPlayerFrame = 1 - gPlayerFrame; gPlayerFTimer = 0; }
+
+    // Crash timer countdown
+    if (gCrashTimer > 0) gCrashTimer--;
+
+    // ── Spawn opponents ───────────────────────────────────────────────────────
+    // Spawn interval: starts ~90 frames (1.5s), decreases with day/score
+    var spawnInterval = Math.max(30, 90 - (gDay - 1) * 8);
+    gSpawnTimer++;
+    if (gSpawnTimer >= spawnInterval) {
+        spawnOpponent();
+        gSpawnTimer = 0;
+    }
+
+    // ── Move opponents ────────────────────────────────────────────────────────
+    var step = opponentSpeed();
+    for (var i = gOpponents.length - 1; i >= 0; i--) {
+        var r = gOpponents[i];
+        r.t += step;
+
+        // Animate sprite
+        r.ftimer++;
+        if (r.ftimer >= 10) { r.frame = 1 - r.frame; r.ftimer = 0; }
+
+        // Passing: opponent fully past player (t > 0.95) in a different lane
+        if (!r.passed && r.t > 0.95 && r.lane !== gPlayerLane) {
+            r.passed = true;
+            gScore++;
+            gDayPassed++;
+            DinoSounds.press();
+        }
+
+        // Collision: same lane, close enough to player (t > 0.90)
+        if (!r.passed && r.t > 0.90 && r.lane === gPlayerLane) {
+            triggerCrash();
+        }
+
+        // Remove opponents that have scrolled past
+        if (r.t > 1.15) {
+            gOpponents.splice(i, 1);
+        }
+    }
+
+    // ── Day progression ───────────────────────────────────────────────────────
+    if (gDayPassed >= dayGoal()) {
+        gDay++;
+        gDayPassed = 0;
+        DinoSounds.reached();
+        gLives = Math.min(gLives + 1, 6);
+        gOpponents = [];
+        gSpawnTimer = 0;
+        gDayMsgTimer = 180; // show "DAY N" for 3 seconds
+        resetNight();
+    }
+
+    // ── Snow particles (day 3+) ───────────────────────────────────────────────
+    if (gDay >= 3) {
+        var target = Math.min(80, 20 + (gDay - 3) * 20);
+        while (gParticles.length < target) {
+            gParticles.push({
+                x:  Math.random() * CW,
+                y:  Math.random() * CH,
+                vy: 1.2 + Math.random() * 2.0,
+                vx: (Math.random() - 0.5) * 0.8,
+                r:  Math.random() < 0.5 ? 2 : 3,
+                a:  0.35 + Math.random() * 0.45
+            });
+        }
+        var spd = 1.0 + (gDay - 1) * 0.3;
+        for (var pi = 0; pi < gParticles.length; pi++) {
+            var p = gParticles[pi];
+            p.x += p.vx * spd;
+            p.y += p.vy * spd;
+            if (p.y > CH + 4) { p.y = -4; p.x = Math.random() * CW; }
+            if (p.x < -4)      p.x = CW + 4;
+            if (p.x > CW + 4)  p.x = -4;
+        }
+    }
+}
+
+// ── Draw road ─────────────────────────────────────────────────────────────────
+function drawRoad() {
+    // Sky background
+    ctx.fillStyle = '#f7f7f7';
+    ctx.fillRect(0, 0, CW, HORIZON_Y);
+
+    // Stars & moon in sky
+    drawNightElements(ctx);
+
+    // Compute road edge points at horizon (t=0) and bottom (t=1)
+    var cx0 = roadCenterX(0), hw0 = roadHalfWidth(0);
+    var cx1 = roadCenterX(1), hw1 = roadHalfWidth(1);
+
+    var rleft0  = cx0 - hw0, rright0 = cx0 + hw0;
+    var rleft1  = cx1 - hw1, rright1 = cx1 + hw1;
+
+    // Desert / ground sides (outside road)
+    ctx.fillStyle = '#e8e8e8';
+    // Left desert
+    ctx.beginPath();
+    ctx.moveTo(0, HORIZON_Y);
+    ctx.lineTo(rleft0, HORIZON_Y);
+    ctx.lineTo(rleft1, ROAD_BOT_Y);
+    ctx.lineTo(0, ROAD_BOT_Y);
+    ctx.closePath();
+    ctx.fill();
+    // Right desert
+    ctx.beginPath();
+    ctx.moveTo(CW, HORIZON_Y);
+    ctx.lineTo(rright0, HORIZON_Y);
+    ctx.lineTo(rright1, ROAD_BOT_Y);
+    ctx.lineTo(CW, ROAD_BOT_Y);
+    ctx.closePath();
+    ctx.fill();
+
+    // Road surface
+    ctx.fillStyle = '#d2d2d7';
+    ctx.beginPath();
+    ctx.moveTo(rleft0,  HORIZON_Y);
+    ctx.lineTo(rright0, HORIZON_Y);
+    ctx.lineTo(rright1, ROAD_BOT_Y);
+    ctx.lineTo(rleft1,  ROAD_BOT_Y);
+    ctx.closePath();
+    ctx.fill();
+
+    // Road edges
+    ctx.strokeStyle = '#535353';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(rleft0,  HORIZON_Y); ctx.lineTo(rleft1,  ROAD_BOT_Y); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(rright0, HORIZON_Y); ctx.lineTo(rright1, ROAD_BOT_Y); ctx.stroke();
+
+    // Edge markers: small posts along both edges, alternating color, every ~40px along bottom edge
+    var edgeColors = ['#535353', '#aaaaaa'];
+    var numPosts = 10;
+    for (var pi = 0; pi < numPosts; pi++) {
+        // Space posts evenly in t-space
+        var tPost = (pi / numPosts + gDashOff * 0.4) % 1;
+        if (tPost < 0.02) continue; // don't draw at very horizon
+        var yPost = getScreenY(tPost);
+        var scPost = depthScale(tPost);
+        var postW = Math.max(1, Math.round(3 * scPost));
+        var postH = Math.max(2, Math.round(8 * scPost));
+        var col = edgeColors[pi % 2];
+        ctx.fillStyle = col;
+        // Left post
+        var lx = roadCenterX(tPost) - roadHalfWidth(tPost) - postW;
+        ctx.fillRect(Math.round(lx), Math.round(yPost - postH), postW, postH);
+        // Right post
+        var rx = roadCenterX(tPost) + roadHalfWidth(tPost);
+        ctx.fillRect(Math.round(rx), Math.round(yPost - postH), postW, postH);
+    }
+
+    // Center dashed line (single center line scrolling with perspective)
+    // Draw dashes as small trapezoid segments along the center
+    var dashCount = 16;
+    var dashLen   = 1.0 / dashCount; // t-length per dash period
+    var dutyOn    = 0.45; // fraction of period that is visible
+
+    ctx.strokeStyle = '#535353';
+    for (var di = 0; di < dashCount + 1; di++) {
+        var tStart = ((di * dashLen) - (gDashOff * dashLen * dashCount)) % 1.0;
+        if (tStart < 0) tStart += 1.0;
+        var tEnd   = tStart + dashLen * dutyOn;
+        if (tStart > 1.0) tStart -= 1.0;
+        if (tEnd   > 1.0) tEnd    = 1.0;
+        if (tStart < 0.01) tStart = 0.01; // clip at horizon
+
+        var yS = getScreenY(tStart);
+        var yE = getScreenY(tEnd);
+        var xS = roadCenterX(tStart);
+        var xE = roadCenterX(tEnd);
+
+        ctx.lineWidth = Math.max(1, depthScale(tStart) * 2.5);
+        ctx.globalAlpha = 0.6;
+        ctx.beginPath();
+        ctx.moveTo(xS, yS);
+        ctx.lineTo(xE, yE);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+    }
+
+    // Ground sprite strip at very bottom (matches other dino games)
+    if (spriteImg && spriteImg.complete) {
+        ctx.drawImage(spriteImg, 2, 54, 600, 12, 0, CH - 12, CW, 12);
+    }
+}
+
+// ── Draw viz overlay ──────────────────────────────────────────────────────────
+function drawViz() {
+    if (!gViz) return;
+    var danger = laneDanger();
+    var safe   = findSafeLane();
+
+    // Draw each lane as a perspective trapezoid with color overlay
+    for (var lane = 0; lane < 3; lane++) {
+        // Compute lane edges at horizon and bottom
+        var hw0 = roadHalfWidth(0);
+        var hw1 = roadHalfWidth(1);
+        var cx0 = roadCenterX(0);
+        var cx1 = roadCenterX(1);
+
+        // Lane x bounds at horizon (t=0)
+        var lx0H = cx0 + (lane - 1) * hw0 * 0.66 - hw0 * 0.33;
+        var rx0H = lx0H + hw0 * 0.66;
+        // Lane x bounds at bottom (t=1)
+        var lx1B = cx1 + (lane - 1) * hw1 * 0.66 - hw1 * 0.33;
+        var rx1B = lx1B + hw1 * 0.66;
+
+        var color;
+        if (lane === safe) {
+            color = 'rgba(60,220,60,0.22)';
+        } else if (danger[lane] > 0.6) {
+            color = 'rgba(255,40,40,0.32)';
+        } else if (danger[lane] > 0.0) {
+            color = 'rgba(255,40,40,0.16)';
+        } else {
+            color = 'rgba(255,40,40,0.06)';
+        }
+
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.moveTo(lx0H, HORIZON_Y);
+        ctx.lineTo(rx0H, HORIZON_Y);
+        ctx.lineTo(rx1B, ROAD_BOT_Y);
+        ctx.lineTo(lx1B, ROAD_BOT_Y);
+        ctx.closePath();
+        ctx.fill();
+    }
+}
+
+// ── Draw sprite ───────────────────────────────────────────────────────────────
+// cx = horizontal center, cy = bottom of sprite feet
+function drawSpriteAt(sp, cx, cy, scale) {
+    var dw = Math.max(1, Math.round(sp.w * scale));
+    var dh = Math.max(1, Math.round(sp.h * scale));
+    var dx = Math.round(cx - dw / 2);
+    var dy = Math.round(cy - dh);
+    ctx.drawImage(spriteImg, sp.x, sp.y, sp.w, sp.h, dx, dy, dw, dh);
+}
+
+// ── Draw HUD ──────────────────────────────────────────────────────────────────
+function drawHUD() {
+    ctx.font = '600 13px "Courier New", monospace';
+    ctx.fillStyle = '#535353';
+
+    // Left: total passed (hi score style)
+    ctx.textAlign = 'left';
+    ctx.fillText('HI ' + padScore(gScore), 10, 18);
+
+    // Center: day + today's progress
+    ctx.textAlign = 'center';
+    ctx.fillText('DAY ' + gDay + '  TODAY: ' + padScore(gDayPassed) + '/' + padScore(dayGoal()), CW / 2, 18);
+
+    // Right: lives as tiny idle T-Rex sprites
+    var lscale = 0.4;
+    var lw = Math.round(SPRITES.TREX_IDLE.w * lscale);
+    var lh = Math.round(SPRITES.TREX_IDLE.h * lscale);
+    var startX = CW - 8 - gLives * (lw + 3);
+    if (spriteImg && spriteImg.complete) {
+        for (var i = 0; i < gLives; i++) {
+            ctx.drawImage(spriteImg,
+                SPRITES.TREX_IDLE.x, SPRITES.TREX_IDLE.y,
+                SPRITES.TREX_IDLE.w, SPRITES.TREX_IDLE.h,
+                startX + i * (lw + 3), 4, lw, lh);
+        }
+    }
+
+    ctx.textAlign = 'left';
+}
+
+// ── Draw game over ────────────────────────────────────────────────────────────
+function drawGameOver() {
+    ctx.fillStyle = 'rgba(247,247,247,0.85)';
+    ctx.fillRect(0, 0, CW, CH);
+    ctx.font = '600 28px "Courier New", monospace';
+    ctx.fillStyle = '#535353';
+    ctx.textAlign = 'center';
+    ctx.fillText('GAME OVER', CW / 2, CH / 2 - 20);
+    ctx.font = '600 13px "Courier New", monospace';
+    ctx.fillText('PASSED ' + padScore(gScore) + '  DAY ' + gDay, CW / 2, CH / 2 + 8);
+    ctx.font = '13px "Courier New", monospace';
+    ctx.fillStyle = '#86868b';
+    ctx.fillText('Press R to restart', CW / 2, CH / 2 + 32);
+    ctx.textAlign = 'left';
+}
+
+// ── Render ────────────────────────────────────────────────────────────────────
+function render() {
+    ctx.clearRect(0, 0, CW, CH);
+
+    // Full background
+    ctx.fillStyle = '#f7f7f7';
+    ctx.fillRect(0, 0, CW, CH);
+
+    // Road (includes sky, stars/moon, desert sides, surface, dashes, posts, ground strip)
+    drawRoad();
+
+    // Viz overlay (color, on top of road)
+    drawViz();
+
+    // ── Opponents (sorted back-to-front by t) ─────────────────────────────────
+    var sorted = gOpponents.slice().sort(function(a, b) { return a.t - b.t; });
+    for (var i = 0; i < sorted.length; i++) {
+        var r = sorted[i];
+        if (r.t <= 0.02 || r.t > 1.05) continue;
+        if (!spriteImg || !spriteImg.complete) continue;
+
+        var rx   = laneX(r.lane, r.t);
+        var ry   = getScreenY(r.t);
+        var sc   = depthScale(r.t) * 0.7;
+        var sp;
+        if (r.type === 'trex') {
+            sp = r.frame === 0 ? SPRITES.TREX_RUN1 : SPRITES.TREX_RUN2;
+        } else {
+            sp = r.frame === 0 ? SPRITES.PTERO1 : SPRITES.PTERO2;
+        }
+        drawSpriteAt(sp, rx, ry, sc);
+    }
+
+    // ── Player T-Rex ──────────────────────────────────────────────────────────
+    // Flash (blink) during invincibility after crash
+    var doFlash = gCrashTimer > 0 && Math.floor(gCrashTimer / 8) % 2 === 1;
+    if (!doFlash && spriteImg && spriteImg.complete) {
+        var psp = gPlayerFrame === 0 ? SPRITES.TREX_RUN1 : SPRITES.TREX_RUN2;
+        var pScale = 1.0;
+        // Player always at t=1.0 depth (bottom), actual y = 355
+        drawSpriteAt(psp, gPlayerX, 355, pScale);
+    }
+
+    // ── Snow particles ────────────────────────────────────────────────────────
+    if (gDay >= 3 && gParticles.length > 0) {
+        ctx.save();
+        var fadeIn = Math.min(1, (gDay - 2) * 0.6);
+        for (var pi = 0; pi < gParticles.length; pi++) {
+            var p = gParticles[pi];
+            ctx.globalAlpha = p.a * fadeIn;
+            ctx.fillStyle = '#535353';
+            ctx.fillRect(p.x, p.y, p.r, p.r);
+        }
+        ctx.restore();
+    }
+
+    // ── Day banner ────────────────────────────────────────────────────────────
+    if (gDayMsgTimer > 0) {
+        var alpha = Math.min(1, gDayMsgTimer / 30);
+        ctx.save();
+        ctx.globalAlpha = alpha * 0.92;
+        ctx.fillStyle = 'rgba(247,247,247,0.88)';
+        ctx.fillRect(CW / 2 - 90, CH / 2 - 26, 180, 44);
+        ctx.globalAlpha = alpha;
+        ctx.font = '600 22px "Courier New", monospace';
+        ctx.fillStyle = '#535353';
+        ctx.textAlign = 'center';
+        ctx.fillText('DAY ' + gDay, CW / 2, CH / 2 + 8);
+        ctx.restore();
+        ctx.textAlign = 'left';
+    }
+
+    // ── HUD ───────────────────────────────────────────────────────────────────
+    drawHUD();
+
+    // ── Night inversion (applied last, before game-over overlay) ──────────────
+    applyNight(ctx);
+
+    if (gGameOver) drawGameOver();
+}
+
+// ── Game loop ─────────────────────────────────────────────────────────────────
+function loop() {
+    update();
+    render();
+    requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// ── Public interface ─────────────────────────────────────────────────────────
+window.setMode = function(m) {
+    gMode = m;
+    document.getElementById('human-btn').classList.toggle('active', m === 'off');
+    document.getElementById('rules-btn').classList.toggle('active', m === 'rules');
+};
+
+window.toggleViz = function() {
+    gViz = !gViz;
+    document.getElementById('viz-btn').classList.toggle('active', gViz);
+};
+
+window.restartGame = function() { restartGame(); };
+
+window.togglePause = function() {
+    gPaused = !gPaused;
+    var btn = document.getElementById('pause-btn');
+    btn.classList.toggle('active', gPaused);
+    btn.textContent = gPaused ? 'Resume' : 'Pause';
+};
+
+// ── Keyboard ─────────────────────────────────────────────────────────────────
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'ArrowLeft'  || e.key === 'a' || e.key === 'A') { gLeftDown  = true; e.preventDefault(); }
+    if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') { gRightDown = true; e.preventDefault(); }
+    if (e.key === 'r' || e.key === 'R') restartGame();
+    if (e.key === 'p' || e.key === 'P') window.togglePause();
+});
+document.addEventListener('keyup', function(e) {
+    if (e.key === 'ArrowLeft'  || e.key === 'a' || e.key === 'A') gLeftDown  = false;
+    if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') gRightDown = false;
+});
+
+// ── Touch controls ────────────────────────────────────────────────────────────
+canvas.addEventListener('touchstart', function(e) {
+    e.preventDefault();
+    var touch = e.touches[0];
+    var rect  = canvas.getBoundingClientRect();
+    var relX  = (touch.clientX - rect.left) / rect.width * CW;
+    if (gMode !== 'rules') {
+        if (relX < CW / 2) {
+            if (gPlayerLane > 0 && gPlayerMoveT <= 0) { gPlayerLane--; gPlayerMoveT = 12; }
+        } else {
+            if (gPlayerLane < 2 && gPlayerMoveT <= 0) { gPlayerLane++; gPlayerMoveT = 12; }
+        }
+    }
+}, { passive: false });
+
+})();
+</script>
+</body>
+</html>

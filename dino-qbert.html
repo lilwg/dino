@@ -1,0 +1,1073 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DinoQbert</title>
+    <link rel="stylesheet" href="si-styles.css?v=2">
+    <style>#game-canvas { width: 100%; height: auto; max-width: none !important; }</style>
+</head>
+<body>
+    <img id="offline-resources-1x"
+         src="assets/default_100_percent/100-offline-sprite.png"
+         style="display:none;">
+
+    <div class="si-page" style="padding-bottom: 40px;">
+        <h1>DinoQbert</h1>
+        <p class="si-subtitle">Stomp every rock before the raptors get you</p>
+
+        <div class="si-game-box">
+            <canvas id="game-canvas" width="600" height="400"></canvas>
+            <div class="si-controls" style="margin-top:12px;">
+                <button class="si-btn active" id="human-btn" onclick="setMode('off')">Human</button>
+                <button class="si-btn" id="rules-btn" onclick="setMode('rules')">AI</button>
+                <button class="si-btn" id="viz-btn" onclick="toggleViz()">Viz</button>
+                <button class="si-btn" onclick="restartGame()">Restart</button>
+                <button class="si-btn" id="pause-btn" onclick="togglePause()">Pause</button>
+            </div>
+            <p class="si-help" style="text-align:center;">&uarr;/Q up-left &nbsp;|&nbsp; &rarr;/E up-right &nbsp;|&nbsp; &larr;/A down-left &nbsp;|&nbsp; &darr;/D down-right &nbsp;|&nbsp; R restart</p>
+        </div>
+
+        <h2 style="margin-top:16px;">How it works</h2>
+        <p class="si-prose">DinoQbert recreates the 1982 Gottlieb arcade original: hop-based movement, one jump per keypress with a 150ms arc animation, and the classic @!#?@! swear bubble on death. Coily spawns as an egg, bounces randomly down the pyramid, then hatches and chases the player. Slick hops down uncoloring cubes. Two teleport discs on each side let Q*bert escape and kill Coily for a bonus.</p>
+        <p class="si-prose">Tap <strong>Viz</strong> to see the AI&rsquo;s planned BFS path drawn across the pyramid. The AI avoids enemy-adjacent cubes and will dive for a disc if Coily gets close.</p>
+
+        <p style="margin-top:20px;"><a href="/" style="color:#0071e3;font-size:14px;text-decoration:none;">&larr; Back</a></p>
+    </div>
+
+<script src="dino-sounds.js"></script>
+<script>
+(function () {
+'use strict';
+
+// ─── Canvas & constants ───────────────────────────────────────────────────────
+var canvas = document.getElementById('game-canvas');
+var ctx    = canvas.getContext('2d');
+var CW = 600, CH = 400;
+
+// ─── Sprites ─────────────────────────────────────────────────────────────────
+var SPRITES = {
+    TREX_RUN1: { x:936, y:2, w:44, h:47 },
+    TREX_RUN2: { x:980, y:2, w:44, h:47 },
+    TREX_IDLE: { x:892, y:2, w:44, h:47 },
+    PTERO1:    { x:134, y:2, w:46, h:40 },
+    PTERO2:    { x:180, y:2, w:46, h:40 },
+    CACTUS_SM: { x:228, y:2, w:17, h:35 }
+};
+var STAR_SPRITE  = { x:645, y:2, size:9 };
+var MOON_SPRITE  = { x:484, y:2, w:20, h:40 };
+var MOON_PHASES  = [140, 120, 100, 60, 40, 20, 0];
+var spriteImg    = document.getElementById('offline-resources-1x');
+function padScore(n) { var s = '' + n; while (s.length < 5) s = '0' + s; return s; }
+
+// ─── Day / Night ─────────────────────────────────────────────────────────────
+var inverted = false, dayTimer = 0, nightOpacity = 0;
+var moonPhase = 0, moonX = CW - 50, moonY = 25;
+var nightStars = [];
+
+function placeStars() {
+    nightStars = [];
+    for (var i = 0; i < 20; i++)
+        nightStars.push({
+            x: Math.random() * CW,
+            y: Math.random() * CH * 0.85,
+            sourceY: STAR_SPRITE.y + STAR_SPRITE.size * (i % 2)
+        });
+}
+placeStars();
+
+function updateDayNight() {
+    dayTimer++;
+    if (!inverted && dayTimer >= 700) { inverted = true;  dayTimer = 0; moonPhase = (moonPhase + 1) % 7; }
+    else if (inverted && dayTimer >= 400) { inverted = false; dayTimer = 0; }
+    if (inverted)  nightOpacity = Math.min(1, nightOpacity + 0.035);
+    else           nightOpacity = Math.max(0, nightOpacity - 0.035);
+    if (nightOpacity > 0) {
+        moonX -= 0.25; if (moonX < -20) moonX = CW;
+        for (var i = 0; i < nightStars.length; i++) {
+            nightStars[i].x -= 0.3;
+            if (nightStars[i].x < -9) nightStars[i].x = CW;
+        }
+    } else { placeStars(); }
+}
+
+function drawNightElements(c) {
+    if (nightOpacity <= 0 || !spriteImg || !spriteImg.complete) return;
+    c.save(); c.globalAlpha = nightOpacity;
+    for (var i = 0; i < nightStars.length; i++) {
+        var s = nightStars[i];
+        c.drawImage(spriteImg, STAR_SPRITE.x, s.sourceY, 9, 9, Math.round(s.x), s.y, 9, 9);
+    }
+    var mx = MOON_SPRITE.x + MOON_PHASES[moonPhase];
+    var mw = moonPhase === 3 ? 40 : 20;
+    c.drawImage(spriteImg, mx, MOON_SPRITE.y, mw, 40, Math.round(moonX), moonY, mw, 40);
+    c.globalAlpha = 1; c.restore();
+}
+
+function applyNight(c) {
+    if (!inverted) return;
+    c.globalCompositeOperation = 'difference';
+    c.fillStyle = '#fff';
+    c.fillRect(0, 0, CW, CH);
+    c.globalCompositeOperation = 'source-over';
+}
+
+// ─── Isometric pyramid ───────────────────────────────────────────────────────
+var ROWS    = 7;
+var TILE_W  = 56, TILE_H = 28;
+var PYR_CX  = 300, PYR_TOP_Y = 55;
+
+function cubeXY(row, col) {
+    return {
+        cx: PYR_CX + (col - row / 2) * TILE_W,
+        cy: PYR_TOP_Y + row * TILE_H
+    };
+}
+
+var CUBE_DEPTH = TILE_H / 2;  // = 14 = hh, ensures perfect interlocking diamonds
+
+function drawCube(c, cx, cy, state) {
+    var tops   = ['#e0e0e0', '#535353', '#888888'];
+    var lefts  = ['#c8c8c8', '#404040', '#666666'];
+    var rights = ['#b0b0b0', '#303030', '#555555'];
+    var hw = TILE_W / 2, hh = TILE_H / 2;
+    // Top face (diamond)
+    c.beginPath();
+    c.moveTo(cx,      cy - hh);
+    c.lineTo(cx + hw, cy);
+    c.lineTo(cx,      cy + hh);
+    c.lineTo(cx - hw, cy);
+    c.closePath();
+    c.fillStyle = tops[state]; c.fill();
+    c.strokeStyle = '#535353'; c.lineWidth = 0.5; c.stroke();
+    // Left face
+    c.beginPath();
+    c.moveTo(cx - hw, cy);
+    c.lineTo(cx,      cy + hh);
+    c.lineTo(cx,      cy + hh + CUBE_DEPTH);
+    c.lineTo(cx - hw, cy      + CUBE_DEPTH);
+    c.closePath();
+    c.fillStyle = lefts[state]; c.fill(); c.stroke();
+    // Right face
+    c.beginPath();
+    c.moveTo(cx + hw, cy);
+    c.lineTo(cx,      cy + hh);
+    c.lineTo(cx,      cy + hh + CUBE_DEPTH);
+    c.lineTo(cx + hw, cy      + CUBE_DEPTH);
+    c.closePath();
+    c.fillStyle = rights[state]; c.fill(); c.stroke();
+}
+
+// ─── Game state ───────────────────────────────────────────────────────────────
+var gameMode = 'off';   // 'off' | 'rules'
+var vizOn    = false;
+var paused   = false;
+var gameOver = false;
+
+var score, hiScore, lives, round;
+var extraLifeGiven;
+var cubeStates;   // flat array indexed [row * ROWS + col] — only valid cols used
+var player;
+var enemies;
+var discs;
+var frameCount;
+var roundMsg;          // { text, timer }
+var swearBubble;       // { x, y, timer }
+var aiPath = [];
+var aiMoveTimer = 0;
+var inputQueue  = [];
+
+// Direction deltas: UL=up-left, UR=up-right, DL=down-left, DR=down-right
+var DIRS = {
+    UL: { dr: -1, dc: -1 },
+    UR: { dr: -1, dc:  0 },
+    DL: { dr: +1, dc:  0 },
+    DR: { dr: +1, dc: +1 }
+};
+var DIR_KEYS = ['UL', 'UR', 'DL', 'DR'];
+
+function isValidPos(row, col) {
+    return row >= 0 && row < ROWS && col >= 0 && col <= row;
+}
+
+// Flat cube lookup
+function cubeAt(row, col) {
+    if (!isValidPos(row, col)) return null;
+    for (var i = 0; i < cubeStates.length; i++) {
+        if (cubeStates[i].row === row && cubeStates[i].col === col) return cubeStates[i];
+    }
+    return null;
+}
+
+// Target state depends on round
+function targetState() { return round >= 5 ? 2 : 1; }
+
+function stompCube(row, col) {
+    var cube = cubeAt(row, col);
+    if (!cube) return;
+    var tgt = targetState();
+    if (cube.state < tgt) {
+        cube.state++;
+        score += 25;
+        // Rounds 3-4: stepping on state=1 in one-stomp mode resets it (flip-flop — not implemented as flip here; round 3-4 are still 1-stomp but with different visuals)
+        // Only round 5+ uses 2-stomp; that's handled by targetState()
+        checkExtraLife();
+    }
+}
+
+function checkExtraLife() {
+    if (!extraLifeGiven && score >= 8000) {
+        extraLifeGiven = true;
+        lives++;
+    }
+}
+
+function allColored() {
+    var tgt = targetState();
+    for (var i = 0; i < cubeStates.length; i++) {
+        if (cubeStates[i].state < tgt) return false;
+    }
+    return true;
+}
+
+// ─── Disc helpers ─────────────────────────────────────────────────────────────
+// Left disc: beside row 3, col -1 equivalent
+// Right disc: beside row 3, col 4 equivalent
+function discScreenPos(side) {
+    var ref = cubeXY(3, side === 0 ? 0 : 3);
+    if (side === 0) return { x: ref.cx - TILE_W - 20, y: ref.cy + TILE_H * 0.5 };
+    else            return { x: ref.cx + TILE_W + 20, y: ref.cy + TILE_H * 0.5 };
+}
+
+// ─── Init level ───────────────────────────────────────────────────────────────
+function initRound() {
+    cubeStates = [];
+    for (var r = 0; r < ROWS; r++)
+        for (var c = 0; c <= r; c++)
+            cubeStates.push({ row: r, col: c, state: 0 });
+
+    var sp = cubeXY(0, 0);
+    player = {
+        row: 0, col: 0,
+        px: sp.cx, py: sp.cy,
+        // jump state
+        jumping: false, jumpT: 0, jumpDur: 0.13,
+        jumpSX: sp.cx, jumpSY: sp.cy,
+        tx: sp.cx, ty: sp.cy,
+        // sprite
+        spriteFrame: 0, frameTimer: 0,
+        // death
+        dead: false, deathTimer: 0,
+        deathAnimTimer: 0
+    };
+
+    // Immediately color starting cube
+    stompCube(0, 0);
+
+    discs = [
+        { side: 0, active: true },
+        { side: 1, active: true }
+    ];
+
+    enemies    = [];
+    frameCount = 0;
+    roundMsg   = { text: 'ROUND ' + round, timer: 90 };
+    swearBubble = null;
+    aiPath     = [];
+    aiMoveTimer= 0;
+
+    // Schedule first Coily spawn after brief delay
+    scheduleSpawn(180);
+    // Rounds 3+ also have Slick
+    if (round >= 3) scheduleSpawn(300, 'slick');
+}
+
+function scheduleSpawn(delay, forcedType) {
+    enemies.push({ type: 'spawn-timer', timer: delay, forcedType: forcedType || null });
+}
+
+// ─── Spawn enemy ──────────────────────────────────────────────────────────────
+function spawnEnemy(forcedType) {
+    var type = forcedType;
+    if (!type) {
+        // Default: coily, unless one already exists
+        var hasCoily = false;
+        for (var i = 0; i < enemies.length; i++) {
+            if (enemies[i].type === 'coily' || enemies[i].type === 'egg') { hasCoily = true; break; }
+        }
+        type = hasCoily ? 'slick' : 'egg';
+    }
+
+    var sp = cubeXY(0, 0);
+    var baseSpeed = Math.max(20, 50 - round * 3);
+
+    if (type === 'egg') {
+        enemies.push({
+            type: 'egg',
+            row: 0, col: 0,
+            px: sp.cx, py: sp.cy,
+            jumping: false, jumpT: 0, jumpDur: 0.14,
+            jumpSX: sp.cx, jumpSY: sp.cy,
+            tx: sp.cx, ty: sp.cy,
+            hops: 0,
+            frame: 0, frameTimer: 0,
+            moveTimer: 0, moveDelay: baseSpeed + 10   // egg hops every ~500ms ~= 30 frames
+        });
+    } else if (type === 'slick') {
+        enemies.push({
+            type: 'slick',
+            row: 0, col: 0,
+            px: sp.cx, py: sp.cy,
+            jumping: false, jumpT: 0, jumpDur: 0.12,
+            jumpSX: sp.cx, jumpSY: sp.cy,
+            tx: sp.cx, ty: sp.cy,
+            frame: 0, frameTimer: 0,
+            moveTimer: 0, moveDelay: baseSpeed + 18   // slick hops every ~700ms ~= 42 frames
+        });
+    }
+}
+
+// ─── Enemy jump helper ────────────────────────────────────────────────────────
+function enemyJumpTo(e, nr, nc) {
+    var dst = cubeXY(nr, nc);
+    e.jumping = true; e.jumpT = 0;
+    e.jumpSX = e.px; e.jumpSY = e.py;
+    e.tx = dst.cx; e.ty = dst.cy;
+    e.row = nr; e.col = nc;
+}
+
+// ─── Player jump ──────────────────────────────────────────────────────────────
+function tryMove(dirKey) {
+    if (player.dead || player.jumping || gameOver || paused) return;
+    var d = DIRS[dirKey]; if (!d) return;
+    var nr = player.row + d.dr, nc = player.col + d.dc;
+
+    // Check disc catch on edge-jump
+    if (!isValidPos(nr, nc)) {
+        // Left disc: jumping UL from col 0, or DL off left edge
+        if (dirKey === 'UL' && player.col === 0 && discs[0].active) {
+            useDisc(0); return;
+        }
+        // Right disc: jumping UR from col === row (right edge), or DR off right edge
+        if (dirKey === 'UR' && player.col === player.row && discs[1].active) {
+            useDisc(1); return;
+        }
+        // Fell off — death with swear bubble
+        killPlayer();
+        return;
+    }
+
+    // Valid move — begin jump arc
+    startPlayerJump(nr, nc);
+}
+
+function startPlayerJump(nr, nc) {
+    DinoSounds.press();
+    var dst = cubeXY(nr, nc);
+    player.jumping  = true;
+    player.jumpT    = 0;
+    player.jumpSX   = player.px;
+    player.jumpSY   = player.py;
+    player.tx       = dst.cx;
+    player.ty       = dst.cy;
+    player.row      = nr;
+    player.col      = nc;
+    player.spriteFrame = 0;
+    player.frameTimer  = 0;
+}
+
+function killPlayer() {
+    if (player.dead) return;
+    player.dead = true;
+    DinoSounds.hit();
+    player.deathTimer = 100;  // frames of death state
+    player.deathAnimTimer = 0;
+    lives--;
+    // Swear bubble over player position
+    swearBubble = { x: player.px, y: player.py - 40, timer: 90 };
+    if (lives <= 0) {
+        setTimeout(function () { gameOver = true; }, 800);
+    }
+}
+
+function useDisc(side) {
+    discs[side].active = false;
+    score += 300;
+    checkExtraLife();
+
+    // Kill any Coily on board
+    var survived = [];
+    for (var i = 0; i < enemies.length; i++) {
+        var e = enemies[i];
+        if (e.type === 'coily' || e.type === 'egg') {
+            score += 300; checkExtraLife();
+        } else {
+            survived.push(e);
+        }
+    }
+    enemies = survived;
+
+    // Teleport player to top
+    var sp = cubeXY(0, 0);
+    player.row = 0; player.col = 0;
+    player.px = sp.cx; player.py = sp.cy;
+    player.tx = sp.cx; player.ty = sp.cy;
+    player.jumping = false;
+    stompCube(0, 0);
+
+    // Schedule new Coily after delay
+    scheduleSpawn(180);
+}
+
+// ─── Collision check ──────────────────────────────────────────────────────────
+function checkPlayerEnemyCollision() {
+    if (player.dead || player.jumping) return;
+    for (var i = 0; i < enemies.length; i++) {
+        var e = enemies[i];
+        if (e.type === 'spawn-timer') continue;
+        if (e.jumping) continue;
+        if (e.row === player.row && e.col === player.col) {
+            if (e.type === 'slick') {
+                // Player destroys slick on landing
+                score += 300; checkExtraLife();
+                enemies.splice(i, 1);
+                i--;
+            } else {
+                // Coily/egg kills player
+                killPlayer();
+                return;
+            }
+        }
+    }
+}
+
+// ─── Update enemies ───────────────────────────────────────────────────────────
+function updateEnemies() {
+    for (var i = enemies.length - 1; i >= 0; i--) {
+        var e = enemies[i];
+
+        // Spawn timers
+        if (e.type === 'spawn-timer') {
+            if (!paused) {
+                e.timer--;
+                if (e.timer <= 0) {
+                    enemies.splice(i, 1);
+                    spawnEnemy(e.forcedType);
+                }
+            }
+            continue;
+        }
+
+        // Sprite frame animation
+        e.frameTimer = (e.frameTimer || 0) + 1;
+        if (e.frameTimer > 8) { e.frameTimer = 0; e.frame = e.frame ^ 1; }
+
+        // Jump arc interpolation
+        if (e.jumping) {
+            e.jumpT += e.jumpDur;
+            if (e.jumpT >= 1) {
+                e.jumpT = 1; e.jumping = false;
+                e.px = e.tx; e.py = e.ty;
+                onEnemyLand(e, i);
+            } else {
+                var arc = Math.sin(e.jumpT * Math.PI) * 16;
+                e.px = e.jumpSX + (e.tx - e.jumpSX) * e.jumpT;
+                e.py = e.jumpSY + (e.ty - e.jumpSY) * e.jumpT - arc;
+            }
+            continue;
+        }
+
+        // Move timer
+        e.moveTimer++;
+        if (e.moveTimer < e.moveDelay) continue;
+        e.moveTimer = 0;
+
+        // Decide next hop
+        if (e.type === 'egg') {
+            // Random DL or DR
+            var dir = Math.random() < 0.5 ? 'DL' : 'DR';
+            var delta = DIRS[dir];
+            var nr = e.row + delta.dr, nc = e.col + delta.dc;
+            if (isValidPos(nr, nc)) {
+                e.hops++;
+                enemyJumpTo(e, nr, nc);
+                // Hatch after 6 hops or reaching row 6
+                if (e.hops >= 6 || nr >= ROWS - 1) {
+                    e.type = 'coily';
+                    e.moveDelay = Math.max(12, 35 - round * 2); // faster after hatch
+                }
+            } else {
+                // Egg fell off edge — hatch into coily at this position
+                e.type = 'coily';
+                e.moveDelay = Math.max(12, 35 - round * 2);
+            }
+
+        } else if (e.type === 'coily') {
+            // BFS-chase: pick hop that minimizes Manhattan distance to player
+            var bestDir = null, bestDist = Infinity;
+            for (var k = 0; k < DIR_KEYS.length; k++) {
+                var dk = DIRS[DIR_KEYS[k]];
+                var enr = e.row + dk.dr, enc = e.col + dk.dc;
+                if (!isValidPos(enr, enc)) continue;
+                var dist = Math.abs(player.row - enr) + Math.abs(player.col - enc);
+                if (dist < bestDist) { bestDist = dist; bestDir = { nr: enr, nc: enc }; }
+            }
+            if (bestDir) {
+                enemyJumpTo(e, bestDir.nr, bestDir.nc);
+            } else {
+                // Stuck at top corner — fall off
+                enemies.splice(i, 1);
+                scheduleSpawn(180);
+            }
+
+        } else if (e.type === 'slick') {
+            // Random DL or DR
+            var sdir = Math.random() < 0.5 ? 'DL' : 'DR';
+            var sdelta = DIRS[sdir];
+            var snr = e.row + sdelta.dr, snc = e.col + sdelta.dc;
+            if (isValidPos(snr, snc)) {
+                enemyJumpTo(e, snr, snc);
+            } else {
+                // Fell off pyramid — disappear
+                enemies.splice(i, 1);
+                // Reschedule slick for round 3+
+                if (round >= 3) scheduleSpawn(240, 'slick');
+            }
+        }
+    }
+}
+
+function onEnemyLand(e, idx) {
+    if (e.type === 'slick') {
+        // Uncolor the cube slick lands on
+        var cube = cubeAt(e.row, e.col);
+        if (cube && cube.state > 0) cube.state--;
+        // If player is already on same square, player destroys slick
+        if (!player.dead && !player.jumping && e.row === player.row && e.col === player.col) {
+            score += 300; checkExtraLife();
+            enemies.splice(idx, 1);
+        }
+        // Check if slick reached row 6 — remove it
+        if (e.row >= ROWS - 1) {
+            enemies.splice(idx, 1);
+            if (round >= 3) scheduleSpawn(240, 'slick');
+        }
+    } else if (e.type === 'coily' || e.type === 'egg') {
+        // Check player collision
+        if (!player.dead && !player.jumping && e.row === player.row && e.col === player.col) {
+            killPlayer();
+        }
+    }
+}
+
+// ─── Player update ────────────────────────────────────────────────────────────
+function updatePlayer() {
+    if (player.dead) {
+        player.deathTimer--;
+        player.deathAnimTimer++;
+        if (player.deathTimer <= 0 && !gameOver) {
+            // Respawn
+            player.dead = false;
+            swearBubble = null;
+            var sp = cubeXY(0, 0);
+            player.row = 0; player.col = 0;
+            player.px = sp.cx; player.py = sp.cy;
+            player.tx = sp.cx; player.ty = sp.cy;
+            player.jumping = false;
+            stompCube(0, 0);
+            // Clear active enemies (keep spawn timers)
+            var kept = [];
+            for (var i = 0; i < enemies.length; i++) {
+                if (enemies[i].type === 'spawn-timer') kept.push(enemies[i]);
+            }
+            enemies = kept;
+            scheduleSpawn(150);
+            if (round >= 3) scheduleSpawn(280, 'slick');
+        }
+        return;
+    }
+
+    if (player.jumping) {
+        player.jumpT += player.jumpDur;
+        if (player.jumpT >= 1) {
+            player.jumpT = 1; player.jumping = false;
+            player.px = player.tx; player.py = player.ty;
+            // Color cube on landing
+            stompCube(player.row, player.col);
+            // Check enemy collision on landing
+            checkPlayerEnemyCollision();
+            // Check round complete
+            if (!player.dead && allColored()) {
+                score += 1000; checkExtraLife();
+                round++;
+                DinoSounds.reached();
+                roundMsg = { text: 'ROUND ' + round, timer: 110 };
+                var savedRound = round;
+                setTimeout(function () {
+                    if (round === savedRound) initRound();
+                }, 2000);
+            }
+        } else {
+            var arc = Math.sin(player.jumpT * Math.PI) * 26;
+            player.px = player.jumpSX + (player.tx - player.jumpSX) * player.jumpT;
+            player.py = player.jumpSY + (player.ty - player.jumpSY) * player.jumpT - arc;
+        }
+        player.frameTimer++;
+        if (player.frameTimer > 6) { player.frameTimer = 0; player.spriteFrame ^= 1; }
+    }
+}
+
+// ─── AI ──────────────────────────────────────────────────────────────────────
+function computeAIMove() {
+    var tgt = targetState();
+
+    // Build danger map: squares occupied or adjacent to enemies
+    var dangerSet = {};
+    for (var i = 0; i < enemies.length; i++) {
+        var e = enemies[i];
+        if (e.type === 'spawn-timer') continue;
+        dangerSet[e.row + ',' + e.col] = true;
+        for (var k = 0; k < DIR_KEYS.length; k++) {
+            var dk = DIRS[DIR_KEYS[k]];
+            var nr = e.row + dk.dr, nc = e.col + dk.dc;
+            if (isValidPos(nr, nc)) dangerSet[nr + ',' + nc] = true;
+        }
+    }
+
+    // Check if Coily is close and disc is reachable
+    var coilyDist = 999;
+    for (var i = 0; i < enemies.length; i++) {
+        if (enemies[i].type === 'coily') {
+            var d = Math.abs(enemies[i].row - player.row) + Math.abs(enemies[i].col - player.col);
+            if (d < coilyDist) coilyDist = d;
+        }
+    }
+    if (coilyDist <= 2) {
+        if (discs[0].active && player.col === 0) return 'UL';
+        if (discs[1].active && player.col === player.row) return 'UR';
+    }
+
+    // BFS to nearest uncolored cube, preferring safe paths
+    var start = { row: player.row, col: player.col };
+    var visited = {}; visited[start.row + ',' + start.col] = true;
+    var queue = [{ row: start.row, col: start.col, path: [] }];
+    var goal = null;
+
+    while (queue.length > 0) {
+        var cur = queue.shift();
+        var cube = cubeAt(cur.row, cur.col);
+        if (cube && cube.state < tgt && (cur.row !== player.row || cur.col !== player.col)) {
+            goal = cur; break;
+        }
+        // Also stop at start if start cube needs coloring (already handled by stompCube on landing)
+        if (cur.path.length === 0 && cube && cube.state < tgt) {
+            // Current cube uncolored — any direction works, handled at landing
+        }
+        for (var k = 0; k < DIR_KEYS.length; k++) {
+            var dk2 = DIRS[DIR_KEYS[k]];
+            var nr2 = cur.row + dk2.dr, nc2 = cur.col + dk2.dc;
+            if (!isValidPos(nr2, nc2)) continue;
+            var key = nr2 + ',' + nc2;
+            if (visited[key]) continue;
+            visited[key] = true;
+            var newPath = cur.path.slice(); newPath.push(DIR_KEYS[k]);
+            queue.push({ row: nr2, col: nc2, path: newPath });
+        }
+    }
+
+    if (!goal || goal.path.length === 0) { aiPath = []; return null; }
+
+    // Build viz path
+    aiPath = [];
+    var pr = player.row, pc = player.col;
+    for (var i = 0; i < goal.path.length; i++) {
+        var dd = DIRS[goal.path[i]];
+        pr += dd.dr; pc += dd.dc;
+        aiPath.push({ row: pr, col: pc });
+    }
+
+    // Take first step — try to avoid danger
+    var firstDir = goal.path[0];
+    var fd = DIRS[firstDir];
+    var fnr = player.row + fd.dr, fnc = player.col + fd.dc;
+    if (dangerSet[fnr + ',' + fnc]) {
+        // Find a safer alternative that still makes progress
+        for (var k = 0; k < DIR_KEYS.length; k++) {
+            if (DIR_KEYS[k] === firstDir) continue;
+            var ad = DIRS[DIR_KEYS[k]];
+            var anr = player.row + ad.dr, anc = player.col + ad.dc;
+            if (!isValidPos(anr, anc)) continue;
+            if (dangerSet[anr + ',' + anc]) continue;
+            return DIR_KEYS[k];
+        }
+    }
+
+    return firstDir;
+}
+
+// ─── Update ───────────────────────────────────────────────────────────────────
+function update() {
+    if (paused || gameOver) return;
+    frameCount++;
+    updateDayNight();
+
+    if (swearBubble) {
+        swearBubble.timer--;
+        if (swearBubble.timer <= 0) swearBubble = null;
+    }
+    if (roundMsg) {
+        roundMsg.timer--;
+        if (roundMsg.timer <= 0) roundMsg = null;
+    }
+
+    updatePlayer();
+    updateEnemies();
+
+    // Accept input / AI
+    if (!player.jumping && !player.dead) {
+        if (gameMode === 'rules') {
+            aiMoveTimer++;
+            var aiDelay = Math.max(8, 22 - round * 2);
+            if (aiMoveTimer >= aiDelay) {
+                aiMoveTimer = 0;
+                var dir = computeAIMove();
+                if (dir) tryMove(dir);
+            }
+        } else {
+            if (inputQueue.length > 0) {
+                tryMove(inputQueue.shift());
+            }
+        }
+    }
+}
+
+// ─── Draw ─────────────────────────────────────────────────────────────────────
+function draw() {
+    ctx.fillStyle = '#f7f7f7';
+    ctx.fillRect(0, 0, CW, CH);
+
+    drawNightElements(ctx);
+
+    // Ground strip
+    if (spriteImg && spriteImg.complete) {
+        ctx.drawImage(spriteImg, 2, 54, 600, 12, 0, CH - 12, CW, 12);
+    } else {
+        ctx.strokeStyle = '#535353'; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(0, CH - 12); ctx.lineTo(CW, CH - 12); ctx.stroke();
+    }
+
+    // Draw pyramid top-to-bottom: row 0 (apex) first so lower rows' diamonds
+    // overlap the side faces of rows above — correct isometric painter's order
+    for (var r = 0; r < ROWS; r++) {
+        for (var c = 0; c <= r; c++) {
+            var cube = cubeAt(r, c);
+            var pos  = cubeXY(r, c);
+            drawCube(ctx, pos.cx, pos.cy, cube ? cube.state : 0);
+        }
+    }
+
+    // Discs
+    drawDiscs();
+
+    // AI viz path (before inversion — color elements excluded from inversion)
+    if (vizOn && aiPath.length > 0) drawVizPath();
+
+    // Enemies
+    for (var i = 0; i < enemies.length; i++) drawEnemy(enemies[i]);
+
+    // Player
+    drawPlayer();
+
+    // Night inversion
+    applyNight(ctx);
+
+    // HUD (drawn post-inversion so it flips too, matching dino runner style)
+    drawHUD();
+
+    // Overlays
+    if (swearBubble) drawSwearBubble();
+    if (roundMsg)    drawRoundMsg();
+    if (gameOver)    drawGameOver();
+    if (paused && !gameOver) drawPaused();
+}
+
+function drawDiscs() {
+    for (var i = 0; i < discs.length; i++) {
+        if (!discs[i].active) continue;
+        var p = discScreenPos(discs[i].side);
+        ctx.save();
+        // Pulsing scale for visibility
+        var pulse = 1 + Math.sin(frameCount * 0.12) * 0.06;
+        ctx.translate(p.x, p.y);
+        ctx.scale(pulse, pulse);
+        // Outer disc
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 20, 10, 0, 0, Math.PI * 2);
+        ctx.fillStyle = '#c8c8c8'; ctx.fill();
+        ctx.strokeStyle = '#535353'; ctx.lineWidth = 1.5; ctx.stroke();
+        // Middle ring
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 13, 6, 0, 0, Math.PI * 2);
+        ctx.fillStyle = '#909090'; ctx.fill();
+        ctx.strokeStyle = '#535353'; ctx.lineWidth = 0.8; ctx.stroke();
+        // Inner dot
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 5, 2.5, 0, 0, Math.PI * 2);
+        ctx.fillStyle = '#535353'; ctx.fill();
+        ctx.restore();
+    }
+}
+
+function drawVizPath() {
+    if (aiPath.length === 0) return;
+    ctx.save();
+    ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = 'rgba(255,200,0,0.80)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    var sp = cubeXY(player.row, player.col);
+    ctx.moveTo(sp.cx, sp.cy);
+    for (var i = 0; i < aiPath.length; i++) {
+        var pt = cubeXY(aiPath[i].row, aiPath[i].col);
+        ctx.lineTo(pt.cx, pt.cy);
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+    for (var i = 0; i < aiPath.length; i++) {
+        var pt2 = cubeXY(aiPath[i].row, aiPath[i].col);
+        ctx.beginPath();
+        ctx.arc(pt2.cx, pt2.cy, 4, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255,200,0,0.90)'; ctx.fill();
+    }
+    ctx.restore();
+}
+
+function drawPlayer() {
+    if (player.dead) {
+        // Flash during death
+        if (Math.floor(player.deathAnimTimer / 5) % 2 === 0) {
+            ctx.save(); ctx.globalAlpha = 0.45;
+            _drawTrex(player.px, player.py, SPRITES.TREX_IDLE, 0.72);
+            ctx.restore();
+        }
+        return;
+    }
+    var sp = player.jumping
+        ? (player.spriteFrame ? SPRITES.TREX_RUN2 : SPRITES.TREX_RUN1)
+        : SPRITES.TREX_IDLE;
+    _drawTrex(player.px, player.py, sp, 0.72);
+}
+
+function _drawTrex(px, py, sp, sc) {
+    if (spriteImg && spriteImg.complete) {
+        ctx.drawImage(spriteImg, sp.x, sp.y, sp.w, sp.h,
+            Math.round(px - sp.w * sc / 2),
+            Math.round(py - sp.h * sc - TILE_H / 2 + 2),
+            sp.w * sc, sp.h * sc);
+    }
+}
+
+function drawEnemy(e) {
+    if (e.type === 'spawn-timer') return;
+
+    if (e.type === 'egg') {
+        ctx.save();
+        ctx.translate(Math.round(e.px), Math.round(e.py - TILE_H / 2 - 6));
+        // Egg body
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 8, 13, 0, 0, Math.PI * 2);
+        ctx.fillStyle = '#e8e8e8'; ctx.fill();
+        ctx.strokeStyle = '#535353'; ctx.lineWidth = 1.5; ctx.stroke();
+        // Cracks if nearly hatched
+        if (e.hops >= 4) {
+            ctx.strokeStyle = '#535353'; ctx.lineWidth = 0.9;
+            ctx.beginPath(); ctx.moveTo(-3, -6); ctx.lineTo(0, -2); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(3, -5); ctx.lineTo(1, -1); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(-1, 2); ctx.lineTo(2, 5); ctx.stroke();
+        }
+        ctx.restore();
+
+    } else if (e.type === 'coily') {
+        // Pterodactyl sprite as raptor pursuer
+        var sp = e.frame ? SPRITES.PTERO2 : SPRITES.PTERO1;
+        var sc = 0.55;
+        if (spriteImg && spriteImg.complete) {
+            ctx.drawImage(spriteImg, sp.x, sp.y, sp.w, sp.h,
+                Math.round(e.px - sp.w * sc / 2),
+                Math.round(e.py - sp.h * sc - TILE_H / 2),
+                sp.w * sc, sp.h * sc);
+        }
+
+    } else if (e.type === 'slick') {
+        var sp2 = SPRITES.CACTUS_SM;
+        var sc2 = 0.55;
+        if (spriteImg && spriteImg.complete) {
+            ctx.drawImage(spriteImg, sp2.x, sp2.y, sp2.w, sp2.h,
+                Math.round(e.px - sp2.w * sc2 / 2),
+                Math.round(e.py - sp2.h * sc2 - TILE_H / 2),
+                sp2.w * sc2, sp2.h * sc2);
+        }
+    }
+}
+
+function drawSwearBubble() {
+    if (!swearBubble) return;
+    ctx.save();
+    var text = '@!#?@!';
+    ctx.font = '600 11px "Courier New",monospace';
+    var tw = ctx.measureText(text).width;
+    var bx = swearBubble.x - tw / 2 - 6;
+    var by = swearBubble.y - 18;
+    var bw = tw + 12;
+    var bh = 20;
+    var alpha = Math.min(1, swearBubble.timer / 15);
+    ctx.globalAlpha = alpha;
+    // Bubble background
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.roundRect
+        ? ctx.roundRect(bx, by, bw, bh, 5)
+        : ctx.rect(bx, by, bw, bh);
+    ctx.fill();
+    ctx.strokeStyle = '#535353'; ctx.lineWidth = 1; ctx.stroke();
+    // Tail
+    ctx.beginPath();
+    ctx.moveTo(swearBubble.x - 4, by + bh);
+    ctx.lineTo(swearBubble.x, by + bh + 7);
+    ctx.lineTo(swearBubble.x + 4, by + bh);
+    ctx.fillStyle = '#ffffff'; ctx.fill();
+    ctx.strokeStyle = '#535353'; ctx.lineWidth = 1; ctx.stroke();
+    // Text
+    ctx.fillStyle = '#535353';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, swearBubble.x, by + bh / 2);
+    ctx.restore();
+}
+
+function drawHUD() {
+    ctx.font = '600 13px "Courier New",monospace';
+    ctx.fillStyle = '#535353';
+    ctx.textAlign = 'left';
+    ctx.fillText('HI ' + padScore(Math.max(score, hiScore)), 10, 18);
+
+    // Lives as small T-Rex sprites at top-right
+    for (var i = 0; i < lives; i++) {
+        if (spriteImg && spriteImg.complete) {
+            var sp = SPRITES.TREX_IDLE;
+            var sc = 0.38;
+            ctx.drawImage(spriteImg, sp.x, sp.y, sp.w, sp.h,
+                CW - 8 - (i + 1) * 20, 4,
+                sp.w * sc, sp.h * sc);
+        }
+    }
+
+    // Round indicator center-top
+    ctx.textAlign = 'center';
+    ctx.fillText('ROUND ' + round, CW / 2, 18);
+    ctx.textAlign = 'left';
+}
+
+function drawRoundMsg() {
+    var alpha = Math.min(1, roundMsg.timer / 20);
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.font = 'bold 26px "Courier New",monospace';
+    ctx.fillStyle = '#535353';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(roundMsg.text, CW / 2, CH / 2 - 10);
+    ctx.textBaseline = 'alphabetic';
+    ctx.restore();
+}
+
+function drawGameOver() {
+    ctx.fillStyle = 'rgba(247,247,247,0.92)';
+    ctx.fillRect(0, CH / 2 - 52, CW, 104);
+    ctx.fillStyle = '#535353';
+    ctx.font = 'bold 28px "Courier New",monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('GAME OVER', CW / 2, CH / 2 - 12);
+    ctx.font = '13px "Courier New",monospace';
+    ctx.fillText('Score: ' + padScore(score) + '    Press R to restart', CW / 2, CH / 2 + 18);
+    ctx.textAlign = 'left';
+}
+
+function drawPaused() {
+    ctx.fillStyle = 'rgba(247,247,247,0.85)';
+    ctx.fillRect(0, CH / 2 - 24, CW, 48);
+    ctx.fillStyle = '#535353';
+    ctx.font = 'bold 20px "Courier New",monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('PAUSED', CW / 2, CH / 2 + 7);
+    ctx.textAlign = 'left';
+}
+
+// ─── Game loop ────────────────────────────────────────────────────────────────
+function loop() {
+    update();
+    draw();
+    requestAnimationFrame(loop);
+}
+
+// ─── Public API ───────────────────────────────────────────────────────────────
+window.restartGame = function () {
+    hiScore = Math.max(hiScore || 0, score || 0);
+    score   = 0;
+    lives   = 3;
+    round   = 1;
+    extraLifeGiven = false;
+    gameOver = false;
+    paused   = false;
+    aiMoveTimer = 0;
+    inputQueue  = [];
+    inverted    = false;
+    dayTimer    = 0;
+    nightOpacity= 0;
+    placeStars();
+    initRound();
+};
+
+window.setMode = function (m) {
+    gameMode = m;
+    document.getElementById('human-btn').classList.toggle('active', m === 'off');
+    document.getElementById('rules-btn').classList.toggle('active', m === 'rules');
+    if (m !== 'off') inputQueue = [];
+    aiMoveTimer = 0;
+};
+
+window.toggleViz = function () {
+    vizOn = !vizOn;
+    document.getElementById('viz-btn').classList.toggle('active', vizOn);
+};
+
+window.togglePause = function () {
+    paused = !paused;
+    document.getElementById('pause-btn').classList.toggle('active', paused);
+};
+
+// ─── Input ────────────────────────────────────────────────────────────────────
+document.addEventListener('keydown', function (e) {
+    if (e.key === 'r' || e.key === 'R') { restartGame(); return; }
+    if (e.key === 'p' || e.key === 'P') { togglePause(); return; }
+    if (gameOver || paused) return;
+    if (gameMode !== 'off') return;
+    var prevent = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'q', 'Q', 'e', 'E', 'a', 'A', 'd', 'D', ' '];
+    if (prevent.indexOf(e.key) !== -1) e.preventDefault();
+    var dir = null;
+    if (e.key === 'ArrowUp'    || e.key === 'q' || e.key === 'Q') dir = 'UL'; // up-left
+    if (e.key === 'ArrowRight' || e.key === 'e' || e.key === 'E') dir = 'UR'; // up-right
+    if (e.key === 'ArrowLeft'  || e.key === 'a' || e.key === 'A') dir = 'DL'; // down-left
+    if (e.key === 'ArrowDown'  || e.key === 'd' || e.key === 'D') dir = 'DR'; // down-right
+    if (dir) inputQueue.push(dir);
+});
+
+// ─── Start ────────────────────────────────────────────────────────────────────
+hiScore = 0;
+restartGame();
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,977 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DinoBeamRider</title>
+    <link rel="stylesheet" href="si-styles.css?v=2">
+    <style>#game-canvas { width: 100%; height: auto; max-width: none !important; }</style>
+</head>
+<body>
+    <img id="offline-resources-1x" src="assets/default_100_percent/100-offline-sprite.png" style="display:none;">
+    <div class="si-page" style="padding-bottom: 40px;">
+        <h1>DinoBeamRider</h1>
+        <p class="si-subtitle">Blast pterodactyls off the prehistoric rail</p>
+        <div class="si-game-box">
+            <canvas id="game-canvas" width="600" height="400"></canvas>
+            <div class="si-controls" style="margin-top:12px;">
+                <button class="si-btn active" id="human-btn" onclick="setMode('off')">Human</button>
+                <button class="si-btn" id="rules-btn" onclick="setMode('rules')">AI</button>
+                <button class="si-btn" id="viz-btn" onclick="toggleViz()">Viz</button>
+                <button class="si-btn" onclick="restartGame()">Restart</button>
+                <button class="si-btn" id="pause-btn" onclick="togglePause()">Pause</button>
+            </div>
+            <p class="si-help" style="text-align:center;">&larr;&rarr; move lane &nbsp;|&nbsp; Space fire (one shot) &nbsp;|&nbsp; R restart</p>
+        </div>
+        <h2 style="margin-top:16px;">How it works</h2>
+        <p class="si-prose">DinoBeamRider recreates the 1982 Activision original: one bullet at a time, sector-by-sector waves of pterodactyls and blocker cacti, and a sentinel boss every three sectors. The AI measures incoming threat per lane, moves toward the safest firing position, and waits for the bullet to clear before reloading.</p>
+        <p class="si-prose">Tap <strong>Viz</strong> to see per-lane threat scores overlaid on the grid and a dashed line tracing the bullet path.</p>
+        <p style="margin-top:20px;"><a href="/" style="color:#0071e3;font-size:14px;text-decoration:none;">&larr; Back</a></p>
+    </div>
+<script src="dino-sounds.js"></script>
+<script>
+(function(){
+'use strict';
+
+// ================================================================
+//  CONSTANTS
+// ================================================================
+var CW = 600, CH = 400;
+var NUM_LANES = 15;
+var VP_X = 300, VP_Y = 60;   // vanishing point
+var GROUND_Y = CH - 12;       // where ground sprite sits
+var PLAYER_Y = GROUND_Y;      // player feet y
+
+// 15 lane x-positions at ground level, evenly spaced 30..570
+var GROUND_XS = (function() {
+    var xs = [];
+    for (var i = 0; i < NUM_LANES; i++) {
+        xs.push(30 + i * (540 / (NUM_LANES - 1)));
+    }
+    return xs;
+}());
+
+// Cross-beam y levels (perspective depth markers)
+var BEAM_YS = [100, 150, 200, 250, 300];
+
+// ================================================================
+//  SPRITES
+// ================================================================
+var SPRITES = {
+    TREX_RUN1: {x:936,y:2,w:44,h:47},
+    TREX_RUN2: {x:980,y:2,w:44,h:47},
+    TREX_IDLE: {x:892,y:2,w:44,h:47},
+    PTERO1:    {x:134,y:2,w:46,h:40},
+    PTERO2:    {x:180,y:2,w:46,h:40},
+    CACTUS_SM: {x:228,y:2,w:17,h:35}
+};
+var STAR_SPRITE  = {x:645,y:2,size:9};
+var MOON_SPRITE  = {x:484,y:2,w:20,h:40};
+var MOON_PHASES  = [140,120,100,60,40,20,0];
+var spriteImg    = document.getElementById('offline-resources-1x');
+
+function padScore(n) {
+    var s = '' + Math.floor(n);
+    while (s.length < 5) s = '0' + s;
+    return s;
+}
+
+// ================================================================
+//  PERSPECTIVE HELPERS
+// ================================================================
+function laneX(lane, y) {
+    // Interpolate from vanishing point to ground x
+    var t = (y - VP_Y) / (GROUND_Y - VP_Y);
+    t = Math.max(0, Math.min(1, t));
+    return VP_X + (GROUND_XS[lane] - VP_X) * t;
+}
+
+function scaleAt(y) {
+    var t = (y - VP_Y) / (GROUND_Y - VP_Y);
+    return Math.max(0.05, Math.min(1, t));
+}
+
+// ================================================================
+//  DAY/NIGHT  (verbatim from spec)
+// ================================================================
+var inverted = false, dayTimer = 0, nightOpacity = 0, moonPhase = 0;
+var moonX = CW - 50, moonY = 25, nightStars = [];
+
+function placeStars() {
+    nightStars = [];
+    for (var i = 0; i < 20; i++)
+        nightStars.push({x:Math.random()*CW, y:Math.random()*CH*0.85,
+                         sourceY:STAR_SPRITE.y+STAR_SPRITE.size*(i%2)});
+}
+placeStars();
+
+function updateDayNight() {
+    dayTimer++;
+    if (!inverted && dayTimer >= 700) { inverted = true; dayTimer = 0; moonPhase = (moonPhase+1)%7; }
+    else if (inverted && dayTimer >= 400) { inverted = false; dayTimer = 0; }
+    if (inverted) nightOpacity = Math.min(1, nightOpacity + 0.035);
+    else          nightOpacity = Math.max(0, nightOpacity - 0.035);
+    if (nightOpacity > 0) {
+        moonX -= 0.25; if (moonX < -20) moonX = CW;
+        for (var i = 0; i < nightStars.length; i++) {
+            nightStars[i].x -= 0.3;
+            if (nightStars[i].x < -9) nightStars[i].x = CW;
+        }
+    } else placeStars();
+}
+
+function drawNightElements(ctx) {
+    if (nightOpacity <= 0 || !spriteImg || !spriteImg.complete) return;
+    ctx.save(); ctx.globalAlpha = nightOpacity;
+    for (var i = 0; i < nightStars.length; i++) {
+        var s = nightStars[i];
+        ctx.drawImage(spriteImg, STAR_SPRITE.x, s.sourceY, 9, 9, Math.round(s.x), s.y, 9, 9);
+    }
+    var mx = MOON_SPRITE.x + MOON_PHASES[moonPhase];
+    var mw = moonPhase === 3 ? 40 : 20;
+    ctx.drawImage(spriteImg, mx, MOON_SPRITE.y, mw, 40, Math.round(moonX), moonY, mw, 40);
+    ctx.globalAlpha = 1; ctx.restore();
+}
+
+function applyNight(ctx) {
+    if (!inverted) return;
+    ctx.globalCompositeOperation = 'difference';
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, CW, CH);
+    ctx.globalCompositeOperation = 'source-over';
+}
+
+// ================================================================
+//  CANVAS
+// ================================================================
+var canvas = document.getElementById('game-canvas');
+var ctx    = canvas.getContext('2d');
+
+// ================================================================
+//  GAME STATE
+// ================================================================
+var mode        = 'off';
+var vizEnabled  = false;
+var paused      = false;
+var gameOver    = false;
+var gameStarted = false;
+
+var score       = 0;
+var hiScore     = 0;
+var lives       = 3;
+var sector      = 1;
+
+// Player
+var playerLane   = 7;   // 0-14, start center
+var moveCooldown = 0;   // seconds until next move allowed
+var MOVE_CD      = 0.15;
+
+// Bullet (ONE at a time)
+var bullet = null;   // {lane, y} or null
+var BULLET_SPEED = 450; // px/s upward
+
+// Enemies
+// type: 'charger' | 'blocker' | 'sentinel'
+// charger: moves toward player lane at spawn, straight down
+// blocker: fixed y, needs 3 hits
+// sentinel: slowly descends, needs 5 hits
+var enemies = [];
+
+// Sector management
+var sectorKillTarget = 0;   // enemies to destroy this sector
+var sectorKillCount  = 0;   // how many destroyed so far
+var sentinelSpawned  = false;
+var sentinelDefeated = false;
+
+// Spawn queue / timing
+var spawnQueue    = [];  // list of {type, lane, delay}
+var spawnTimer    = 0;
+var spawnInterval = 1.8; // seconds between spawns (decreases with sector)
+
+// Sector advance animation
+var sectorTransition = 0;  // >0 = animating, counts down
+var SECTOR_TRANS_DUR = 1.2;
+var sectorMessage    = '';
+var sectorMsgTimer   = 0;
+
+// Flash on hit
+var hitFlashes = []; // {x,y,timer}
+
+// Player anim
+var animTick  = 0;
+var lastTime  = 0;
+var rafId     = null;
+
+// Bonus life threshold
+var nextBonusLife = 10000;
+
+// ================================================================
+//  SECTOR SETUP
+// ================================================================
+function killsForSector(s) {
+    return 8 + (s - 1) * 2;
+}
+
+function spawnIntervalForSector(s) {
+    return Math.max(0.5, 1.8 - (s - 1) * 0.08);
+}
+
+function chargerSpeedForSector(s) {
+    return 60 + (s - 1) * 10;
+}
+
+function buildSpawnQueue(s) {
+    var q = [];
+    var target = killsForSector(s);
+    // Queue charger and blocker spawns
+    // Blockers appear from sector 2 onward, roughly 1 per 4 chargers
+    for (var i = 0; i < target; i++) {
+        var isBlocker = (s >= 2) && (i > 0) && (i % 4 === 0);
+        q.push({ type: isBlocker ? 'blocker' : 'charger' });
+    }
+    return q;
+}
+
+function initSector(s) {
+    enemies      = [];
+    bullet       = null;
+    spawnQueue   = buildSpawnQueue(s);
+    spawnTimer   = 0.6; // small initial delay
+    sentinelSpawned  = false;
+    sentinelDefeated = false;
+    sectorKillTarget = killsForSector(s);
+    sectorKillCount  = 0;
+}
+
+// ================================================================
+//  INIT GAME
+// ================================================================
+function initGame() {
+    score       = 0;
+    lives       = 3;
+    sector      = 1;
+    playerLane  = 7;
+    moveCooldown = 0;
+    gameOver    = false;
+    gameStarted = true;
+    sectorTransition = 0;
+    sectorMessage    = '';
+    sectorMsgTimer   = 0;
+    hitFlashes  = [];
+    nextBonusLife = 10000;
+    animTick    = 0;
+
+    inverted = false; dayTimer = 0; nightOpacity = 0; placeStars();
+    moonX = CW - 50;
+
+    initSector(sector);
+}
+
+// ================================================================
+//  SPAWN LOGIC
+// ================================================================
+function spawnEnemy(type) {
+    var lane = Math.floor(Math.random() * NUM_LANES);
+    var spd  = chargerSpeedForSector(sector);
+
+    if (type === 'charger') {
+        // Charger targets the player's current lane at spawn time
+        enemies.push({
+            type:       'charger',
+            lane:       lane,
+            targetLane: playerLane,  // will fly toward this
+            y:          VP_Y + 2,
+            hp:         1,
+            maxHp:      1,
+            speed:      spd,
+            animT:      Math.random() * 2,
+            hitFlash:   0
+        });
+    } else if (type === 'blocker') {
+        // Blocker appears at mid-screen, stays fixed
+        var blockerY = 160 + Math.random() * 80;
+        enemies.push({
+            type:     'blocker',
+            lane:     lane,
+            y:        blockerY,
+            hp:       3,
+            maxHp:    3,
+            speed:    0,
+            animT:    0,
+            hitFlash: 0
+        });
+    }
+}
+
+function spawnSentinel() {
+    if (sentinelSpawned) return;
+    sentinelSpawned = true;
+    var lane = Math.floor(Math.random() * NUM_LANES);
+    enemies.push({
+        type:     'sentinel',
+        lane:     lane,
+        y:        VP_Y + 10,
+        hp:       5,
+        maxHp:    5,
+        speed:    18,  // slow descent
+        animT:    0,
+        hitFlash: 0
+    });
+}
+
+// ================================================================
+//  CONTROLS — DISCRETE LANE MOVES
+// ================================================================
+window.addEventListener('keydown', function(e) {
+    if (e.key === 'r' || e.key === 'R') { restartGame(); return; }
+    if (e.key === 'p' || e.key === 'P') { togglePause(); return; }
+    if (paused || gameOver || mode !== 'off') return;
+    if (e.key === 'ArrowLeft'  || e.key === 'a' || e.key === 'A') { tryMove(-1); e.preventDefault(); }
+    if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') { tryMove(+1); e.preventDefault(); }
+    if (e.key === ' ') { tryFire(); e.preventDefault(); }
+});
+
+canvas.addEventListener('touchstart', function(e) {
+    e.preventDefault();
+    if (paused || gameOver || mode !== 'off') return;
+    var rect = canvas.getBoundingClientRect();
+    var scaleX = CW / rect.width;
+    for (var ti = 0; ti < e.changedTouches.length; ti++) {
+        var tx = (e.changedTouches[ti].clientX - rect.left) * scaleX;
+        if (tx < CW * 0.35)      tryMove(-1);
+        else if (tx > CW * 0.65) tryMove(+1);
+        else                     tryFire();
+    }
+}, { passive: false });
+
+function tryMove(dir) {
+    if (moveCooldown > 0) return;
+    var next = playerLane + dir;
+    if (next < 0 || next >= NUM_LANES) return;
+    playerLane   = next;
+    moveCooldown = MOVE_CD;
+}
+
+function tryFire() {
+    // ONE bullet at a time — can't fire if bullet is in flight
+    if (bullet !== null) return;
+    bullet = { lane: playerLane, y: PLAYER_Y - 50 };
+    DinoSounds.press();
+}
+
+// ================================================================
+//  AI (rules mode)
+// ================================================================
+var aiMoveCooldown = 0;
+
+function aiTick(dt) {
+    if (mode !== 'rules') return;
+    aiMoveCooldown -= dt;
+
+    // Compute threat per lane
+    var threat = new Array(NUM_LANES).fill(0);
+    var blockerInLane = new Array(NUM_LANES).fill(false);
+
+    for (var i = 0; i < enemies.length; i++) {
+        var e = enemies[i];
+        if (e.type === 'blocker') {
+            blockerInLane[e.lane] = true;
+            // Blockers are obstacles — penalise the lane moderately
+            threat[e.lane] += 8;
+        } else {
+            // charger or sentinel: weight by proximity to player (lower y = farther = less urgent)
+            var dist = GROUND_Y - e.y;
+            var w    = dist > 0 ? 1000 / (dist + 1) : 50;
+            threat[e.lane] += w;
+        }
+    }
+
+    // Find best lane: highest threat that is reachable and not blocked by blocker in bullet path
+    var bestLane = playerLane;
+    var bestScore = -1;
+    for (var l = 0; l < NUM_LANES; l++) {
+        if (threat[l] > bestScore) { bestScore = threat[l]; bestLane = l; }
+    }
+
+    // If no enemies, stay put
+    if (bestScore < 0.01) bestLane = playerLane;
+
+    // Step one lane toward target
+    if (aiMoveCooldown <= 0) {
+        if (playerLane < bestLane)      { playerLane++; aiMoveCooldown = MOVE_CD; }
+        else if (playerLane > bestLane) { playerLane--; aiMoveCooldown = MOVE_CD; }
+    }
+
+    // Fire as soon as bullet clears, unless a blocker is directly in lane
+    if (bullet === null) {
+        // Check if any blocker is directly in our lane — if so, try adjacent
+        if (blockerInLane[playerLane]) {
+            // Peek left/right for a clear lane with high threat
+            var left  = playerLane > 0 ? playerLane - 1 : playerLane;
+            var right = playerLane < NUM_LANES - 1 ? playerLane + 1 : playerLane;
+            if (!blockerInLane[left] && aiMoveCooldown <= 0) {
+                playerLane = left; aiMoveCooldown = MOVE_CD;
+            } else if (!blockerInLane[right] && aiMoveCooldown <= 0) {
+                playerLane = right; aiMoveCooldown = MOVE_CD;
+            }
+        }
+        tryFire();
+    }
+}
+
+// ================================================================
+//  UPDATE
+// ================================================================
+function update(dt) {
+    if (paused || gameOver) return;
+    animTick += dt;
+
+    // Sector transition animation — freeze gameplay
+    if (sectorTransition > 0) {
+        sectorTransition -= dt;
+        updateDayNight();
+        if (sectorTransition <= 0) {
+            sectorTransition = 0;
+            sector++;
+            DinoSounds.reached();
+            initSector(sector);
+            sectorMessage  = 'SECTOR ' + sector;
+            sectorMsgTimer = 2.0;
+        }
+        return;
+    }
+
+    // Message timer
+    if (sectorMsgTimer > 0) sectorMsgTimer -= dt;
+
+    updateDayNight();
+
+    // Move cooldown
+    if (moveCooldown > 0) moveCooldown -= dt;
+
+    // AI
+    aiTick(dt);
+
+    // Spawn enemies from queue
+    spawnTimer -= dt;
+    if (spawnTimer <= 0 && spawnQueue.length > 0) {
+        var entry = spawnQueue.shift();
+        spawnEnemy(entry.type);
+        spawnTimer = spawnIntervalForSector(sector);
+    }
+
+    // Spawn sentinel when all normal kills done and sentinel not yet spawned
+    if (!sentinelSpawned && spawnQueue.length === 0 && sectorKillCount >= sectorKillTarget) {
+        spawnSentinel();
+    }
+
+    // Move bullet
+    if (bullet !== null) {
+        bullet.y -= BULLET_SPEED * dt;
+        if (bullet.y < VP_Y) {
+            bullet = null; // missed, clears for next shot
+        }
+    }
+
+    // Move enemies & collision
+    for (var ei = enemies.length - 1; ei >= 0; ei--) {
+        var e = enemies[ei];
+        e.animT   += dt;
+        e.hitFlash = Math.max(0, e.hitFlash - dt * 6);
+
+        if (e.type === 'charger') {
+            // Charger flies straight toward targetLane (moves x gradually, descends)
+            e.y += e.speed * dt;
+            // Also drift lane toward targetLane at a fixed px/s rate
+            var curX    = laneX(e.lane, e.y);
+            var targetX = laneX(e.targetLane, e.y);
+            // We track fractional lane
+            if (!e.laneF) e.laneF = e.lane;
+            var dx = targetX - curX;
+            var stepPx = Math.sign(dx) * Math.min(Math.abs(dx), 40 * dt);
+            // Convert stepPx back to lane fraction — approximate
+            var laneWidth = (GROUND_XS[1] - GROUND_XS[0]) * scaleAt(e.y);
+            if (laneWidth > 0) e.laneF += stepPx / laneWidth;
+            e.laneF = Math.max(0, Math.min(NUM_LANES - 1, e.laneF));
+            e.lane = Math.round(e.laneF);
+        }
+        // blockers stay put; sentinel descends
+        if (e.type === 'sentinel') {
+            e.y += e.speed * dt;
+        }
+
+        // Bullet collision
+        if (bullet !== null && bullet.lane === e.lane) {
+            var bx  = laneX(bullet.lane, bullet.y);
+            var ex  = laneX(e.lane, e.y);
+            var hit = Math.abs(bullet.y - e.y) < 28;
+
+            // Blockers also stop bullets (absorb)
+            if (hit) {
+                if (e.type === 'blocker') {
+                    // Bullet absorbed by blocker whether or not it kills it
+                    bullet = null;
+                    e.hp--;
+                    e.hitFlash = 1;
+                    hitFlashes.push({x: ex, y: e.y, timer: 0.25});
+                    if (e.hp <= 0) {
+                        score += 200;
+                        sectorKillCount++;
+                        DinoSounds.press();
+                        enemies.splice(ei, 1);
+                        checkBonusLife();
+                    }
+                    continue;
+                } else {
+                    bullet = null;
+                    e.hp--;
+                    e.hitFlash = 1;
+                    hitFlashes.push({x: ex, y: e.y, timer: 0.25});
+                    if (e.hp <= 0) {
+                        if (e.type === 'charger')  score += 100;
+                        if (e.type === 'sentinel') score += 500;
+                        if (e.type !== 'sentinel') sectorKillCount++;
+                        else sentinelDefeated = true;
+                        DinoSounds.press();
+                        enemies.splice(ei, 1);
+                        checkBonusLife();
+                        // Check sector clear after sentinel
+                        if (sentinelDefeated) checkSectorClear(true);
+                    }
+                    continue;
+                }
+            }
+        }
+
+        // Charger reaches player
+        if (e.type === 'charger' && e.y >= GROUND_Y - 30) {
+            if (e.lane === playerLane) loseLife();
+            enemies.splice(ei, 1);
+            continue;
+        }
+        // Sentinel reaches player
+        if (e.type === 'sentinel' && e.y >= GROUND_Y - 40) {
+            loseLife();
+            enemies.splice(ei, 1);
+            sentinelDefeated = true;
+            continue;
+        }
+    }
+
+    // Hit flash particles
+    for (var fi = hitFlashes.length - 1; fi >= 0; fi--) {
+        hitFlashes[fi].timer -= dt;
+        if (hitFlashes[fi].timer <= 0) hitFlashes.splice(fi, 1);
+    }
+
+    // Check sector clear (non-sentinel path)
+    if (!sentinelSpawned) {
+        checkSectorClear(false);
+    }
+}
+
+function checkBonusLife() {
+    if (score >= nextBonusLife) {
+        lives++;
+        nextBonusLife += 10000;
+    }
+}
+
+function checkSectorClear(forceClear) {
+    // Sector clears when:
+    // - All queued enemies spawned + killed
+    // - Sentinel defeated (if spawned), or we force-clear
+    if (sectorTransition > 0) return;
+
+    var allNormalDone = (spawnQueue.length === 0 && sectorKillCount >= sectorKillTarget);
+    var sentinelOk    = !sentinelSpawned || sentinelDefeated;
+    var noEnemies     = enemies.length === 0;
+
+    if (allNormalDone && sentinelOk && noEnemies || forceClear && noEnemies) {
+        sectorTransition = SECTOR_TRANS_DUR;
+    }
+}
+
+function loseLife() {
+    lives--;
+    DinoSounds.hit();
+    if (lives <= 0) {
+        lives    = 0;
+        gameOver = true;
+        if (score > hiScore) hiScore = score;
+    }
+}
+
+// ================================================================
+//  DRAW
+// ================================================================
+function draw() {
+    // Background
+    ctx.fillStyle = '#f7f7f7';
+    ctx.fillRect(0, 0, CW, CH);
+
+    // Stars / moon behind everything
+    drawNightElements(ctx);
+
+    // -- GRID --
+    ctx.save();
+    ctx.strokeStyle = '#535353';
+    ctx.lineWidth   = 0.8;
+
+    // 15 lane lines from vanishing point to ground
+    for (var l = 0; l < NUM_LANES; l++) {
+        ctx.beginPath();
+        ctx.moveTo(VP_X, VP_Y);
+        ctx.lineTo(GROUND_XS[l], GROUND_Y);
+        ctx.stroke();
+    }
+
+    // Cross-beam ellipse curves at each depth level
+    ctx.lineWidth = 0.6;
+    for (var bi = 0; bi < BEAM_YS.length; bi++) {
+        var by  = BEAM_YS[bi];
+        var t   = (by - VP_Y) / (GROUND_Y - VP_Y);
+        var x0  = laneX(0, by);
+        var x14 = laneX(NUM_LANES - 1, by);
+        var mid = (x0 + x14) / 2;
+        var hw  = (x14 - x0) / 2;
+        var ry  = hw * 0.12; // slight curve for tunnel feel
+        ctx.beginPath();
+        ctx.ellipse(mid, by, hw, ry, 0, 0, Math.PI * 2);
+        ctx.stroke();
+    }
+    ctx.restore();
+
+    // -- AI VIZ overlays (color-tinted lane triangles) --
+    if (vizEnabled) drawViz();
+
+    // -- SECTOR TRANSITION (zoom animation) --
+    if (sectorTransition > 0) {
+        drawSectorTransition();
+    }
+
+    // -- HIT FLASHES --
+    for (var fi = 0; fi < hitFlashes.length; fi++) {
+        var f = hitFlashes[fi];
+        var fAlpha = f.timer * 4;
+        ctx.save();
+        ctx.globalAlpha = Math.min(1, fAlpha);
+        ctx.fillStyle   = '#535353';
+        ctx.beginPath();
+        ctx.arc(f.x, f.y, 8, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+    }
+
+    // -- BULLET --
+    if (bullet !== null) {
+        var bx  = laneX(bullet.lane, bullet.y);
+        var bsc = scaleAt(bullet.y);
+        // Dashed line from player to bullet tip when viz on
+        if (vizEnabled) {
+            ctx.save();
+            ctx.setLineDash([3, 5]);
+            ctx.strokeStyle = 'rgba(255,220,0,0.55)';
+            ctx.lineWidth   = 1;
+            ctx.beginPath();
+            ctx.moveTo(laneX(bullet.lane, PLAYER_Y), PLAYER_Y - SPRITES.TREX_IDLE.h);
+            ctx.lineTo(bx, bullet.y);
+            ctx.stroke();
+            ctx.restore();
+        }
+        ctx.fillStyle = '#535353';
+        ctx.beginPath();
+        ctx.arc(bx, bullet.y, Math.max(2, 4 * bsc), 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    // -- ENEMIES --
+    for (var ei = 0; ei < enemies.length; ei++) {
+        drawEnemy(enemies[ei]);
+    }
+
+    // -- PLAYER T-REX --
+    drawPlayer();
+
+    // -- GROUND SPRITE --
+    if (spriteImg && spriteImg.complete) {
+        ctx.drawImage(spriteImg, 2, 54, 600, 12, 0, CH - 12, CW, 12);
+    } else {
+        ctx.strokeStyle = '#535353'; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(0, CH - 8); ctx.lineTo(CW, CH - 8); ctx.stroke();
+    }
+
+    // Apply night inversion BEFORE HUD so HUD stays readable
+    applyNight(ctx);
+
+    // -- HUD --
+    drawHUD();
+
+    // -- SECTOR MESSAGE --
+    if (sectorMsgTimer > 0) {
+        var alpha = Math.min(1, sectorMsgTimer * 1.5);
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.font        = '700 22px "Courier New",monospace';
+        ctx.fillStyle   = '#535353';
+        ctx.textAlign   = 'center';
+        ctx.fillText(sectorMessage, CW / 2, CH / 2 - 10);
+        ctx.restore();
+        ctx.textAlign = 'left';
+    }
+
+    // -- GAME OVER --
+    if (gameOver) {
+        ctx.fillStyle = 'rgba(247,247,247,0.85)';
+        ctx.fillRect(0, 0, CW, CH);
+        ctx.font      = '700 24px "Courier New",monospace';
+        ctx.fillStyle = '#535353';
+        ctx.textAlign = 'center';
+        ctx.fillText('GAME OVER', CW / 2, CH / 2 - 22);
+        ctx.font = '600 13px "Courier New",monospace';
+        ctx.fillText('SCORE ' + padScore(score) + '   SECTOR ' + sector, CW / 2, CH / 2 + 4);
+        ctx.fillText('PRESS R TO RESTART', CW / 2, CH / 2 + 26);
+        ctx.textAlign = 'left';
+    }
+
+    // -- START SCREEN --
+    if (!gameStarted) {
+        ctx.fillStyle = 'rgba(247,247,247,0.9)';
+        ctx.fillRect(0, 0, CW, CH);
+        ctx.font      = '700 24px "Courier New",monospace';
+        ctx.fillStyle = '#535353';
+        ctx.textAlign = 'center';
+        ctx.fillText('DINO BEAM RIDER', CW / 2, CH / 2 - 22);
+        ctx.font = '600 13px "Courier New",monospace';
+        ctx.fillText('ARROW KEYS to move   SPACE to fire', CW / 2, CH / 2 + 4);
+        ctx.fillText('PRESS R OR SPACE TO START', CW / 2, CH / 2 + 26);
+        ctx.textAlign = 'left';
+    }
+}
+
+function drawEnemy(e) {
+    if (!spriteImg || !spriteImg.complete) return;
+    var ex  = laneX(e.lane, e.y);
+    var sc  = scaleAt(e.y);
+    ctx.save();
+    ctx.translate(ex, e.y);
+    ctx.scale(sc, sc);
+
+    if (e.hitFlash > 0) {
+        ctx.filter = 'invert(1)';
+    }
+
+    if (e.type === 'charger') {
+        var pspr = Math.floor(e.animT * 6) % 2 === 0 ? SPRITES.PTERO1 : SPRITES.PTERO2;
+        ctx.drawImage(spriteImg, pspr.x, pspr.y, pspr.w, pspr.h,
+                      -pspr.w / 2, -pspr.h / 2, pspr.w, pspr.h);
+    } else if (e.type === 'blocker') {
+        // Draw blocker as cactus — 1x for low hp, 1x for each remaining stack cue
+        var cspr = SPRITES.CACTUS_SM;
+        ctx.drawImage(spriteImg, cspr.x, cspr.y, cspr.w, cspr.h,
+                      -cspr.w / 2, -cspr.h / 2, cspr.w, cspr.h);
+        ctx.filter = 'none';
+        // HP pips below sprite (dots)
+        ctx.fillStyle = '#535353';
+        var pip = 5;
+        var totalW = e.maxHp * pip + (e.maxHp - 1) * 2;
+        for (var pi = 0; pi < e.maxHp; pi++) {
+            var px2 = -totalW / 2 + pi * (pip + 2) + pip / 2;
+            ctx.globalAlpha = pi < e.hp ? 1 : 0.2;
+            ctx.beginPath();
+            ctx.arc(px2, cspr.h / 2 + 6, pip / 2, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    } else if (e.type === 'sentinel') {
+        // Sentinel = 2x ptero stacked, draws larger
+        ctx.scale(2, 2);
+        var pspr2 = Math.floor(e.animT * 4) % 2 === 0 ? SPRITES.PTERO1 : SPRITES.PTERO2;
+        ctx.drawImage(spriteImg, pspr2.x, pspr2.y, pspr2.w, pspr2.h,
+                      -pspr2.w / 2, -pspr2.h / 2, pspr2.w, pspr2.h);
+        ctx.filter = 'none';
+        // HP pips
+        ctx.scale(0.5, 0.5); // back to 1x for pips
+        ctx.fillStyle = '#535353';
+        var pip2 = 5;
+        var totW2 = e.maxHp * pip2 + (e.maxHp - 1) * 2;
+        for (var pi2 = 0; pi2 < e.maxHp; pi2++) {
+            var ppx = -totW2 / 2 + pi2 * (pip2 + 2) + pip2 / 2;
+            ctx.globalAlpha = pi2 < e.hp ? 1 : 0.2;
+            ctx.beginPath();
+            ctx.arc(ppx, SPRITES.PTERO1.h + 8, pip2 / 2, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    }
+    ctx.restore();
+}
+
+function drawPlayer() {
+    if (!spriteImg || !spriteImg.complete) return;
+    var px   = laneX(playerLane, PLAYER_Y);
+    var pSpr = (Math.floor(animTick * 8) % 2 === 0) ? SPRITES.TREX_RUN1 : SPRITES.TREX_RUN2;
+    ctx.drawImage(spriteImg, pSpr.x, pSpr.y, pSpr.w, pSpr.h,
+                  px - pSpr.w / 2, PLAYER_Y - pSpr.h, pSpr.w, pSpr.h);
+}
+
+function drawHUD() {
+    ctx.font      = '600 13px "Courier New",monospace';
+    ctx.fillStyle = '#535353';
+    ctx.textAlign = 'left';
+    ctx.fillText('HI ' + padScore(hiScore > score ? hiScore : score), 10, 18);
+    ctx.textAlign = 'center';
+    ctx.fillText('SECTOR ' + sector, CW / 2, 18);
+    // Kill progress below sector
+    ctx.font = '600 10px "Courier New",monospace';
+    if (!sentinelSpawned || !sentinelDefeated) {
+        var prog = Math.min(sectorKillCount, sectorKillTarget);
+        ctx.fillText(prog + '/' + sectorKillTarget, CW / 2, 30);
+    }
+    ctx.textAlign = 'left';
+    // Lives as T-Rex sprites, top right, 0.4x scale
+    for (var i = 0; i < lives; i++) {
+        if (spriteImg && spriteImg.complete) {
+            ctx.drawImage(spriteImg,
+                SPRITES.TREX_IDLE.x, SPRITES.TREX_IDLE.y,
+                SPRITES.TREX_IDLE.w, SPRITES.TREX_IDLE.h,
+                CW - 8 - (i + 1) * 22, 4,
+                SPRITES.TREX_IDLE.w * 0.4, SPRITES.TREX_IDLE.h * 0.4);
+        }
+    }
+}
+
+// ================================================================
+//  VIZ OVERLAY
+// ================================================================
+function drawViz() {
+    var threat = new Array(NUM_LANES).fill(0);
+    for (var i = 0; i < enemies.length; i++) {
+        var e = enemies[i];
+        var dist = GROUND_Y - e.y;
+        var w    = dist > 0 ? 1000 / (dist + 1) : 50;
+        threat[e.lane] += (e.type === 'sentinel') ? w * 3 : w;
+    }
+    var maxT = 1;
+    for (var l = 0; l < NUM_LANES; l++) if (threat[l] > maxT) maxT = threat[l];
+
+    var laneStep = (GROUND_XS[1] - GROUND_XS[0]) / 2;
+    for (var l = 0; l < NUM_LANES; l++) {
+        var norm   = threat[l] / maxT;
+        var r      = Math.round(220 * norm);
+        var g2     = Math.round(180 * (1 - norm));
+        var alpha  = 0.06 + norm * 0.22;
+        if (l === playerLane) { r = 0; g2 = 190; alpha = 0.18; }
+
+        var leftGx  = GROUND_XS[l] - laneStep;
+        var rightGx = GROUND_XS[l] + laneStep;
+        if (l === 0)            leftGx  = GROUND_XS[0]  - laneStep * 0.5;
+        if (l === NUM_LANES-1)  rightGx = GROUND_XS[NUM_LANES-1] + laneStep * 0.5;
+
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle   = 'rgb(' + r + ',' + g2 + ',40)';
+        ctx.beginPath();
+        ctx.moveTo(VP_X, VP_Y);
+        ctx.lineTo(leftGx,  GROUND_Y);
+        ctx.lineTo(rightGx, GROUND_Y);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+    }
+}
+
+// ================================================================
+//  SECTOR TRANSITION ANIMATION (grid zoom)
+// ================================================================
+function drawSectorTransition() {
+    var progress = 1 - sectorTransition / SECTOR_TRANS_DUR; // 0..1
+    // Draw extra zoomed grid lines that rush toward player
+    var numRings = 6;
+    ctx.save();
+    ctx.strokeStyle = '#535353';
+    ctx.lineWidth   = 1.2;
+    ctx.globalAlpha = Math.min(1, progress * 2);
+    for (var ring = 0; ring < numRings; ring++) {
+        // Each ring starts at top and moves down with time
+        var phase = (progress * 2 + ring / numRings) % 1;
+        var ringY = VP_Y + phase * (GROUND_Y - VP_Y);
+        var x0    = laneX(0, ringY);
+        var x14   = laneX(NUM_LANES - 1, ringY);
+        var mid2  = (x0 + x14) / 2;
+        var hw    = (x14 - x0) / 2;
+        ctx.beginPath();
+        ctx.ellipse(mid2, ringY, hw, hw * 0.1, 0, 0, Math.PI * 2);
+        ctx.stroke();
+    }
+    // Dim flash at start of transition
+    if (progress < 0.15) {
+        ctx.globalAlpha = (0.15 - progress) / 0.15 * 0.4;
+        ctx.fillStyle   = '#535353';
+        ctx.fillRect(0, 0, CW, CH);
+    }
+    ctx.restore();
+
+    // "SECTOR CLEAR" label during transition
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, 1 - progress * 3);
+    ctx.font        = '700 20px "Courier New",monospace';
+    ctx.fillStyle   = '#535353';
+    ctx.textAlign   = 'center';
+    ctx.fillText('SECTOR ' + sector + ' CLEAR', CW / 2, CH / 2 - 10);
+    ctx.restore();
+    ctx.textAlign = 'left';
+}
+
+// ================================================================
+//  GAME LOOP
+// ================================================================
+function gameLoop(ts) {
+    rafId = requestAnimationFrame(gameLoop);
+    if (!lastTime) lastTime = ts;
+    var dt = Math.min((ts - lastTime) / 1000, 0.05);
+    lastTime = ts;
+
+    if (gameStarted) update(dt);
+    draw();
+}
+
+// ================================================================
+//  PUBLIC API
+// ================================================================
+window.setMode = function(m) {
+    mode = m;
+    document.getElementById('human-btn').classList.toggle('active', m === 'off');
+    document.getElementById('rules-btn').classList.toggle('active', m === 'rules');
+    if (m === 'rules' && !gameStarted) restartGame();
+};
+
+window.toggleViz = function() {
+    vizEnabled = !vizEnabled;
+    document.getElementById('viz-btn').classList.toggle('active', vizEnabled);
+};
+
+window.restartGame = function() {
+    initGame();
+    lastTime = 0;
+    if (!rafId) rafId = requestAnimationFrame(gameLoop);
+};
+
+window.togglePause = function() {
+    paused = !paused;
+    document.getElementById('pause-btn').classList.toggle('active', paused);
+    if (!paused) lastTime = 0;
+};
+
+// Allow space to start game from start screen
+window.addEventListener('keydown', function(e) {
+    if (!gameStarted && e.key === ' ') { restartGame(); e.preventDefault(); }
+});
+
+// ================================================================
+//  BOOT
+// ================================================================
+rafId = requestAnimationFrame(gameLoop);
+
+})();
+</script>
+</body>
+</html>

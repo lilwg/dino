@@ -1,0 +1,1016 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DinoSeaquest</title>
+    <link rel="stylesheet" href="si-styles.css?v=2">
+    <style>#game-canvas { width: 100%; height: auto; max-width: none !important; }</style>
+</head>
+<body>
+    <img id="offline-resources-1x" src="assets/default_100_percent/100-offline-sprite.png" style="display:none;">
+    <div class="si-page" style="padding-bottom: 40px;">
+        <h1>DinoSeaquest</h1>
+        <p class="si-subtitle">Rescue baby dinos from the prehistoric sea</p>
+        <div class="si-game-box">
+            <canvas id="game-canvas" width="600" height="400"></canvas>
+            <div class="si-controls" style="margin-top:12px;">
+                <button class="si-btn active" id="human-btn" onclick="setMode('off')">Human</button>
+                <button class="si-btn" id="rules-btn" onclick="setMode('rules')">AI</button>
+                <button class="si-btn" id="viz-btn" onclick="toggleViz()">Viz</button>
+                <button class="si-btn" onclick="restartGame()">Restart</button>
+                <button class="si-btn" id="pause-btn" onclick="togglePause()">Pause</button>
+            </div>
+            <p class="si-help" style="text-align:center;">Arrows move &nbsp;|&nbsp; Space shoot (one shot) &nbsp;|&nbsp; Surface to rescue &nbsp;|&nbsp; R restart</p>
+        </div>
+        <h2 style="margin-top:16px;">How it works</h2>
+        <p class="si-prose">DinoSeaquest recreates the 1983 Activision original: one bullet at a time fired in your facing direction, 6-diver capacity, a depleting oxygen supply, and escalating waves of pterodactyl fish. Surface with divers to score 150 pts each; surface with none to just refill oxygen. An enemy sub patrols the surface when you have divers aboard.</p>
+        <p class="si-prose">Tap <strong>Viz</strong> to see the AI's target diver circled in green, dangerous fish in red, and a dashed line to the surface when the AI plans to ascend.</p>
+        <p style="margin-top:20px;"><a href="/" style="color:#0071e3;font-size:14px;text-decoration:none;">&larr; Back</a></p>
+    </div>
+<script src="dino-sounds.js"></script>
+<script>
+(function(){
+'use strict';
+
+// ── Canvas & Constants ────────────────────────────────────────────────────────
+var CW = 600, CH = 400;
+var SURFACE_Y = 60;   // sky/water boundary
+var FLOOR_Y   = 388;  // seafloor top
+var PLAYER_MIN_X = 10, PLAYER_MAX_X = 550;
+var PLAYER_MIN_Y = 10, PLAYER_MAX_Y = FLOOR_Y - 24;
+var PLAYER_SPEED = 140; // px/s
+var BULLET_SPEED = 300; // px/s
+var OXYGEN_RATE  = 1 / 50; // fraction/s → 50 s to empty
+var FISH_SCORE   = 20;
+var ESUB_SCORE   = 20;
+var DIVER_SCORE  = 150;
+var SURFACE_ZONE = 65; // y < this = at surface
+
+// ── Sprites ──────────────────────────────────────────────────────────────────
+var SPRITES = {
+    TREX_RUN1: {x:936, y:2, w:44, h:47},
+    TREX_RUN2: {x:980, y:2, w:44, h:47},
+    TREX_IDLE: {x:892, y:2, w:44, h:47},
+    PTERO1:    {x:134, y:2, w:46, h:40},
+    PTERO2:    {x:180, y:2, w:46, h:40},
+    CACTUS_SM: {x:228, y:2, w:17, h:35}
+};
+var STAR_SPRITE = {x:645, y:2, size:9};
+var MOON_SPRITE = {x:484, y:2, w:20, h:40};
+var MOON_PHASES = [140,120,100,60,40,20,0];
+var spriteImg = document.getElementById('offline-resources-1x');
+
+function padScore(n){var s=''+n; while(s.length<5)s='0'+s; return s;}
+
+// ── Night system ──────────────────────────────────────────────────────────────
+var inverted=false, dayTimer=0, nightOpacity=0;
+var moonPhase=0, moonX=CW-50, moonY=25;
+var nightStars=[];
+function placeStars(){
+    nightStars=[];
+    for(var i=0;i<20;i++)
+        nightStars.push({x:Math.random()*CW, y:Math.random()*SURFACE_Y*0.9,
+                         sourceY:STAR_SPRITE.y+STAR_SPRITE.size*(i%2)});
+}
+placeStars();
+function updateDayNight(){
+    dayTimer++;
+    if(!inverted&&dayTimer>=700){inverted=true;dayTimer=0;moonPhase=(moonPhase+1)%7;}
+    else if(inverted&&dayTimer>=400){inverted=false;dayTimer=0;}
+    if(inverted) nightOpacity=Math.min(1,nightOpacity+0.035);
+    else          nightOpacity=Math.max(0,nightOpacity-0.035);
+    if(nightOpacity>0){
+        moonX-=0.25; if(moonX<-20) moonX=CW;
+        for(var i=0;i<nightStars.length;i++){nightStars[i].x-=0.3; if(nightStars[i].x<-9)nightStars[i].x=CW;}
+    } else placeStars();
+}
+function drawNightElements(ctx){
+    if(nightOpacity<=0||!spriteImg||!spriteImg.complete) return;
+    ctx.save(); ctx.globalAlpha=nightOpacity;
+    for(var i=0;i<nightStars.length;i++){
+        var s=nightStars[i];
+        ctx.drawImage(spriteImg,STAR_SPRITE.x,s.sourceY,9,9,Math.round(s.x),s.y,9,9);
+    }
+    var mx=MOON_SPRITE.x+MOON_PHASES[moonPhase], mw=(moonPhase===3?40:20);
+    ctx.drawImage(spriteImg,mx,MOON_SPRITE.y,mw,40,Math.round(moonX),moonY,mw,40);
+    ctx.globalAlpha=1; ctx.restore();
+}
+function applyNight(ctx){
+    if(!inverted) return;
+    ctx.globalCompositeOperation='difference';
+    ctx.fillStyle='#fff';
+    ctx.fillRect(0,0,CW,CH);
+    ctx.globalCompositeOperation='source-over';
+}
+
+// ── Canvas setup ──────────────────────────────────────────────────────────────
+var canvas = document.getElementById('game-canvas');
+var ctx = canvas.getContext('2d');
+
+// ── Game state ────────────────────────────────────────────────────────────────
+var mode = 'off';
+var vizOn = false;
+var paused = false;
+var raf = null;
+var keys = {};
+var hiScore = 0;
+
+// per-round state
+var score, lives, wave, waveTimer;
+var oxygen;           // 0..1
+var diverCount;       // divers currently aboard (0..6)
+var player;
+var bullet;           // at most ONE bullet; null when not in flight
+var fishArr;
+var divers;           // diver objects in the sea
+var enemySub;         // the surface enemy sub, or null
+var popups;           // score popups
+var sinkAnim;         // death sink animation state or null
+var surfaceTimer;     // frames player has been at surface this visit
+var justSurfaced;     // flag to avoid repeated scoring
+var gameOver, gameOverTimer;
+var frameCount;
+var lastTime;
+
+// AI viz
+var aiTarget = null;
+var aiShouldSurface = false;
+
+// Touch
+var touchDir = {x:0, y:0};
+var touchStartX = null, touchStartY = null;
+
+// Coral decorations (generated once per init)
+var coralData = [];
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function rand(a,b){return a+Math.random()*(b-a);}
+function randi(a,b){return Math.floor(rand(a,b+1));}
+function clamp(v,lo,hi){return v<lo?lo:v>hi?hi:v;}
+function dist(a,b){return Math.hypot(a.x-b.x,a.y-b.y);}
+
+// ── Init ─────────────────────────────────────────────────────────────────────
+function initGame(){
+    score       = 0;
+    lives       = 3;
+    wave        = 1;
+    waveTimer   = 0;
+    oxygen      = 1.0;
+    diverCount  = 0;
+    bullet      = null;
+    fishArr     = [];
+    divers      = [];
+    enemySub    = null;
+    popups      = [];
+    sinkAnim    = null;
+    surfaceTimer = 0;
+    justSurfaced = false;
+    gameOver    = false;
+    gameOverTimer = 0;
+    frameCount  = 0;
+    lastTime    = null;
+    aiTarget    = null;
+    aiShouldSurface = false;
+
+    player = {
+        x: CW/2, y: SURFACE_Y + 80,
+        vx: 0, vy: 0,
+        facingRight: true,
+        animFrame: 0, animTimer: 0, moving: false,
+        invincible: 0
+    };
+
+    // Coral decorations
+    coralData = [];
+    for(var c=0;c<8;c++){
+        coralData.push({
+            x: rand(20, CW-20),
+            h: rand(12, 28),
+            branches: randi(2,4)
+        });
+    }
+
+    spawnWave(wave);
+
+    inverted=false; dayTimer=0; nightOpacity=0; placeStars();
+}
+
+// ── Wave spawning ─────────────────────────────────────────────────────────────
+function spawnWave(w){
+    fishArr = [];
+    divers  = [];
+    enemySub = null;
+
+    var numFish  = 3 + w;          // wave 1 → 4 fish, wave 4 → 7 fish, etc.
+    var numDivers = 2 + Math.min(w, 3);
+    for(var i=0;i<numFish;i++)  spawnFish(w);
+    for(var j=0;j<numDivers;j++) spawnDiver();
+}
+
+function fishSpeed(w){
+    return rand(60, 110) * (1 + (w-1)*0.18);
+}
+
+function spawnFish(w){
+    var fromLeft = Math.random()<0.5;
+    var spd = fishSpeed(w||wave);
+    // assign fish to a horizontal lane so they stay separated
+    var laneCount = 5;
+    var laneIdx   = randi(0, laneCount-1);
+    var laneY     = SURFACE_Y + 40 + laneIdx * ((FLOOR_Y - SURFACE_Y - 80) / (laneCount-1));
+    fishArr.push({
+        x: fromLeft ? -50 : CW+50,
+        y: laneY + rand(-12, 12),
+        vx: fromLeft ? spd : -spd,
+        animFrame: 0, animTimer: 0,
+        isShark: Math.random() < 0.15  // 15% chance of "shark"
+    });
+}
+
+function spawnDiver(){
+    divers.push({
+        x: rand(50, CW-50),
+        y: rand(SURFACE_Y+60, FLOOR_Y-60),
+        bobPhase: rand(0, Math.PI*2),
+        driftDir: Math.random()<0.5?1:-1,
+        driftX: 0
+    });
+}
+
+// ── Scene drawing ─────────────────────────────────────────────────────────────
+function drawScene(){
+    // Sky
+    ctx.fillStyle = '#f7f7f7';
+    ctx.fillRect(0,0,CW,SURFACE_Y);
+
+    drawNightElements(ctx);
+
+    // Underwater
+    ctx.fillStyle = '#e8e8e8';
+    ctx.fillRect(0,SURFACE_Y,CW,FLOOR_Y-SURFACE_Y);
+
+    // Surface dashed line
+    ctx.save();
+    ctx.setLineDash([4,4]);
+    ctx.strokeStyle='#535353'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(0,SURFACE_Y); ctx.lineTo(CW,SURFACE_Y); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+
+    // "SURFACE" label
+    ctx.font='10px "Courier New",monospace';
+    ctx.fillStyle='#535353'; ctx.textAlign='left';
+    ctx.fillText('SURFACE',4,SURFACE_Y-4);
+
+    // Coral arcs at seafloor (drawn before ground sprite so ground covers the base)
+    ctx.strokeStyle='#535353'; ctx.lineWidth=2;
+    for(var c=0;c<coralData.length;c++){
+        var co=coralData[c];
+        ctx.beginPath();
+        // anticlockwise=true → upper semicircle (rises above floor, not below)
+        ctx.arc(co.x, FLOOR_Y-2, co.h*0.6, Math.PI, 0, true);
+        ctx.stroke();
+        for(var b=0;b<co.branches;b++){
+            var bx=co.x + (b-(co.branches-1)/2)*8;
+            ctx.beginPath();
+            ctx.moveTo(bx, FLOOR_Y-2-co.h*0.4);
+            ctx.arc(bx, FLOOR_Y-2-co.h*0.65, co.h*0.25, Math.PI, 0, true);
+            ctx.stroke();
+        }
+    }
+
+    // Seaweed (CACTUS_SM) at seafloor
+    if(spriteImg&&spriteImg.complete){
+        var cs=SPRITES.CACTUS_SM, sc=0.7;
+        var wx=[55,150,270,390,510];
+        for(var w2=0;w2<wx.length;w2++){
+            ctx.drawImage(spriteImg,cs.x,cs.y,cs.w,cs.h,
+                wx[w2]-cs.w*sc/2, FLOOR_Y-cs.h*sc, cs.w*sc, cs.h*sc);
+        }
+    }
+
+    // Seafloor ground sprite drawn last so it cleanly covers coral bases
+    if(spriteImg&&spriteImg.complete){
+        ctx.drawImage(spriteImg,2,54,600,12,0,CH-12,CW,12);
+    } else {
+        ctx.fillStyle='#535353';
+        ctx.fillRect(0,CH-12,CW,12);
+    }
+}
+
+// ── Entity drawing ────────────────────────────────────────────────────────────
+function drawSprite(spr, x, y, scale, flipH, alpha){
+    if(!spriteImg||!spriteImg.complete) return;
+    var dw=spr.w*scale, dh=spr.h*scale;
+    ctx.save();
+    if(alpha!==undefined) ctx.globalAlpha=alpha;
+    if(flipH){
+        ctx.translate(x+dw/2*2,0);
+        ctx.scale(-1,1);
+    }
+    var dx = flipH ? x : x;
+    ctx.drawImage(spriteImg, spr.x, spr.y, spr.w, spr.h,
+        flipH ? -(x+dw) : x, y, dw, dh);
+    ctx.restore();
+}
+
+function drawPlayer(){
+    var p=player;
+    if(!spriteImg||!spriteImg.complete) return;
+    var spr = p.moving
+        ? (p.animFrame===0 ? SPRITES.TREX_RUN1 : SPRITES.TREX_RUN2)
+        : SPRITES.TREX_IDLE;
+    var scale=0.85;
+    var dw=spr.w*scale, dh=spr.h*scale;
+    var dx=p.x-dw/2, dy=p.y-dh/2;
+
+    var alpha=1;
+    if(p.invincible>0 && Math.floor(p.invincible/4)%2===1) alpha=0.35;
+
+    ctx.save();
+    ctx.globalAlpha=alpha;
+    if(!p.facingRight){
+        ctx.translate(dx+dw,dy); ctx.scale(-1,1);
+        ctx.drawImage(spriteImg,spr.x,spr.y,spr.w,spr.h,0,0,dw,dh);
+    } else {
+        ctx.drawImage(spriteImg,spr.x,spr.y,spr.w,spr.h,dx,dy,dw,dh);
+    }
+    ctx.restore();
+}
+
+function drawFish(f){
+    if(!spriteImg||!spriteImg.complete) return;
+    var spr=f.animFrame===0?SPRITES.PTERO1:SPRITES.PTERO2;
+    var scale=f.isShark?0.88:0.65;
+    var dw=spr.w*scale, dh=spr.h*scale;
+    var dx=f.x-dw/2, dy=f.y-dh/2;
+    ctx.save();
+    if(f.isShark){ctx.globalAlpha=0.82;}
+    // sprite naturally faces left; flip when moving right
+    if(f.vx>0){
+        ctx.translate(dx+dw,dy); ctx.scale(-1,1);
+        ctx.drawImage(spriteImg,spr.x,spr.y,spr.w,spr.h,0,0,dw,dh);
+    } else {
+        ctx.drawImage(spriteImg,spr.x,spr.y,spr.w,spr.h,dx,dy,dw,dh);
+    }
+    ctx.restore();
+}
+
+function drawDiver(d){
+    if(!spriteImg||!spriteImg.complete) return;
+    var cs=SPRITES.CACTUS_SM, scale=0.58;
+    var dw=cs.w*scale, dh=cs.h*scale;
+    ctx.drawImage(spriteImg,cs.x,cs.y,cs.w,cs.h,
+        d.x-dw/2, d.y-dh/2, dw, dh);
+}
+
+function drawEnemySub(es){
+    if(!spriteImg||!spriteImg.complete) return;
+    var spr=es.animFrame===0?SPRITES.PTERO1:SPRITES.PTERO2;
+    var scale=1.4;
+    var dw=spr.w*scale, dh=spr.h*scale;
+    var dx=es.x-dw/2, dy=es.y-dh/2;
+    ctx.save();
+    ctx.globalAlpha=0.9;
+    if(es.vx>0){
+        ctx.translate(dx+dw,dy); ctx.scale(-1,1);
+        ctx.drawImage(spriteImg,spr.x,spr.y,spr.w,spr.h,0,0,dw,dh);
+    } else {
+        ctx.drawImage(spriteImg,spr.x,spr.y,spr.w,spr.h,dx,dy,dw,dh);
+    }
+    ctx.restore();
+}
+
+function drawBullet(){
+    if(!bullet) return;
+    ctx.beginPath();
+    ctx.arc(bullet.x, bullet.y, 3, 0, Math.PI*2);
+    ctx.fillStyle='#535353';
+    ctx.fill();
+}
+
+function drawPopups(){
+    for(var i=0;i<popups.length;i++){
+        var p=popups[i];
+        ctx.globalAlpha=p.alpha;
+        ctx.font='bold 13px "Courier New",monospace';
+        ctx.fillStyle='#535353';
+        ctx.textAlign='center';
+        ctx.fillText('+'+p.val, p.x, p.y);
+    }
+    ctx.globalAlpha=1; ctx.textAlign='left';
+}
+
+function drawHUD(){
+    ctx.font='600 13px "Courier New",monospace';
+    ctx.fillStyle='#535353';
+
+    // Left: HI + score
+    ctx.textAlign='left';
+    ctx.fillText('HI '+padScore(Math.max(score,hiScore)), 10, 18);
+
+    // Center: 6 diver slots
+    var slotW=16, slotH=22, gap=3;
+    var totalW=6*slotW+5*gap;
+    var sx0=(CW-totalW)/2;
+    if(spriteImg&&spriteImg.complete){
+        var cs=SPRITES.CACTUS_SM;
+        var sc=slotH/cs.h;
+        for(var i=0;i<6;i++){
+            var sx=sx0+i*(slotW+gap);
+            ctx.save();
+            ctx.globalAlpha=0.28; ctx.strokeStyle='#535353'; ctx.lineWidth=1;
+            ctx.strokeRect(sx,3,slotW,slotH);
+            ctx.restore();
+            if(i<diverCount){
+                ctx.drawImage(spriteImg,cs.x,cs.y,cs.w,cs.h,
+                    sx+(slotW-cs.w*sc)/2, 3, cs.w*sc, slotH);
+            }
+        }
+    } else {
+        ctx.textAlign='center';
+        ctx.fillText(diverCount+'/6',CW/2,18);
+    }
+
+    // Right: lives as tiny T-Rex
+    if(spriteImg&&spriteImg.complete){
+        var ts=SPRITES.TREX_IDLE, tsc=0.4;
+        var tw=ts.w*tsc, th=ts.h*tsc;
+        for(var j=0;j<lives;j++){
+            ctx.drawImage(spriteImg,ts.x,ts.y,ts.w,ts.h,
+                CW-8-(j+1)*(tw+3), 3, tw, th);
+        }
+    } else {
+        ctx.textAlign='right';
+        ctx.fillText('x'+lives,CW-8,18);
+    }
+
+    // O2 bar: below lives
+    var oxX=CW-106, oxY=26, oxW=92, oxH=8;
+    ctx.font='11px "Courier New",monospace';
+    ctx.textAlign='right';
+    ctx.fillStyle='#535353';
+    ctx.fillText('O\u2082',oxX-3,oxY+oxH-1);
+    ctx.strokeStyle='#535353'; ctx.lineWidth=1;
+    ctx.strokeRect(oxX,oxY,oxW,oxH);
+    // fill color based on level
+    var pct=oxygen;
+    if(pct>0.6) ctx.fillStyle='#535353';
+    else if(pct>0.3) ctx.fillStyle='#888888';
+    else ctx.fillStyle='#aaaaaa';
+    ctx.fillRect(oxX,oxY,Math.round(oxW*pct),oxH);
+
+    // Wave indicator
+    ctx.font='11px "Courier New",monospace';
+    ctx.textAlign='left'; ctx.fillStyle='#535353';
+    ctx.fillText('W'+wave, 10, 34);
+
+    ctx.textAlign='left';
+}
+
+function drawViz(){
+    if(!vizOn) return;
+
+    if(aiTarget&&mode==='rules'){
+        ctx.save();
+        ctx.strokeStyle='rgba(0,180,0,0.85)';
+        ctx.lineWidth=2; ctx.setLineDash([4,3]);
+        ctx.beginPath(); ctx.arc(aiTarget.x,aiTarget.y,22,0,Math.PI*2); ctx.stroke();
+        ctx.setLineDash([]); ctx.restore();
+    }
+
+    for(var i=0;i<fishArr.length;i++){
+        var f=fishArr[i];
+        if(dist(player,f)<140){
+            ctx.save();
+            ctx.strokeStyle='rgba(200,0,0,0.7)';
+            ctx.lineWidth=2;
+            ctx.beginPath(); ctx.arc(f.x,f.y,28,0,Math.PI*2); ctx.stroke();
+            ctx.restore();
+        }
+    }
+
+    if(aiShouldSurface&&mode==='rules'){
+        ctx.save();
+        ctx.strokeStyle='rgba(0,0,200,0.6)';
+        ctx.lineWidth=1.5; ctx.setLineDash([6,4]);
+        ctx.beginPath();
+        ctx.moveTo(player.x,player.y);
+        ctx.lineTo(player.x,SURFACE_Y+5);
+        ctx.stroke(); ctx.setLineDash([]); ctx.restore();
+    }
+}
+
+function drawSinkAnim(){
+    if(!sinkAnim) return;
+    var p=sinkAnim;
+    if(!spriteImg||!spriteImg.complete) return;
+    var spr=SPRITES.TREX_IDLE, scale=0.85;
+    var dw=spr.w*scale, dh=spr.h*scale;
+    ctx.save();
+    ctx.globalAlpha=Math.max(0.1, 1-(p.progress*0.7));
+    ctx.drawImage(spriteImg,spr.x,spr.y,spr.w,spr.h,
+        p.x-dw/2, p.y-dh/2, dw, dh);
+    ctx.restore();
+}
+
+function drawGameOver(){
+    ctx.save();
+    ctx.fillStyle='rgba(247,247,247,0.85)';
+    ctx.fillRect(0,0,CW,CH);
+    ctx.fillStyle='#535353';
+    ctx.font='bold 32px "Courier New",monospace';
+    ctx.textAlign='center';
+    ctx.fillText('GAME OVER',CW/2,CH/2-18);
+    ctx.font='16px "Courier New",monospace';
+    ctx.fillText(padScore(score),CW/2,CH/2+14);
+    ctx.font='13px "Courier New",monospace';
+    ctx.fillStyle='#86868b';
+    ctx.fillText('Press R to restart',CW/2,CH/2+40);
+    ctx.textAlign='left'; ctx.restore();
+}
+
+// ── Update: player ────────────────────────────────────────────────────────────
+function updatePlayer(dt){
+    var p=player;
+    var dx=0, dy=0;
+
+    if(mode==='off'){
+        if(keys['ArrowLeft'] ||keys['KeyA']) dx-=1;
+        if(keys['ArrowRight']||keys['KeyD']) dx+=1;
+        if(keys['ArrowUp']   ||keys['KeyW']) dy-=1;
+        if(keys['ArrowDown'] ||keys['KeyS']) dy+=1;
+        dx+=touchDir.x; dy+=touchDir.y;
+    }
+
+    if(dx!==0&&dy!==0){dx*=0.707; dy*=0.707;}
+    p.moving=(dx!==0||dy!==0);
+
+    p.animTimer+=dt*60;
+    if(p.animTimer>=8){p.animTimer=0; p.animFrame=1-p.animFrame;}
+
+    p.x=clamp(p.x+dx*PLAYER_SPEED*dt, PLAYER_MIN_X, PLAYER_MAX_X);
+    p.y=clamp(p.y+dy*PLAYER_SPEED*dt, PLAYER_MIN_Y, PLAYER_MAX_Y);
+
+    if(dx>0.1) p.facingRight=true;
+    if(dx<-0.1) p.facingRight=false;
+
+    if(p.invincible>0) p.invincible-=dt*60;
+}
+
+// ── Update: oxygen ────────────────────────────────────────────────────────────
+function updateOxygen(dt){
+    // Only deplete when fully underwater
+    if(player.y >= SURFACE_ZONE){
+        oxygen -= OXYGEN_RATE * dt;
+        if(oxygen<0) oxygen=0;
+    }
+
+    if(oxygen<=0 && !sinkAnim){
+        triggerSinkDeath();
+    }
+}
+
+// ── Surfacing ─────────────────────────────────────────────────────────────────
+function updateSurface(dt){
+    var atSurface = player.y < SURFACE_ZONE;
+
+    if(atSurface){
+        surfaceTimer += dt;
+        if(!justSurfaced){
+            justSurfaced=true;
+            // refill oxygen
+            oxygen=1.0;
+            // deposit divers for score
+            if(diverCount>0){
+                var pts=diverCount*DIVER_SCORE;
+                score+=pts;
+                if(score>hiScore) hiScore=score;
+                addPopup(player.x, player.y-30, pts);
+                diverCount=0;
+                wave++;
+                DinoSounds.reached();
+                // Spawn enemy sub
+                spawnEnemySub();
+                // Spawn more fish for new wave
+                var newFish=2+Math.min(wave,4);
+                for(var i=0;i<newFish;i++) spawnFish(wave);
+                var newDivers=2+Math.min(wave,3);
+                for(var j=0;j<newDivers;j++) spawnDiver();
+            }
+        }
+    } else {
+        if(surfaceTimer>0){
+            surfaceTimer=0;
+            justSurfaced=false;
+        }
+    }
+}
+
+function spawnEnemySub(){
+    // Enemy sub appears at surface level, on opposite side from player
+    var fromLeft = player.x > CW/2;
+    var spd = 80 + wave*15;
+    enemySub = {
+        x: fromLeft ? -50 : CW+50,
+        y: SURFACE_ZONE-12,
+        vx: fromLeft ? spd : -spd,
+        animFrame: 0, animTimer: 0
+    };
+}
+
+// ── Update: bullet ────────────────────────────────────────────────────────────
+function updateBullet(dt){
+    if(!bullet) return;
+    bullet.x += bullet.vx * dt;
+    if(bullet.x < -10 || bullet.x > CW+10) bullet=null;
+}
+
+// ── Update: fish ─────────────────────────────────────────────────────────────
+function updateFish(dt){
+    for(var i=0;i<fishArr.length;i++){
+        var f=fishArr[i];
+        f.x += f.vx*dt;
+        // Bounce at walls
+        if(f.x < -60){ f.x=-60; f.vx=Math.abs(f.vx); }
+        if(f.x > CW+60){ f.x=CW+60; f.vx=-Math.abs(f.vx); }
+        // Animate wings
+        f.animTimer=(f.animTimer||0)+dt*60;
+        if(f.animTimer>=10){f.animTimer=0; f.animFrame=1-f.animFrame;}
+    }
+}
+
+// ── Update: divers ────────────────────────────────────────────────────────────
+function updateDivers(dt){
+    for(var i=0;i<divers.length;i++){
+        var d=divers[i];
+        d.bobPhase += 1.2*dt;
+        d.driftX   += d.driftDir*18*dt;
+        if(Math.abs(d.driftX)>20){ d.driftDir*=-1; }
+        d.x = clamp(d.x + d.driftDir*18*dt, 30, CW-30);
+        d.y = clamp(d.y + Math.sin(d.bobPhase)*14*dt, SURFACE_Y+30, FLOOR_Y-50);
+    }
+}
+
+// ── Update: enemy sub ────────────────────────────────────────────────────────
+function updateEnemySub(dt){
+    if(!enemySub) return;
+    var es=enemySub;
+    // Move toward player x
+    var dir=player.x>es.x?1:-1;
+    es.vx=Math.abs(es.vx)*dir;
+    es.x+=es.vx*dt;
+    es.animTimer=(es.animTimer||0)+dt*60;
+    if(es.animTimer>=12){es.animTimer=0; es.animFrame=1-es.animFrame;}
+
+    // Disappear if player goes underwater and stays away from surface for a while
+    if(player.y >= SURFACE_ZONE+30){
+        enemySub=null;
+    }
+}
+
+// ── Update: popups ────────────────────────────────────────────────────────────
+function updatePopups(dt){
+    for(var i=popups.length-1;i>=0;i--){
+        var p=popups[i];
+        p.y-=30*dt;
+        p.alpha-=dt*1.2;
+        if(p.alpha<=0) popups.splice(i,1);
+    }
+}
+
+function addPopup(x,y,val){
+    popups.push({x:x, y:y, val:val, alpha:1});
+}
+
+// ── Sink death animation ──────────────────────────────────────────────────────
+function triggerSinkDeath(){
+    sinkAnim={
+        x: player.x, y: player.y,
+        targetY: FLOOR_Y-24,
+        progress: 0
+    };
+    // hide player during sink
+    player.y = -999;
+}
+
+function updateSinkAnim(dt){
+    if(!sinkAnim) return;
+    sinkAnim.progress += dt*0.6;
+    sinkAnim.y = Math.min(sinkAnim.y + 60*dt, sinkAnim.targetY);
+    if(sinkAnim.progress>=1){
+        sinkAnim=null;
+        doLoseLife();
+    }
+}
+
+function doLoseLife(){
+    DinoSounds.hit();
+    lives--;
+    if(lives<=0){
+        gameOver=true;
+        return;
+    }
+    oxygen=1.0;
+    diverCount=0;
+    bullet=null;
+    enemySub=null;
+    player.x=CW/2;
+    player.y=SURFACE_ZONE+80;
+    player.invincible=120;
+    player.moving=false;
+}
+
+// ── Collisions ────────────────────────────────────────────────────────────────
+function checkCollisions(){
+    var p=player;
+
+    // Bullet vs fish
+    if(bullet){
+        for(var fi=fishArr.length-1;fi>=0;fi--){
+            var f=fishArr[fi];
+            var fw=SPRITES.PTERO1.w*(f.isShark?0.88:0.65)*0.55;
+            var fh=SPRITES.PTERO1.h*(f.isShark?0.88:0.65)*0.55;
+            if(Math.abs(bullet.x-f.x)<fw+3 && Math.abs(bullet.y-f.y)<fh+3){
+                score+=FISH_SCORE; if(score>hiScore) hiScore=score;
+                addPopup(f.x,f.y-16,FISH_SCORE);
+                fishArr.splice(fi,1);
+                bullet=null;
+                spawnFish(wave); // keep fish count up
+                break;
+            }
+        }
+    }
+
+    // Bullet vs enemy sub
+    if(bullet&&enemySub){
+        var ew=SPRITES.PTERO1.w*1.4*0.55;
+        var eh=SPRITES.PTERO1.h*1.4*0.55;
+        if(Math.abs(bullet.x-enemySub.x)<ew+3 && Math.abs(bullet.y-enemySub.y)<eh+3){
+            score+=ESUB_SCORE; if(score>hiScore) hiScore=score;
+            addPopup(enemySub.x,enemySub.y-20,ESUB_SCORE);
+            enemySub=null;
+            bullet=null;
+        }
+    }
+
+    if(p.invincible>0||sinkAnim) return;
+
+    // Player vs fish (hitbox smaller than sprite)
+    var phw=10, phh=12;
+    for(var fi2=fishArr.length-1;fi2>=0;fi2--){
+        var f2=fishArr[fi2];
+        var fw2=SPRITES.PTERO1.w*(f2.isShark?0.88:0.65)*0.38;
+        var fh2=SPRITES.PTERO1.h*(f2.isShark?0.88:0.65)*0.38;
+        if(Math.abs(p.x-f2.x)<phw+fw2 && Math.abs(p.y-f2.y)<phh+fh2){
+            triggerSinkDeath();
+            return;
+        }
+    }
+
+    // Player vs enemy sub
+    if(enemySub){
+        var ew2=SPRITES.PTERO1.w*1.4*0.5;
+        if(Math.abs(p.x-enemySub.x)<phw+ew2 && Math.abs(p.y-enemySub.y)<phh+20){
+            triggerSinkDeath();
+            return;
+        }
+    }
+
+    // Player vs divers (collect)
+    for(var di=divers.length-1;di>=0;di--){
+        if(diverCount>=6) break;
+        var d=divers[di];
+        if(Math.abs(p.x-d.x)<22 && Math.abs(p.y-d.y)<20){
+            diverCount++;
+            divers.splice(di,1);
+        }
+    }
+}
+
+// ── Shooting ──────────────────────────────────────────────────────────────────
+function tryShoot(){
+    if(bullet) return;          // one bullet at a time
+    if(sinkAnim) return;
+    var dir=player.facingRight?1:-1;
+    bullet={
+        x: player.x + dir*22,
+        y: player.y,
+        vx: dir*BULLET_SPEED
+    };
+    DinoSounds.press();
+}
+
+// ── AI ────────────────────────────────────────────────────────────────────────
+function runAI(dt){
+    if(mode!=='rules') return;
+    if(sinkAnim) return;
+
+    var p=player;
+    aiShouldSurface=false;
+    aiTarget=null;
+
+    // Priority 1: low oxygen → surface
+    if(oxygen<0.30){
+        aiShouldSurface=true;
+        aiMoveToward(p.x, SURFACE_ZONE-10, dt);
+        return;
+    }
+
+    // Priority 2: full load → surface
+    if(diverCount>=6){
+        aiShouldSurface=true;
+        aiMoveToward(p.x, SURFACE_ZONE-10, dt);
+        return;
+    }
+
+    // Shoot logic — faces toward closest fish in lane, fires if clear
+    aiShoot();
+
+    // Priority 3: avoid enemy sub if at surface
+    if(enemySub && p.y < SURFACE_ZONE+30){
+        // dive immediately
+        aiMoveToward(p.x, SURFACE_ZONE+100, dt);
+        return;
+    }
+
+    // Priority 4: move toward nearest diver, avoid dangerous fish
+    var nearD=null, nearDist=Infinity;
+    for(var i=0;i<divers.length;i++){
+        var dd=dist(p,divers[i]);
+        if(dd<nearDist){nearDist=dd; nearD=divers[i];}
+    }
+
+    if(nearD){
+        aiTarget=nearD;
+        // avoidance vector from nearby fish
+        var avx=0, avy=0;
+        for(var j=0;j<fishArr.length;j++){
+            var f=fishArr[j];
+            var fd=dist(p,f);
+            if(fd<80){ avx-=(f.x-p.x)/fd; avy-=(f.y-p.y)/fd; }
+        }
+        var tx=nearD.x+avx*30;
+        var ty=nearD.y+avy*30;
+        aiMoveToward(tx, ty, dt);
+    } else {
+        // patrol
+        aiMoveToward(CW/2, 200, dt);
+    }
+}
+
+function aiMoveToward(tx,ty,dt){
+    var p=player;
+    var ddx=tx-p.x, ddy=ty-p.y;
+    var len=Math.hypot(ddx,ddy);
+    if(len<5) return;
+    var nx=ddx/len, ny=ddy/len;
+    p.x=clamp(p.x+nx*PLAYER_SPEED*dt, PLAYER_MIN_X, PLAYER_MAX_X);
+    p.y=clamp(p.y+ny*PLAYER_SPEED*dt, PLAYER_MIN_Y, PLAYER_MAX_Y);
+    p.moving=true;
+    p.animTimer+=dt*60;
+    if(p.animTimer>=8){p.animTimer=0; p.animFrame=1-p.animFrame;}
+    if(nx>0.1) p.facingRight=true;
+    if(nx<-0.1) p.facingRight=false;
+}
+
+function aiShoot(){
+    var p=player;
+    // Find closest fish in facing direction within lane
+    var best=null, bestDist=Infinity;
+    for(var i=0;i<fishArr.length;i++){
+        var f=fishArr[i];
+        var inFront=p.facingRight?(f.x>p.x):(f.x<p.x);
+        if(!inFront) continue;
+        if(Math.abs(f.y-p.y)>40) continue;
+        var d=dist(p,f);
+        if(d<bestDist){bestDist=d; best=f;}
+    }
+    // Also check enemy sub
+    if(enemySub){
+        var inFront2=p.facingRight?(enemySub.x>p.x):(enemySub.x<p.x);
+        if(inFront2 && Math.abs(enemySub.y-p.y)<50){
+            var esd=dist(p,enemySub);
+            if(esd<bestDist){bestDist=esd; best=enemySub;}
+        }
+    }
+    if(best && bestDist<260) tryShoot();
+}
+
+// ── Main loop ─────────────────────────────────────────────────────────────────
+function loop(ts){
+    if(!lastTime) lastTime=ts;
+    var dt=Math.min((ts-lastTime)/1000, 0.05); // cap at 50ms to avoid spiral
+    lastTime=ts;
+    frameCount++;
+
+    if(!paused && !gameOver){
+        // Human shooting
+        if(mode==='off' && keys['Space']) tryShoot();
+
+        runAI(dt);
+        if(!sinkAnim){
+            updatePlayer(dt);
+            updateSurface(dt);
+        }
+        updateOxygen(dt);
+        updateBullet(dt);
+        updateFish(dt);
+        updateDivers(dt);
+        updateEnemySub(dt);
+        updateSinkAnim(dt);
+        checkCollisions();
+        updatePopups(dt);
+        updateDayNight();
+    }
+
+    // ── Draw ──────────────────────────────────────────────────────────────────
+    drawScene();
+
+    for(var i=0;i<divers.length;i++) drawDiver(divers[i]);
+    for(var j=0;j<fishArr.length;j++) drawFish(fishArr[j]);
+    if(enemySub) drawEnemySub(enemySub);
+    drawBullet();
+    if(sinkAnim) drawSinkAnim(); else drawPlayer();
+    drawPopups();
+    drawHUD();
+
+    applyNight(ctx);
+    drawViz();
+
+    if(gameOver) drawGameOver();
+
+    if(paused&&!gameOver){
+        ctx.save();
+        ctx.fillStyle='rgba(247,247,247,0.72)';
+        ctx.fillRect(0,0,CW,CH);
+        ctx.fillStyle='#535353';
+        ctx.font='bold 28px "Courier New",monospace';
+        ctx.textAlign='center';
+        ctx.fillText('PAUSED',CW/2,CH/2);
+        ctx.textAlign='left'; ctx.restore();
+    }
+
+    raf=requestAnimationFrame(loop);
+}
+
+// ── Public controls ───────────────────────────────────────────────────────────
+window.setMode=function(m){
+    mode=m;
+    document.getElementById('human-btn').classList.toggle('active',m==='off');
+    document.getElementById('rules-btn').classList.toggle('active',m==='rules');
+};
+window.toggleViz=function(){
+    vizOn=!vizOn;
+    document.getElementById('viz-btn').classList.toggle('active',vizOn);
+};
+window.restartGame=function(){
+    if(score>hiScore) hiScore=score;
+    initGame();
+    if(!raf) raf=requestAnimationFrame(loop);
+};
+window.togglePause=function(){
+    paused=!paused;
+    document.getElementById('pause-btn').classList.toggle('active',paused);
+    if(!raf) raf=requestAnimationFrame(loop);
+};
+
+// ── Keyboard ──────────────────────────────────────────────────────────────────
+document.addEventListener('keydown',function(e){
+    keys[e.code]=true;
+    if(e.code==='Space'){e.preventDefault(); if(mode==='off') tryShoot();}
+    if(e.code==='ArrowUp'||e.code==='ArrowDown'||
+       e.code==='ArrowLeft'||e.code==='ArrowRight') e.preventDefault();
+    if(e.code==='KeyR') restartGame();
+});
+document.addEventListener('keyup',function(e){keys[e.code]=false;});
+
+// ── Touch ─────────────────────────────────────────────────────────────────────
+canvas.addEventListener('touchstart',function(e){
+    e.preventDefault();
+    var t=e.touches[0];
+    touchStartX=t.clientX; touchStartY=t.clientY;
+    touchDir={x:0,y:0};
+},{passive:false});
+canvas.addEventListener('touchmove',function(e){
+    e.preventDefault();
+    var t=e.touches[0];
+    var ddx=t.clientX-touchStartX, ddy=t.clientY-touchStartY;
+    var len=Math.hypot(ddx,ddy);
+    if(len>10) touchDir={x:ddx/len,y:ddy/len};
+},{passive:false});
+canvas.addEventListener('touchend',function(e){
+    e.preventDefault();
+    if(Math.abs(touchDir.x)<0.3&&Math.abs(touchDir.y)<0.3) tryShoot();
+    touchDir={x:0,y:0};
+},{passive:false});
+
+// ── Start ─────────────────────────────────────────────────────────────────────
+initGame();
+raf=requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>

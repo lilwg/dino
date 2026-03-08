@@ -26,6 +26,8 @@
             <div class="si-controls" style="margin-top: 12px;">
                 <button class="si-btn active" id="human-btn" onclick="setMode('off')">Human</button>
                 <button class="si-btn" id="rules-btn" onclick="setMode('rules')">AI</button>
+                <button class="si-btn" id="ppo-play-btn" onclick="setMode('ppo')">PPO</button>
+                <button class="si-btn" id="rainbow-play-btn" onclick="setMode('rainbow')">Rainbow</button>
                 <button class="si-btn" id="viz-btn" onclick="toggleViz()">Viz</button>
                 <button class="si-btn" onclick="restartGame()">Restart</button>
                 <button class="si-btn" id="pause-btn" onclick="togglePause()">Pause</button>
@@ -46,6 +48,32 @@
         <p class="si-prose">
             Tap <strong>Viz</strong> to watch the AI think. A grey dashed line shows the ball&rsquo;s predicted flight. Coloured dots along the paddle mark candidate catch positions &mdash; green for high-scoring, red for low-scoring &mdash; with a bright green ring around the chosen target. A green dashed line traces the post-bounce trajectory, and a dot at the far end shows whether the second catch is reachable.
         </p>
+
+        <!-- ═══ PPO Training ═══ -->
+        <div id="ppo-section" style="display:none; margin-top: 16px; padding: 12px; border: 1px solid #e0e0e0; border-radius: 8px;">
+            <h3 style="margin: 0 0 8px 0;">PPO Training</h3>
+            <p class="si-prose" style="margin: 0 0 8px 0;">Proximal Policy Optimization: actor-critic with clipped policy updates. Collects full episodes, then runs multiple update epochs with a trust region constraint.</p>
+            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                <button class="si-btn" id="ppo-start-btn" onclick="window.togglePPOTrain()">Train</button>
+                <button class="si-btn" onclick="window.resetPPO()">Reset</button>
+                <span style="font-size: 11px;">Episodes/tick: <input type="range" id="ppo-speed2" min="1" max="20" value="5" oninput="document.getElementById('ppo-speed').value=this.value; document.getElementById('ppo-spd-val').textContent=this.value" style="width: 80px;"><span id="ppo-spd-val">5</span></span>
+            </div>
+            <div id="ppo-stats2" style="font-size: 11px; margin-top: 6px; font-family: 'Courier New', monospace;"></div>
+            <div id="ppo-chart-box" style="display:none; margin-top: 8px;"><canvas id="ppo-chart2" width="380" height="160"></canvas></div>
+        </div>
+
+        <!-- ═══ Rainbow DQN Training ═══ -->
+        <div id="rainbow-section" style="display:none; margin-top: 16px; padding: 12px; border: 1px solid #e0e0e0; border-radius: 8px;">
+            <h3 style="margin: 0 0 8px 0;">Rainbow DQN Training</h3>
+            <p class="si-prose" style="margin: 0 0 8px 0;">Rainbow DQN combines three DQN improvements: prioritized experience replay (sample important transitions more often), dueling architecture (separate value and advantage streams), and n-step returns (look further ahead for better targets).</p>
+            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                <button class="si-btn" id="rainbow-start-btn" onclick="window.toggleRainbowTrain()">Train</button>
+                <button class="si-btn" onclick="window.resetRainbow()">Reset</button>
+                <span style="font-size: 11px;">Steps/tick: <input type="range" id="rainbow-speed2" min="1" max="500" value="100" oninput="document.getElementById('rainbow-speed').value=this.value; document.getElementById('rainbow-spd-val').textContent=this.value" style="width: 80px;"><span id="rainbow-spd-val">100</span></span>
+            </div>
+            <div id="rainbow-stats2" style="font-size: 11px; margin-top: 6px; font-family: 'Courier New', monospace;"></div>
+            <div id="rainbow-chart-box" style="display:none; margin-top: 8px;"><canvas id="rainbow-chart2" width="380" height="160"></canvas></div>
+        </div>
 
         <p style="margin-top: 20px;">
             <a href="/" style="color: #0071e3; font-size: 14px; text-decoration: none;">&larr; Back</a>
@@ -73,6 +101,16 @@
         <button id="hybrid-cached-btn"></button>
         <span id="hybrid-stats"></span>
         <div id="hybrid-viz-box"><canvas id="hybrid-chart" width="1" height="1"></canvas></div>
+        <button id="ppo-train-btn"></button>
+        <input type="range" id="ppo-speed" min="1" max="20" value="5">
+        <span id="ppo-speed-val">5</span>
+        <span id="ppo-stats"></span>
+        <div id="ppo-viz-box"><canvas id="ppo-chart" width="400" height="200"></canvas></div>
+        <button id="rainbow-train-btn"></button>
+        <input type="range" id="rainbow-speed" min="1" max="500" value="100">
+        <span id="rainbow-speed-val">100</span>
+        <span id="rainbow-stats"></span>
+        <div id="rainbow-viz-box"><canvas id="rainbow-chart" width="400" height="200"></canvas></div>
     </div>
 
 <script src="breakout-weights.js?v=2"></script>
@@ -89,13 +127,13 @@
     var PAD_SPEED = 6;
     var BALL_SZ = 10, BALL_SPEED = 4;
 
-    var COLS = 8, ROWS = 6;
-    var BRICK_W = 60, BRICK_H = 16, BRICK_GAP = 4;
-    var BRICK_TOP = 50;
-    var BRICK_LEFT = (CW - COLS * (BRICK_W + BRICK_GAP) + BRICK_GAP) / 2;
-    var ROW_TYPES = ['PTERO', 'PTERO', 'CACTUS', 'CACTUS', 'CACTUS', 'CACTUS'];
-    var ROW_POINTS = [30, 30, 20, 20, 10, 10];
-    var ROW_COLORS = ['#c8c8c8', '#c8c8c8', '#d8d8d8', '#d8d8d8', '#e8e8e8', '#e8e8e8'];
+    var COLS = 14, ROWS = 8;
+    var BRICK_W = 40, BRICK_H = 14, BRICK_GAP = 2;
+    var BRICK_TOP = 40;
+    var BRICK_LEFT = Math.floor((CW - (COLS * BRICK_W + (COLS - 1) * BRICK_GAP)) / 2);
+    var ROW_TYPES = ['PTERO','PTERO','PTERO','PTERO','CACTUS','CACTUS','CACTUS','CACTUS'];
+    var ROW_POINTS = [30, 30, 25, 25, 20, 20, 15, 15];
+    var ROW_COLORS = ['#404040','#404040','#565656','#565656','#6a6a6a','#6a6a6a','#848484','#848484'];
     var MAX_LIVES = 3;
     var FRAME_SKIP = 3;
 
@@ -242,10 +280,18 @@
                         var overlapR = (br.x + br.w) - this.bx;
                         var overlapT = (this.by + BALL_SZ) - br.y;
                         var overlapB = (br.y + br.h) - this.by;
-                        if (Math.min(overlapT, overlapB) < Math.min(overlapL, overlapR)) {
+                        var minOvX = Math.min(overlapL, overlapR);
+                        var minOvY = Math.min(overlapT, overlapB);
+                        if (minOvY < minOvX) {
                             this.bvy = -this.bvy; dySub = -dySub;
+                            // Push ball out of brick
+                            if (overlapT < overlapB) { this.by = br.y - BALL_SZ; }
+                            else { this.by = br.y + br.h; }
                         } else {
                             this.bvx = -this.bvx; dxSub = -dxSub;
+                            // Push ball out of brick
+                            if (overlapL < overlapR) { this.bx = br.x - BALL_SZ; }
+                            else { this.bx = br.x + br.w; }
                         }
 
                         this.totalBricks--;
@@ -253,7 +299,7 @@
                             this._nextLevel();
                             return { reward: reward + 10, done: false };
                         }
-                        r = ROWS; break; // one brick per substep
+                        sub = nSub; r = ROWS; break; // one brick per frame
                     }
                 }
             }
@@ -337,9 +383,12 @@
     }
 
     // Shared drawing function
-    function drawBreakoutGame(ctx, g, anim, moveDir, faceDir) {
+    function drawBreakoutGame(ctx, g, anim, moveDir, faceDir, isPlayCanvas) {
         ctx.fillStyle = '#f7f7f7';
         ctx.fillRect(0, 0, CW, CH);
+
+        // Draw night elements BEHIND bricks (only for the play canvas)
+        if (isPlayCanvas) drawNightElements(ctx);
 
         // Ground (spritesheet horizon texture)
         if (spriteImg && spriteImg.complete) {
@@ -356,6 +405,9 @@
                 var br = brickRect(r, c);
                 ctx.fillStyle = ROW_COLORS[r];
                 ctx.fillRect(br.x, br.y, br.w, br.h);
+                // Draw sprites inverted (white) so they contrast on dark bricks
+                ctx.save();
+                ctx.filter = 'invert(1)';
                 if (ROW_TYPES[r] === 'PTERO') {
                     var pspr = anim === 0 ? SPRITES.PTERO1 : SPRITES.PTERO2;
                     var pScale = Math.min(br.w / pspr.w, br.h / pspr.h) * 0.9;
@@ -373,6 +425,7 @@
                             br.y + (br.h - cspr.h * cScale) / 2,
                             cspr.w * cScale, cspr.h * cScale);
                 }
+                ctx.restore();
             }
         }
 
@@ -459,6 +512,28 @@
     // ═════════════════════════════════════════════════════════════════
     //  RULES-BASED AI — Forward simulation with path visualization
     // ═════════════════════════════════════════════════════════════════
+    // --- Web Worker for async deep search ---
+    var _searchWorker = new Worker('breakout-worker.js');
+    var _searchId = 0;
+    var _workerResult = null;
+    var _lastSearchKey = '';
+    var _plannedNextP = -1;    // planned catch pos for NEXT bounce (from bestPath[0])
+    var _plannedBricksLeft = -1; // bricks remaining when plan was made
+
+    _searchWorker.postMessage({ type: 'init', constants: {
+        CW: CW, CH: CH, BALL_SZ: BALL_SZ, BALL_SPEED: BALL_SPEED,
+        PAD_Y: PAD_Y, PAD_H: PAD_H, PAD_SPEED: PAD_SPEED,
+        ROWS: ROWS, COLS: COLS, ROW_POINTS: ROW_POINTS,
+        BRICK_W: BRICK_W, BRICK_H: BRICK_H, BRICK_TOP: BRICK_TOP, BRICK_LEFT: BRICK_LEFT
+    }});
+
+    _searchWorker.onmessage = function (e) {
+        var msg = e.data;
+        if (msg.type === 'result' && msg.id === _searchId) {
+            _workerResult = msg;
+        }
+    };
+
     var breakoutSimAI = {
         enabled: false,
         _vizEnabled: false,
@@ -468,13 +543,13 @@
         _prevLives: -1,
 
         update: function (game) {
-            if (game.gameOver) return 1;
+            if (game.gameOver) { _workerResult = null; _lastSearchKey = ''; _plannedNextP = -1; return 1; }
             if (game.stuck) {
-                // Move to center before launching
+                _workerResult = null; _lastSearchKey = ''; _plannedNextP = -1;
                 var center = CW / 2 - game.padW / 2;
                 var diff = center - game.px;
                 if (Math.abs(diff) > PAD_SPEED) return diff < 0 ? 0 : 2;
-                return 3; // centered — launch
+                return 3;
             }
 
             this._prevLives = game.lives;
@@ -482,26 +557,19 @@
             var px = game.px, padW = game.padW, sm = game._speedMult;
             var bx = game.bx, by = game.by, bvx = game.bvx, bvy = game.bvy;
 
-            // Copy bricks
+            // Quick flight1 on main thread (cheap — needed for viz path + track mode)
             var bricks = [];
             for (var r = 0; r < ROWS; r++) {
                 bricks[r] = [];
                 for (var c = 0; c < COLS; c++) bricks[r][c] = game.bricks[r][c];
             }
-
-            // 1. Simulate ball free-flight to paddle zone
             var flight1 = this._simBallFlight(bx, by, bvx, bvy, bricks, 1000);
 
-            // Ball going up or won't reach paddle — track ball x
             if (!flight1.caught) {
+                _lastSearchKey = '';
                 var target = bx + BALL_SZ / 2 - padW / 2;
                 var action = target < px - 2 ? 0 : target > px + 2 ? 2 : 1;
-                this._lastDecision = {
-                    mode: 'track', action: action, px: px,
-                    bx: bx, by: by, bvx: bvx, bvy: bvy,
-                    flight1caught: false, flight1lost: flight1.lost,
-                    flight1frames: flight1.frames
-                };
+                this._lastDecision = { mode: 'track', action: action, px: px };
                 if (this._vizEnabled) {
                     this._vizData = { mode: 'track', action: action,
                         paddleX: px, padW: padW, flight: flight1.path };
@@ -509,124 +577,84 @@
                 return action;
             }
 
-            // 2. Reachable paddle range at catch frame
-            var F = flight1.frames;
-            var reachMin = Math.max(0, px - F * PAD_SPEED);
-            var reachMax = Math.min(CW - padW, px + F * PAD_SPEED);
+            // Detect new trajectory — dispatch search to worker
+            // Quantize to 5px to avoid jitter from floating-point drift each frame
+            var searchKey = (Math.round(flight1.bx / 5) * 5) + ',' + game.totalBricks;
+            if (searchKey !== _lastSearchKey) {
+                // New trajectory — extract planned next-p from old result before dispatching
+                if (_workerResult && _workerResult.bestPath && _workerResult.bestPath.length > 0) {
+                    var plannedStep = _workerResult.bestPath[0];
+                    // bestPath entries are {p, flight} objects (after worker update)
+                    var nextP = plannedStep.p !== undefined ? plannedStep.p : -1;
+                    // Only use plan if brick count is consistent (expected bricks after this flight)
+                    var expectedBricks = _plannedBricksLeft >= 0
+                        ? _plannedBricksLeft - (_workerResult.flight1 ? _workerResult.flight1.hits : 0)
+                        : -1;
+                    _plannedNextP = (nextP >= 0 && (expectedBricks < 0 || Math.abs(game.totalBricks - expectedBricks) <= 2))
+                        ? nextP : -1;
+                } else {
+                    _plannedNextP = -1;
+                }
+                _plannedBricksLeft = game.totalBricks;
+                _lastSearchKey = searchKey;
+                _searchId++;
+                // Don't null _workerResult — keep old result until new one arrives
+                _searchWorker.postMessage({
+                    type: 'search', id: _searchId,
+                    bx: bx, by: by, bvx: bvx, bvy: bvy,
+                    bricks: bricks, px: px, padW: padW, sm: sm,
+                    bricksLeft: game.totalBricks
+                });
+            }
 
-            // 3. Intersect reachable grid with catch positions
-            var cbx = flight1.bx, cby = flight1.by;
-            var catchLo = cbx - padW + 1;  // leftmost paddle x that catches
-            var catchHi = cbx + BALL_SZ - 1; // rightmost paddle x that catches
+            // Use latest worker result — but check it's not stale for movement
+            var wr = _workerResult;
+            var cbx = flight1.bx;
+            var wrStale = wr && wr.caught && wr.flight1 &&
+                Math.abs(wr.flight1.bx - cbx) > 20;
+            var wrMove = wrStale ? null : wr; // for paddle movement
+            // Keep raw wr for viz (stale paths still informative)
 
-            // Exact reachable grid: px + 6*k, clamped to [0, CW-padW]
-            // Find first grid point >= catchLo
-            var kMin = Math.ceil((Math.max(0, catchLo) - px) / PAD_SPEED);
-            var kMax = Math.floor((Math.min(CW - padW, catchHi) - px) / PAD_SPEED);
-            kMin = Math.max(kMin, -F);
-            kMax = Math.min(kMax, F);
-
-            // Count remaining bricks — if a trajectory clears them all, level resets
+            var bestP = wrMove && wrMove.caught ? wrMove.bestP : -1;
+            // When fresh result not yet available, fall back to the plan from previous bounce
+            if (bestP < 0 && _plannedNextP >= 0) bestP = _plannedNextP;
+            // Clear planned next-p once a fresh non-stale result arrives
+            if (!wrStale && wr && wr.caught) _plannedNextP = -1;
+            var bestScore = wr ? wr.bestScore : 0;
+            var searchDepth = wr ? wr.depth : 0;
+            var bestPath = wr ? wr.bestPath : null;
+            var candidates = wr ? wr.candidates : [];
             var bricksLeft = game.totalBricks;
 
-            var bestP = -1, bestScore = -999, bestPost = null, bestCatch2 = false, bestClearsAll = false;
-            var candidates = [];
-            for (var k = kMin; k <= kMax; k++) {
-                var p = px + k * PAD_SPEED;
-                if (p < 0 || p > CW - padW) continue;
-                if (p < catchLo || p > catchHi) continue;
-                var hit = (cbx + BALL_SZ / 2 - p) / padW;
-                var newBvx = BALL_SPEED * sm * (hit - 0.5) * 2.5;
-                var newBvy = -Math.abs(flight1.bvy);
-
-                // Post-bounce flight
-                var flight2 = this._simBallFlight(cbx, PAD_Y - BALL_SZ,
-                    newBvx, newBvy, flight1.bricks, 1000);
-
-                var totalHits = flight1.hits + flight2.hits;
-                var score = flight1.reward + 1.0 + flight2.reward;
-                // If this trajectory clears all bricks, level resets — no catch needed
-                if (totalHits >= bricksLeft) { score += 10.0; }
-                var canCatch2 = false;
-                if (totalHits < bricksLeft && flight2.caught) {
-                    // Find best 2nd catch position on the grid from p
-                    var F2 = flight2.frames;
-                    var c2Lo = flight2.bx - padW + 1, c2Hi = flight2.bx + BALL_SZ - 1;
-                    var k2Min = Math.ceil((Math.max(0, c2Lo) - p) / PAD_SPEED);
-                    var k2Max = Math.floor((Math.min(CW - padW, c2Hi) - p) / PAD_SPEED);
-                    k2Min = Math.max(k2Min, -F2);
-                    k2Max = Math.min(k2Max, F2);
-
-                    var bestScore2 = -5.0;
-                    for (var k2 = k2Min; k2 <= k2Max; k2++) {
-                        var p2 = p + k2 * PAD_SPEED;
-                        if (p2 < 0 || p2 > CW - padW) continue;
-                        if (p2 < c2Lo || p2 > c2Hi) continue;
-                        canCatch2 = true;
-
-                        // 3rd bounce: sim from 2nd catch position
-                        var hit2 = (flight2.bx + BALL_SZ / 2 - p2) / padW;
-                        var bvx3 = BALL_SPEED * sm * (hit2 - 0.5) * 2.5;
-                        var bvy3 = -Math.abs(flight2.bvy);
-                        var flight3 = this._simBallFlight(flight2.bx, PAD_Y - BALL_SZ,
-                            bvx3, bvy3, flight2.bricks, 1000);
-
-                        var s2 = 1.0 + flight3.reward;
-                        if (flight3.caught) {
-                            var F3 = flight3.frames;
-                            var r3Min = Math.max(0, p2 - F3 * PAD_SPEED);
-                            var r3Max = Math.min(CW - padW, p2 + F3 * PAD_SPEED);
-                            var canCatch3 = flight3.bx + BALL_SZ > r3Min &&
-                                            flight3.bx < r3Max + padW;
-                            s2 += canCatch3 ? 1.0 : -5.0;
-                        } else if (flight3.lost) {
-                            s2 -= 5.0;
-                        }
-                        if (s2 > bestScore2) bestScore2 = s2;
-                    }
-                    score += canCatch2 ? bestScore2 : -5.0;
-                } else if (totalHits < bricksLeft && flight2.lost) {
-                    score -= 5.0;
-                }
-
-                candidates.push({ p: p, score: score, canCatch2: canCatch2, post: flight2 });
-                if (score > bestScore) {
-                    bestScore = score; bestP = p;
-                    bestPost = flight2; bestCatch2 = canCatch2;
-                    bestClearsAll = (totalHits >= bricksLeft);
-                }
-            }
-
-            // 5. Move toward best catch position
+            // Move toward best catch position
             var action;
             if (bestP < 0) {
-                // No catch possible — track ball
-                action = cbx + BALL_SZ / 2 < px + padW / 2 ? 0 : 2;
+                var diff = (cbx + BALL_SZ / 2 - padW / 2) - px;
+                action = diff < -PAD_SPEED ? 0 : diff > PAD_SPEED ? 2 : 1;
             } else {
                 var diff = bestP - px;
-                action = diff < -2 ? 0 : diff > 2 ? 2 : 1;
+                action = diff < -PAD_SPEED ? 0 : diff > PAD_SPEED ? 2 : 1;
             }
 
+            var F = flight1.frames;
             this._lastDecision = {
-                mode: bestP < 0 ? 'no_catch' : '2bounce',
+                mode: bestP < 0 ? 'no_catch' : 'search',
                 action: action, bestP: bestP, px: px,
-                catchFrame: F, nCandidates: candidates.length,
-                bestScore: bestScore, canCatch2: bestCatch2,
-                bx: bx, by: by, bvx: bvx, bvy: bvy,
-                simBx: flight1.bx, simBy: flight1.by,
-                reachMin: reachMin, reachMax: reachMax,
-                catchLo: catchLo, catchHi: catchHi
+                catchFrame: F, bestScore: bestScore,
+                searchDepth: searchDepth
             };
 
             if (this._vizEnabled) {
                 this._vizData = {
-                    mode: '2bounce', action: action,
+                    mode: 'search', action: action,
                     paddleX: px, padW: padW,
                     flight1: flight1, bestP: bestP,
-                    bestScore: bestScore, bestCatch2: bestCatch2,
-                    bestClearsAll: bestClearsAll,
+                    bestScore: bestScore, searchDepth: searchDepth,
+                    bestClearsAll: (bestScore >= bricksLeft),
                     flight1ClearsAll: (flight1.hits >= bricksLeft),
-                    bestPost: bestPost, candidates: candidates,
+                    bestPost: bestPath && bestPath[0] ? bestPath[0] : null,
+                    bestPath: bestPath,
+                    candidates: candidates,
                     catchFrame: F
                 };
             }
@@ -667,10 +695,15 @@
                                 reward += ROW_POINTS[r] / 30;
                                 var oL = (bx + BALL_SZ) - br.x, oR = (br.x + br.w) - bx;
                                 var oT = (by + BALL_SZ) - br.y, oB = (br.y + br.h) - by;
-                                if (Math.min(oT, oB) < Math.min(oL, oR)) { bvy = -bvy; dyS = -dyS; }
-                                else { bvx = -bvx; dxS = -dxS; }
+                                if (Math.min(oT, oB) < Math.min(oL, oR)) {
+                                    bvy = -bvy; dyS = -dyS;
+                                    if (oT < oB) by = br.y - BALL_SZ; else by = br.y + br.h;
+                                } else {
+                                    bvx = -bvx; dxS = -dxS;
+                                    if (oL < oR) bx = br.x - BALL_SZ; else bx = br.x + br.w;
+                                }
                                 if (hits >= initialBricks) { allCleared = true; path.push({ x: bx, y: by }); }
-                                r = ROWS; break;
+                                s = nSub; r = ROWS; break; // one brick per frame
                             }
                         }
                     }
@@ -737,9 +770,14 @@
                                 totalReward += ROW_POINTS[r] / 30;
                                 var oL = (bx + BALL_SZ) - br.x, oR = (br.x + br.w) - bx;
                                 var oT = (by + BALL_SZ) - br.y, oB = (br.y + br.h) - by;
-                                if (Math.min(oT, oB) < Math.min(oL, oR)) { bvy = -bvy; dyS = -dyS; }
-                                else { bvx = -bvx; dxS = -dxS; }
-                                r = ROWS; break;
+                                if (Math.min(oT, oB) < Math.min(oL, oR)) {
+                                    bvy = -bvy; dyS = -dyS;
+                                    if (oT < oB) by = br.y - BALL_SZ; else by = br.y + br.h;
+                                } else {
+                                    bvx = -bvx; dxS = -dxS;
+                                    if (oL < oR) bx = br.x - BALL_SZ; else bx = br.x + br.w;
+                                }
+                                s = nSub; r = ROWS; break;
                             }
                         }
                     }
@@ -790,7 +828,7 @@
         var ACOLORS = ['#0071e3', '#8e8e93', '#ff9f0a'];
 
         // Draw ball free-flight path (gray dashed, adaptive to day/night)
-        var flightPath = viz.mode === '2bounce' ? viz.flight1.path :
+        var flightPath = viz.mode === 'search' ? viz.flight1.path :
                          viz.mode === 'track' ? viz.flight : null;
         if (flightPath && flightPath.length > 1) {
             var pathGray = nightOpacity > 0.5 ? 'rgba(200,200,200,0.35)' : 'rgba(40,40,40,0.35)';
@@ -807,9 +845,7 @@
             ctx.setLineDash([]);
         }
 
-        if (viz.mode === '2bounce' && viz.candidates && viz.candidates.length > 0) {
-            // Skip paddle indicators when flight1 alone clears all bricks
-            // (level resets on last brick hit, ball never reaches paddle)
+        if (viz.mode === 'search' && viz.candidates && viz.candidates.length > 0) {
             if (!viz.flight1ClearsAll) {
                 // Find score range for color mapping
                 var minS = 999, maxS = -999;
@@ -822,9 +858,8 @@
                 // Draw catch position dots colored by score
                 for (var i = 0; i < viz.candidates.length; i++) {
                     var cd = viz.candidates[i];
-                    var t = (cd.score - minS) / range; // 0=worst, 1=best
+                    var t = (cd.score - minS) / range;
                     var isBest = cd.p === viz.bestP;
-                    // Red(0) → Yellow(0.5) → Green(1)
                     var cr = Math.round(255 * (1 - t));
                     var cg = Math.round(200 * t);
                     ctx.globalAlpha = isBest ? 0.9 : 0.5;
@@ -834,7 +869,7 @@
                     ctx.fill();
                 }
 
-                // Draw target marker (bright ring at best catch position)
+                // Draw target marker
                 if (viz.bestP >= 0) {
                     ctx.globalAlpha = 0.8;
                     ctx.strokeStyle = '#30d158';
@@ -845,31 +880,34 @@
                 }
             }
 
-            // Draw post-bounce trajectory from best catch (green dashed)
-            // Path naturally stops at last brick cleared thanks to allCleared in sim
-            if (viz.bestPost && viz.bestPost.path && viz.bestPost.path.length > 1 && !viz.flight1ClearsAll) {
-                ctx.strokeStyle = '#30d158';
-                ctx.globalAlpha = 0.4;
-                ctx.lineWidth = 1.5;
-                ctx.setLineDash([2, 2]);
-                ctx.beginPath();
-                for (var i = 0; i < viz.bestPost.path.length; i++) {
-                    var pt = viz.bestPost.path[i];
-                    if (i === 0) ctx.moveTo(pt.x + BALL_SZ / 2, pt.y + BALL_SZ / 2);
-                    else ctx.lineTo(pt.x + BALL_SZ / 2, pt.y + BALL_SZ / 2);
-                }
-                ctx.stroke();
-                ctx.setLineDash([]);
-
-                // 2nd catch indicator (skip when trajectory clears all bricks)
-                if (viz.bestPost.caught && !viz.bestClearsAll) {
-                    var c2x = viz.bestPost.bx + BALL_SZ / 2;
-                    var c2y = viz.bestPost.by + BALL_SZ / 2;
-                    ctx.globalAlpha = 0.6;
-                    ctx.fillStyle = viz.bestCatch2 ? '#30d158' : '#ff3b30';
+            // Draw full best-path trajectory (all planned bounces)
+            var BOUNCE_COLORS = ['#30d158', '#0a84ff', '#ff9f0a', '#ff453a', '#bf5af2', '#64d2ff'];
+            if (viz.bestPath && !viz.flight1ClearsAll) {
+                for (var b = 0; b < viz.bestPath.length; b++) {
+                    var seg = viz.bestPath[b];
+                    if (!seg || !seg.path || seg.path.length < 2) continue;
+                    var bColor = BOUNCE_COLORS[b % BOUNCE_COLORS.length];
+                    ctx.strokeStyle = bColor;
+                    ctx.globalAlpha = Math.max(0.15, 0.5 - b * 0.08);
+                    ctx.lineWidth = Math.max(0.5, 1.5 - b * 0.2);
+                    ctx.setLineDash([2, 2]);
                     ctx.beginPath();
-                    ctx.arc(c2x, c2y, 5, 0, Math.PI * 2);
-                    ctx.fill();
+                    for (var i = 0; i < seg.path.length; i++) {
+                        var pt = seg.path[i];
+                        if (i === 0) ctx.moveTo(pt.x + BALL_SZ / 2, pt.y + BALL_SZ / 2);
+                        else ctx.lineTo(pt.x + BALL_SZ / 2, pt.y + BALL_SZ / 2);
+                    }
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+
+                    // Catch indicator dot at each bounce point
+                    if (seg.caught) {
+                        ctx.globalAlpha = 0.6;
+                        ctx.fillStyle = bColor;
+                        ctx.beginPath();
+                        ctx.arc(seg.bx + BALL_SZ / 2, seg.by + BALL_SZ / 2, 3, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
                 }
             }
         }
@@ -877,12 +915,12 @@
         // Decision badge
         var aColor = ACOLORS[viz.action];
         var dText = '\u2192 ' + NAMES[viz.action];
-        if (viz.mode === '2bounce') {
+        if (viz.mode === 'search') {
             if (viz.flight1ClearsAll) {
                 dText += '  \u2713CLEAR';
             } else {
-                dText += '  ' + viz.bestScore.toFixed(1);
-                dText += viz.bestClearsAll ? '  \u2713ALL' : viz.bestCatch2 ? '  \u27132nd' : '  \u27172nd';
+                dText += '  ' + Math.floor(viz.bestScore) + 'bk';
+                dText += '  d=' + viz.searchDepth;
                 dText += '  f=' + viz.catchFrame;
             }
         }
@@ -925,7 +963,8 @@
                 if (dist < bestDist) { bestDist = dist; nearDx = (cx - bx) / CW; nearDy = (cy - by) / CH; }
             }
         }
-        var f = new Float64Array(24);
+        var N_HYBRID = 7 + COLS + ROWS + 3;
+        var f = new Float64Array(N_HYBRID);
         f[0] = px / CW;
         f[1] = bx / CW;
         f[2] = by / CH;
@@ -934,10 +973,11 @@
         f[5] = nearDx;
         f[6] = nearDy;
         for (var c = 0; c < COLS; c++) f[7 + c] = colCounts[c] / ROWS;
-        for (var r = 0; r < ROWS; r++) f[15 + r] = rowCounts[r] / COLS;
-        f[21] = totalBricks / (ROWS * COLS);
-        f[22] = lives / MAX_LIVES;
-        f[23] = Math.min(score / 480, 1);
+        var ri = 7 + COLS;
+        for (var r = 0; r < ROWS; r++) f[ri + r] = rowCounts[r] / COLS;
+        f[ri + ROWS] = totalBricks / (ROWS * COLS);
+        f[ri + ROWS + 1] = lives / MAX_LIVES;
+        f[ri + ROWS + 2] = Math.min(score / (ROWS * COLS * 30), 1);
         return f;
     }
 
@@ -954,7 +994,7 @@
         DISCOUNT: 0.99,
 
         init: function () {
-            this.valueNet = new MLP([24, 32, 16, 1]);
+            this.valueNet = new MLP([7 + COLS + ROWS + 3, 32, 16, 1]);
             this.trained = false;
             this._trainingData = [];
             this._lossHistory = [];
@@ -1020,9 +1060,14 @@
                                 score += ROW_POINTS[r];
                                 var oL = (bx + BALL_SZ) - br.x, oR = (br.x + br.w) - bx;
                                 var oT = (by + BALL_SZ) - br.y, oB = (br.y + br.h) - by;
-                                if (Math.min(oT, oB) < Math.min(oL, oR)) { bvy = -bvy; dyS = -dyS; }
-                                else { bvx = -bvx; dxS = -dxS; }
-                                r = ROWS; break;
+                                if (Math.min(oT, oB) < Math.min(oL, oR)) {
+                                    bvy = -bvy; dyS = -dyS;
+                                    if (oT < oB) by = br.y - BALL_SZ; else by = br.y + br.h;
+                                } else {
+                                    bvx = -bvx; dxS = -dxS;
+                                    if (oL < oR) bx = br.x - BALL_SZ; else bx = br.x + br.w;
+                                }
+                                s = nSub; r = ROWS; break;
                             }
                         }
                     }
@@ -1979,8 +2024,8 @@
     var nightStars = [];
     function placeStars() {
         nightStars = [];
-        for (var i = 0; i < 10; i++)
-            nightStars.push({ x: Math.random() * CW, y: Math.random() * CH * 0.4,
+        for (var i = 0; i < 20; i++)
+            nightStars.push({ x: Math.random() * CW, y: Math.random() * CH * 0.85,
                               sourceY: STAR_SPRITE.y + STAR_SPRITE.size * (i % 2) });
     }
     placeStars();
@@ -2012,7 +2057,13 @@
         document.getElementById('hybrid-btn').classList.toggle('active', mode === 'hybrid');
         document.getElementById('dp-btn').classList.toggle('active', mode === 'dp');
         document.getElementById('dqn-btn').classList.toggle('active', mode === 'dqn');
+        document.getElementById('ppo-play-btn').classList.toggle('active', mode === 'ppo');
+        document.getElementById('rainbow-play-btn').classList.toggle('active', mode === 'rainbow');
         document.getElementById('dp-horizon-box').style.display = mode === 'dp' ? '' : 'none';
+        var ppoSec = document.getElementById('ppo-section');
+        var rbSec = document.getElementById('rainbow-section');
+        if (ppoSec) ppoSec.style.display = (mode === 'ppo') ? '' : 'none';
+        if (rbSec) rbSec.style.display = (mode === 'rainbow') ? '' : 'none';
         if (mode !== 'off') {
             gameStarted = true;
             if (playGame.gameOver) resetPlayGame();
@@ -2083,6 +2134,16 @@
             var q = policy.forward(features);
             action = argmax(q);
             if (playGame.stuck) playGame.launch();
+        } else if (aiMode === 'ppo') {
+            var features = playGame.getFeatures();
+            var logits = ppoPol.forward(features);
+            action = argmax(logits);
+            if (playGame.stuck) playGame.launch();
+        } else if (aiMode === 'rainbow') {
+            var features = playGame.getFeatures();
+            var q = rbPolicy.forward(features);
+            action = argmax(q);
+            if (playGame.stuck) playGame.launch();
         } else {
             if (playKeys[37] || playKeys[65]) action = 0;
             if (playKeys[39] || playKeys[68]) action = 2;
@@ -2110,8 +2171,7 @@
     }
 
     function playDraw() {
-        drawBreakoutGame(playCtx, playGame, playAnim, playLastAction, playLastDir);
-        drawNightElements(playCtx);
+        drawBreakoutGame(playCtx, playGame, playAnim, playLastAction, playLastDir, true);
         if (inverted) {
             playCtx.globalCompositeOperation = 'difference';
             playCtx.fillStyle = '#fff';
@@ -2614,7 +2674,7 @@
             alert('No cached hybrid weights available yet.');
             return;
         }
-        hybridAI.valueNet = new MLP([24, 32, 16, 1]);
+        hybridAI.valueNet = new MLP([7 + COLS + ROWS + 3, 32, 16, 1]);
         hybridAI.valueNet.deserialize(HYBRID_CACHED_WEIGHTS);
         hybridAI._returnMean = HYBRID_CACHED_WEIGHTS.mean || 0;
         hybridAI._returnStd = HYBRID_CACHED_WEIGHTS.std || 1;
@@ -2637,9 +2697,448 @@
     window.breakoutSimAI = breakoutSimAI;
     window.breakoutSetAIMode = setAIMode;
 
-    // Initialize both agents
+    // ═════════════════════════════════════════════════════════════════
+    //  SOFTMAX HELPER
+    // ═════════════════════════════════════════════════════════════════
+    function softmax(logits) {
+        var mx = -Infinity;
+        for (var i = 0; i < logits.length; i++) if (logits[i] > mx) mx = logits[i];
+        var sum = 0, out = new Float64Array(logits.length);
+        for (var i = 0; i < logits.length; i++) { out[i] = Math.exp(logits[i] - mx); sum += out[i]; }
+        for (var i = 0; i < logits.length; i++) out[i] /= sum;
+        return out;
+    }
+
+    // ═════════════════════════════════════════════════════════════════
+    //  PPO AGENT
+    // ═════════════════════════════════════════════════════════════════
+    var PPO_LR = 0.001, PPO_VLR = 0.01, PPO_GAMMA = 0.99;
+    var PPO_CLIP = 0.2, PPO_EPOCHS = 4;
+
+    var ppoPol, ppoVal;
+    var ppoGame, ppoEp, ppoScores, ppoBest;
+    var ppoTraining = false;
+
+    function initPPO() {
+        ppoPol = new MLP([N_FEAT, 64, 32, N_ACT]);
+        ppoVal = new MLP([N_FEAT, 64, 32, 1]);
+        ppoGame = new BreakoutGame();
+        ppoGame.reset(3);
+        ppoGame.launch();
+        ppoEp = 0; ppoScores = []; ppoBest = -99;
+        ppoTraining = false;
+    }
+
+    function ppoCollectEpisode() {
+        var states = [], actions = [], rewards = [], oldProbs = [];
+        ppoGame.reset(3); ppoGame.launch();
+        var done = false;
+        while (!done && states.length < 5000) {
+            var s = ppoGame.getFeatures();
+            var logits = ppoPol.forward(s);
+            var probs = softmax(logits);
+            var r = Math.random(), cum = 0, a = 0;
+            for (var i = 0; i < probs.length; i++) { cum += probs[i]; if (r < cum) { a = i; break; } }
+            states.push(Array.from(s));
+            actions.push(a);
+            oldProbs.push(probs[a]);
+            if (ppoGame.stuck) ppoGame.launch();
+            var totalR = 0;
+            for (var fs = 0; fs < FRAME_SKIP; fs++) {
+                var result = ppoGame.step(a);
+                totalR += result.reward;
+                if (result.done) { done = true; break; }
+            }
+            rewards.push(totalR);
+        }
+        return { states: states, actions: actions, rewards: rewards, oldProbs: oldProbs, score: ppoGame.score };
+    }
+
+    function ppoUpdate(ep) {
+        var T = ep.states.length;
+        if (T < 2) return;
+        // Discounted returns
+        var returns = new Float64Array(T);
+        var G = 0;
+        for (var t = T - 1; t >= 0; t--) { G = ep.rewards[t] + PPO_GAMMA * G; returns[t] = G; }
+        // Advantages
+        var advantages = new Float64Array(T);
+        for (var t = 0; t < T; t++) {
+            var v = ppoVal.forward(ep.states[t])[0];
+            advantages[t] = returns[t] - v;
+        }
+        // Normalize advantages
+        var mean = 0;
+        for (var t = 0; t < T; t++) mean += advantages[t];
+        mean /= T;
+        var std = 0;
+        for (var t = 0; t < T; t++) std += (advantages[t] - mean) * (advantages[t] - mean);
+        std = Math.sqrt(std / T + 1e-8);
+        for (var t = 0; t < T; t++) advantages[t] = (advantages[t] - mean) / std;
+        // PPO epochs
+        for (var epoch = 0; epoch < PPO_EPOCHS; epoch++) {
+            ppoPol.zeroGrad();
+            for (var t = 0; t < T; t++) {
+                var logits = ppoPol.forward(ep.states[t]);
+                var probs = softmax(logits);
+                var ratio = probs[ep.actions[t]] / (ep.oldProbs[t] + 1e-8);
+                var clipped = Math.max(1 - PPO_CLIP, Math.min(1 + PPO_CLIP, ratio));
+                var adv = advantages[t];
+                var useClipped = (clipped * adv) < (ratio * adv);
+                var grad = new Float64Array(N_ACT);
+                if (!useClipped) {
+                    for (var i = 0; i < N_ACT; i++)
+                        grad[i] = -adv * ((i === ep.actions[t] ? 1 : 0) - probs[i]);
+                }
+                ppoPol.backward(grad);
+            }
+            ppoPol.update(PPO_LR, T);
+            // Value update
+            ppoVal.zeroGrad();
+            for (var t = 0; t < T; t++) {
+                var v = ppoVal.forward(ep.states[t])[0];
+                ppoVal.backward(new Float64Array([v - returns[t]]));
+            }
+            ppoVal.update(PPO_VLR, T);
+        }
+    }
+
+    function ppoTrainTick() {
+        if (!ppoTraining) return;
+        var speed = parseInt(document.getElementById('ppo-speed').value) || 5;
+        for (var i = 0; i < speed; i++) {
+            var ep = ppoCollectEpisode();
+            ppoUpdate(ep);
+            ppoScores.push(ep.score);
+            ppoEp++;
+            if (ep.score > ppoBest) ppoBest = ep.score;
+        }
+        var avg = 0;
+        var last50 = ppoScores.slice(-50);
+        for (var i = 0; i < last50.length; i++) avg += last50[i];
+        avg /= last50.length;
+        var statsText = 'Ep ' + ppoEp + ' | Avg50: ' + avg.toFixed(0) + ' | Best: ' + ppoBest;
+        document.getElementById('ppo-stats').textContent = statsText;
+        document.getElementById('ppo-stats2').textContent = statsText;
+        if (ppoScores.length > 1) {
+            document.getElementById('ppo-viz-box').style.display = '';
+            document.getElementById('ppo-chart-box').style.display = '';
+            drawGenericChart('ppo-chart2', ppoScores);
+        }
+        setTimeout(ppoTrainTick, 0);
+    }
+
+    window.togglePPOTrain = function () {
+        ppoTraining = !ppoTraining;
+        var btn = document.getElementById('ppo-start-btn');
+        if (ppoTraining) { btn.textContent = 'Pause'; btn.classList.add('active'); ppoTrainTick(); }
+        else { btn.textContent = 'Train'; btn.classList.remove('active'); }
+    };
+    window.resetPPO = function () { ppoTraining = false; initPPO(); document.getElementById('ppo-stats2').textContent = 'Ready'; document.getElementById('ppo-chart-box').style.display = 'none'; document.getElementById('ppo-start-btn').textContent = 'Train'; document.getElementById('ppo-start-btn').classList.remove('active'); };
+
+    // ═════════════════════════════════════════════════════════════════
+    //  RAINBOW DQN AGENT (Prioritized Replay + Dueling + N-step)
+    // ═════════════════════════════════════════════════════════════════
+
+    // --- Prioritized Replay Buffer ---
+    function PriReplayBuffer(cap, alpha) {
+        this.cap = cap; this.buf = []; this.priorities = [];
+        this.pos = 0; this.alpha = alpha || 0.6;
+    }
+    PriReplayBuffer.prototype.push = function (s, a, r, ns, d) {
+        var maxP = this.priorities.length > 0 ? Math.max.apply(null, this.priorities) : 1.0;
+        var item = { s: s, a: a, r: r, ns: ns, d: d };
+        if (this.buf.length < this.cap) { this.buf.push(item); this.priorities.push(maxP); }
+        else { this.buf[this.pos] = item; this.priorities[this.pos] = maxP; }
+        this.pos = (this.pos + 1) % this.cap;
+    };
+    PriReplayBuffer.prototype.sample = function (n, beta) {
+        beta = beta || 0.4;
+        var N = this.buf.length;
+        var probs = new Float64Array(N);
+        var sum = 0;
+        for (var i = 0; i < N; i++) { probs[i] = Math.pow(this.priorities[i] + 1e-6, this.alpha); sum += probs[i]; }
+        for (var i = 0; i < N; i++) probs[i] /= sum;
+        var indices = [], samples = [], weights = new Float64Array(n);
+        var maxW = 0;
+        for (var i = 0; i < n; i++) {
+            var r = Math.random(), cum = 0, idx = 0;
+            for (var j = 0; j < N; j++) { cum += probs[j]; if (r < cum) { idx = j; break; } }
+            indices.push(idx);
+            samples.push(this.buf[idx]);
+            weights[i] = Math.pow(1.0 / (N * probs[idx] + 1e-8), beta);
+            if (weights[i] > maxW) maxW = weights[i];
+        }
+        for (var i = 0; i < n; i++) weights[i] /= maxW;
+        return { indices: indices, samples: samples, weights: weights };
+    };
+    PriReplayBuffer.prototype.updatePriorities = function (indices, tdErrors) {
+        for (var i = 0; i < indices.length; i++)
+            this.priorities[indices[i]] = Math.abs(tdErrors[i]) + 1e-6;
+    };
+
+    // --- Dueling MLP ---
+    function DuelingMLP(nFeat, hiddenSizes, nAct) {
+        this.shared = new MLP([nFeat].concat(hiddenSizes));
+        var lastH = hiddenSizes[hiddenSizes.length - 1];
+        this.valHead = new MLP([lastH, 1]);
+        this.advHead = new MLP([lastH, nAct]);
+        this.nAct = nAct;
+    }
+    DuelingMLP.prototype.forward = function (x) {
+        var h = this.shared.forward(x);
+        // Apply ReLU to shared output (shared net's last layer is linear)
+        var hRelu = new Float64Array(h.length);
+        for (var i = 0; i < h.length; i++) hRelu[i] = h[i] > 0 ? h[i] : 0;
+        var v = this.valHead.forward(hRelu);
+        var a = this.advHead.forward(hRelu);
+        var meanA = 0;
+        for (var i = 0; i < this.nAct; i++) meanA += a[i];
+        meanA /= this.nAct;
+        var q = new Float64Array(this.nAct);
+        for (var i = 0; i < this.nAct; i++) q[i] = v[0] + a[i] - meanA;
+        return q;
+    };
+    DuelingMLP.prototype.backwardQ = function (grad) {
+        // grad is dL/dQ for each action
+        var dv = 0;
+        var meanGrad = 0;
+        for (var i = 0; i < this.nAct; i++) meanGrad += grad[i];
+        meanGrad /= this.nAct;
+        // dQ/dv = 1 for all actions → dL/dv = sum of grad
+        dv = meanGrad * this.nAct; // sum of grads
+        // Actually: Q_i = V + A_i - mean(A)
+        // dL/dV = Σ dL/dQ_i = sum(grad)
+        // dL/dA_i = dL/dQ_i - (1/nAct)*Σ dL/dQ_j = grad[i] - meanGrad
+        var dA = new Float64Array(this.nAct);
+        for (var i = 0; i < this.nAct; i++) dA[i] = grad[i] - meanGrad;
+        // Backprop through heads
+        this.advHead.backward(dA);
+        this.valHead.backward(new Float64Array([dv]));
+        // Backprop through shared: need combined gradient from both heads
+        // Get gradient w.r.t. hidden (shared output)
+        // We need to manually compute dL/dh from both heads
+        var lastH = this.shared.dims[this.shared.n - 1].o;
+        var dh = new Float64Array(lastH);
+        // From val head
+        var vW = this.valHead.W[0], vDims = this.valHead.dims[0];
+        for (var j = 0; j < lastH; j++) {
+            for (var i = 0; i < vDims.o; i++) dh[j] += vW[i * vDims.i + j] * new Float64Array([dv])[i];
+        }
+        // From adv head
+        var aW = this.advHead.W[0], aDims = this.advHead.dims[0];
+        for (var j = 0; j < lastH; j++) {
+            for (var i = 0; i < aDims.o; i++) dh[j] += aW[i * aDims.i + j] * dA[i];
+        }
+        // ReLU derivative on shared output
+        var sharedOut = this.shared._z[this.shared.n - 1];
+        for (var j = 0; j < lastH; j++) if (sharedOut[j] <= 0) dh[j] = 0;
+        this.shared.backward(dh);
+    };
+    DuelingMLP.prototype.update = function (lr, batchSize) {
+        this.shared.update(lr, batchSize);
+        this.valHead.update(lr, batchSize);
+        this.advHead.update(lr, batchSize);
+    };
+    DuelingMLP.prototype.zeroGrad = function () {
+        this.shared.zeroGrad();
+        this.valHead.zeroGrad();
+        this.advHead.zeroGrad();
+    };
+    DuelingMLP.prototype.copyFrom = function (other) {
+        this.shared.copyFrom(other.shared);
+        this.valHead.copyFrom(other.valHead);
+        this.advHead.copyFrom(other.advHead);
+    };
+    DuelingMLP.prototype.serialize = function () {
+        return { shared: this.shared.serialize(), val: this.valHead.serialize(), adv: this.advHead.serialize() };
+    };
+    DuelingMLP.prototype.deserialize = function (data) {
+        this.shared.deserialize(data.shared);
+        this.valHead.deserialize(data.val);
+        this.advHead.deserialize(data.adv);
+    };
+
+    // --- Rainbow DQN state ---
+    var RB_GAMMA = 0.99, RB_LR = 0.0008;
+    var RB_BATCH = 32, RB_BUF_CAP = 30000, RB_WARMUP = 500;
+    var RB_TGT_SYNC = 500, RB_NSTEP = 3;
+    var RB_EPS_START = 1.0, RB_EPS_END = 0.02, RB_EPS_DECAY = 30000;
+
+    var rbPolicy, rbTarget, rbBuf;
+    var rbGame, rbStep, rbEp, rbScores, rbBest;
+    var rbTraining = false;
+    var rbNStepBuf = [];
+
+    function initRainbow() {
+        rbPolicy = new DuelingMLP(N_FEAT, [64, 64], N_ACT);
+        rbTarget = new DuelingMLP(N_FEAT, [64, 64], N_ACT);
+        rbTarget.copyFrom(rbPolicy);
+        rbBuf = new PriReplayBuffer(RB_BUF_CAP);
+        rbGame = new BreakoutGame();
+        rbGame.reset(3); rbGame.launch();
+        rbStep = 0; rbEp = 0; rbScores = []; rbBest = -99;
+        rbTraining = false; rbNStepBuf = [];
+    }
+
+    function rbGetEpsilon() {
+        return Math.max(RB_EPS_END, RB_EPS_START - (RB_EPS_START - RB_EPS_END) * rbStep / RB_EPS_DECAY);
+    }
+
+    function rbFlushNStep(done) {
+        if (rbNStepBuf.length === 0) return;
+        // Compute n-step return from oldest entry
+        var first = rbNStepBuf[0];
+        var nStepR = 0, gamma_n = 1;
+        for (var i = 0; i < rbNStepBuf.length; i++) {
+            nStepR += gamma_n * rbNStepBuf[i].r;
+            gamma_n *= RB_GAMMA;
+        }
+        var last = rbNStepBuf[rbNStepBuf.length - 1];
+        rbBuf.push(first.s, first.a, nStepR, last.ns, done || last.d);
+    }
+
+    function rainbowTrainTick() {
+        if (!rbTraining) return;
+        var speed = parseInt(document.getElementById('rainbow-speed').value) || 100;
+        var t0 = performance.now();
+
+        for (var s = 0; s < speed; s++) {
+            var eps = rbGetEpsilon();
+            var features = rbGame.getFeatures();
+            var action;
+            if (Math.random() < eps) action = Math.floor(Math.random() * N_ACT);
+            else action = argmax(rbPolicy.forward(features));
+            if (rbGame.stuck) rbGame.launch();
+            var totalReward = 0, done = false;
+            for (var fs = 0; fs < FRAME_SKIP; fs++) {
+                var r = rbGame.step(action);
+                totalReward += r.reward;
+                if (r.done) { done = true; break; }
+            }
+            var nextFeatures = rbGame.getFeatures();
+            // N-step buffer
+            rbNStepBuf.push({ s: features, a: action, r: totalReward, ns: nextFeatures, d: done });
+            if (rbNStepBuf.length >= RB_NSTEP) {
+                rbFlushNStep(false);
+                rbNStepBuf.shift();
+            }
+            rbStep++;
+            if (done) {
+                // Flush remaining n-step transitions
+                while (rbNStepBuf.length > 0) {
+                    rbFlushNStep(true);
+                    rbNStepBuf.shift();
+                }
+                rbScores.push(rbGame.score);
+                rbEp++;
+                if (rbGame.score > rbBest) rbBest = rbGame.score;
+                rbGame.reset(3); rbGame.launch();
+            }
+            // Train step
+            if (rbBuf.buf.length >= RB_WARMUP) {
+                var beta = Math.min(1.0, 0.4 + 0.6 * rbStep / RB_EPS_DECAY);
+                var batch = rbBuf.sample(RB_BATCH, beta);
+                rbPolicy.zeroGrad();
+                var tdErrors = new Float64Array(RB_BATCH);
+                for (var b = 0; b < batch.samples.length; b++) {
+                    var tr = batch.samples[b];
+                    var q = rbPolicy.forward(tr.s);
+                    var qa = q[tr.a];
+                    // Double DQN: select action with policy, evaluate with target
+                    var bestNextA = argmax(rbPolicy.forward(tr.ns));
+                    var gamma_n = Math.pow(RB_GAMMA, RB_NSTEP);
+                    var nextQ = rbTarget.forward(tr.ns)[bestNextA];
+                    var tgt = tr.r + (tr.d ? 0 : gamma_n * nextQ);
+                    var td = qa - tgt;
+                    tdErrors[b] = td;
+                    var clippedTd = Math.max(-1, Math.min(1, td)) * batch.weights[b];
+                    rbPolicy.forward(tr.s); // re-forward for correct activations
+                    var grad = new Float64Array(N_ACT);
+                    grad[tr.a] = clippedTd;
+                    rbPolicy.backwardQ(grad);
+                }
+                rbPolicy.update(RB_LR, RB_BATCH);
+                rbBuf.updatePriorities(batch.indices, tdErrors);
+            }
+            if (rbStep % RB_TGT_SYNC === 0) rbTarget.copyFrom(rbPolicy);
+        }
+
+        var elapsed = (performance.now() - t0) / 1000;
+        var sps = speed / Math.max(0.001, elapsed);
+        var avg = 0;
+        if (rbScores.length > 0) {
+            var last50 = rbScores.slice(-50);
+            for (var i = 0; i < last50.length; i++) avg += last50[i];
+            avg /= last50.length;
+        }
+        var statsText = 'Ep ' + rbEp + ' | Step ' + rbStep +
+            ' | Avg50: ' + avg.toFixed(0) + ' | Best: ' + rbBest +
+            ' | Eps: ' + rbGetEpsilon().toFixed(2) + ' | ' + Math.round(sps) + ' s/s';
+        document.getElementById('rainbow-stats').textContent = statsText;
+        document.getElementById('rainbow-stats2').textContent = statsText;
+        if (rbScores.length > 1) {
+            document.getElementById('rainbow-viz-box').style.display = '';
+            document.getElementById('rainbow-chart-box').style.display = '';
+            drawGenericChart('rainbow-chart2', rbScores);
+        }
+        setTimeout(rainbowTrainTick, 0);
+    }
+
+    window.toggleRainbowTrain = function () {
+        rbTraining = !rbTraining;
+        var btn = document.getElementById('rainbow-start-btn');
+        if (rbTraining) { btn.textContent = 'Pause'; btn.classList.add('active'); rainbowTrainTick(); }
+        else { btn.textContent = 'Train'; btn.classList.remove('active'); }
+    };
+    window.resetRainbow = function () { rbTraining = false; initRainbow(); document.getElementById('rainbow-stats2').textContent = 'Ready'; document.getElementById('rainbow-chart-box').style.display = 'none'; document.getElementById('rainbow-start-btn').textContent = 'Train'; document.getElementById('rainbow-start-btn').classList.remove('active'); };
+
+    // ═════════════════════════════════════════════════════════════════
+    //  GENERIC CHART DRAWING (reused by PPO, Rainbow)
+    // ═════════════════════════════════════════════════════════════════
+    function drawGenericChart(canvasId, data) {
+        var cc = document.getElementById(canvasId);
+        if (!cc) return;
+        var c = cc.getContext('2d');
+        var w = cc.width, h = cc.height;
+        c.fillStyle = '#fff'; c.fillRect(0, 0, w, h);
+        if (data.length < 2) return;
+        var pad = 40, pw = w - pad * 2, ph = h - pad * 2;
+        var yMin = 0, yMax = Math.max(200, Math.max.apply(null, data) * 1.1);
+        c.strokeStyle = '#e8e8e8'; c.lineWidth = 1;
+        for (var y = 0; y <= yMax; y += Math.max(50, Math.round(yMax / 4))) {
+            var py = pad + ph - (y - yMin) / (yMax - yMin) * ph;
+            c.beginPath(); c.moveTo(pad, py); c.lineTo(w - pad, py); c.stroke();
+            c.fillStyle = '#86868b'; c.font = '10px "Courier New"';
+            c.textAlign = 'right'; c.fillText(y, pad - 4, py + 3);
+        }
+        c.fillStyle = 'rgba(0,113,227,0.15)';
+        for (var i = 0; i < data.length; i++) {
+            var px = pad + (i / (data.length - 1)) * pw;
+            var py = pad + ph - (data[i] - yMin) / (yMax - yMin) * ph;
+            c.fillRect(px - 1, py - 1, 3, 3);
+        }
+        if (data.length >= 10) {
+            c.strokeStyle = '#0071e3'; c.lineWidth = 2; c.beginPath();
+            var winSz = Math.min(50, Math.floor(data.length / 3));
+            if (winSz < 2) winSz = 2;
+            for (var i = winSz; i < data.length; i++) {
+                var sum = 0;
+                for (var j = i - winSz; j < i; j++) sum += data[j];
+                var avg = sum / winSz;
+                var px = pad + (i / (data.length - 1)) * pw;
+                var py = pad + ph - (avg - yMin) / (yMax - yMin) * ph;
+                if (i === winSz) c.moveTo(px, py); else c.lineTo(px, py);
+            }
+            c.stroke();
+        }
+    }
+
+    // Initialize all agents
     hybridAI.init();
     initDQN();
+    initPPO();
+    initRainbow();
 })();
 </script>
 
@@ -2651,15 +3150,16 @@
     var origTogglePause = window.togglePause;
 
     window.setMode = function (mode) {
-        window.breakoutSetAIMode(mode === 'rules' ? 'rules' : 'off');
+        var aiModes = ['rules', 'ppo', 'rainbow'];
+        var aiMode = aiModes.indexOf(mode) >= 0 ? mode : 'off';
+        window.breakoutSetAIMode(aiMode);
 
         // Update button states
         document.getElementById('human-btn').classList.toggle('active', mode === 'off');
-        // rules-btn active state handled by setAIMode
 
         // Set difficulty defaults: Human=1, AI=6
         var slider = document.getElementById('play-diff');
-        var val = mode === 'rules' ? 6 : 1;
+        var val = mode !== 'off' ? 6 : 1;
         slider.value = val;
         document.getElementById('play-diff-val').textContent = val;
 

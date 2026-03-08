@@ -94,6 +94,7 @@
         <div class="si-controls" style="margin-top: 12px;">
             <button class="si-btn active" id="human-btn" onclick="setMode('off')">Human</button>
             <button class="si-btn" id="rules-btn" onclick="setMode('rules')">AI</button>
+            <button class="si-btn" id="neat-btn" onclick="setMode('neat')">NEAT</button>
             <button class="si-btn" id="viz-btn" onclick="toggleViz()">Viz</button>
             <button class="si-btn" onclick="restartGame()">Restart</button>
             <button class="si-btn" id="pause-btn" onclick="togglePause()">Pause</button>
@@ -108,6 +109,22 @@
         <p class="si-help" style="text-align: center;">↑ / Space jump &nbsp;|&nbsp; ↓ duck &nbsp;|&nbsp; R restart</p>
     </div>
 
+    <!-- ═══ NEAT TRAINING (directly under game) ═══ -->
+    <div id="neat-section" style="display: none; margin-top: 0;">
+        <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 6px;">
+            <button class="si-btn primary" id="neat-train-btn" onclick="toggleNeatTrain()">Train</button>
+            <button class="si-btn" onclick="resetNeat()">Reset</button>
+            <span id="neat-stats" style="font-size: 12px; color: #6e6e73;"></span>
+            <span id="neat-watch-status" style="font-size: 11px; color: #535353; margin-left: auto; display: none;"></span>
+        </div>
+        <div class="si-game-box" style="margin: 0 0 16px; padding: 12px;">
+            <canvas id="neat-chart" width="600" height="180"
+                    style="background: #f7f7f7; cursor: pointer; border-radius: 4px; width: 100%; height: auto;"></canvas>
+            <canvas id="neat-topology" width="600" height="155"
+                    style="background: #f7f7f7; border-radius: 4px; width: 100%; height: auto; margin-top: 8px;"></canvas>
+        </div>
+    </div>
+
     <!-- ═══ HOW IT WORKS ═══ -->
     <h2 style="margin-top: 16px;">How it works</h2>
     <p class="si-prose">
@@ -116,6 +133,15 @@
     <p class="si-prose">
         Tap <strong>Viz</strong> to watch the AI think. A cloud of simulated paths appears ahead of the dinosaur — blue for jumping, orange for ducking, dark for running. The thick line is the chosen path; fainter lines are alternatives the AI evaluated. A badge above the dino shows the current decision.
     </p>
+    <div id="neat-description" style="display: none;">
+        <h2 style="margin-top: 16px;">How NEAT works</h2>
+        <p class="si-prose">
+            NEAT (NeuroEvolution of Augmenting Topologies) evolves both the network
+            topology and weights. Starting from minimal networks (input-to-output only),
+            it discovers hidden nodes and connections through structural mutations.
+            Species protect innovations so new topologies have time to optimize.
+        </p>
+    </div>
 
     <p style="margin-top: 20px;">
         <a href="/" style="color: #0071e3; font-size: 14px; text-decoration: none;">← Back</a>
@@ -3014,6 +3040,285 @@
             }
         }
     };
+})();
+</script>
+<script src="ghost-trex.js"></script>
+<script src="neat-agent.js"></script>
+<script>
+// ═══════════════════════════════════════════════════════════════
+//  NEAT Integration — wires NEATAgent into the game UI
+// ═══════════════════════════════════════════════════════════════
+(function () {
+    'use strict';
+
+    var neatAgent = window._neatAgent;
+    if (!neatAgent) return;
+
+    var neatTraining = false;
+    var neatLiveMode = false; // true when NEAT is active but not training (live play)
+    var _neatWatching = false; // true when viewing a past generation's champion
+
+    // --- Wire NEAT into setAIMode ---
+    var prevSetMode = window.setMode;
+    window.setMode = function (mode) {
+        // Turn off NEAT if switching away
+        if (mode !== 'neat') {
+            if (_neatWatching) {
+                neatAgent.restoreChampion();
+                _neatWatching = false;
+                var ws = document.getElementById('neat-watch-status');
+                if (ws) ws.style.display = 'none';
+            }
+            neatAgent.enabled = false;
+            neatLiveMode = false;
+            if (neatTraining) toggleNeatTrain();
+            document.getElementById('neat-btn').classList.remove('active');
+            document.getElementById('neat-section').style.display = 'none';
+            document.getElementById('neat-description').style.display = 'none';
+            prevSetMode(mode);
+            return;
+        }
+
+        // Activate NEAT mode
+        var r = window.runner;
+        if (r && !r.audioContext) r.loadSounds();
+
+        // Deactivate other modes
+        if (r) {
+            r.aiAgent = null;
+            r.postRenderHook = null;
+        }
+        var simAgent = window._simAgent;
+        var simViz = window._simVisualizer;
+        if (simAgent) { simAgent.enabled = false; simAgent._vizEnabled = false; }
+        if (simViz) simViz.enabled = false;
+
+        // Deactivate buttons
+        document.getElementById('human-btn').classList.remove('active');
+        document.getElementById('rules-btn').classList.remove('active');
+        var dqnBtn = document.getElementById('dqn-btn');
+        if (dqnBtn) dqnBtn.classList.remove('active');
+        var vizBtn = document.getElementById('viz-btn');
+        if (vizBtn) vizBtn.classList.remove('active');
+
+        // Activate NEAT
+        document.getElementById('neat-btn').classList.add('active');
+        document.getElementById('neat-section').style.display = '';
+        document.getElementById('neat-description').style.display = '';
+
+        // If not training, use champion for live play
+        neatAgent.enabled = true;
+        neatLiveMode = true;
+
+        // Set up as AI agent for live play with champion
+        var neatAiProxy = {
+            enabled: true,
+            update: function (runner) {
+                // Always use champion for live play on canvas
+                // (training runs headlessly in background)
+                neatAgent.liveUpdate(runner);
+                neatAgent.drawTopology();
+            },
+            recordPrediction: function () {},
+            onCrash: function (runner) {
+                neatAgent.onCrash(runner);
+            },
+            checkGhostCollisions: function () {}
+        };
+
+        if (r) {
+            r.aiAgent = neatAiProxy;
+        }
+
+        // Start runner if needed
+        if (r) {
+            if (r.crashed) {
+                r.restart();
+            } else if (!r.playing) {
+                r.setSpeed(r.config.SPEED);
+                r.runningTime = 0;
+                r.distanceRan = 0;
+                r.activated = true;
+                r.playingIntro = false;
+                r.tRex.playingIntro = false;
+                r.time = performance.now();
+                r.playing = true;
+                r.tRex.startJump(r.currentSpeed);
+                r.update();
+            }
+        }
+
+        // Set default max speed for NEAT
+        var slider = document.getElementById('max-speed-slider');
+        var msv = document.getElementById('max-speed-val');
+        var defaultSpd = 30;
+        if (slider) {
+            slider.value = defaultSpd;
+            if (msv) msv.textContent = defaultSpd;
+            var ratio = defaultSpd / 13;
+            if (r) {
+                r.config.MAX_SPEED = defaultSpd;
+                r.config.ACCELERATION = 0.002 * ratio * ratio;
+            }
+        }
+
+        // Hide start overlay
+        var overlay = document.getElementById('start-overlay');
+        if (overlay) overlay.style.display = 'none';
+
+        // Clear stale paused flag
+        if (r) r.paused = false;
+        var pauseBtn = document.getElementById('pause-btn');
+        if (pauseBtn) pauseBtn.classList.remove('active');
+
+        // Draw initial topology and stats
+        neatAgent.loadState();
+        neatAgent.updateStats();
+        neatAgent.drawChart();
+        neatAgent.drawTopology();
+    };
+
+    // --- Train toggle ---
+    window.toggleNeatTrain = function () {
+        var r = window.runner;
+        neatTraining = !neatTraining;
+        neatAgent._training = neatTraining;
+        var btn = document.getElementById('neat-train-btn');
+
+        if (neatTraining) {
+            // Restore champion if we were watching a past gen
+            if (_neatWatching) {
+                neatAgent.restoreChampion();
+                _neatWatching = false;
+                var ws = document.getElementById('neat-watch-status');
+                if (ws) ws.style.display = 'none';
+            }
+
+            btn.textContent = 'Pause';
+            btn.classList.remove('primary');
+            btn.classList.add('active');
+
+            // Start headless training (off-screen runner, fast loop)
+            neatAgent.startHeadlessTraining();
+
+            // Canvas shows champion playing live
+            neatLiveMode = true;
+            if (r) {
+                if (r.crashed) r.restart();
+                r.suppressCollision = false;
+                r.postRenderHook = null;
+                r.distanceRan = 0;
+                r.setSpeed(r.config.SPEED);
+                r.currentSpeed = r.config.SPEED;
+                r.time = performance.now();
+                r.horizon.obstacles = [];
+                r.tRex.reset();
+                r.tRex.update(0, window.Trex.status.RUNNING);
+                r.activated = true;
+                r.playing = true;
+                r.paused = false;
+                r.tRex.startJump(r.currentSpeed);
+                r.update();
+            }
+        } else {
+            btn.textContent = 'Train';
+            btn.classList.add('primary');
+            btn.classList.remove('active');
+
+            // Stop headless training
+            neatAgent.stopHeadlessTraining();
+            neatLiveMode = true;
+
+            // Keep playing live with champion
+            if (r) {
+                r.suppressCollision = false;
+                r.postRenderHook = null;
+                if (r.crashed) r.restart();
+            }
+        }
+    };
+
+    // --- Reset ---
+    window.resetNeat = function () {
+        if (_neatWatching) {
+            _neatWatching = false;
+            neatAgent._championBackup = null;
+            var ws = document.getElementById('neat-watch-status');
+            if (ws) ws.style.display = 'none';
+        }
+        if (neatTraining) window.toggleNeatTrain();
+        neatAgent.resetState();
+        neatAgent.updateStats();
+        neatAgent.drawChart();
+        neatAgent.drawTopology();
+    };
+
+    // --- Clickable chart: time-travel to past generations ---
+    function watchNeatGeneration(genIdx) {
+        var snap = neatAgent.watchGeneration(genIdx);
+        if (!snap) return;
+
+        _neatWatching = true;
+
+        // Stop training if running
+        if (neatTraining) {
+            window.toggleNeatTrain();
+        }
+
+        // Update status display
+        var statusEl = document.getElementById('neat-watch-status');
+        if (statusEl) {
+            statusEl.style.display = '';
+            statusEl.textContent = 'Watching Gen ' + snap.gen + '  (score: ' + snap.fitness + ')';
+        }
+
+        // Show this snapshot's network topology
+        neatAgent.drawTopology();
+
+        // Restart runner to play live with snapshot champion
+        var r = window.runner;
+        if (r) {
+            if (r.crashed) {
+                r.restart();
+            } else {
+                r.distanceRan = 0;
+                r.setSpeed(r.config.SPEED);
+                r.currentSpeed = r.config.SPEED;
+                r.time = performance.now();
+                r.horizon.obstacles = [];
+                r.tRex.reset();
+                r.tRex.update(0, window.Trex.status.RUNNING);
+                r.activated = true;
+                r.playing = true;
+                r.tRex.startJump(r.currentSpeed);
+                r.update();
+            }
+        }
+    }
+
+    var neatChart = document.getElementById('neat-chart');
+    neatChart.addEventListener('click', function (e) {
+        var scores = neatAgent.generationBestHistory;
+        if (scores.length < 2 || neatAgent.championSnapshots.length === 0) return;
+
+        var rect = neatChart.getBoundingClientRect();
+        var scaleX = neatChart.width / rect.width;
+        var clickX = (e.clientX - rect.left) * scaleX;
+
+        var pad = neatAgent.CHART_PAD;
+        var plotW = neatChart.width - pad.left - pad.right;
+        var step = plotW / Math.max(1, scores.length - 1);
+
+        var genIdx = Math.round((clickX - pad.left) / step);
+        genIdx = Math.max(0, Math.min(genIdx, scores.length - 1));
+
+        // Ensure NEAT mode is active
+        if (!neatAgent.enabled) {
+            window.setMode('neat');
+        }
+
+        watchNeatGeneration(genIdx);
+    });
 })();
 </script>
 </body>

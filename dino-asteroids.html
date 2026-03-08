@@ -1,0 +1,554 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DinoAsteroids</title>
+    <link rel="stylesheet" href="si-styles.css?v=2">
+    <style>#game-canvas { width: 100%; height: auto; max-width: none !important; }</style>
+</head>
+<body>
+    <img id="offline-resources-1x" src="assets/default_100_percent/100-offline-sprite.png" style="display:none;">
+    <div class="si-page" style="padding-bottom: 40px;">
+        <h1>DinoAsteroids</h1>
+        <p class="si-subtitle">Blast boulders in the prehistoric asteroid belt</p>
+        <div class="si-game-box">
+            <canvas id="game-canvas" width="600" height="400"></canvas>
+            <div class="si-controls" style="margin-top:12px;">
+                <button class="si-btn active" id="human-btn" onclick="setMode('off')">Human</button>
+                <button class="si-btn" id="rules-btn" onclick="setMode('ai')">AI</button>
+                <button class="si-btn" onclick="restartGame()">Restart</button>
+                <button class="si-btn" id="pause-btn" onclick="togglePause()">Pause</button>
+            </div>
+            <p class="si-help" style="text-align:center;">↑ thrust &nbsp;|&nbsp; ←→ rotate &nbsp;|&nbsp; Space fire &nbsp;|&nbsp; H hyperspace &nbsp;|&nbsp; R restart</p>
+        </div>
+        <h2 style="margin-top:16px;">How it works</h2>
+        <p class="si-prose">DinoAsteroids recreates the 1979 Atari classic: smash large boulders into medium then small fragments, and survive the pterodactyl UFO. Big rocks split into two medium, medium into two small. The small UFO pterodactyl aims precisely; the large one fires randomly. Use hyperspace as a last resort — there&rsquo;s a small chance of rematerialising inside a rock.</p>
+        <p class="si-prose">The AI leads its shots using predicted intercept angles, prioritises nearby smaller fragments, and dodges when any rock gets within 70 pixels.</p>
+        <p style="margin-top:20px;"><a href="/" style="color:#0071e3;font-size:14px;text-decoration:none;">&larr; Back</a></p>
+    </div>
+<script src="dino-sounds.js"></script>
+<script>
+(function(){
+'use strict';
+
+// ─── Setup ───────────────────────────────────────────────────────────────────
+var CW = 600, CH = 400;
+var canvas = document.getElementById('game-canvas');
+var ctx = canvas.getContext('2d');
+var spr = document.getElementById('offline-resources-1x');
+
+var TREX = [{ x:892, y:2, w:44, h:47 }, { x:936, y:2, w:44, h:47 }, { x:980, y:2, w:44, h:47 }];
+var PTERO = [{ x:134, y:2, w:46, h:40 }, { x:180, y:2, w:46, h:40 }];
+var MOON_PH = [140,120,100,60,40,20,0];
+
+// ─── Constants ───────────────────────────────────────────────────────────────
+var SHIP_R   = 10;
+var TURN     = 0.065;    // rad/frame
+var ACCEL    = 0.15;
+var FRIC     = 0.987;
+var VMAX     = 6;
+var B_SPD    = 7;
+var B_LIFE   = 58;       // frames (~1 s)
+var UFO_INT  = 1500;     // frames between UFO spawns
+
+// Irregular asteroid polygon vertices (normalized -1..1)
+var SHAPES = [
+    [-0.1,-1, 0.5,-0.7, 1,-0.2, 0.8, 0.6,  0.2, 1,-0.4, 0.9,-1, 0.4,-0.7,-0.4],
+    [ 0.1,-0.9, 0.7,-0.5, 0.9, 0.1, 0.6, 0.8,  0, 1,-0.6, 0.7,-0.9, 0,-0.7,-0.7],
+    [ 0.4,-1,   0.9,-0.3, 0.7, 0.5, 1,   0.8,  0.3, 1,-0.4, 0.8,-1, 0.2,-0.5,-0.6],
+    [ 0,-0.8,   0.5,-0.6, 1,   0,   0.7, 0.7,  0.1, 1,-0.5, 0.8,-0.9, 0.1,-0.8,-0.6]
+];
+var RADII  = [0, 11, 20, 38];
+var SPEEDS = [0, 1.8, 1.1, 0.6];
+var APTS   = [0, 100, 50, 20];
+var UPTS   = [0, 1000, 200];  // UFO pts: small=1, large=2
+
+// ─── State ───────────────────────────────────────────────────────────────────
+var gs, player, bullets, rocks, sparks, ufo;
+var sc, hi, lv, lives, ufoT, tick;
+var aiMode = 'off', aiIn = { rot:0, thrust:false };
+var keys = {}, paused = false;
+var inv, dayT, nightA, moonPh, moonX, stars;
+
+hi = 0;
+
+// ─── Night cycle helpers ──────────────────────────────────────────────────────
+function placeStars() {
+    stars = [];
+    for (var i = 0; i < 22; i++)
+        stars.push({ x:Math.random()*CW, y:Math.random()*(CH*.55), f:Math.random()<.5?2:11 });
+}
+
+// ─── Math helpers ────────────────────────────────────────────────────────────
+function dst(ax,ay,bx,by) { var dx=ax-bx,dy=ay-by; return Math.sqrt(dx*dx+dy*dy); }
+function wrp(v,m) { return v<0?v+m:v>m?v-m:v; }
+function normA(a) { while(a>Math.PI)a-=Math.PI*2; while(a<-Math.PI)a+=Math.PI*2; return a; }
+function pad5(n) { var s=''+n; while(s.length<5)s='0'+s; return s; }
+
+// ─── Init ────────────────────────────────────────────────────────────────────
+function initGame() {
+    sc=0; lv=1; lives=3; ufoT=0; tick=0;
+    bullets=[]; rocks=[]; sparks=[]; ufo=null;
+    inv=false; dayT=0; nightA=0; moonPh=0; moonX=CW;
+    placeStars();
+    spawnPlayer();
+    spawnRocks(4);
+    gs='playing';
+}
+
+function spawnPlayer() {
+    player = { x:CW/2, y:CH/2, vx:0, vy:0,
+               angle:-Math.PI/2, iframes:0, cooldown:0,
+               dead:false, thrusting:false, anim:0, animT:0 };
+}
+
+function spawnRocks(n) {
+    rocks = [];
+    for (var i = 0; i < n; i++) addRock(3, null, null);
+}
+
+function addRock(sz, x, y) {
+    if (x == null) {
+        var px = player ? player.x : CW/2, py = player ? player.y : CH/2;
+        var tries = 0;
+        do { x=Math.random()*CW; y=Math.random()*CH; tries++; }
+        while (tries < 20 && dst(x,y,px,py) < 110);
+    }
+    var ang = Math.random()*Math.PI*2;
+    var spd = SPEEDS[sz] * (0.7 + Math.random()*0.6);
+    rocks.push({ x:x, y:y, vx:Math.cos(ang)*spd, vy:Math.sin(ang)*spd,
+                 sz:sz, r:RADII[sz],
+                 sh:Math.floor(Math.random()*SHAPES.length),
+                 rot:Math.random()*Math.PI*2, rotV:(Math.random()-.5)*.04 });
+}
+
+// ─── Update ──────────────────────────────────────────────────────────────────
+function update() {
+    if (paused || gs !== 'playing') return;
+    tick++;
+
+    // Night cycle
+    dayT++;
+    if (!inv && dayT >= 1800) { inv=true; dayT=0; moonPh=(moonPh+1)%7; }
+    else if (inv && dayT >= 720) { inv=false; dayT=0; }
+    if (inv) nightA=Math.min(1,nightA+.035);
+    else     nightA=Math.max(0,nightA-.035);
+    if (nightA > 0) { moonX -= .3; if (moonX < -40) moonX = CW+40; }
+
+    if (aiMode==='ai' && player && !player.dead) computeAI();
+    if (player && !player.dead) stepPlayer();
+    stepRocks();
+    stepBullets();
+    stepUFO();
+    stepSparks();
+
+    // Level complete
+    if (rocks.length === 0 && !ufo) {
+        lv++;
+        DinoSounds.reached();
+        var n = Math.min(4 + lv, 12);
+        spawnRocks(n);
+        if (player) { player.vx=0; player.vy=0; player.iframes=120; }
+    }
+}
+
+function stepPlayer() {
+    var p = player, ai = aiMode === 'ai';
+    var left  = ai ? (aiIn.rot < 0) : !!keys[37];
+    var right = ai ? (aiIn.rot > 0) : !!keys[39];
+    var thr   = ai ? aiIn.thrust     : !!(keys[38]||keys[87]);
+    var fire  = !ai && (keys[32]||keys[90]);
+
+    if (left)  p.angle -= TURN;
+    if (right) p.angle += TURN;
+
+    p.thrusting = thr;
+    if (thr) {
+        p.vx += Math.cos(p.angle)*ACCEL;
+        p.vy += Math.sin(p.angle)*ACCEL;
+        var spd = Math.sqrt(p.vx*p.vx + p.vy*p.vy);
+        if (spd > VMAX) { p.vx *= VMAX/spd; p.vy *= VMAX/spd; }
+    }
+    p.vx *= FRIC; p.vy *= FRIC;
+    p.x = wrp(p.x+p.vx, CW); p.y = wrp(p.y+p.vy, CH);
+
+    if (p.cooldown > 0) p.cooldown--;
+    if (fire && p.cooldown === 0) { fireBullet(); p.cooldown = 8; }
+
+    // Hyperspace
+    if ((keys[72]||keys[83]) && !keys._hH) {
+        keys._hH = true;
+        p.vx = 0; p.vy = 0;
+        addSparks(p.x, p.y, 8, 1);
+        p.x = 20+Math.random()*(CW-40);
+        p.y = 20+Math.random()*(CH-40);
+        addSparks(p.x, p.y, 8, 1);
+        if (Math.random() < 0.1) killPlayer();
+    }
+    if (!keys[72] && !keys[83]) keys._hH = false;
+
+    if (p.iframes > 0) p.iframes--;
+
+    if (thr) { p.animT++; if (p.animT>6){p.anim^=1; p.animT=0;} }
+    else     { p.anim=0; p.animT=0; }
+}
+
+function fireBullet() {
+    var p = player;
+    bullets.push({ x:p.x+Math.cos(p.angle)*(SHIP_R+3),
+                   y:p.y+Math.sin(p.angle)*(SHIP_R+3),
+                   vx:p.vx+Math.cos(p.angle)*B_SPD,
+                   vy:p.vy+Math.sin(p.angle)*B_SPD,
+                   age:0, own:true });
+    DinoSounds.press();
+}
+
+function killPlayer() {
+    if (player.iframes > 0) return;
+    addSparks(player.x, player.y, 22, 2);
+    DinoSounds.hit();
+    player.dead = true;
+    lives--;
+    if (lives <= 0) { gs='gameover'; return; }
+    setTimeout(function(){
+        if (gs === 'playing') { spawnPlayer(); player.iframes = 180; }
+    }, 1800);
+}
+
+function stepRocks() {
+    for (var i = 0; i < rocks.length; i++) {
+        var r = rocks[i];
+        r.x = wrp(r.x+r.vx, CW); r.y = wrp(r.y+r.vy, CH); r.rot += r.rotV;
+        if (player && !player.dead && player.iframes <= 0)
+            if (dst(player.x,player.y,r.x,r.y) < r.r+SHIP_R) killPlayer();
+    }
+}
+
+function stepBullets() {
+    outer: for (var i = bullets.length-1; i >= 0; i--) {
+        var b = bullets[i];
+        b.x = wrp(b.x+b.vx, CW); b.y = wrp(b.y+b.vy, CH); b.age++;
+        if (b.age > B_LIFE) { bullets.splice(i,1); continue; }
+        if (b.own) {
+            for (var j = rocks.length-1; j >= 0; j--) {
+                if (dst(b.x,b.y,rocks[j].x,rocks[j].y) < rocks[j].r) {
+                    smashRock(j); bullets.splice(i,1); continue outer;
+                }
+            }
+            if (ufo && dst(b.x,b.y,ufo.x,ufo.y) < ufo.r) {
+                killUFO(); bullets.splice(i,1); continue outer;
+            }
+        } else {
+            if (player && !player.dead && player.iframes <= 0)
+                if (dst(b.x,b.y,player.x,player.y) < SHIP_R) {
+                    killPlayer(); bullets.splice(i,1); continue outer;
+                }
+        }
+    }
+}
+
+function smashRock(idx) {
+    var r = rocks[idx];
+    addSparks(r.x, r.y, 8+r.sz*4, r.sz);
+    sc += APTS[r.sz]; if (sc > hi) hi = sc;
+    DinoSounds.press();
+    if (r.sz > 1) { addRock(r.sz-1,r.x,r.y); addRock(r.sz-1,r.x,r.y); }
+    rocks.splice(idx, 1);
+}
+
+function stepUFO() {
+    ufoT++;
+    if (lv >= 2 && !ufo && ufoT > Math.max(600, UFO_INT - lv*80)) {
+        ufoT = 0;
+        var side = Math.random() < .5 ? -20 : CW+20;
+        var big  = lv < 5 || Math.random() < .6;
+        var spd  = big ? 1.8 : 2.5;
+        ufo = { x:side, y:60+Math.random()*(CH-120),
+                vx:side<0?spd:-spd, vy:0,
+                r:big?18:12, big:big,
+                shotT:big?100:65, wobT:0, frame:0, frameT:0 };
+    }
+    if (!ufo) return;
+    ufo.x += ufo.vx; ufo.y += ufo.vy;
+    ufo.wobT++;
+    if (ufo.wobT % 80 === 0) ufo.vy = (Math.random()-.5)*1.8;
+    ufo.vy *= .98;
+    ufo.y = Math.max(30, Math.min(CH-30, ufo.y));
+    ufo.frameT++; if (ufo.frameT > 8) { ufo.frame ^= 1; ufo.frameT = 0; }
+    // Shoot at player
+    if (player && !player.dead) {
+        ufo.shotT--;
+        if (ufo.shotT <= 0) {
+            ufo.shotT = ufo.big ? 100 : 65;
+            var ang = ufo.big ? Math.random()*Math.PI*2
+                              : Math.atan2(player.y-ufo.y, player.x-ufo.x);
+            bullets.push({ x:ufo.x, y:ufo.y,
+                           vx:Math.cos(ang)*B_SPD*.7, vy:Math.sin(ang)*B_SPD*.7,
+                           age:0, own:false });
+        }
+    }
+    if (player && !player.dead && player.iframes <= 0)
+        if (dst(player.x,player.y,ufo.x,ufo.y) < ufo.r+SHIP_R) killPlayer();
+    if (ufo && (ufo.x < -60 || ufo.x > CW+60)) ufo = null;
+}
+
+function killUFO() {
+    sc += UPTS[ufo.big?2:1]; if (sc > hi) hi = sc;
+    addSparks(ufo.x, ufo.y, 18, 2);
+    DinoSounds.reached();
+    ufo = null;
+}
+
+function stepSparks() {
+    for (var i = sparks.length-1; i >= 0; i--) {
+        var s = sparks[i];
+        s.x += s.vx; s.y += s.vy; s.vx *= .95; s.vy *= .95; s.life--;
+        if (s.life <= 0) sparks.splice(i,1);
+    }
+}
+
+function addSparks(x, y, n, sz) {
+    for (var i = 0; i < n; i++) {
+        var a = Math.random()*Math.PI*2;
+        var spd = (0.5+Math.random()*2.5)*sz;
+        sparks.push({ x:x, y:y, vx:Math.cos(a)*spd, vy:Math.sin(a)*spd,
+                      life:15+Math.random()*20, maxLife:35 });
+    }
+}
+
+// ─── AI ──────────────────────────────────────────────────────────────────────
+function computeAI() {
+    aiIn.rot = 0; aiIn.thrust = false;
+    var p = player;
+
+    // Find nearest danger
+    var nearD = Infinity, nearX = 0, nearY = 0;
+    for (var i = 0; i < rocks.length; i++) {
+        var d = dst(p.x,p.y,rocks[i].x,rocks[i].y);
+        if (d < nearD) { nearD=d; nearX=rocks[i].x; nearY=rocks[i].y; }
+    }
+    if (ufo) { var ud=dst(p.x,p.y,ufo.x,ufo.y); if(ud<nearD){nearD=ud;nearX=ufo.x;nearY=ufo.y;} }
+
+    // Dodge if too close
+    if (nearD < 70) {
+        var flee = Math.atan2(p.y-nearY, p.x-nearX);
+        var diff = normA(flee - p.angle);
+        if (diff > 0.1) aiIn.rot=1; else if (diff < -0.1) aiIn.rot=-1;
+        aiIn.thrust = true;
+        return;
+    }
+
+    // Pick target: UFO preferred, else closest small rock
+    var tgt = null;
+    if (ufo && dst(p.x,p.y,ufo.x,ufo.y) < 250) tgt = { x:ufo.x, y:ufo.y, vx:ufo.vx, vy:ufo.vy };
+    if (!tgt) {
+        var best = null, bestS = Infinity;
+        for (var i = 0; i < rocks.length; i++) {
+            var r = rocks[i];
+            var s = dst(p.x,p.y,r.x,r.y) * r.sz;
+            if (s < bestS) { bestS=s; best=r; }
+        }
+        if (best) tgt = { x:best.x, y:best.y, vx:best.vx, vy:best.vy };
+    }
+    if (!tgt) return;
+
+    // Lead the shot
+    var td = dst(p.x,p.y,tgt.x,tgt.y);
+    var tt = td / B_SPD;
+    var px = tgt.x + tgt.vx*tt, py = tgt.y + tgt.vy*tt;
+    var dx = px-p.x, dy = py-p.y;
+    if (dx >  CW/2) px -= CW; else if (dx < -CW/2) px += CW;
+    if (dy >  CH/2) py -= CH; else if (dy < -CH/2) py += CH;
+
+    var aimA = Math.atan2(py-p.y, px-p.x);
+    var diff = normA(aimA - p.angle);
+    if (diff > 0.1) aiIn.rot=1; else if (diff < -0.1) aiIn.rot=-1;
+    if (Math.abs(diff) < 0.18 && p.cooldown === 0) { fireBullet(); p.cooldown=8; }
+    if (td > 160) aiIn.thrust = true;
+}
+
+// ─── Draw ────────────────────────────────────────────────────────────────────
+function draw() {
+    ctx.fillStyle = '#f7f7f7';
+    ctx.fillRect(0, 0, CW, CH);
+
+    drawNight();
+
+    // Ground strip
+    if (spr && spr.complete)
+        ctx.drawImage(spr, 2,54,600,12, 0,CH-12,CW,12);
+    else {
+        ctx.strokeStyle='#535353'; ctx.lineWidth=1;
+        ctx.beginPath(); ctx.moveTo(0,CH-8); ctx.lineTo(CW,CH-8); ctx.stroke();
+    }
+
+    for (var i = 0; i < rocks.length; i++) drawRock(rocks[i]);
+    if (ufo) drawUFO(ufo);
+
+    for (var i = 0; i < bullets.length; i++) {
+        var b = bullets[i];
+        ctx.beginPath(); ctx.arc(b.x, b.y, b.own?2.5:2, 0, Math.PI*2);
+        ctx.fillStyle = b.own ? '#535353' : '#909090'; ctx.fill();
+    }
+
+    for (var i = 0; i < sparks.length; i++) {
+        var s = sparks[i];
+        ctx.fillStyle = 'rgba(83,83,83,'+(s.life/s.maxLife).toFixed(2)+')';
+        ctx.fillRect(s.x-1, s.y-1, 2, 2);
+    }
+
+    if (player && !player.dead)
+        if (player.iframes <= 0 || Math.floor(player.iframes/5)%2 === 0)
+            drawShip(player);
+
+    // Night inversion
+    if (inv) {
+        ctx.globalCompositeOperation = 'difference';
+        ctx.fillStyle = '#fff'; ctx.fillRect(0,0,CW,CH);
+        ctx.globalCompositeOperation = 'source-over';
+    }
+
+    drawHUD();
+
+    if (gs === 'start') {
+        ctx.fillStyle = 'rgba(247,247,247,.88)';
+        ctx.fillRect(0, CH/2-28, CW, 56);
+        ctx.fillStyle = '#535353';
+        ctx.font = '600 17px "Courier New",monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText('Press Space to start', CW/2, CH/2+6);
+        ctx.textAlign = 'left';
+    } else if (gs === 'gameover') {
+        ctx.fillStyle = 'rgba(247,247,247,.88)';
+        ctx.fillRect(0, CH/2-38, CW, 76);
+        ctx.fillStyle = '#535353';
+        ctx.font = '600 22px "Courier New",monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText('GAME OVER', CW/2, CH/2-4);
+        ctx.font = '13px "Courier New",monospace';
+        ctx.fillText('Score: ' + sc + '   |   R to restart', CW/2, CH/2+19);
+        ctx.textAlign = 'left';
+    }
+}
+
+function drawShip(p) {
+    var sc2 = 0.46;
+    var sp = p.thrusting ? TREX[p.anim === 0 ? 1 : 2] : TREX[0];
+    var sw = sp.w * sc2, sh = sp.h * sc2;
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.rotate(p.angle);  // T-Rex faces right at angle=0
+    if (spr && spr.complete) {
+        ctx.drawImage(spr, sp.x, sp.y, sp.w, sp.h, -sw/2, -sh/2, sw, sh);
+    } else {
+        ctx.strokeStyle='#535353'; ctx.lineWidth=1.5; ctx.fillStyle='#ebebeb';
+        ctx.beginPath();
+        ctx.moveTo(SHIP_R,0); ctx.lineTo(-SHIP_R,SHIP_R*.7); ctx.lineTo(-SHIP_R*.3,0); ctx.lineTo(-SHIP_R,-SHIP_R*.7);
+        ctx.closePath(); ctx.fill(); ctx.stroke();
+    }
+    // Thrust flame (shoots behind the dino, to its left at angle=0)
+    if (p.thrusting) {
+        var fl = 4 + Math.random()*7;
+        ctx.strokeStyle = '#777'; ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(-sw/2, sh*.2); ctx.lineTo(-sw/2-fl, 0); ctx.lineTo(-sw/2, -sh*.2);
+        ctx.stroke();
+    }
+    ctx.restore();
+}
+
+function drawRock(a) {
+    var sh = SHAPES[a.sh];
+    ctx.save();
+    ctx.translate(a.x, a.y); ctx.rotate(a.rot);
+    ctx.strokeStyle = '#535353'; ctx.lineWidth = 1.5; ctx.fillStyle = '#e0e0e0';
+    ctx.beginPath();
+    for (var i = 0; i < sh.length; i += 2) {
+        if (i===0) ctx.moveTo(sh[i]*a.r, sh[i+1]*a.r);
+        else       ctx.lineTo(sh[i]*a.r, sh[i+1]*a.r);
+    }
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.restore();
+}
+
+function drawUFO(u) {
+    ctx.save();
+    ctx.translate(u.x, u.y);
+    if (spr && spr.complete) {
+        var sp = PTERO[u.frame];
+        var sc2 = u.big ? 0.68 : 0.44;
+        var sw = sp.w*sc2, sh2 = sp.h*sc2;
+        if (u.vx < 0) ctx.scale(-1, 1);
+        ctx.drawImage(spr, sp.x,sp.y,sp.w,sp.h, -sw/2,-sh2/2, sw,sh2);
+    } else {
+        ctx.strokeStyle='#535353'; ctx.lineWidth=1.5; ctx.fillStyle='#d8d8d8';
+        ctx.beginPath(); ctx.ellipse(0,0,u.r,u.r*.45,0,0,Math.PI*2);
+        ctx.fill(); ctx.stroke();
+    }
+    ctx.restore();
+}
+
+function drawNight() {
+    if (nightA <= 0 || !spr || !spr.complete) return;
+    ctx.save(); ctx.globalAlpha = nightA;
+    for (var i = 0; i < stars.length; i++) {
+        var s = stars[i];
+        ctx.drawImage(spr, 645,s.f,9,9, Math.round(s.x),s.y,9,9);
+    }
+    var mw = moonPh===3?40:20;
+    ctx.drawImage(spr, 484+MOON_PH[moonPh],2,mw,40, Math.round(moonX),20,mw,40);
+    ctx.restore();
+}
+
+function drawHUD() {
+    ctx.fillStyle = '#535353';
+    ctx.font = '600 13px "Courier New",monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText('HI ' + pad5(hi), 10, 20);
+    ctx.textAlign = 'center';
+    ctx.fillText(pad5(sc), CW/2, 20);
+    ctx.fillText('LV ' + lv, CW/2+135, 20);
+    ctx.textAlign = 'left';
+    if (spr && spr.complete)
+        for (var i = 0; i < lives; i++)
+            ctx.drawImage(spr, TREX[0].x,TREX[0].y,TREX[0].w,TREX[0].h, CW-10-(i+1)*25,2, 20,21);
+}
+
+// ─── Input ───────────────────────────────────────────────────────────────────
+document.addEventListener('keydown', function(e) {
+    keys[e.keyCode] = true;
+    var p = [32,37,38,39,40,72,83,87,90];
+    if (p.indexOf(e.keyCode) >= 0) e.preventDefault();
+    if (gs==='start'   && e.keyCode===32) { initGame(); return; }
+    if (gs==='gameover'&& e.keyCode===82) { initGame(); return; }
+    if (gs==='playing' && e.keyCode===82) { initGame(); return; }
+    if (e.keyCode===80) { paused=!paused; document.getElementById('pause-btn').classList.toggle('active',paused); }
+});
+document.addEventListener('keyup', function(e) { keys[e.keyCode] = false; });
+
+// ─── Buttons ─────────────────────────────────────────────────────────────────
+window.setMode = function(m) {
+    aiMode = m;
+    document.getElementById('human-btn').classList.toggle('active', m==='off');
+    document.getElementById('rules-btn').classList.toggle('active', m==='ai');
+};
+window.restartGame = function() { initGame(); };
+window.togglePause = function() {
+    paused = !paused;
+    document.getElementById('pause-btn').classList.toggle('active', paused);
+};
+
+// ─── Boot ────────────────────────────────────────────────────────────────────
+gs='start'; sc=0; lives=3; lv=1; tick=0;
+bullets=[]; rocks=[]; sparks=[]; ufo=null;
+inv=false; dayT=0; nightA=0; moonPh=0; moonX=CW;
+placeStars();
+
+function loop() { update(); draw(); requestAnimationFrame(loop); }
+loop();
+
+})();
+</script>
+</body>
+</html>

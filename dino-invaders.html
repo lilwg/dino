@@ -25,6 +25,8 @@
             <div class="si-controls" style="margin-top: 12px;">
                 <button class="si-btn active" id="human-btn" onclick="setMode('off')">Human</button>
                 <button class="si-btn" id="rules-btn" onclick="setMode('rules')">AI</button>
+                <button class="si-btn" id="ppo-btn" onclick="setMode('ppo')">PPO</button>
+                <button class="si-btn" id="dqnplus-btn" onclick="setMode('dqnplus')">DQN+</button>
                 <button class="si-btn" id="viz-btn" onclick="toggleViz()">Viz</button>
                 <button class="si-btn" onclick="restartGame()">Restart</button>
                 <button class="si-btn" id="pause-btn" onclick="togglePause()">Pause</button>
@@ -46,6 +48,46 @@
         <p class="si-prose">
             Tap <strong>Viz</strong> to watch the AI think. Coloured trails show predicted player positions &mdash; blue for left, orange for right, grey for staying still. A dashed line traces the player bullet&rsquo;s path for the chosen action. Pill badges above the trails show each family&rsquo;s outcome (hit, score, or safe), and a badge below the player names the chosen action.
         </p>
+
+        <!-- ═══ PPO TRAINING ═══ -->
+        <h2 id="ppo-section" style="margin-top: 32px;">PPO Training</h2>
+        <p class="si-prose">
+            Proximal Policy Optimization learns a policy network (what to do) and a value network (how good a state is). It collects full episodes, computes advantages, then runs multiple clipped gradient updates for stable learning.
+        </p>
+        <div class="si-viz-box">
+            <div class="si-controls" style="margin-bottom: 8px;">
+                <button class="si-btn" id="ppo-train-btn" onclick="togglePPOTrain()">Train</button>
+                <div class="si-speed" style="font-size: 11px;">
+                    Speed: <input type="range" id="ppo-speed" min="1" max="500" value="100" step="1"
+                        oninput="document.getElementById('ppo-speed-val').textContent=this.value">
+                    <span id="ppo-speed-val">100</span>
+                </div>
+            </div>
+            <div class="si-stats" id="ppo-stats">Ready to train</div>
+            <div id="ppo-viz-box" style="display:none; margin-top: 12px;">
+                <canvas id="ppo-chart" class="si-chart-canvas" width="500" height="200"></canvas>
+            </div>
+        </div>
+
+        <!-- ═══ DQN+ TRAINING ═══ -->
+        <h2 id="dqnplus-section" style="margin-top: 32px;">DQN+ Training</h2>
+        <p class="si-prose">
+            DQN+ extends the standard DQN with spatial awareness. It adds 40 binary features representing the 8&times;5 alien grid (alive/dead), giving the network a 64-dimensional input and better understanding of which aliens remain.
+        </p>
+        <div class="si-viz-box">
+            <div class="si-controls" style="margin-bottom: 8px;">
+                <button class="si-btn" id="dqnplus-train-btn" onclick="toggleDQNPlusTrain()">Train</button>
+                <div class="si-speed" style="font-size: 11px;">
+                    Speed: <input type="range" id="dqnplus-speed" min="1" max="500" value="100" step="1"
+                        oninput="document.getElementById('dqnplus-speed-val').textContent=this.value">
+                    <span id="dqnplus-speed-val">100</span>
+                </div>
+            </div>
+            <div class="si-stats" id="dqnplus-stats">Ready to train</div>
+            <div id="dqnplus-viz-box" style="display:none; margin-top: 12px;">
+                <canvas id="dqnplus-chart" class="si-chart-canvas" width="500" height="200"></canvas>
+            </div>
+        </div>
 
         <p style="margin-top: 20px;">
             <a href="/" style="color: #0071e3; font-size: 14px; text-decoration: none;">&larr; Back</a>
@@ -294,6 +336,8 @@
         game.aiAgent.enabled = (mode !== 'off');
         document.getElementById('rules-btn').classList.remove('active');
         document.getElementById('dqn-btn').classList.remove('active');
+        document.getElementById('ppo-btn').classList.remove('active');
+        document.getElementById('dqnplus-btn').classList.remove('active');
 
         if (mode === 'rules') {
             invadersSimAI.enabled = true;
@@ -302,6 +346,12 @@
             if (game.gameOver) game.restart();
         } else if (mode === 'dqn') {
             document.getElementById('dqn-btn').classList.add('active');
+            if (game.gameOver) game.restart();
+        } else if (mode === 'ppo') {
+            document.getElementById('ppo-btn').classList.add('active');
+            if (game.gameOver) game.restart();
+        } else if (mode === 'dqnplus') {
+            document.getElementById('dqnplus-btn').classList.add('active');
             if (game.gameOver) game.restart();
         }
     }
@@ -324,6 +374,15 @@
                 var state = g.extractState();
                 var features = stateToArray(state);
                 var action = argmax(policy.forward(features));
+                g.executeAction(action);
+            } else if (aiMode === 'ppo' && ppoPolicy) {
+                var features = g.extractStateArray();
+                var logits = ppoPolicy.forward(features);
+                var action = argmax(logits);
+                g.executeAction(action);
+            } else if (aiMode === 'dqnplus' && dqnPlusPolicy) {
+                var features = extractExpandedFeatures(g);
+                var action = argmax(dqnPlusPolicy.forward(features));
                 g.executeAction(action);
             }
         },
@@ -723,12 +782,443 @@
 
     window.getWeights = function () { return policy.serialize(); };
 
+    // ═══════════════════════════════════════════════════════════════
+    //  GENERIC CHART — reusable for PPO and DQN+
+    // ═══════════════════════════════════════════════════════════════
+    function drawScoreChart(canvasId, data, color) {
+        var cc = document.getElementById(canvasId);
+        if (!cc || data.length < 2) return;
+        var c = cc.getContext('2d');
+        var w = cc.width, h = cc.height;
+        c.fillStyle = '#fff'; c.fillRect(0, 0, w, h);
+
+        var pad = 40;
+        var pw = w - pad * 2, ph = h - pad * 2;
+        var yMin = 0, yMax = Math.max(100, Math.max.apply(null, data) * 1.1);
+
+        c.strokeStyle = '#e8e8e8'; c.lineWidth = 1;
+        for (var y = 0; y <= yMax; y += Math.max(20, Math.round(yMax / 5))) {
+            var py = pad + ph - (y - yMin) / (yMax - yMin) * ph;
+            c.beginPath(); c.moveTo(pad, py); c.lineTo(w - pad, py); c.stroke();
+            c.fillStyle = '#86868b'; c.font = '10px "Courier New"';
+            c.textAlign = 'right'; c.fillText(y, pad - 4, py + 3);
+        }
+
+        // Dots
+        var dotColor = color || '#0071e3';
+        var r = parseInt(dotColor.slice(1, 3), 16);
+        var g2 = parseInt(dotColor.slice(3, 5), 16);
+        var b2 = parseInt(dotColor.slice(5, 7), 16);
+        c.fillStyle = 'rgba(' + r + ',' + g2 + ',' + b2 + ',0.15)';
+        for (var i = 0; i < data.length; i++) {
+            var px = pad + (i / (data.length - 1)) * pw;
+            var py = pad + ph - (data[i] - yMin) / (yMax - yMin) * ph;
+            c.fillRect(px - 1, py - 1, 3, 3);
+        }
+
+        // Rolling average line
+        if (data.length >= 10) {
+            c.strokeStyle = dotColor; c.lineWidth = 2;
+            c.beginPath();
+            var winSz = Math.min(50, Math.floor(data.length / 3));
+            if (winSz < 2) winSz = 2;
+            for (var i = winSz; i < data.length; i++) {
+                var sum = 0;
+                for (var j = i - winSz; j < i; j++) sum += data[j];
+                var avg = sum / winSz;
+                var px = pad + (i / (data.length - 1)) * pw;
+                var py = pad + ph - (avg - yMin) / (yMax - yMin) * ph;
+                if (i === winSz) c.moveTo(px, py); else c.lineTo(px, py);
+            }
+            c.stroke();
+        }
+
+        c.fillStyle = '#535353'; c.font = '10px "Courier New"';
+        c.textAlign = 'center';
+        c.fillText('Episode', w / 2, h - 5);
+        c.textAlign = 'left';
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  SOFTMAX HELPER
+    // ═══════════════════════════════════════════════════════════════
+    function softmax(logits) {
+        var maxL = logits[0];
+        for (var i = 1; i < logits.length; i++) if (logits[i] > maxL) maxL = logits[i];
+        var exps = new Float64Array(logits.length);
+        var sumExp = 0;
+        for (var i = 0; i < logits.length; i++) {
+            exps[i] = Math.exp(logits[i] - maxL);
+            sumExp += exps[i];
+        }
+        var probs = new Float64Array(logits.length);
+        for (var i = 0; i < logits.length; i++) probs[i] = exps[i] / sumExp;
+        return probs;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  PPO — Proximal Policy Optimization
+    // ═══════════════════════════════════════════════════════════════
+    var ppoPolicy, ppoValue;
+    var ppoTraining = false;
+    var ppoTrainGame;
+    var ppoEp = 0, ppoScores = [], ppoBest = -99;
+    var PPO_GAMMA = 0.99;
+    var PPO_CLIP_EPS = 0.2;
+    var PPO_EPOCHS = 4;
+    var PPO_LR_POLICY = 0.0003;
+    var PPO_LR_VALUE = 0.001;
+    var PPO_FRAME_SKIP = 2;
+
+    function initPPO() {
+        ppoPolicy = new MLP([N_FEAT, 128, 64, N_ACT]);
+        ppoValue = new MLP([N_FEAT, 64, 32, 1]);
+        ppoTrainGame = new SpaceInvadersGame(
+            document.createElement('canvas'), { primary: false });
+        ppoTrainGame.restart();
+        ppoEp = 0;
+        ppoScores = [];
+        ppoBest = -99;
+        ppoTraining = false;
+        document.getElementById('ppo-train-btn').textContent = 'Train';
+        document.getElementById('ppo-train-btn').classList.remove('active');
+        document.getElementById('ppo-stats').textContent = 'Ready to train';
+        document.getElementById('ppo-viz-box').style.display = 'none';
+    }
+
+    function ppoCollectEpisode() {
+        // Collect a full episode of (state, action, reward, logProb)
+        var states = [], actions = [], rewards = [], logProbs = [];
+        ppoTrainGame.restart();
+        var prevScore = 0;
+
+        while (!ppoTrainGame.gameOver) {
+            var features = ppoTrainGame.extractStateArray();
+            var logits = ppoPolicy.forward(features);
+            var probs = softmax(logits);
+
+            // Sample action from policy
+            var r = Math.random(), cumP = 0, action = N_ACT - 1;
+            for (var a = 0; a < N_ACT; a++) {
+                cumP += probs[a];
+                if (r < cumP) { action = a; break; }
+            }
+
+            var logProb = Math.log(Math.max(probs[action], 1e-8));
+            states.push(features.slice ? features.slice() : Array.prototype.slice.call(features));
+            actions.push(action);
+            logProbs.push(logProb);
+
+            // Step with frame skip
+            var stepReward = 0;
+            for (var fs = 0; fs < PPO_FRAME_SKIP; fs++) {
+                ppoTrainGame.executeAction(action);
+                ppoTrainGame.update();
+                var scoreDelta = ppoTrainGame.score - prevScore;
+                prevScore = ppoTrainGame.score;
+                stepReward += scoreDelta / 30;
+                if (ppoTrainGame.gameOver) {
+                    stepReward -= 5;
+                    break;
+                }
+            }
+            rewards.push(stepReward);
+
+            // Safety: cap episode length
+            if (states.length > 10000) break;
+        }
+
+        return { states: states, actions: actions, rewards: rewards, logProbs: logProbs,
+                 score: ppoTrainGame.score };
+    }
+
+    function ppoUpdate(episode) {
+        var T = episode.states.length;
+        if (T === 0) return;
+
+        // Compute discounted returns
+        var returns = new Float64Array(T);
+        var R = 0;
+        for (var t = T - 1; t >= 0; t--) {
+            R = episode.rewards[t] + PPO_GAMMA * R;
+            returns[t] = R;
+        }
+
+        // Compute values and advantages
+        var values = new Float64Array(T);
+        for (var t = 0; t < T; t++) {
+            var v = ppoValue.forward(episode.states[t]);
+            values[t] = v[0];
+        }
+
+        var advantages = new Float64Array(T);
+        // Normalize advantages
+        var advMean = 0, advStd = 0;
+        for (var t = 0; t < T; t++) {
+            advantages[t] = returns[t] - values[t];
+            advMean += advantages[t];
+        }
+        advMean /= T;
+        for (var t = 0; t < T; t++) advStd += (advantages[t] - advMean) * (advantages[t] - advMean);
+        advStd = Math.sqrt(advStd / T + 1e-8);
+        for (var t = 0; t < T; t++) advantages[t] = (advantages[t] - advMean) / advStd;
+
+        // PPO epochs
+        for (var epoch = 0; epoch < PPO_EPOCHS; epoch++) {
+            // Update policy
+            ppoPolicy.zeroGrad();
+            for (var t = 0; t < T; t++) {
+                var logits = ppoPolicy.forward(episode.states[t]);
+                var probs = softmax(logits);
+                var newLogProb = Math.log(Math.max(probs[episode.actions[t]], 1e-8));
+                var ratio = Math.exp(newLogProb - episode.logProbs[t]);
+                var clipped = Math.max(1 - PPO_CLIP_EPS, Math.min(1 + PPO_CLIP_EPS, ratio));
+                var adv = advantages[t];
+                // Use the minimum of ratio*adv and clipped*adv
+                var surr1 = ratio * adv;
+                var surr2 = clipped * adv;
+                var useSurr = surr1 < surr2 ? surr1 : surr2;
+                // We want to maximize, but update() does descent, so negate
+                // gradient of -surr w.r.t. logits = -(advantage * (one_hot - probs)) when unclipped
+                // Use the effective surrogate gradient
+                var effAdv = (useSurr === surr1) ? adv : 0; // clip kills gradient when clipped
+                var grad = new Float64Array(N_ACT);
+                for (var i = 0; i < N_ACT; i++) {
+                    var oneHot = (i === episode.actions[t]) ? 1 : 0;
+                    grad[i] = -effAdv * (oneHot - probs[i]);
+                }
+                ppoPolicy.backward(grad);
+            }
+            ppoPolicy.update(PPO_LR_POLICY, T);
+
+            // Update value network
+            ppoValue.zeroGrad();
+            for (var t = 0; t < T; t++) {
+                var v = ppoValue.forward(episode.states[t]);
+                var vGrad = new Float64Array(1);
+                vGrad[0] = v[0] - returns[t];
+                ppoValue.backward(vGrad);
+            }
+            ppoValue.update(PPO_LR_VALUE, T);
+        }
+    }
+
+    function ppoTrainTick() {
+        if (!ppoTraining) return;
+        var speed = parseInt(document.getElementById('ppo-speed').value) || 100;
+        var t0 = performance.now();
+
+        // Collect and train on one episode per tick (PPO is on-policy)
+        var episode = ppoCollectEpisode();
+        ppoUpdate(episode);
+
+        ppoEp++;
+        ppoScores.push(episode.score);
+        if (episode.score > ppoBest) ppoBest = episode.score;
+
+        var elapsed = (performance.now() - t0) / 1000;
+        var avg = 0;
+        if (ppoScores.length > 0) {
+            var last50 = ppoScores.slice(-50);
+            for (var i = 0; i < last50.length; i++) avg += last50[i];
+            avg /= last50.length;
+        }
+        document.getElementById('ppo-stats').textContent =
+            'Ep ' + ppoEp +
+            ' | Avg50: ' + avg.toFixed(0) +
+            ' | Best: ' + ppoBest +
+            ' | Steps: ' + episode.states.length +
+            ' | ' + elapsed.toFixed(1) + 's/ep';
+
+        if (ppoScores.length > 0) {
+            document.getElementById('ppo-viz-box').style.display = '';
+            drawScoreChart('ppo-chart', ppoScores, '#34c759');
+        }
+
+        // Use speed slider to control delay between episodes
+        var delay = Math.max(0, Math.floor(1000 / speed));
+        setTimeout(ppoTrainTick, delay);
+    }
+
+    window.togglePPOTrain = function () {
+        ppoTraining = !ppoTraining;
+        var btn = document.getElementById('ppo-train-btn');
+        if (ppoTraining) {
+            btn.textContent = 'Pause';
+            btn.classList.add('active');
+            ppoTrainTick();
+        } else {
+            btn.textContent = 'Train';
+            btn.classList.remove('active');
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════════
+    //  EXPANDED FEATURES — 24 base + 40 alien grid = 64
+    // ═══════════════════════════════════════════════════════════════
+    var N_EXPANDED = 64;
+
+    function extractExpandedFeatures(g) {
+        var base = g.extractStateArray();
+        var expanded = new Float64Array(N_EXPANDED);
+        // Copy base 24 features
+        for (var i = 0; i < N_FEAT; i++) expanded[i] = base[i];
+        // Append alien grid: 5 rows x 8 cols = 40 features
+        // aliens are stored row-major: row 0 cols 0-7, row 1 cols 0-7, ...
+        for (var i = 0; i < g.aliens.length; i++) {
+            expanded[N_FEAT + i] = g.aliens[i].alive ? 1 : 0;
+        }
+        return expanded;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  DQN+ — DQN with expanded spatial features
+    // ═══════════════════════════════════════════════════════════════
+    var dqnPlusPolicy, dqnPlusTarget, dqnPlusBuf;
+    var dqnPlusTrainGame;
+    var dqnPlusStep = 0, dqnPlusEp = 0, dqnPlusScores = [], dqnPlusBest = -99;
+    var dqnPlusTraining = false;
+
+    var DQNP_GAMMA = 0.99, DQNP_LR = 0.0005;
+    var DQNP_BATCH_SZ = 32, DQNP_BUF_CAP = 50000, DQNP_WARMUP = 2000;
+    var DQNP_TGT_SYNC = 1000;
+    var DQNP_EPS_START = 1.0, DQNP_EPS_END = 0.05, DQNP_EPS_DECAY = 50000;
+    var DQNP_FRAME_SKIP = 2;
+
+    function initDQNPlus() {
+        dqnPlusPolicy = new MLP([N_EXPANDED, 128, 64, N_ACT]);
+        dqnPlusTarget = new MLP([N_EXPANDED, 128, 64, N_ACT]);
+        dqnPlusTarget.copyFrom(dqnPlusPolicy);
+        dqnPlusBuf = new ReplayBuffer(DQNP_BUF_CAP);
+        dqnPlusTrainGame = new SpaceInvadersGame(
+            document.createElement('canvas'), { primary: false });
+        dqnPlusTrainGame.restart();
+        dqnPlusStep = 0; dqnPlusEp = 0;
+        dqnPlusScores = []; dqnPlusBest = -99;
+        dqnPlusTraining = false;
+        document.getElementById('dqnplus-train-btn').textContent = 'Train';
+        document.getElementById('dqnplus-train-btn').classList.remove('active');
+        document.getElementById('dqnplus-stats').textContent = 'Ready to train';
+        document.getElementById('dqnplus-viz-box').style.display = 'none';
+    }
+
+    function getDQNPlusEpsilon() {
+        return Math.max(DQNP_EPS_END, DQNP_EPS_START - (DQNP_EPS_START - DQNP_EPS_END) * dqnPlusStep / DQNP_EPS_DECAY);
+    }
+
+    function dqnPlusTrainTick() {
+        if (!dqnPlusTraining) return;
+        var speed = parseInt(document.getElementById('dqnplus-speed').value) || 100;
+        var stepsThisTick = speed;
+        var t0 = performance.now();
+
+        for (var s = 0; s < stepsThisTick; s++) {
+            var eps = getDQNPlusEpsilon();
+            var features = extractExpandedFeatures(dqnPlusTrainGame);
+            var prevScore = dqnPlusTrainGame.score;
+
+            // Epsilon-greedy action
+            var action;
+            if (Math.random() < eps) {
+                action = Math.floor(Math.random() * N_ACT);
+            } else {
+                action = argmax(dqnPlusPolicy.forward(features));
+            }
+
+            // Step game with frame skip
+            var totalReward = 0, done = false;
+            for (var fs = 0; fs < DQNP_FRAME_SKIP; fs++) {
+                dqnPlusTrainGame.executeAction(action);
+                dqnPlusTrainGame.update();
+                var scoreDelta = dqnPlusTrainGame.score - prevScore;
+                prevScore = dqnPlusTrainGame.score;
+                totalReward += scoreDelta / 30;
+                if (dqnPlusTrainGame.gameOver) {
+                    done = true;
+                    totalReward -= 5;
+                    break;
+                }
+            }
+
+            var nextFeatures = extractExpandedFeatures(dqnPlusTrainGame);
+            dqnPlusBuf.push(features, action, totalReward, nextFeatures, done);
+            dqnPlusStep++;
+
+            if (done) {
+                var score = dqnPlusTrainGame.score;
+                dqnPlusScores.push(score);
+                dqnPlusEp++;
+                if (score > dqnPlusBest) dqnPlusBest = score;
+                dqnPlusTrainGame.restart();
+            }
+
+            // Train on batch
+            if (dqnPlusBuf.buf.length >= DQNP_WARMUP) {
+                var batch = dqnPlusBuf.sample(DQNP_BATCH_SZ);
+                dqnPlusPolicy.zeroGrad();
+                for (var b = 0; b < batch.length; b++) {
+                    var tr = batch[b];
+                    var q = dqnPlusPolicy.forward(tr.s);
+                    var qa = q[tr.a];
+                    var bestNextA = argmax(dqnPlusPolicy.forward(tr.ns));
+                    var nextQ = dqnPlusTarget.forward(tr.ns)[bestNextA];
+                    var tgt = tr.r + (tr.d ? 0 : DQNP_GAMMA * nextQ);
+                    var td = Math.max(-1, Math.min(1, qa - tgt));
+                    dqnPlusPolicy.forward(tr.s);
+                    var grad = new Float64Array(N_ACT);
+                    grad[tr.a] = td;
+                    dqnPlusPolicy.backward(grad);
+                }
+                dqnPlusPolicy.update(DQNP_LR, DQNP_BATCH_SZ);
+            }
+
+            if (dqnPlusStep % DQNP_TGT_SYNC === 0) dqnPlusTarget.copyFrom(dqnPlusPolicy);
+        }
+
+        var elapsed = (performance.now() - t0) / 1000;
+        var sps = stepsThisTick / Math.max(0.001, elapsed);
+        var avg = 0;
+        if (dqnPlusScores.length > 0) {
+            var last50 = dqnPlusScores.slice(-50);
+            for (var i = 0; i < last50.length; i++) avg += last50[i];
+            avg /= last50.length;
+        }
+        document.getElementById('dqnplus-stats').textContent =
+            'Ep ' + dqnPlusEp + ' | Step ' + dqnPlusStep +
+            ' | Avg50: ' + avg.toFixed(0) +
+            ' | Best: ' + dqnPlusBest +
+            ' | Eps: ' + getDQNPlusEpsilon().toFixed(2) +
+            ' | ' + Math.round(sps) + ' s/s';
+
+        if (dqnPlusScores.length > 0) {
+            document.getElementById('dqnplus-viz-box').style.display = '';
+            drawScoreChart('dqnplus-chart', dqnPlusScores, '#ff9f0a');
+        }
+
+        setTimeout(dqnPlusTrainTick, 0);
+    }
+
+    window.toggleDQNPlusTrain = function () {
+        dqnPlusTraining = !dqnPlusTraining;
+        var btn = document.getElementById('dqnplus-train-btn');
+        if (dqnPlusTraining) {
+            btn.textContent = 'Pause';
+            btn.classList.add('active');
+            dqnPlusTrainTick();
+        } else {
+            btn.textContent = 'Train';
+            btn.classList.remove('active');
+        }
+    };
+
     // ── Expose for page-level wrappers ──
     window.invadersSimAI = invadersSimAI;
     window.setAIMode = setAIMode;
 
     // ── Init ──────────────────────────────────────────────────────
     initDQN();
+    initPPO();
+    initDQNPlus();
 
 })();
 </script>
@@ -739,11 +1229,12 @@
     // --- setMode: Human/AI toggle ---
     window.setMode = function (mode) {
         var g = window.game;
-        window.setAIMode(mode === 'rules' ? 'rules' : 'off');
+        var aiModeMap = { rules: 'rules', ppo: 'ppo', dqnplus: 'dqnplus' };
+        window.setAIMode(aiModeMap[mode] || 'off');
 
         // Update button states
         document.getElementById('human-btn').classList.toggle('active', mode === 'off');
-        // rules-btn active state is already handled by setAIMode
+        // Other button active states are handled by setAIMode
 
         // Viz off by default when entering AI mode
         if (mode === 'rules' && window.invadersSimAI) {
