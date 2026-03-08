@@ -478,8 +478,8 @@ function drawAIViz() {
     ctx.save();
 
     // Danger-zone rings centred on ship (red = threat)
-    ctx.strokeStyle = 'rgba(200,0,0,0.25)';
-    ctx.lineWidth = 0.8; ctx.setLineDash([2,6]);
+    ctx.strokeStyle = 'rgba(200,0,0,0.6)';
+    ctx.lineWidth = 1; ctx.setLineDash([3,5]);
     ctx.beginPath(); ctx.arc(p.x,p.y,DODGE_SOFT,0,Math.PI*2); ctx.stroke();
     ctx.strokeStyle = 'rgba(200,0,0,0.55)';
     ctx.lineWidth = 1.2; ctx.setLineDash([]);
