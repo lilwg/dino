@@ -403,18 +403,22 @@ function computeAI() {
         return { a:Math.atan2(ry+rvy*tt, rx+rvx*tt), tt:tt, rx:rx, ry:ry };
     }
 
-    // UFO first (it shoots back); otherwise pick the rock needing least rotation
+    // UFO first (it shoots back); otherwise prefer rocks inside the outer danger
+    // circle (DODGE_SOFT), picking the one needing least rotation. Fall back to
+    // the globally easiest rock if none are inside the circle.
     var tgt=null;
     if (ufo && wdst(p.x,p.y,ufo.x,ufo.y)<350) {
         tgt=ufo;
     } else if (rocks.length>0) {
-        var bestRot=Infinity;
+        var bestRot=Infinity, bestRotAll=Infinity, tgtAll=null;
         for (var i=0; i<rocks.length; i++) {
             var r=rocks[i];
             var ric=interceptA(r);
-            var rot=ric ? Math.abs(normA(ric.a-p.angle)) : Math.PI; // fallback: worst
-            if(rot<bestRot){bestRot=rot;tgt=r;}
+            var rot=ric ? Math.abs(normA(ric.a-p.angle)) : Math.PI;
+            if (rot<bestRotAll) { bestRotAll=rot; tgtAll=r; }
+            if (wdst(p.x,p.y,r.x,r.y) < DODGE_SOFT && rot<bestRot) { bestRot=rot; tgt=r; }
         }
+        if (!tgt) tgt=tgtAll; // no rocks inside circle — use global best
     }
 
     var leadX=null, leadY=null, aimA=null, aimDiff=null;
