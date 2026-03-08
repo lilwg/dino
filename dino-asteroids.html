@@ -414,7 +414,9 @@ function computeAI() {
         for (var i=0; i<rocks.length; i++) {
             var r=rocks[i];
             var ric=interceptA(r);
-            var rot=ric ? Math.abs(normA(ric.a-p.angle)) : Math.PI;
+            // Small rocks score lower (preferred): add (sz-1)*π/2 bias so a large
+            // rock must be ~180° closer in heading than a small one to be chosen.
+            var rot=(ric ? Math.abs(normA(ric.a-p.angle)) : Math.PI) + (r.sz-1)*Math.PI/2;
             if (rot<bestRotAll) { bestRotAll=rot; tgtAll=r; }
             if (wdst(p.x,p.y,r.x,r.y) < DODGE_SOFT && rot<bestRot) { bestRot=rot; tgt=r; }
         }
