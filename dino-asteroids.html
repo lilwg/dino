@@ -98,6 +98,10 @@ function placeStars() {
 function dst(ax,ay,bx,by) { var dx=ax-bx,dy=ay-by; return Math.sqrt(dx*dx+dy*dy); }
 function wrp(v,m) { return v<0?v+m:v>m?v-m:v; }
 function normA(a) { while(a>Math.PI)a-=Math.PI*2; while(a<-Math.PI)a+=Math.PI*2; return a; }
+// Wrap-aware helpers: signed shortest-path difference and distance
+function wdx(a,b){ var d=a-b; if(d>CW/2)d-=CW; else if(d<-CW/2)d+=CW; return d; }
+function wdy(a,b){ var d=a-b; if(d>CH/2)d-=CH; else if(d<-CH/2)d+=CH; return d; }
+function wdst(ax,ay,bx,by){ var dx=wdx(ax,bx),dy=wdy(ay,by); return Math.sqrt(dx*dx+dy*dy); }
 function pad5(n) { var s=''+n; while(s.length<5)s='0'+s; return s; }
 
 // ─── Init ────────────────────────────────────────────────────────────────────
@@ -341,90 +345,94 @@ function computeAI() {
     aiIn.rot = 0; aiIn.thrust = false;
     var p = player;
 
-    // ── 1. Build combined flee vector from all nearby threats ──────────────────
-    var fleeX = 0, fleeY = 0, hardThreat = false;
-    for (var i = 0; i < rocks.length; i++) {
-        var r = rocks[i];
-        var eff = dst(p.x,p.y,r.x,r.y) - r.r;
-        if (eff < DODGE_SOFT) {
-            var w = (DODGE_SOFT-eff)/DODGE_SOFT; w *= w;
-            var dx=p.x-r.x, dy=p.y-r.y, dl=Math.sqrt(dx*dx+dy*dy)||1;
-            fleeX += dx/dl*w; fleeY += dy/dl*w;
+    // ── 1. Build flee vector using time-to-collision (wrap-aware) ─────────────
+    var fleeX=0, fleeY=0, hardThreat=false, minTTC=Infinity;
+
+    function addThreat(tx,ty,tvx,tvy,tr,mul) {
+        // Signed shortest-path vector FROM threat TO ship
+        var dx=wdx(p.x,tx), dy=wdy(p.y,ty);
+        var d=Math.sqrt(dx*dx+dy*dy)||1;
+        var eff=d-tr-SHIP_R;   // gap between surfaces
+        // Closing speed: rate at which gap is shrinking (positive = approaching)
+        // d(d)/dt = (t-p)·(tvx-pvx,tvy-pvy)/d = (-dx*(tvx-pvx)-dy*(tvy-pvy))/d
+        // closing = -d(d)/dt = (dx*(tvx-pvx)+dy*(tvy-pvy))/d
+        var rvx=tvx-p.vx, rvy=tvy-p.vy;
+        var closing=(dx*rvx+dy*rvy)/d;  // positive = threat approaching ship
+        var w=0;
+        if (closing>0.1) {
+            var ttc=Math.max(0,eff)/closing;
+            if (ttc<minTTC) minTTC=ttc;
+            if (ttc<150) { w=Math.pow((150-ttc)/150,2)*mul; if(ttc<30)hardThreat=true; }
+        } else if (eff<70) {
+            // Stationary/retreating but very close — still push away
+            w=((70-eff)/70)*0.5*mul;
+            if (eff<15) hardThreat=true;
         }
-        if (eff < DODGE_HARD) hardThreat = true;
+        if (w>0.001) { fleeX+=(dx/d)*w; fleeY+=(dy/d)*w; }
     }
-    if (ufo) {
-        var eff = dst(p.x,p.y,ufo.x,ufo.y) - ufo.r;
-        if (eff < DODGE_SOFT*1.3) {
-            var w = (DODGE_SOFT*1.3-eff)/(DODGE_SOFT*1.3); w *= w*1.5;
-            var dx=p.x-ufo.x, dy=p.y-ufo.y, dl=Math.sqrt(dx*dx+dy*dy)||1;
-            fleeX += dx/dl*w; fleeY += dy/dl*w;
-        }
-        if (eff < DODGE_HARD) hardThreat = true;
-    }
-    // Dodge incoming enemy bullets heading toward us
-    for (var i = 0; i < bullets.length; i++) {
-        var b = bullets[i];
-        if (b.own) continue;
-        var bd = dst(p.x,p.y,b.x,b.y);
-        if (bd < 90 && (p.x-b.x)*b.vx+(p.y-b.y)*b.vy > 0) {
-            var w = ((90-bd)/90)*1.3;
-            var dx=p.x-b.x, dy=p.y-b.y, dl=Math.sqrt(dx*dx+dy*dy)||1;
-            fleeX += dx/dl*w; fleeY += dy/dl*w;
-            if (bd < 45) hardThreat = true;
-        }
-    }
-    var dodging = (fleeX*fleeX + fleeY*fleeY) > 0.04;
-    var fleeA   = dodging ? Math.atan2(fleeY, fleeX) : 0;
+
+    for (var i=0; i<rocks.length; i++) { var r=rocks[i]; addThreat(r.x,r.y,r.vx,r.vy,r.r,1.0); }
+    if (ufo) addThreat(ufo.x,ufo.y,ufo.vx,ufo.vy,ufo.r,1.5);
+    for (var i=0; i<bullets.length; i++) { var b=bullets[i]; if(!b.own) addThreat(b.x,b.y,b.vx,b.vy,3,2.5); }
+
+    var dodging=(fleeX*fleeX+fleeY*fleeY)>0.04;
+    var fleeA=dodging?Math.atan2(fleeY,fleeX):0;
 
     // ── 2. Target selection: UFO first, then lowest-score rock ────────────────
-    var tgt = null;
-    if (ufo && dst(p.x,p.y,ufo.x,ufo.y) < 350) {
-        tgt = ufo;
-    } else if (rocks.length > 0) {
-        var bestS = Infinity;
-        for (var i = 0; i < rocks.length; i++) {
-            var r = rocks[i];
-            var s = dst(p.x,p.y,r.x,r.y) * r.sz * r.sz;
-            if (s < bestS) { bestS=s; tgt=r; }
+    var tgt=null;
+    if (ufo && wdst(p.x,p.y,ufo.x,ufo.y)<350) {
+        tgt=ufo;
+    } else if (rocks.length>0) {
+        var bestS=Infinity;
+        for (var i=0; i<rocks.length; i++) {
+            var r=rocks[i], s=wdst(p.x,p.y,r.x,r.y)*r.sz*r.sz;
+            if(s<bestS){bestS=s;tgt=r;}
         }
     }
 
-    // ── 3. Iterative lead-shot prediction (4 passes) ──────────────────────────
+    // ── 3. Iterative lead-shot prediction (4 passes, wrap-aware) ─────────────
+    // Each pass: project target forward by flight time, recompute flight time.
+    // Bullet effective speed accounts for ship velocity component along aim.
     var leadX=null, leadY=null, aimA=null, aimDiff=null;
     if (tgt) {
-        var tt = dst(p.x,p.y,tgt.x,tgt.y) / B_SPD;
+        var tt=wdst(p.x,p.y,tgt.x,tgt.y)/B_SPD;
         var px=tgt.x, py=tgt.y;
-        for (var it = 0; it < 4; it++) {
-            px = tgt.x + (tgt.vx||0)*tt;
-            py = tgt.y + (tgt.vy||0)*tt;
-            var wdx=px-p.x, wdy=py-p.y;
-            if (wdx > CW/2) px-=CW; else if (wdx < -CW/2) px+=CW;
-            if (wdy > CH/2) py-=CH; else if (wdy < -CH/2) py+=CH;
-            tt = dst(p.x,p.y,px,py) / B_SPD;
+        for (var it=0; it<5; it++) {
+            // Wrap the predicted position so we can measure distance correctly
+            px=wrp(tgt.x+(tgt.vx||0)*tt, CW);
+            py=wrp(tgt.y+(tgt.vy||0)*tt, CH);
+            // Wrap-corrected vector from ship to lead point
+            var lx=wdx(px,p.x), ly=wdy(py,p.y);
+            var ld=Math.sqrt(lx*lx+ly*ly)||1;
+            // Effective bullet speed: B_SPD plus ship velocity projected onto aim
+            var effSpd=B_SPD+Math.max(0, (p.vx*lx+p.vy*ly)/ld);
+            tt=ld/effSpd;
         }
-        leadX=px; leadY=py;
-        aimA    = Math.atan2(py-p.y, px-p.x);
-        aimDiff = normA(aimA - p.angle);
-        // Fire any time aligned, even while dodging
-        if (Math.abs(aimDiff) < 0.15 && p.cooldown === 0) { fireBullet(); p.cooldown=6; }
+        // Express lead as canvas coords nearest to ship (for aimA & drawing)
+        leadX=p.x+wdx(px,p.x);
+        leadY=p.y+wdy(py,p.y);
+        aimA=Math.atan2(leadY-p.y, leadX-p.x);
+        aimDiff=normA(aimA-p.angle);
+        // Fire when aligned, even while dodging
+        if (Math.abs(aimDiff)<0.15&&p.cooldown===0){fireBullet();p.cooldown=6;}
     }
 
     // ── 4. Rotation & thrust ──────────────────────────────────────────────────
     if (dodging) {
-        var diff = normA(fleeA - p.angle);
-        if (diff > 0.1) aiIn.rot=1; else if (diff < -0.1) aiIn.rot=-1;
-        aiIn.thrust = hardThreat || Math.abs(diff) < 0.5;
-    } else if (aimA !== null) {
-        if (aimDiff > 0.1) aiIn.rot=1; else if (aimDiff < -0.1) aiIn.rot=-1;
-        var td  = dst(p.x,p.y,tgt.x,tgt.y);
-        var spd = Math.sqrt(p.vx*p.vx+p.vy*p.vy);
-        if (td > 190 && Math.abs(aimDiff) < 0.5) aiIn.thrust = true;
-        else if (td > 90 && spd < 2.5 && Math.abs(aimDiff) < 0.3) aiIn.thrust = true;
+        var diff=normA(fleeA-p.angle);
+        if(diff>0.1)aiIn.rot=1; else if(diff<-0.1)aiIn.rot=-1;
+        aiIn.thrust=hardThreat||Math.abs(diff)<0.5;
+        // Last resort: hyperspace when imminent unavoidable collision
+        if (minTTC<10) { keys[72]=true; setTimeout(function(){keys[72]=false;},120); }
+    } else if (aimA!==null) {
+        if(aimDiff>0.1)aiIn.rot=1; else if(aimDiff<-0.1)aiIn.rot=-1;
+        var td=wdst(p.x,p.y,tgt.x,tgt.y);
+        var spd=Math.sqrt(p.vx*p.vx+p.vy*p.vy);
+        if(td>190&&Math.abs(aimDiff)<0.5)aiIn.thrust=true;
+        else if(td>90&&spd<2.5&&Math.abs(aimDiff)<0.3)aiIn.thrust=true;
     }
 
-    aiVizData = { dodging:dodging, fleeA:fleeA,
-                  tgt:tgt, leadX:leadX, leadY:leadY, aimA:aimA };
+    aiVizData={dodging:dodging,fleeA:fleeA,tgt:tgt,leadX:leadX,leadY:leadY,aimA:aimA};
 }
 
 function drawAIViz() {
