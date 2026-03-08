@@ -669,6 +669,8 @@ window.setMode = function(m) {
     aiMode = m;
     document.getElementById('human-btn').classList.toggle('active', m==='off');
     document.getElementById('rules-btn').classList.toggle('active', m==='ai');
+    // If AI is selected while on the start/gameover screen, kick off the game
+    if (m === 'ai' && (gs === 'start' || gs === 'gameover')) initGame();
 };
 window.restartGame = function() { initGame(); };
 window.togglePause = function() {
@@ -726,9 +728,10 @@ window.toggleViz = function() {
 })();
 
 // ─── Boot ────────────────────────────────────────────────────────────────────
+gs='start'; sc=0; lives=3; lv=1; tick=0;
+bullets=[]; rocks=[]; sparks=[]; ufo=null;
+inv=false; dayT=0; nightA=0; moonPh=0; moonX=CW;
 placeStars();
-setMode('ai');
-initGame();
 
 function loop() { update(); draw(); requestAnimationFrame(loop); }
 loop();
