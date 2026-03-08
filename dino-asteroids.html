@@ -390,43 +390,55 @@ function computeAI() {
         }
     }
 
-    // ── 3. Exact lead-shot via quadratic formula (wrap-aware) ────────────────
-    // In the relative frame (ship = origin), bullet travels at B_SPD in aim dir.
-    // Target moves at (tgt.vel - ship.vel). Solve for intercept time t:
-    //   |aim * B_SPD * t|² = |r + rv*t|²  →  quadratic in t.
-    var leadX=null, leadY=null, aimA=null, aimDiff=null;
-    if (tgt) {
-        var rx=wdx(tgt.x,p.x), ry=wdy(tgt.y,p.y);        // ship→target (wrapped)
-        var rvx=(tgt.vx||0)-p.vx, rvy=(tgt.vy||0)-p.vy;   // relative velocity
+    // ── 3. Intercept angle via quadratic formula (wrap-aware) ────────────────
+    // Returns {a, tt, rx, ry} or null. Works in relative frame (ship = origin).
+    function interceptA(t) {
+        var rx=wdx(t.x,p.x), ry=wdy(t.y,p.y);
+        var rvx=(t.vx||0)-p.vx, rvy=(t.vy||0)-p.vy;
         var qa=rvx*rvx+rvy*rvy-B_SPD*B_SPD;
-        var qb=2*(rx*rvx+ry*rvy);
-        var qc=rx*rx+ry*ry;
+        var qb=2*(rx*rvx+ry*rvy), qc=rx*rx+ry*ry;
         var tt=null;
-        if (Math.abs(qa)<0.001) {
-            if (qb<-0.001) tt=-qc/qb;          // linear case
-        } else {
+        if (Math.abs(qa)<0.001) { if(qb<-0.001) tt=-qc/qb; }
+        else {
             var disc=qb*qb-4*qa*qc;
             if (disc>=0) {
                 var sq=Math.sqrt(disc);
                 var t1=(-qb-sq)/(2*qa), t2=(-qb+sq)/(2*qa);
-                if(t1>0&&t2>0) tt=Math.min(t1,t2);
-                else if(t1>0)  tt=t1;
-                else if(t2>0)  tt=t2;
+                if(t1>0&&t2>0)tt=Math.min(t1,t2); else if(t1>0)tt=t1; else if(t2>0)tt=t2;
             }
         }
-        if (tt!==null&&tt<B_LIFE) {
-            // Aim direction = relative intercept vector (accounts for ship vel)
-            var ix=rx+rvx*tt, iy=ry+rvy*tt;
-            aimA=Math.atan2(iy,ix);
-            // Lead dot = where the target will actually be (world coords)
-            leadX=p.x+rx+(tgt.vx||0)*tt;
-            leadY=p.y+ry+(tgt.vy||0)*tt;
+        if (tt===null||tt>=B_LIFE) return null;
+        return { a:Math.atan2(ry+rvy*tt, rx+rvx*tt), tt:tt, rx:rx, ry:ry };
+    }
+
+    var leadX=null, leadY=null, aimA=null, aimDiff=null;
+    if (tgt) {
+        var ic=interceptA(tgt);
+        if (ic) {
+            aimA=ic.a;
+            leadX=p.x+ic.rx+(tgt.vx||0)*ic.tt;
+            leadY=p.y+ic.ry+(tgt.vy||0)*ic.tt;
         } else {
-            aimA=Math.atan2(ry,rx);             // fallback: aim at target now
+            aimA=Math.atan2(wdy(tgt.y,p.y), wdx(tgt.x,p.x));  // fallback: direct
         }
         aimDiff=normA(aimA-p.angle);
-        // Fire when aligned, even while dodging
-        if(Math.abs(aimDiff)<0.15&&p.cooldown===0){fireBullet();p.cooldown=6;}
+    }
+
+    // Fire at primary target if aligned; then scan every other object
+    // for opportunistic shots — anything the crosshairs sweep through.
+    if (p.cooldown===0) {
+        var fired=false;
+        if (aimDiff!==null && Math.abs(aimDiff)<0.15) { fireBullet(); p.cooldown=6; fired=true; }
+        if (!fired) {
+            var opps = ufo ? rocks.concat([ufo]) : rocks;
+            for (var i=0; i<opps.length&&!fired; i++) {
+                if (opps[i]===tgt) continue;
+                var oic=interceptA(opps[i]);
+                if (oic && Math.abs(normA(oic.a-p.angle))<0.15) {
+                    fireBullet(); p.cooldown=6; fired=true;
+                }
+            }
+        }
     }
 
     // ── 4. Rotation & thrust ──────────────────────────────────────────────────
