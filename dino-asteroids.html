@@ -56,40 +56,51 @@ function buildRockTex(a) {
     var full = Math.ceil(a.r * 2 + pad * 2);   // full-res size
     var sz   = Math.ceil(full / ROCK_SCALE);    // small canvas size
 
-    // 1. Draw polygon at full resolution (avoids tiny-canvas precision loss)
+    // 1. Draw fill ONLY at full resolution — no stroke, avoids fill/stroke pixel ambiguity
     var big = document.createElement('canvas');
     big.width = big.height = full;
     var bc = big.getContext('2d');
     bc.translate(full / 2, full / 2);
     var sh = SHAPES[a.sh];
-    bc.strokeStyle = '#535353'; bc.lineWidth = 1.5; bc.fillStyle = '#e0e0e0';
+    bc.fillStyle = '#e0e0e0';
     bc.beginPath();
     for (var i = 0; i < sh.length; i += 2) {
         if (i === 0) bc.moveTo(sh[i] * a.r, sh[i + 1] * a.r);
         else         bc.lineTo(sh[i] * a.r, sh[i + 1] * a.r);
     }
-    bc.closePath(); bc.fill(); bc.stroke();
+    bc.closePath(); bc.fill();
 
-    // 2. Quantize: snap every pixel to solid fill, solid stroke, or transparent.
-    //    This removes canvas anti-aliasing so the downscaled texture has hard edges.
+    // 2. Quantize: opaque → solid fill, semi-transparent edge pixels → transparent
     var id = bc.getImageData(0, 0, full, full), d = id.data;
     for (var p = 0; p < d.length; p += 4) {
-        if (d[p + 3] < 64) {                      // transparent — clear fully
-            d[p] = d[p+1] = d[p+2] = d[p+3] = 0;
-        } else if (d[p] < 150) {                   // dark → stroke #535353
-            d[p] = d[p+1] = d[p+2] = 83; d[p+3] = 255;
-        } else {                                    // light → fill #e0e0e0
-            d[p] = d[p+1] = d[p+2] = 224; d[p+3] = 255;
-        }
+        if (d[p + 3] < 128) { d[p] = d[p+1] = d[p+2] = d[p+3] = 0; }
+        else                 { d[p] = d[p+1] = d[p+2] = 224; d[p+3] = 255; }
     }
     bc.putImageData(id, 0, 0);
 
-    // 3. Downscale to the small canvas with nearest-neighbor — picks one pixel per block
+    // 3. Nearest-neighbor downscale to small canvas
     var tmp = document.createElement('canvas');
     tmp.width = tmp.height = sz;
     var tc = tmp.getContext('2d');
     tc.imageSmoothingEnabled = false;
     tc.drawImage(big, 0, 0, sz, sz);
+
+    // 4. Morphological dilation: any transparent pixel adjacent to a fill pixel
+    //    becomes the stroke colour — gives a guaranteed continuous 1px outline
+    var sd = tc.getImageData(0, 0, sz, sz);
+    var src = new Uint8ClampedArray(sd.data);
+    for (var y = 0; y < sz; y++) {
+        for (var x = 0; x < sz; x++) {
+            var idx = (y * sz + x) * 4;
+            if (src[idx + 3] > 0) continue;
+            var edge = (y > 0    && src[((y-1)*sz + x)   * 4 + 3] > 0) ||
+                       (y < sz-1 && src[((y+1)*sz + x)   * 4 + 3] > 0) ||
+                       (x > 0    && src[(y*sz  + (x-1))  * 4 + 3] > 0) ||
+                       (x < sz-1 && src[(y*sz  + (x+1))  * 4 + 3] > 0);
+            if (edge) { sd.data[idx]=sd.data[idx+1]=sd.data[idx+2]=83; sd.data[idx+3]=255; }
+        }
+    }
+    tc.putImageData(sd, 0, 0);
     return tmp;
 }
 var spr = document.getElementById('offline-resources-1x');
