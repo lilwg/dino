@@ -47,12 +47,30 @@ var CW = 600, CH = 400;
 var canvas = document.getElementById('game-canvas');
 var ctx = canvas.getContext('2d');
 
-// Off-screen rock canvas — drawn at 1/ROCK_SCALE then upscaled (pixelated look)
+// Pre-render each rock to a small canvas at 1/ROCK_SCALE, then rotate that image
+// each frame — pixelation is baked in once at spawn, not recomputed per frame.
 var ROCK_SCALE = 2;
-var rockCvs = document.createElement('canvas');
-rockCvs.width  = CW / ROCK_SCALE;
-rockCvs.height = CH / ROCK_SCALE;
-var rockCtx = rockCvs.getContext('2d');
+
+function buildRockTex(a) {
+    var pad = 4;
+    var sz  = Math.ceil((a.r * 2 + pad * 2) / ROCK_SCALE);
+    var tmp = document.createElement('canvas');
+    tmp.width = tmp.height = sz;
+    var tc = tmp.getContext('2d');
+    tc.save();
+    tc.translate(sz / 2, sz / 2);
+    tc.scale(1 / ROCK_SCALE, 1 / ROCK_SCALE);
+    var sh = SHAPES[a.sh];
+    tc.strokeStyle = '#535353'; tc.lineWidth = 1.5; tc.fillStyle = '#e0e0e0';
+    tc.beginPath();
+    for (var i = 0; i < sh.length; i += 2) {
+        if (i === 0) tc.moveTo(sh[i] * a.r, sh[i + 1] * a.r);
+        else         tc.lineTo(sh[i] * a.r, sh[i + 1] * a.r);
+    }
+    tc.closePath(); tc.fill(); tc.stroke();
+    tc.restore();
+    return tmp;
+}
 var spr = document.getElementById('offline-resources-1x');
 
 var TREX = [{ x:892, y:2, w:44, h:47 }, { x:936, y:2, w:44, h:47 }, { x:980, y:2, w:44, h:47 }];
@@ -142,10 +160,12 @@ function addRock(sz, x, y) {
     }
     var ang = Math.random()*Math.PI*2;
     var spd = SPEEDS[sz] * (0.7 + Math.random()*0.6);
-    rocks.push({ x:x, y:y, vx:Math.cos(ang)*spd, vy:Math.sin(ang)*spd,
+    var rock = { x:x, y:y, vx:Math.cos(ang)*spd, vy:Math.sin(ang)*spd,
                  sz:sz, r:RADII[sz],
                  sh:Math.floor(Math.random()*SHAPES.length),
-                 rot:Math.random()*Math.PI*2, rotV:(Math.random()-.5)*.04 });
+                 rot:Math.random()*Math.PI*2, rotV:(Math.random()-.5)*.04 };
+    rock.tex = buildRockTex(rock);
+    rocks.push(rock);
 }
 
 // ─── Update ──────────────────────────────────────────────────────────────────
@@ -547,15 +567,7 @@ function draw() {
         ctx.beginPath(); ctx.moveTo(0,CH-8); ctx.lineTo(CW,CH-8); ctx.stroke();
     }
 
-    // Render rocks to half-res canvas then upscale — gives chunky pixelated edges
-    rockCtx.clearRect(0, 0, rockCvs.width, rockCvs.height);
-    rockCtx.save();
-    rockCtx.scale(1 / ROCK_SCALE, 1 / ROCK_SCALE);
-    for (var i = 0; i < rocks.length; i++) drawRock(rocks[i], rockCtx);
-    rockCtx.restore();
-    ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(rockCvs, 0, 0, CW, CH);
-    ctx.imageSmoothingEnabled = true;
+    for (var i = 0; i < rocks.length; i++) drawRock(rocks[i]);
     if (ufo) drawUFO(ufo);
 
     for (var i = 0; i < bullets.length; i++) {
@@ -632,19 +644,15 @@ function drawShip(p) {
     ctx.restore();
 }
 
-function drawRock(a, c) {
-    c = c || ctx;
-    var sh = SHAPES[a.sh];
-    c.save();
-    c.translate(a.x, a.y); c.rotate(a.rot);
-    c.strokeStyle = '#535353'; c.lineWidth = 1.5; c.fillStyle = '#e0e0e0';
-    c.beginPath();
-    for (var i = 0; i < sh.length; i += 2) {
-        if (i===0) c.moveTo(sh[i]*a.r, sh[i+1]*a.r);
-        else       c.lineTo(sh[i]*a.r, sh[i+1]*a.r);
-    }
-    c.closePath(); c.fill(); c.stroke();
-    c.restore();
+function drawRock(a) {
+    if (!a.tex) return;
+    var tw = a.tex.width * ROCK_SCALE, th = a.tex.height * ROCK_SCALE;
+    ctx.save();
+    ctx.translate(a.x, a.y); ctx.rotate(a.rot);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(a.tex, -tw / 2, -th / 2, tw, th);
+    ctx.imageSmoothingEnabled = true;
+    ctx.restore();
 }
 
 function drawUFO(u) {
