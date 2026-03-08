@@ -463,19 +463,19 @@ function drawAIViz() {
     if (!aiViz || aiMode !== 'ai' || !player || player.dead || !aiVizData) return;
     var d = aiVizData, p = player;
     ctx.save();
-    ctx.globalAlpha = 0.65;
 
-    // Danger-zone rings centred on ship
-    ctx.strokeStyle = '#535353';
-    ctx.lineWidth = 0.6; ctx.setLineDash([2,6]);
+    // Danger-zone rings centred on ship (red = threat)
+    ctx.strokeStyle = 'rgba(200,0,0,0.25)';
+    ctx.lineWidth = 0.8; ctx.setLineDash([2,6]);
     ctx.beginPath(); ctx.arc(p.x,p.y,DODGE_SOFT,0,Math.PI*2); ctx.stroke();
-    ctx.lineWidth = 1;   ctx.setLineDash([]);
+    ctx.strokeStyle = 'rgba(200,0,0,0.55)';
+    ctx.lineWidth = 1.2; ctx.setLineDash([]);
     ctx.beginPath(); ctx.arc(p.x,p.y,DODGE_HARD,0,Math.PI*2); ctx.stroke();
 
     if (d.dodging) {
-        // Flee arrow
+        // Flee arrow (red/orange = evading danger)
         var len=55, ax=p.x+Math.cos(d.fleeA)*len, ay=p.y+Math.sin(d.fleeA)*len;
-        ctx.strokeStyle='#535353'; ctx.lineWidth=2.5; ctx.setLineDash([]);
+        ctx.strokeStyle='rgba(220,80,0,0.85)'; ctx.lineWidth=2.5; ctx.setLineDash([]);
         ctx.beginPath(); ctx.moveTo(p.x,p.y); ctx.lineTo(ax,ay);
         var ha=0.65;
         ctx.moveTo(ax,ay); ctx.lineTo(ax+Math.cos(d.fleeA+Math.PI-ha)*13, ay+Math.sin(d.fleeA+Math.PI-ha)*13);
@@ -485,18 +485,18 @@ function drawAIViz() {
 
     if (d.tgt) {
         var tr = (d.tgt.r || 15) + 8;
-        // Dashed ring around target
-        ctx.strokeStyle='#535353'; ctx.lineWidth=1.5; ctx.setLineDash([5,4]);
+        // Dashed ring around target (green = selected target)
+        ctx.strokeStyle='rgba(0,180,0,0.85)'; ctx.lineWidth=1.5; ctx.setLineDash([5,4]);
         ctx.beginPath(); ctx.arc(d.tgt.x,d.tgt.y,tr,0,Math.PI*2); ctx.stroke();
         ctx.setLineDash([]);
 
         if (d.leadX !== null) {
-            // Dashed line from ship to lead point
-            ctx.strokeStyle='#535353'; ctx.lineWidth=1; ctx.setLineDash([6,5]);
+            // Dashed line from ship to lead point (yellow = bullet path)
+            ctx.strokeStyle='rgba(255,200,0,0.7)'; ctx.lineWidth=1; ctx.setLineDash([6,5]);
             ctx.beginPath(); ctx.moveTo(p.x,p.y); ctx.lineTo(d.leadX,d.leadY); ctx.stroke();
             ctx.setLineDash([]);
             // Lead intercept dot
-            ctx.fillStyle='#535353';
+            ctx.fillStyle='rgba(255,200,0,0.9)';
             ctx.beginPath(); ctx.arc(d.leadX,d.leadY,4,0,Math.PI*2); ctx.fill();
         }
     }
