@@ -726,10 +726,9 @@ window.toggleViz = function() {
 })();
 
 // ─── Boot ────────────────────────────────────────────────────────────────────
-gs='start'; sc=0; lives=3; lv=1; tick=0;
-bullets=[]; rocks=[]; sparks=[]; ufo=null;
-inv=false; dayT=0; nightA=0; moonPh=0; moonX=CW;
 placeStars();
+setMode('ai');
+initGame();
 
 function loop() { update(); draw(); requestAnimationFrame(loop); }
 loop();
