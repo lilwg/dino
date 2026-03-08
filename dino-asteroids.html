@@ -90,8 +90,8 @@ hi = 0;
 // ─── Night cycle helpers ──────────────────────────────────────────────────────
 function placeStars() {
     stars = [];
-    for (var i = 0; i < 22; i++)
-        stars.push({ x:Math.random()*CW, y:Math.random()*(CH*.55), f:Math.random()<.5?2:11 });
+    for (var i = 0; i < 40; i++)
+        stars.push({ x:Math.random()*CW, y:Math.random()*(CH-14), f:Math.random()<.5?2:11 });
 }
 
 // ─── Math helpers ────────────────────────────────────────────────────────────
