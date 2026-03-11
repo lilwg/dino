@@ -4157,7 +4157,7 @@
 
         _training = true;
         var mySession = ++_trainSession;
-        var curIndiv = 0, curEval = 0, curScoreSum = 0;
+        var curIndiv = 0, curEval = 0, curScoreMin = Infinity;
         // Each genome is tested at a spread of speeds so the best genome
         // must handle both slow and fast gameplay (not just one speed).
         var evalSpeeds = [6, 20, 40]; // low, mid, high — one per EVALS_PER
@@ -4174,15 +4174,16 @@
 
                 if (collision) {
                     var score = Math.round(r.distanceRan * 0.025);
-                    curScoreSum += score;
+                    curScoreMin = Math.min(curScoreMin, score);
                     curEval++;
                     deaths++;
 
                     if (curEval >= EVALS_PER) {
-                        population[curIndiv].fitness = curScoreSum / EVALS_PER;
+                        // Use minimum score across speeds so genome must handle ALL speeds
+                        population[curIndiv].fitness = curScoreMin;
                         curIndiv++;
                         curEval = 0;
-                        curScoreSum = 0;
+                        curScoreMin = Infinity;
 
                         if (curIndiv >= POP_SIZE) {
                             // --- Generation complete ---
