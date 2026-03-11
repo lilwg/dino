@@ -261,7 +261,7 @@
 
         // Target crosshair
         if (d.targetX !== null) {
-            var color = d.targetReason === 'ufo' ? '#ff9f0a' : '#0071e3';
+            var color = '#30d158';
             ctx.strokeStyle = color;
             ctx.globalAlpha = 0.5;
             ctx.setLineDash([4, 4]);
@@ -278,10 +278,9 @@
             ctx.stroke();
         }
 
-        // Dotted circles around aliens: green for main target, gray for others
+        // Gray dotted circles around non-target aliens (opportunistic targets)
         ctx.setLineDash([3, 3]);
         ctx.lineWidth = 1.5;
-        // Draw gray circles on non-target aliens first (behind green)
         ctx.strokeStyle = '#8e8e93';
         ctx.globalAlpha = 0.35;
         for (var i = 0; i < game.aliens.length; i++) {
@@ -294,21 +293,7 @@
             ctx.arc(acx, acy, r, 0, Math.PI * 2);
             ctx.stroke();
         }
-        // Green circle on main target
-        if (d.target) {
-            ctx.strokeStyle = '#30d158';
-            ctx.globalAlpha = 0.8;
-            var t = d.target;
-            var tcx = t.x + t.w / 2, tcy = t.y + t.h / 2;
-            var tr = Math.max(t.w, t.h) / 2 + 5;
-            ctx.beginPath();
-            ctx.arc(tcx, tcy, tr, 0, Math.PI * 2);
-            ctx.stroke();
-        }
-        // Gray circle on mystery ship if it's not the target
         if (game.mystery && !(d.target && d.target.isMystery)) {
-            ctx.strokeStyle = '#8e8e93';
-            ctx.globalAlpha = 0.35;
             var mx = game.mystery.x + 20, my = game.mystery.y + 8;
             ctx.beginPath();
             ctx.arc(mx, my, 24, 0, Math.PI * 2);
