@@ -140,8 +140,10 @@
             var targetReason = 'none';
 
             if (g.mystery) {
-                // UFO: aim at its current position (it moves slowly)
-                targetX = g.mystery.x + 20; // center of mystery ship
+                // UFO: lead the shot — mystery moves at constant speed
+                var myCx = g.mystery.x + 20;
+                var bulletFrames = (playerY - g.mystery.y - 8) / BULLET_SPEED_CONST;
+                targetX = myCx + g.mystery.dir * 1.5 * bulletFrames; // MYSTERY_SPEED=1.5
                 targetReason = 'ufo';
             } else {
                 // Find the lowest alive alien (most threatening)
@@ -157,7 +159,19 @@
                     }
                 }
                 if (lowestAlien) {
-                    targetX = lowestAlien.x + lowestAlien.w / 2;
+                    // Lead the shot: predict where alien will be when bullet arrives
+                    var alienCx = lowestAlien.x + lowestAlien.w / 2;
+                    var bulletFrames = (playerY - lowestAlien.y - lowestAlien.h / 2) / BULLET_SPEED_CONST;
+                    var moveSteps = Math.floor(bulletFrames / Math.max(1, g.alienMoveInterval - g.alienMoveTimer));
+                    // After first step, subsequent steps are at full interval
+                    if (bulletFrames > g.alienMoveInterval - g.alienMoveTimer) {
+                        var remaining = bulletFrames - (g.alienMoveInterval - g.alienMoveTimer);
+                        moveSteps = 1 + Math.floor(remaining / Math.max(1, g.alienMoveInterval));
+                    }
+                    var leadX = alienCx + g.alienDir * g.alienSpeed * 8 * moveSteps;
+                    // Clamp to canvas — aliens bounce off walls
+                    leadX = Math.max(lowestAlien.w / 2, Math.min(600 - lowestAlien.w / 2, leadX));
+                    targetX = leadX;
                     targetReason = 'lowest';
                 }
             }
@@ -175,9 +189,9 @@
                 // Priority 2/3: move toward target
                 var dx = targetX - playerCx;
                 if (Math.abs(dx) <= AIM_TOLERANCE) {
-                    // Lined up — fire!
+                    // Lined up — fire if no bunker in the way
                     moveDir = 0;
-                    shouldFire = canFire;
+                    shouldFire = canFire && !this._bunkerBlocks(g, playerCx);
                 } else {
                     // Move toward target
                     moveDir = dx > 0 ? 1 : -1;
@@ -214,6 +228,7 @@
 
         // Check if any alien or UFO is roughly above the player (within bullet width tolerance)
         _hasTargetAbove: function (g, px) {
+            if (this._bunkerBlocks(g, px)) return false;
             var tolerance = 24; // generous — bullets are thin but aliens are wide
             if (g.mystery) {
                 var mx = g.mystery.x + 20;
@@ -224,6 +239,24 @@
                 if (!a.alive) continue;
                 var acx = a.x + a.w / 2;
                 if (Math.abs(acx - px) < tolerance) return true;
+            }
+            return false;
+        },
+
+        // Check if a bunker would block a bullet fired from px
+        _bunkerBlocks: function (g, px) {
+            for (var i = 0; i < g.bunkers.length; i++) {
+                var bk = g.bunkers[i];
+                // Check if player X is within bunker's horizontal span
+                if (px >= bk.x && px <= bk.x + bk.w) {
+                    // Check if bunker still has solid pixels in this column
+                    var lx = Math.floor(px - bk.x);
+                    var bkCtx = bk.canvas.getContext('2d');
+                    var col = bkCtx.getImageData(lx, 0, 1, bk.h);
+                    for (var y = 0; y < bk.h; y++) {
+                        if (col.data[y * 4 + 3] > 0) return true; // solid pixel
+                    }
+                }
             }
             return false;
         }
