@@ -171,7 +171,6 @@
             var died = false;
             var killedTarget = false;
             var scoreGain = 0;
-            var minBulletDist = 9999;
             var positions = [];
             var bulletPositions = [];
             // Snapshot which aliens are alive before sim
@@ -201,16 +200,6 @@
                     bulletPositions.push({ x: simGame.bullets[0].x + 1.5, y: simGame.bullets[0].y });
                 }
 
-                // Track closest enemy bullet for dodging score
-                var px = simGame.player.x + 22;
-                var py = simGame.player.y;
-                for (var j = 0; j < simGame.enemyBullets.length; j++) {
-                    var eb = simGame.enemyBullets[j];
-                    var dx = eb.x - px, dy = eb.y - py;
-                    var dist = Math.sqrt(dx * dx + dy * dy);
-                    if (dist < minBulletDist) minBulletDist = dist;
-                }
-
                 if (simGame.lives < startLives) { died = true; break; }
                 if (simGame.gameOver) { died = true; break; }
 
@@ -225,17 +214,14 @@
                 scoreGain = simGame.score - startScore;
             }
 
-            // Scoring priorities:
-            // 1. Survival (don't die)
-            // 2. Kill the target
-            // 3. Kill anything
-            // 4. Stay away from enemy bullets
-            // 5. Move toward target
+            // Scoring: survival (death penalty) > kill target > any kill > proximity
             var score = 0;
             if (died) score -= 10000;
             if (killedTarget) score += 500;
             score += scoreGain * 10;
-            score += Math.min(minBulletDist, 200) * 0.5;
+            // Penalize wasted shots (fired but killed nothing — likely hit a bunker)
+            var fires = (action === 2 || action === 3 || action === 4);
+            if (fires && scoreGain === 0) score -= 50;
             if (target) {
                 var targetCx = target.x + target.w / 2;
                 var finalCx = simGame.player.x + 22;
