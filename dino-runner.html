@@ -94,7 +94,9 @@
         <div class="si-controls" style="margin-top: 12px;">
             <button class="si-btn active" id="human-btn" onclick="setMode('off')">Human</button>
             <button class="si-btn" id="rules-btn" onclick="setMode('rules')">AI</button>
-            <button class="si-btn" id="ml-btn" onclick="setMode('ml')">ML</button>
+            <button class="si-btn" id="ml-btn" onclick="setMode('ml')">MLP</button>
+            <button class="si-btn" id="knn-btn" onclick="setMode('knn')">k-NN</button>
+            <button class="si-btn" id="ql-btn" onclick="setMode('ql')">Q-Learn</button>
             <button class="si-btn" id="viz-btn" onclick="toggleViz()">Viz</button>
             <button class="si-btn" onclick="restartGame()">Restart</button>
             <button class="si-btn" id="pause-btn" onclick="togglePause()">Pause</button>
@@ -114,7 +116,7 @@
         <h2 style="margin-top: 16px;">Neural Network (MLP with Backpropagation)</h2>
         <p class="si-prose">
             A 2-layer neural network (10 &rarr; 64 &rarr; 3) trained via backpropagation.
-            Click <strong>Train</strong> to collect 30k frames of gameplay from the sim AI (headless, takes a few seconds),
+            Click <strong>Train</strong> to collect 40k frames of gameplay from the sim AI (headless, takes a few seconds),
             then train the network with class-balanced mini-batch SGD for 200 epochs.
             Once trained, click <strong>Play</strong> to watch the network play.
         </p>
@@ -130,6 +132,45 @@
                 <div id="ml-network-svg"></div>
                 <h3 style="font-size:14px; margin:16px 0 8px;">Training Loss</h3>
                 <canvas id="ml-loss-canvas" width="600" height="80" style="width:100%; max-width:600px;"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══ K-NN ═══ -->
+    <div id="knn-section" style="display:none;">
+        <h2 style="margin-top: 16px;">k-Nearest Neighbors</h2>
+        <p class="si-prose">
+            No training at all &mdash; just stores examples from the sim AI and classifies new states
+            by majority vote of the <em>k</em> closest neighbors. Click <strong>Collect</strong> to gather data,
+            then <strong>Play</strong> to watch it run.
+        </p>
+        <div class="si-controls" style="margin-top: 8px; margin-bottom: 8px;">
+            <button class="si-btn" id="knn-collect-btn" onclick="knnCollect()">Collect</button>
+            <button class="si-btn" id="knn-play-btn" onclick="knnPlay()" style="display:none;">Play</button>
+            <button class="si-btn" id="knn-stop-btn" onclick="knnStop()" style="display:none;">Stop</button>
+            <label style="font-size:11px; margin-left:8px;">k=<input type="number" id="knn-k" value="7" min="1" max="51" step="2" style="width:40px;"></label>
+            <span id="knn-stats" style="font-size: 11px; color: #6e6e73; margin-left: 8px;"></span>
+        </div>
+    </div>
+
+    <!-- ═══ Q-LEARNING ═══ -->
+    <div id="ql-section" style="display:none;">
+        <h2 style="margin-top: 16px;">Q-Learning (Tabular RL)</h2>
+        <p class="si-prose">
+            No teacher &mdash; learns from scratch by playing the game. Discretizes the state into bins
+            and builds a Q-table via Bellman updates with experience replay.
+            It will die a lot at first while exploring, then gradually improve.
+            Click <strong>Start</strong> to begin learning.
+        </p>
+        <div class="si-controls" style="margin-top: 8px; margin-bottom: 8px;">
+            <button class="si-btn" id="ql-start-btn" onclick="qlStart()">Start</button>
+            <button class="si-btn" id="ql-stop-btn" onclick="qlStop()" style="display:none;">Stop</button>
+            <span id="ql-stats" style="font-size: 11px; color: #6e6e73; margin-left: 8px;"></span>
+        </div>
+        <div id="ql-viz" style="display:none;">
+            <div style="background:#fff; border-radius:12px; padding:16px; margin-top:8px; box-shadow:0 1px 3px rgba(0,0,0,0.08);">
+                <h3 style="font-size:14px; margin:0 0 8px;">Score History</h3>
+                <canvas id="ql-score-canvas" width="600" height="80" style="width:100%; max-width:600px;"></canvas>
             </div>
         </div>
     </div>
@@ -2629,18 +2670,32 @@
         document.getElementById('rules-btn').classList.remove('active');
         document.getElementById('dqn-btn').classList.remove('active');
         document.getElementById('ml-btn').classList.remove('active');
+        document.getElementById('knn-btn').classList.remove('active');
+        document.getElementById('ql-btn').classList.remove('active');
 
-        // Hide ML section when switching away from ML mode
+        // Hide algo sections when switching away
         var mlSection = document.getElementById('ml-section');
+        var knnSection = document.getElementById('knn-section');
+        var qlSection = document.getElementById('ql-section');
         if (mlSection && mode !== 'ml') mlSection.style.display = 'none';
-        // Stop ML agent when switching modes
+        if (knnSection && mode !== 'knn') knnSection.style.display = 'none';
+        if (qlSection && mode !== 'ql') qlSection.style.display = 'none';
+        // Stop agents when switching modes
         if (mode !== 'ml' && window.mlStop) window.mlStop();
+        if (mode !== 'knn' && window.knnStop) window.knnStop();
+        if (mode !== 'ql' && window.qlStop) window.qlStop();
 
         if (mode === 'off') {
             document.getElementById('human-btn').classList.add('active');
         } else if (mode === 'ml') {
             document.getElementById('ml-btn').classList.add('active');
             if (mlSection) mlSection.style.display = '';
+        } else if (mode === 'knn') {
+            document.getElementById('knn-btn').classList.add('active');
+            if (knnSection) knnSection.style.display = '';
+        } else if (mode === 'ql') {
+            document.getElementById('ql-btn').classList.add('active');
+            if (qlSection) qlSection.style.display = '';
         } else if (mode === 'rules') {
             simAgent.enabled = true;
             simAgent._vizEnabled = true;
@@ -3574,6 +3629,14 @@
         el.innerHTML = svg;
     }
 
+    // --- Shared utilities for other algorithm tabs ---
+    window.mlExtractState = mlExtractState;
+    window.mlExecuteAction = mlExecuteAction;
+    window._knnCollectData = collectData;
+    window._knnSpeedTiers = SPEED_TIERS;
+    window._knnTargetFrames = TARGET_FRAMES;
+    window._knnStopCollecting = function () { _collecting = false; };
+
     // --- Public API ---
     window.mlTrain = function () {
         var statsEl = document.getElementById('ml-stats');
@@ -3697,6 +3760,424 @@
         var playBtn = document.getElementById('ml-play-btn');
         var stopBtn = document.getElementById('ml-stop-btn');
         if (playBtn && _trained) playBtn.style.display = '';
+        if (stopBtn) stopBtn.style.display = 'none';
+    };
+})();
+</script>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<!--  k-NN AGENT                                                           -->
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<script>
+(function () {
+    'use strict';
+
+    var _dataset = null;
+    var _playing = false, _collecting = false;
+    var _deaths = 0, _bestScore = 0;
+    var _statsInterval = null;
+
+    // Reuse the same data collection, state extraction, and action execution
+    // from the MLP section (they're on window via mlExtractState / mlExecuteAction / collectData)
+
+    // --- k-NN classifier ---
+    function euclidean(a, b) {
+        var sum = 0;
+        for (var i = 0; i < a.length; i++) { var d = a[i] - b[i]; sum += d * d; }
+        return sum; // no sqrt needed for comparison
+    }
+
+    function knnPredict(dataset, query, k) {
+        // Partial sort: find k smallest distances
+        var dists = new Float64Array(dataset.length);
+        for (var i = 0; i < dataset.length; i++) dists[i] = euclidean(dataset[i].input, query);
+
+        // Find k-th smallest via partial selection
+        var indices = new Uint32Array(dataset.length);
+        for (var i = 0; i < indices.length; i++) indices[i] = i;
+
+        // Simple: just pick k smallest by scanning k times (k is tiny, dataset ~40k)
+        for (var i = 0; i < k; i++) {
+            var minIdx = i;
+            for (var j = i + 1; j < indices.length; j++) {
+                if (dists[indices[j]] < dists[indices[minIdx]]) minIdx = j;
+            }
+            var tmp = indices[i]; indices[i] = indices[minIdx]; indices[minIdx] = tmp;
+        }
+
+        // Majority vote
+        var votes = [0, 0, 0];
+        for (var i = 0; i < k; i++) votes[dataset[indices[i]].label]++;
+        var best = 0;
+        if (votes[1] > votes[best]) best = 1;
+        if (votes[2] > votes[best]) best = 2;
+        return best;
+    }
+
+    // --- Optimized inference with a pre-built spatial index ---
+    // Downsample the dataset for real-time play (brute force 40k is too slow per frame)
+    var _playDataset = null;
+
+    function buildPlayDataset(dataset, maxSize) {
+        if (dataset.length <= maxSize) return dataset;
+        // Stratified downsample: equal per class
+        var buckets = [[], [], []];
+        for (var i = 0; i < dataset.length; i++) buckets[dataset[i].label].push(dataset[i]);
+        var perClass = Math.floor(maxSize / 3);
+        var result = [];
+        for (var c = 0; c < 3; c++) {
+            // Shuffle bucket
+            var b = buckets[c];
+            for (var i = b.length - 1; i > 0; i--) {
+                var j = Math.floor(Math.random() * (i + 1));
+                var tmp = b[i]; b[i] = b[j]; b[j] = tmp;
+            }
+            for (var i = 0; i < Math.min(perClass, b.length); i++) result.push(b[i]);
+        }
+        return result;
+    }
+
+    // --- Public API ---
+    window.knnCollect = function () {
+        var statsEl = document.getElementById('knn-stats');
+        var playBtn = document.getElementById('knn-play-btn');
+        var stopBtn = document.getElementById('knn-stop-btn');
+        var collectBtn = document.getElementById('knn-collect-btn');
+        if (playBtn) playBtn.style.display = 'none';
+        if (stopBtn) stopBtn.style.display = 'none';
+        if (collectBtn) { collectBtn.textContent = 'Stop'; collectBtn.onclick = function () { _collecting = false; window._knnStopCollecting(); }; }
+
+        _collecting = true;
+        _dataset = null;
+        _playDataset = null;
+        if (statsEl) statsEl.textContent = 'Collecting data from sim AI (headless)...';
+
+        window._knnCollectData(
+            function onProgress(n, speed, deaths) {
+                var deathStr = '';
+                if (deaths) {
+                    var parts = [];
+                    var tiers = window._knnSpeedTiers;
+                    for (var t = 0; t < tiers.length; t++) {
+                        if (deaths[t]) parts.push('s' + tiers[t] + ':' + deaths[t]);
+                    }
+                    if (parts.length) deathStr = ' | deaths [' + parts.join(' ') + ']';
+                }
+                if (statsEl) statsEl.textContent = 'Collecting: ' + n + ' / ' + window._knnTargetFrames +
+                    ' frames | speed ' + speed + deathStr;
+            },
+            function onDone(dataset) {
+                _collecting = false;
+                _dataset = dataset;
+                _playDataset = buildPlayDataset(dataset, 6000);
+                if (collectBtn) { collectBtn.textContent = 'Collect'; collectBtn.onclick = window.knnCollect; }
+                if (statsEl) statsEl.textContent = 'Ready! ' + dataset.length + ' examples (' + _playDataset.length + ' for inference)';
+                if (playBtn) playBtn.style.display = '';
+            }
+        );
+    };
+
+    window.knnPlay = function () {
+        var runner = window.runner;
+        if (!runner || !_playDataset) return;
+        var playBtn = document.getElementById('knn-play-btn');
+        var stopBtn = document.getElementById('knn-stop-btn');
+        var statsEl = document.getElementById('knn-stats');
+
+        if (_playing) { window.knnStop(); return; }
+
+        var k = parseInt(document.getElementById('knn-k').value) || 7;
+        _playing = true;
+        _deaths = 0; _bestScore = 0;
+        if (playBtn) playBtn.style.display = 'none';
+        if (stopBtn) stopBtn.style.display = '';
+
+        var agent = {
+            enabled: true,
+            update: function (r) {
+                if (!r.playing) return;
+                var state = window.mlExtractState(r);
+                var action = knnPredict(_playDataset, state, k);
+                window.mlExecuteAction(action, r);
+            },
+            onCrash: function (r) {
+                _deaths++;
+                var score = Math.round(r.distanceRan * 0.025);
+                if (score > _bestScore) _bestScore = score;
+            },
+            recordPrediction: function () {},
+            checkGhostCollisions: function () {}
+        };
+
+        runner.aiAgent = agent;
+        runner.suppressCollision = false;
+        if (runner.crashed || !runner.playing) {
+            runner.playing = true;
+            runner.activated = true;
+            runner.tRex.playingIntro = false;
+            runner.playingIntro = false;
+            runner.setArcadeMode();
+            runner.containerEl.style.width = runner.dimensions.WIDTH + 'px';
+            runner.tRex.startJump(runner.currentSpeed);
+            runner.update();
+        }
+
+        if (_statsInterval) clearInterval(_statsInterval);
+        _statsInterval = setInterval(function () {
+            if (!_playing) { clearInterval(_statsInterval); return; }
+            var score = Math.round(runner.distanceRan * 0.025);
+            if (statsEl) statsEl.textContent =
+                'k=' + k + ' | ' + _playDataset.length + ' examples | Deaths: ' + _deaths +
+                ' | Best: ' + _bestScore + ' | Score: ' + score;
+        }, 200);
+    };
+
+    window.knnStop = function () {
+        _playing = false;
+        _collecting = false;
+        if (window._knnStopCollecting) window._knnStopCollecting();
+        var runner = window.runner;
+        if (runner) { runner.aiAgent = null; runner.postRenderHook = null; }
+        if (_statsInterval) { clearInterval(_statsInterval); _statsInterval = null; }
+        var playBtn = document.getElementById('knn-play-btn');
+        var stopBtn = document.getElementById('knn-stop-btn');
+        if (playBtn && _dataset) playBtn.style.display = '';
+        if (stopBtn) stopBtn.style.display = 'none';
+    };
+})();
+</script>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<!--  Q-LEARNING AGENT                                                     -->
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<script>
+(function () {
+    'use strict';
+
+    // --- Hyperparameters ---
+    var ALPHA         = 0.15;
+    var GAMMA         = 0.95;
+    var EPSILON_START = 1.0;
+    var EPSILON_MIN   = 0.05;
+    var EPSILON_DECAY = 0.997;   // per-death decay
+    var DEATH_PENALTY = -100;
+    var ALIVE_REWARD  = 1;
+    var NUM_ACTIONS   = 3;
+
+    // --- State discretization ---
+    // Uses the same 10-feature vector from mlExtractState.
+    // Discretize into: dist1(8) × type(2) × speed(4) × jumping(2) × ducking(2) = 256 states
+    var DIST_BINS  = 8;
+    var TYPE_BINS  = 2;
+    var SPEED_BINS = 4;
+    var JUMP_BINS  = 2;
+    var DUCK_BINS  = 2;
+    var NUM_STATES = DIST_BINS * TYPE_BINS * SPEED_BINS * JUMP_BINS * DUCK_BINS; // 256
+
+    function discretize(state) {
+        var dist  = Math.min(DIST_BINS - 1, Math.floor(state[0] * DIST_BINS));
+        var type  = state[2] > 0.5 ? 1 : 0;  // pterodactyl?
+        var speed = Math.min(SPEED_BINS - 1, Math.floor(state[6] * SPEED_BINS));
+        var jump  = state[7] > 0 ? 1 : 0;     // jumpHeight > 0
+        var duck  = state[9] > 0.5 ? 1 : 0;
+        return dist + DIST_BINS * (type + TYPE_BINS * (speed + SPEED_BINS * (jump + JUMP_BINS * duck)));
+    }
+
+    // --- Experience replay ---
+    var REPLAY_SIZE    = 1000;
+    var REPLAY_BATCH   = 32;
+    var REPLAY_BATCHES = 3;
+
+    // --- Q-table ---
+    var Q = {};
+    var epsilon = EPSILON_START;
+    var prevState = null, prevAction = null;
+    var replay = new Array(REPLAY_SIZE);
+    var replayIdx = 0, replayCount = 0;
+
+    // Stats
+    var deaths = 0, bestScore = 0, lastScore = 0;
+    var scoreHistory = [];
+    var _playing = false, _statsInterval = null;
+
+    function getQ(s) {
+        if (!Q[s]) Q[s] = new Float64Array(NUM_ACTIONS);
+        return Q[s];
+    }
+
+    function argmax(arr) {
+        var best = 0;
+        for (var i = 1; i < arr.length; i++) if (arr[i] > arr[best]) best = i;
+        return best;
+    }
+
+    function storeTransition(s, a, r, sn, terminal) {
+        replay[replayIdx] = { s: s, a: a, r: r, sn: sn, t: terminal };
+        replayIdx = (replayIdx + 1) % REPLAY_SIZE;
+        if (replayCount < REPLAY_SIZE) replayCount++;
+    }
+
+    function replayBatch() {
+        if (replayCount < REPLAY_BATCH) return;
+        for (var b = 0; b < REPLAY_BATCHES; b++) {
+            for (var i = 0; i < REPLAY_BATCH; i++) {
+                var idx = Math.floor(Math.random() * replayCount);
+                var tr = replay[idx];
+                var qS = getQ(tr.s);
+                var target = tr.t ? tr.r : tr.r + GAMMA * getQ(tr.sn)[argmax(getQ(tr.sn))];
+                qS[tr.a] += ALPHA * (target - qS[tr.a]);
+            }
+        }
+    }
+
+    function chooseAction(s) {
+        if (Math.random() < epsilon) return Math.floor(Math.random() * NUM_ACTIONS);
+        return argmax(getQ(s));
+    }
+
+    // --- Score chart ---
+    function renderScoreChart(canvasId, scores) {
+        var canvas = document.getElementById(canvasId);
+        if (!canvas) return;
+        var ctx = canvas.getContext('2d');
+        var W = canvas.width, H = canvas.height;
+        ctx.clearRect(0, 0, W, H);
+        if (scores.length < 2) return;
+
+        var maxScore = 0;
+        for (var i = 0; i < scores.length; i++) if (scores[i] > maxScore) maxScore = scores[i];
+        if (maxScore === 0) maxScore = 1;
+
+        ctx.strokeStyle = '#0071e3';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        var n = Math.min(scores.length, W);
+        var start = scores.length - n;
+        for (var i = 0; i < n; i++) {
+            var x = (i / (n - 1)) * W;
+            var y = H - (scores[start + i] / maxScore) * (H - 4) - 2;
+            if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+
+        // Moving average
+        if (scores.length > 10) {
+            ctx.strokeStyle = 'rgba(255,100,0,0.6)';
+            ctx.beginPath();
+            var windowSize = Math.min(20, Math.floor(scores.length / 2));
+            for (var i = 0; i < n; i++) {
+                var idx = start + i;
+                var sum = 0, count = 0;
+                for (var j = Math.max(0, idx - windowSize); j <= idx; j++) { sum += scores[j]; count++; }
+                var avg = sum / count;
+                var x = (i / (n - 1)) * W;
+                var y = H - (avg / maxScore) * (H - 4) - 2;
+                if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+            }
+            ctx.stroke();
+        }
+    }
+
+    // --- Public API ---
+    window.qlStart = function () {
+        var runner = window.runner;
+        if (!runner) return;
+        var startBtn = document.getElementById('ql-start-btn');
+        var stopBtn = document.getElementById('ql-stop-btn');
+        var statsEl = document.getElementById('ql-stats');
+        var vizEl = document.getElementById('ql-viz');
+
+        if (_playing) { window.qlStop(); return; }
+
+        // Reset
+        Q = {}; epsilon = EPSILON_START;
+        prevState = null; prevAction = null;
+        replay = new Array(REPLAY_SIZE);
+        replayIdx = 0; replayCount = 0;
+        deaths = 0; bestScore = 0; lastScore = 0;
+        scoreHistory = [];
+
+        _playing = true;
+        if (startBtn) startBtn.style.display = 'none';
+        if (stopBtn) stopBtn.style.display = '';
+        if (vizEl) vizEl.style.display = '';
+
+        var agent = {
+            enabled: true,
+            update: function (r) {
+                if (!r.playing) return;
+                var rawState = window.mlExtractState(r);
+                var s = discretize(rawState);
+                var a = chooseAction(s);
+
+                // Update previous transition
+                if (prevState !== null) {
+                    storeTransition(prevState, prevAction, ALIVE_REWARD, s, false);
+                }
+                prevState = s;
+                prevAction = a;
+
+                window.mlExecuteAction(a, r);
+            },
+            onCrash: function (r) {
+                // Terminal update
+                if (prevState !== null) {
+                    storeTransition(prevState, prevAction, DEATH_PENALTY, 0, true);
+                    var qS = getQ(prevState);
+                    qS[prevAction] += ALPHA * (DEATH_PENALTY - qS[prevAction]);
+                }
+                prevState = null;
+                prevAction = null;
+
+                // Replay
+                replayBatch();
+
+                // Decay epsilon
+                epsilon = Math.max(EPSILON_MIN, epsilon * EPSILON_DECAY);
+
+                // Stats
+                deaths++;
+                var score = Math.round(r.distanceRan * 0.025);
+                lastScore = score;
+                if (score > bestScore) bestScore = score;
+                scoreHistory.push(score);
+            },
+            recordPrediction: function () {},
+            checkGhostCollisions: function () {}
+        };
+
+        runner.aiAgent = agent;
+        runner.suppressCollision = false;
+        if (runner.crashed || !runner.playing) {
+            runner.playing = true;
+            runner.activated = true;
+            runner.tRex.playingIntro = false;
+            runner.playingIntro = false;
+            runner.setArcadeMode();
+            runner.containerEl.style.width = runner.dimensions.WIDTH + 'px';
+            runner.tRex.startJump(runner.currentSpeed);
+            runner.update();
+        }
+
+        if (_statsInterval) clearInterval(_statsInterval);
+        _statsInterval = setInterval(function () {
+            if (!_playing) { clearInterval(_statsInterval); return; }
+            var statesVisited = Object.keys(Q).length;
+            if (statsEl) statsEl.textContent =
+                'Deaths: ' + deaths + ' | Best: ' + bestScore + ' | Last: ' + lastScore +
+                ' | ε: ' + epsilon.toFixed(3) + ' | States: ' + statesVisited + '/' + NUM_STATES;
+            renderScoreChart('ql-score-canvas', scoreHistory);
+        }, 300);
+    };
+
+    window.qlStop = function () {
+        _playing = false;
+        var runner = window.runner;
+        if (runner) { runner.aiAgent = null; runner.postRenderHook = null; }
+        if (_statsInterval) { clearInterval(_statsInterval); _statsInterval = null; }
+        var startBtn = document.getElementById('ql-start-btn');
+        var stopBtn = document.getElementById('ql-stop-btn');
+        if (startBtn) startBtn.style.display = '';
         if (stopBtn) stopBtn.style.display = 'none';
     };
 })();
