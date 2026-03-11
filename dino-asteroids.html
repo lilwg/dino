@@ -639,12 +639,13 @@ function simRollout(s, aimAngle) {
     }
 
     var fleeing = (fx*fx+fy*fy) > 0.04;
+    var pursuing = !fleeing && aimAngle!==null && s.rocks.length<=4;
     var goalA = fleeing ? Math.atan2(fy,fx) : (aimAngle!==null ? aimAngle : s.pa);
     var diff = normA(goalA - s.pa);
 
     var rot = 0;
     if (diff>0.08) rot=1; else if (diff<-0.08) rot=-1;
-    var thr = fleeing && Math.abs(diff)<0.7;
+    var thr = (fleeing && Math.abs(diff)<0.7) || (pursuing && Math.abs(diff)<0.5);
 
     return [rot, thr?1:0, 0];
 }
@@ -732,6 +733,13 @@ function computeAI() {
                 // Near-miss: quadratic penalty — barely surviving is bad
                 var danger = (SHIP_R*3 - s.minRD) / (SHIP_R*2);
                 score -= danger * danger * 200;  // up to -200 for grazing hits
+            }
+
+            // Pursue bonus: when few rocks remain, reward closing distance to target
+            if (tgt && rocks.length<=4) {
+                var pdx=wdx(tgt.x,s.px), pdy=wdy(tgt.y,s.py);
+                var pd=Math.sqrt(pdx*pdx+pdy*pdy);
+                score += Math.max(0, 400-pd) * 0.3; // up to ~120 for being close
             }
 
             // Penalize wasted shots (fire actions that hit nothing)
