@@ -1440,15 +1440,40 @@ function accumGrads(x, y) {
     return loss / N_OUT;
 }
 
-// Apply accumulated gradients (divide by batch size, then SGD step)
+// ── Adam optimizer ──────────────────────────────────────────────────────
+var adamBeta1 = 0.9, adamBeta2 = 0.999, adamEps = 1e-8;
+var mW1, vW1, mb1, vb1, mW2, vW2, mb2, vb2, mW3, vW3, mb3, vb3;
+var adamT = 0;
+
+function allocAdam() {
+    mW1 = new Float32Array(W1.length); vW1 = new Float32Array(W1.length);
+    mb1 = new Float32Array(b1.length); vb1 = new Float32Array(b1.length);
+    mW2 = new Float32Array(W2.length); vW2 = new Float32Array(W2.length);
+    mb2 = new Float32Array(b2.length); vb2 = new Float32Array(b2.length);
+    mW3 = new Float32Array(W3.length); vW3 = new Float32Array(W3.length);
+    mb3 = new Float32Array(b3.length); vb3 = new Float32Array(b3.length);
+    adamT = 0;
+}
+
+function adamUpdate(w, g, m, v, lr, bs) {
+    for (var i = 0; i < w.length; i++) {
+        var gi = g[i] / bs;
+        m[i] = adamBeta1 * m[i] + (1 - adamBeta1) * gi;
+        v[i] = adamBeta2 * v[i] + (1 - adamBeta2) * gi * gi;
+        var mHat = m[i] / (1 - Math.pow(adamBeta1, adamT));
+        var vHat = v[i] / (1 - Math.pow(adamBeta2, adamT));
+        w[i] -= lr * mHat / (Math.sqrt(vHat) + adamEps);
+    }
+}
+
 function applyGrads(lr, batchSize) {
-    var s = lr / batchSize;
-    for (var i = 0; i < W1.length; i++) W1[i] -= s * gW1[i];
-    for (var i = 0; i < b1.length; i++) b1[i] -= s * gb1[i];
-    for (var i = 0; i < W2.length; i++) W2[i] -= s * gW2[i];
-    for (var i = 0; i < b2.length; i++) b2[i] -= s * gb2[i];
-    for (var i = 0; i < W3.length; i++) W3[i] -= s * gW3[i];
-    for (var i = 0; i < b3.length; i++) b3[i] -= s * gb3[i];
+    adamT++;
+    adamUpdate(W1, gW1, mW1, vW1, lr, batchSize);
+    adamUpdate(b1, gb1, mb1, vb1, lr, batchSize);
+    adamUpdate(W2, gW2, mW2, vW2, lr, batchSize);
+    adamUpdate(b2, gb2, mb2, vb2, lr, batchSize);
+    adamUpdate(W3, gW3, mW3, vW3, lr, batchSize);
+    adamUpdate(b3, gb3, mb3, vb3, lr, batchSize);
 }
 
 // ── Training loop ───────────────────────────────────────────────────────
@@ -1459,6 +1484,7 @@ window.mlTrain = function() {
     if (dataX.length < 100) return;
     initWeights();
     allocGrads();
+    allocAdam();
     lossHistory = [];
     trained = false;
 
@@ -1467,9 +1493,9 @@ window.mlTrain = function() {
     vizEl.style.display = '';
     document.getElementById('ml-train-btn').style.display = 'none';
 
-    var EPOCHS = 50;
-    var BATCH = 64;
-    var lr0 = 0.01;
+    var EPOCHS = 100;
+    var BATCH = 128;
+    var lr0 = 0.001;
     var epoch = 0;
     var n = dataX.length;
 
@@ -1486,7 +1512,7 @@ window.mlTrain = function() {
 
     function runEpoch() {
         shuffle();
-        var lr = lr0 * Math.pow(0.95, epoch); // decay LR
+        var lr = lr0;
         var totalLoss = 0;
         // Mini-batch SGD
         for (var b = 0; b < n; b += BATCH) {
@@ -1502,7 +1528,7 @@ window.mlTrain = function() {
         lossHistory.push(avgLoss);
         epoch++;
         statsEl.textContent = 'Training epoch ' + epoch + '/' + EPOCHS +
-            ' | Loss: ' + avgLoss.toFixed(4) + ' | LR: ' + lr.toFixed(5);
+            ' | Loss: ' + avgLoss.toFixed(4);
         drawLossChart();
 
         if (epoch < EPOCHS) {
