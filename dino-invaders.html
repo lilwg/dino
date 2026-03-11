@@ -41,7 +41,7 @@
         <!-- ═══ HOW IT WORKS ═══ -->
         <h2 style="margin-top: 16px;">How it works</h2>
         <p class="si-prose">
-            The AI uses forward simulation to decide every move. Each frame, it snapshots the game state and simulates 45 frames ahead for all six actions &mdash; move left, move right, fire, fire-left, fire-right, and stay. It scores each action by the points gained, penalises death, and favours staying clear of enemy bullets. On top of that, it analyses which columns have bottom-row aliens (the ones that can fire) and mildly penalises lingering below them, gives bonus points for hitting aliens in threatening columns, and rewards shooting mystery ships. Stay wins ties, keeping the player conservative when nothing is urgent.
+            The AI uses Monte Carlo forward simulation. Each frame it snapshots the game state and, for each of six actions (left, right, fire, fire-left, fire-right, stay), runs five random rollouts 45 frames into the future &mdash; this time with enemy fire enabled, so the AI must account for incoming bullets it hasn&rsquo;t seen yet. Each rollout is scored purely on outcomes: points gained, deaths, and closest bullet distance. The scores are averaged across rollouts and the best action is chosen. No hand-tuned positional rules &mdash; the simulation itself naturally penalises bad positions because they lead to getting hit. Stay wins ties, keeping the player conservative when nothing is urgent.
         </p>
         <p class="si-prose">
             Tap <strong>Viz</strong> to watch the AI think. Coloured trails show predicted player positions &mdash; blue for left, orange for right, grey for staying still. A dashed line traces the player bullet&rsquo;s path for the chosen action. Pill badges above the trails show each family&rsquo;s outcome (hit, score, or safe), and a badge below the player names the chosen action.
@@ -84,97 +84,53 @@
     var aiMode = 'off';
 
     // ═══════════════════════════════════════════════════════════════
-    //  RULES AI — improved heuristic simulation
+    //  RULES AI — Monte Carlo forward simulation
+    //  For each action, run multiple rollouts WITH enemy fire enabled.
+    //  Score purely on simulation outcomes (death, score, bullet proximity).
+    //  No hand-tuned positional heuristics — the simulation itself handles
+    //  positioning, targeting, and threat avoidance naturally.
     // ═══════════════════════════════════════════════════════════════
     var simGame = new SpaceInvadersGame(document.createElement('canvas'), { primary: false });
-    simGame._suppressEnemyFire = true;
 
-    var CANVAS_W = SpaceInvadersGame.CANVAS_W;    // 600
-    var PLAYER_W = SpaceInvadersGame.PLAYER_W;    // 44
-    var PLAYER_Y = SpaceInvadersGame.PLAYER_Y;    // 337
-    var ALIEN_COLS = SpaceInvadersGame.ALIEN_COLS; // 8
+    var SIM_STEPS = 45;    // frames to simulate per rollout
+    var NUM_ROLLOUTS = 5;  // rollouts per action (with random enemy fire)
 
     var invadersSimAI = {
         enabled: false,
         _vizEnabled: false,
         _vizData: null,
 
-        // Analyse which columns have bottom-row aliens (can fire) and their Y positions
-        _analyseThreats: function (g) {
-            var colBottomY = new Array(ALIEN_COLS);
-            var colBottomX = new Array(ALIEN_COLS);
-            for (var c = 0; c < ALIEN_COLS; c++) { colBottomY[c] = -1; colBottomX[c] = 0; }
-            for (var i = 0; i < g.aliens.length; i++) {
-                var a = g.aliens[i];
-                if (!a.alive) continue;
-                var c = a.col;
-                if (a.y > colBottomY[c]) { colBottomY[c] = a.y + (a.h || 40); colBottomX[c] = a.x + (a.w || 46) / 2; }
-            }
-            return { colBottomY: colBottomY, colBottomX: colBottomX };
-        },
-
         update: function (g) {
             var snap = g.snapshotState();
-            var threats = this._analyseThreats(g);
-            var N = 45;
-            var results = [];
+
+            // Run one deterministic sim per action (for viz), plus Monte Carlo rollouts
+            var detResults = [];
+            var avgScores = new Array(6);
+
             for (var a = 0; a < 6; a++) {
-                results.push(this._simulate(snap, a, N));
+                // Deterministic rollout (no enemy fire) — used for visualization
+                detResults.push(this._simulate(snap, a, SIM_STEPS, true));
+
+                // Monte Carlo rollouts (with enemy fire) — used for scoring
+                var total = 0;
+                for (var r = 0; r < NUM_ROLLOUTS; r++) {
+                    var result = this._simulate(snap, a, SIM_STEPS, false);
+                    total += this._scoreResult(result);
+                }
+                avgScores[a] = total / NUM_ROLLOUTS;
             }
 
-            // ── Score each action ──
-            var scores = new Array(6);
-            for (var a = 0; a < 6; a++) {
-                var r = results[a];
-                var s = 0;
-
-                // Death penalty
-                if (r.died) s -= 1000;
-
-                // Reward score gained
-                s += r.scoreGain * 10;
-
-                // Bullet proximity — stay clear of enemy bullets
-                s += Math.min(r.minBulletDist, 200) * 0.05;
-
-                // Threat column avoidance: mild penalty for lingering under firing columns
-                var finalPx = r.finalX;
-                for (var c = 0; c < ALIEN_COLS; c++) {
-                    if (threats.colBottomY[c] < 0) continue;
-                    var colDist = Math.abs(threats.colBottomX[c] - finalPx);
-                    if (colDist < 24) {
-                        var danger = threats.colBottomY[c] / PLAYER_Y; // 0-1, higher = closer to player
-                        s -= (24 - colDist) * 0.06 * danger;
-                    }
-                }
-
-                // Center pull — prevent drifting to corners and getting stuck
-                var centerDist = Math.abs(finalPx - CANVAS_W / 2);
-                s -= centerDist * 0.015;
-
-                // Targeting bonus: extra reward for hitting aliens in dangerous columns
-                if (r.hitAlienCol >= 0 && threats.colBottomY[r.hitAlienCol] >= 0) {
-                    var colThreat = threats.colBottomY[r.hitAlienCol] / PLAYER_Y;
-                    s += 5 * colThreat;
-                }
-
-                // Mystery ship bonus
-                if (r.hitMystery) s += 15;
-
-                scores[a] = s;
-            }
-
-            // Pick best — STAY wins ties (conservative default)
+            // Pick best — STAY (5) wins ties (conservative default)
             var best = 5;
-            var bestScore = scores[5];
+            var bestScore = avgScores[5];
             for (var a = 0; a < 6; a++) {
                 if (a === 5) continue;
-                if (scores[a] > bestScore) { bestScore = scores[a]; best = a; }
+                if (avgScores[a] > bestScore) { bestScore = avgScores[a]; best = a; }
             }
 
             if (this._vizEnabled) {
                 this._vizData = {
-                    results: results,
+                    results: detResults,
                     chosenAction: best,
                     playerX: g.player.x,
                     playerY: g.player.y
@@ -184,9 +140,18 @@
             g.executeAction(best);
         },
 
-        _simulate: function (snap, action, nSteps) {
+        // Score a single rollout result — pure simulation outcomes, no positional hacks
+        _scoreResult: function (r) {
+            var s = 0;
+            if (r.died) s -= 1000;
+            s += r.scoreGain * 10;
+            s += Math.min(r.minBulletDist, 200) * 0.05;
+            return s;
+        },
+
+        _simulate: function (snap, action, nSteps, suppressFire) {
             simGame.restoreState(snap);
-            simGame._suppressEnemyFire = true;
+            simGame._suppressEnemyFire = !!suppressFire;
 
             var startScore = simGame.score;
             var startLives = simGame.lives;
@@ -194,9 +159,6 @@
             var bulletPositions = [];
             var died = false;
             var minBulletDist = 9999;
-            var hitAlienCol = -1;
-            var hitMystery = false;
-            var prevSimScore = startScore;
 
             for (var i = 0; i < nSteps; i++) {
                 simGame.executeAction(action);
@@ -208,17 +170,6 @@
                 // Track player bullet for viz
                 if (simGame.bullets.length > 0) {
                     bulletPositions.push({ x: simGame.bullets[0].x + 1.5, y: simGame.bullets[0].y });
-                }
-
-                // Detect what we hit this frame (compare to previous frame, not snapshot)
-                if (simGame.score > prevSimScore) {
-                    for (var k = 0; k < simGame.aliens.length; k++) {
-                        if (!simGame.aliens[k].alive && snap.aliens[k].alive) {
-                            hitAlienCol = simGame.aliens[k].col;
-                        }
-                    }
-                    if (snap.mystery && !simGame.mystery) hitMystery = true;
-                    prevSimScore = simGame.score;
                 }
 
                 // Track closest enemy bullet distance to player
@@ -241,9 +192,7 @@
                 positions: positions,
                 bulletPositions: bulletPositions,
                 minBulletDist: minBulletDist,
-                finalX: simGame.player.x + 22,
-                hitAlienCol: hitAlienCol,
-                hitMystery: hitMystery
+                finalX: simGame.player.x + 22
             };
         }
     };
