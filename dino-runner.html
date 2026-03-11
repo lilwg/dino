@@ -3294,6 +3294,7 @@
         for (var tw = 0; tw < tierWeights.length; tw++)
             tierLimits.push(Math.ceil(TARGET_FRAMES * tierWeights[tw] / totalWeight));
         var tierFrames = 0;
+        var tierDeaths = {};
 
         // Start first tier
         r.config.MAX_SPEED = SPEED_TIERS[SPEED_TIERS.length - 1] + 5;
@@ -3312,13 +3313,16 @@
                 var action = 0;
                 if (r.tRex.jumping && !wasJumping) action = 1;
                 else if ((r.tRex.ducking && !wasDucking) || (r.tRex.speedDrop && !wasSpeedDrop)) action = 2;
-                dataset.push({ input: state, label: action });
                 tierFrames++;
 
                 var collision = mlTrainStep(r, -1);
                 if (collision) {
+                    // Discard this frame — the action led to a crash
+                    tierDeaths[tierIdx] = (tierDeaths[tierIdx] || 0) + 1;
                     collector.onCrash(r);
                     mlTrainRestart(r, SPEED_TIERS[tierIdx]);
+                } else {
+                    dataset.push({ input: state, label: action });
                 }
 
                 // Move to next speed tier
@@ -3334,7 +3338,7 @@
                     return;
                 }
             }
-            onProgress(dataset.length, SPEED_TIERS[tierIdx]);
+            onProgress(dataset.length, SPEED_TIERS[tierIdx], tierDeaths);
             _channel.port2.postMessage(0);
         };
         _channel.port2.postMessage(0);
@@ -3589,9 +3593,17 @@
         if (statsEl) statsEl.textContent = 'Collecting data from sim AI (headless)...';
 
         collectData(
-            function onProgress(n, speed) {
+            function onProgress(n, speed, deaths) {
+                var deathStr = '';
+                if (deaths) {
+                    var parts = [];
+                    for (var t = 0; t < SPEED_TIERS.length; t++) {
+                        if (deaths[t]) parts.push('s' + SPEED_TIERS[t] + ':' + deaths[t]);
+                    }
+                    if (parts.length) deathStr = ' | deaths [' + parts.join(' ') + ']';
+                }
                 if (statsEl) statsEl.textContent = 'Collecting (headless): ' + n + ' / ' + TARGET_FRAMES +
-                    ' frames | speed tier ' + speed;
+                    ' frames | speed tier ' + speed + deathStr;
             },
             function onDone(dataset) {
                 if (trainBtn) { trainBtn.textContent = 'Train'; trainBtn.onclick = window.mlTrain; }
