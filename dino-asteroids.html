@@ -1121,6 +1121,8 @@ window._astState = function() { return { player:player, rocks:rocks, bullets:bul
 window._astAiIn = aiIn;
 window._astConst = { CW:CW, CH:CH, SHIP_R:SHIP_R, TURN:TURN, ACCEL:ACCEL, FRIC:FRIC, VMAX:VMAX, B_SPD:B_SPD, B_LIFE:B_LIFE };
 window._astWdx = wdx; window._astWdy = wdy; window._astWdst = wdst; window._astNormA = normA;
+window._astUpdate = update;
+window._astInitGame = initGame;
 
 })();
 </script>
@@ -1217,44 +1219,68 @@ function extractAction() {
     return [ai.rot < 0 ? 1 : 0, ai.rot > 0 ? 1 : 0, ai.thrust ? 1 : 0, ai.fire ? 1 : 0];
 }
 
-// ── Data collection ─────────────────────────────────────────────────────
+// ── Headless data collection ────────────────────────────────────────────
 var dataX = [], dataY = [];
 var collecting = false;
-
-function collectTick() {
-    var st = window._astState();
-    if (st.gs !== 'playing' || !st.player || st.player.dead) return;
-    // The rule AI has already been called this frame, so aiIn has its output
-    var feat = extractState();
-    if (!feat) return;
-    var act = extractAction();
-    dataX.push(feat);
-    dataY.push(act);
-}
-
-var _collectHook = null;
+var TARGET_SAMPLES = 30000;
+var BATCH_PER_FRAME = 200; // ticks per animation frame (headless speed)
 
 window.mlCollect = function() {
-    // Switch to rule-based AI and start collecting
-    window.setMode('ai');
     collecting = true;
     dataX = []; dataY = [];
+    // Force AI mode so computeAI() runs inside update()
+    window.setMode('ai');
+    // Immediately start a new game
+    window._astInitGame();
 
     document.getElementById('ml-collect-btn').style.display = 'none';
     document.getElementById('ml-stop-btn').style.display = '';
+    document.getElementById('ml-stats').textContent = 'Collecting headless...';
 
-    // Hook into the game loop by polling each frame
-    _collectHook = setInterval(function() {
+    function headlessBatch() {
         if (!collecting) return;
-        collectTick();
+        for (var i = 0; i < BATCH_PER_FRAME; i++) {
+            var st = window._astState();
+            // If game over, restart automatically
+            if (st.gs !== 'playing') {
+                window._astInitGame();
+                continue;
+            }
+            if (!st.player || st.player.dead) {
+                window._astUpdate();
+                continue;
+            }
+            // Extract state BEFORE the tick (what the AI sees)
+            var feat = extractState();
+            // Run one game tick (computeAI sets aiIn + physics)
+            window._astUpdate();
+            // Extract action AFTER (what the AI decided)
+            if (feat) {
+                dataX.push(feat);
+                dataY.push(extractAction());
+            }
+            if (dataX.length >= TARGET_SAMPLES) {
+                collecting = false;
+                break;
+            }
+        }
         document.getElementById('ml-stats').textContent =
-            'Collecting... ' + dataX.length + ' samples';
-    }, 17); // ~60fps
+            'Headless: ' + dataX.length + ' / ' + TARGET_SAMPLES + ' samples';
+        if (collecting) {
+            requestAnimationFrame(headlessBatch);
+        } else {
+            finishCollect();
+        }
+    }
+    requestAnimationFrame(headlessBatch);
 };
 
 window.mlStopCollect = function() {
     collecting = false;
-    if (_collectHook) { clearInterval(_collectHook); _collectHook = null; }
+    finishCollect();
+};
+
+function finishCollect() {
     document.getElementById('ml-stop-btn').style.display = 'none';
     document.getElementById('ml-collect-btn').style.display = '';
     if (dataX.length > 100) {
@@ -1262,7 +1288,7 @@ window.mlStopCollect = function() {
     }
     document.getElementById('ml-stats').textContent =
         dataX.length + ' samples collected. Ready to train.';
-};
+}
 
 // ── Neural network (MLP: N_FEAT → 64 → 32 → 4) ────────────────────────
 var N_H1 = 64, N_H2 = 32, N_OUT = 4;
