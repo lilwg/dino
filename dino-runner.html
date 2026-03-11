@@ -3168,53 +3168,142 @@
         }
     }
 
-    // --- Data collection ---
-    function collectData(runner, onProgress, onDone) {
-        var simAgent = window._simAgent;
-        if (!simAgent) return;
-        // Create a fresh sim agent for collection
+    // --- Headless runner for fast data collection ---
+    var _mlTrainRunner = null;
+
+    function createMLTrainRunner() {
+        var container = document.createElement('div');
+        container.className = 'interstitial-wrapper';
+        container.style.cssText = 'position:absolute;left:-9999px;top:-9999px;width:600px;height:150px;overflow:hidden;';
+        var mc = document.createElement('div');
+        mc.className = 'icon icon-offline';
+        container.appendChild(mc);
+        document.body.appendChild(container);
+        var tr = new Runner(container, {}, { primary: false });
+        tr.aiAgent = {
+            enabled: true, update: function () {},
+            recordPrediction: function () {},
+            onCrash: function () {},
+            checkGhostCollisions: function () {}
+        };
+        return tr;
+    }
+
+    function mlTrainStep(r, action) {
+        var deltaTime = 1000 / 60;
+        // action=-1 means the caller already applied the action to tRex
+        if (action >= 0) {
+            if (action === 1 && !r.tRex.jumping) {
+                if (r.tRex.ducking) r.tRex.setDuck(false);
+                r.tRex.startJump(r.currentSpeed);
+            }
+            if (action === 2) {
+                if (r.tRex.jumping) { if (!r.tRex.speedDrop) r.tRex.setSpeedDrop(); }
+                else { if (!r.tRex.ducking) r.tRex.setDuck(true); }
+            } else if (action !== 2) {
+                r.tRex.setDuck(false);
+            }
+            if (r.tRex.jumping && r.tRex.ducking) r.tRex.setDuck(false);
+        }
+        if (r.tRex.jumping) r.tRex.updateJump(deltaTime);
+        r.runningTime += deltaTime;
+        var hasObstacles = r.runningTime > r.config.CLEAR_TIME;
+        r.horizon.update(deltaTime, r.currentSpeed, hasObstacles);
+
+        var collision = false;
+        if (hasObstacles && r.horizon.obstacles.length > 0) {
+            var obs = r.horizon.obstacles[0];
+            var tRexBox = new CollisionBox(
+                r.tRex.xPos + 1, r.tRex.yPos + 1,
+                r.tRex.config.WIDTH - 2, r.tRex.config.HEIGHT - 2);
+            var obstacleBox = new CollisionBox(
+                obs.xPos + 1, obs.yPos + 1,
+                obs.typeConfig.width * obs.size - 2,
+                obs.typeConfig.height - 2);
+            if (boxCompare(tRexBox, obstacleBox)) {
+                var collisionBoxes = obs.collisionBoxes;
+                var tRexCB = r.tRex.ducking ? Trex.collisionBoxes.DUCKING : Trex.collisionBoxes.RUNNING;
+                for (var t = 0; t < tRexCB.length && !collision; t++) {
+                    for (var i = 0; i < collisionBoxes.length && !collision; i++) {
+                        if (boxCompare(
+                            createAdjustedCollisionBox(tRexCB[t], tRexBox),
+                            createAdjustedCollisionBox(collisionBoxes[i], obstacleBox)))
+                            collision = true;
+                    }
+                }
+            }
+        }
+        if (!collision) {
+            r.distanceRan += r.currentSpeed * deltaTime / r.msPerFrame;
+            if (r.currentSpeed < r.config.MAX_SPEED) r.currentSpeed += r.config.ACCELERATION;
+        }
+        r.tRex.update(deltaTime);
+        return collision;
+    }
+
+    function mlTrainRestart(r) {
+        r.runningTime = 0; r.playing = true; r.crashed = false;
+        r.activated = true; r.playingIntro = false; r.distanceRan = 0;
+        r.setSpeed(r.config.SPEED);
+        r.time = performance.now();
+        if (r.distanceMeter) r.distanceMeter.reset(0);
+        r.horizon.reset(); r.tRex.reset();
+    }
+
+    var CollisionBox = window.CollisionBox;
+    var boxCompare = window.boxCompare;
+    var createAdjustedCollisionBox = window.createAdjustedCollisionBox;
+    var Trex = window.Trex;
+
+    // --- Data collection (headless, tight loop) ---
+    var STEPS_PER_TICK = 200;
+
+    function collectData(onProgress, onDone) {
+        if (!_mlTrainRunner) _mlTrainRunner = createMLTrainRunner();
+        var r = _mlTrainRunner;
+        mlTrainRestart(r);
+
         var collector = new window.AIAgent();
         collector.enabled = true;
+        // Wire collector into the runner so it can read obstacles
+        r.aiAgent = { enabled: true, update: function(){}, recordPrediction: function(){},
+                      onCrash: function(){}, checkGhostCollisions: function(){} };
+
         var dataset = [];
         _collecting = true;
+        var _channel = new MessageChannel();
 
-        var wrapper = {
-            enabled: true,
-            update: function (r) {
-                if (!r.playing || !_collecting) return;
+        _channel.port1.onmessage = function () {
+            if (!_collecting) return;
+            for (var s = 0; s < STEPS_PER_TICK; s++) {
                 var state = mlExtractState(r);
                 var wasJumping = r.tRex.jumping;
                 var wasDucking = r.tRex.ducking;
+                var wasSpeedDrop = r.tRex.speedDrop;
+                // Let the sim AI decide and apply its action to tRex
                 collector.update(r);
                 var action = 0;
                 if (r.tRex.jumping && !wasJumping) action = 1;
-                else if (r.tRex.ducking && !wasDucking) action = 2;
-                else if (r.tRex.speedDrop) action = 2;
+                else if ((r.tRex.ducking && !wasDucking) || (r.tRex.speedDrop && !wasSpeedDrop)) action = 2;
                 dataset.push({ input: state, label: action });
-                if (dataset.length % 200 === 0) onProgress(dataset.length);
+
+                // Step physics headlessly (action=-1 means sim AI already applied it)
+                var collision = mlTrainStep(r, -1);
+                if (collision) {
+                    collector.onCrash(r);
+                    mlTrainRestart(r);
+                }
+
                 if (dataset.length >= TARGET_FRAMES) {
                     _collecting = false;
-                    r.aiAgent = null;
                     onDone(dataset);
+                    return;
                 }
-            },
-            onCrash: function (r) { collector.onCrash(r); },
-            recordPrediction: function () {},
-            checkGhostCollisions: function () {}
+            }
+            onProgress(dataset.length);
+            _channel.port2.postMessage(0);
         };
-
-        runner.aiAgent = wrapper;
-        runner.suppressCollision = false;
-        if (runner.crashed || !runner.playing) {
-            runner.playing = true;
-            runner.activated = true;
-            runner.tRex.playingIntro = false;
-            runner.playingIntro = false;
-            runner.setArcadeMode();
-            runner.containerEl.style.width = runner.dimensions.WIDTH + 'px';
-            runner.tRex.startJump(runner.currentSpeed);
-            runner.update();
-        }
+        _channel.port2.postMessage(0);
     }
 
     // --- Training ---
@@ -3409,29 +3498,28 @@
 
     // --- Public API ---
     window.mlTrain = function () {
-        var runner = window.runner;
-        if (!runner) return;
         var statsEl = document.getElementById('ml-stats');
         var vizEl = document.getElementById('ml-viz');
         var playBtn = document.getElementById('ml-play-btn');
         var stopBtn = document.getElementById('ml-stop-btn');
+        var trainBtn = document.getElementById('ml-train-btn');
         if (playBtn) playBtn.style.display = 'none';
         if (stopBtn) stopBtn.style.display = 'none';
+        if (trainBtn) { trainBtn.textContent = 'Stop'; trainBtn.onclick = function () { _collecting = false; }; }
         _trained = false;
 
-        // Stop current AI
-        runner.aiAgent = null;
-        runner.postRenderHook = null;
+        // Don't touch the visible runner — collection is fully headless
         if (_statsInterval) { clearInterval(_statsInterval); _statsInterval = null; }
 
         initWeights();
-        if (statsEl) statsEl.textContent = 'Collecting data from sim AI...';
+        if (statsEl) statsEl.textContent = 'Collecting data from sim AI (headless)...';
 
-        collectData(runner,
+        collectData(
             function onProgress(n) {
-                if (statsEl) statsEl.textContent = 'Collecting: ' + n + ' / ' + TARGET_FRAMES + ' frames';
+                if (statsEl) statsEl.textContent = 'Collecting (headless): ' + n + ' / ' + TARGET_FRAMES + ' frames';
             },
             function onDone(dataset) {
+                if (trainBtn) { trainBtn.textContent = 'Train'; trainBtn.onclick = window.mlTrain; }
                 if (statsEl) statsEl.textContent = 'Training (epoch 0/100)...';
                 if (vizEl) vizEl.style.display = 'block';
                 renderNetwork('ml-network-svg', null);
