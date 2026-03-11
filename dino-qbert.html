@@ -1402,6 +1402,49 @@ function _drawSpriteOutlined(px, py, sp, sc) {
     ctx.drawImage(src, sp.x, sp.y, sp.w, sp.h, dx, dy, dw, dh);
 }
 
+// Draw color-reversed T-Rex: white body with dark outline (evil dino / slick)
+function _drawEvilDino(px, py, sp, sc) {
+    if (!spriteDark) return;
+    var dw = Math.round(sp.w * sc), dh = Math.round(sp.h * sc);
+    var dx = Math.round(px - dw / 2);
+    var dy = Math.round(py - dh - TILE_H / 2 + 2);
+
+    // Build inverted sprite: dark pixels become white, transparent stays transparent
+    var cacheKey = 'evil_' + sp.x + ',' + sp.y + ',' + sc;
+    if (!outlineCache[cacheKey]) {
+        var tmp = document.createElement('canvas');
+        tmp.width = dw; tmp.height = dh;
+        var tc = tmp.getContext('2d');
+        // Draw the dark sprite (black pixels on transparent)
+        tc.drawImage(spriteDark, sp.x, sp.y, sp.w, sp.h, 0, 0, dw, dh);
+        // Invert: fill white over the drawn pixels only
+        tc.globalCompositeOperation = 'source-in';
+        tc.fillStyle = '#ffffff';
+        tc.fillRect(0, 0, dw, dh);
+        outlineCache[cacheKey] = tmp;
+    }
+    var inverted = outlineCache[cacheKey];
+
+    // Dark outline: draw dark silhouette at cardinal offsets
+    var silKey = 'evilsil_' + sp.x + ',' + sp.y + ',' + sc;
+    if (!outlineCache[silKey]) {
+        var tmp2 = document.createElement('canvas');
+        tmp2.width = dw; tmp2.height = dh;
+        var tc2 = tmp2.getContext('2d');
+        tc2.drawImage(spriteDark, sp.x, sp.y, sp.w, sp.h, 0, 0, dw, dh);
+        outlineCache[silKey] = tmp2;
+    }
+    var darkSil = outlineCache[silKey];
+
+    // Draw dark outline at 4 offsets
+    ctx.drawImage(darkSil, dx - 1, dy);
+    ctx.drawImage(darkSil, dx + 1, dy);
+    ctx.drawImage(darkSil, dx, dy - 1);
+    ctx.drawImage(darkSil, dx, dy + 1);
+    // Draw inverted (white) body on top
+    ctx.drawImage(inverted, dx, dy);
+}
+
 function drawEnemy(e) {
     if (e.type === 'spawn-timer') return;
 
@@ -1432,34 +1475,19 @@ function drawEnemy(e) {
         _drawSpriteOutlined(e.px, e.py, sp, 0.80);
 
     } else if (e.type === 'slick') {
-        _drawSpriteOutlined(e.px, e.py, SPRITES.CACTUS_SM, 0.80);
+        // Evil dino: color-reversed T-Rex (white body, black outline — inverted)
+        var slSp = e.frame ? SPRITES.TREX_RUN2 : SPRITES.TREX_RUN1;
+        _drawEvilDino(e.px, e.py, slSp, 0.60);
 
     } else if (e.type === 'redball') {
-        // Red ball: dark grey filled circle with white outline
-        ctx.save();
-        var rbx = Math.round(e.px), rby = Math.round(e.py - TILE_H / 2 - 4);
-        ctx.beginPath(); ctx.arc(rbx, rby, 10.5, 0, Math.PI * 2);
-        ctx.fillStyle = '#ffffff'; ctx.fill();
-        ctx.beginPath(); ctx.arc(rbx, rby, 9, 0, Math.PI * 2);
-        ctx.fillStyle = '#686868'; ctx.fill();
-        ctx.strokeStyle = '#383838'; ctx.lineWidth = 1.2; ctx.stroke();
-        // Highlight
-        ctx.beginPath(); ctx.arc(rbx - 3, rby - 3, 3, 0, Math.PI * 2);
-        ctx.fillStyle = '#909090'; ctx.fill();
-        ctx.restore();
+        // Dangerous cactus (dark, with white outline)
+        _drawSpriteOutlined(e.px, e.py, SPRITES.CACTUS_SM, 0.75);
 
     } else if (e.type === 'greenball') {
-        // Green ball: lighter grey with white outline (safe — distinct from red ball)
+        // Safe cactus (lighter, semi-transparent to look friendly)
         ctx.save();
-        var gbx = Math.round(e.px), gby = Math.round(e.py - TILE_H / 2 - 4);
-        ctx.beginPath(); ctx.arc(gbx, gby, 10.5, 0, Math.PI * 2);
-        ctx.fillStyle = '#ffffff'; ctx.fill();
-        ctx.beginPath(); ctx.arc(gbx, gby, 9, 0, Math.PI * 2);
-        ctx.fillStyle = '#b8b8b8'; ctx.fill();
-        ctx.strokeStyle = '#888888'; ctx.lineWidth = 1.2; ctx.stroke();
-        // Highlight
-        ctx.beginPath(); ctx.arc(gbx - 3, gby - 3, 3, 0, Math.PI * 2);
-        ctx.fillStyle = '#d8d8d8'; ctx.fill();
+        ctx.globalAlpha = 0.55;
+        _drawSpriteOutlined(e.px, e.py, SPRITES.CACTUS_SM, 0.65);
         ctx.restore();
     }
 }
