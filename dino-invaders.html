@@ -112,11 +112,15 @@
             } else {
                 var lowestAlien = null;
                 var lowestY = -1;
+                var closestDx = Infinity;
                 for (var i = 0; i < g.aliens.length; i++) {
                     var a = g.aliens[i];
                     if (!a.alive) continue;
-                    if (a.y + a.h > lowestY) {
-                        lowestY = a.y + a.h;
+                    var ay = a.y + a.h;
+                    var dx = Math.abs(a.x + a.w / 2 - playerCx);
+                    if (ay > lowestY || (ay === lowestY && dx < closestDx)) {
+                        lowestY = ay;
+                        closestDx = dx;
                         lowestAlien = a;
                     }
                 }
