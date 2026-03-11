@@ -94,6 +94,7 @@
         <div class="si-controls" style="margin-top: 12px;">
             <button class="si-btn active" id="human-btn" onclick="setMode('off')">Human</button>
             <button class="si-btn" id="rules-btn" onclick="setMode('rules')">AI</button>
+            <button class="si-btn" id="ml-btn" onclick="setMode('ml')">ML</button>
             <button class="si-btn" id="viz-btn" onclick="toggleViz()">Viz</button>
             <button class="si-btn" onclick="restartGame()">Restart</button>
             <button class="si-btn" id="pause-btn" onclick="togglePause()">Pause</button>
@@ -106,6 +107,30 @@
         </div>
 
         <p class="si-help" style="text-align: center;">↑ / Space jump &nbsp;|&nbsp; ↓ duck &nbsp;|&nbsp; R restart</p>
+    </div>
+
+    <!-- ═══ ML NEURAL NETWORK ═══ -->
+    <div id="ml-section" style="display:none;">
+        <h2 style="margin-top: 16px;">Neural Network (MLP with Backpropagation)</h2>
+        <p class="si-prose">
+            A 2-layer neural network (10 &rarr; 16 &rarr; 3) trained via backpropagation.
+            Click <strong>Train</strong> to collect gameplay data from the simulation AI, then train the network with mini-batch SGD.
+            Once trained, click <strong>Play</strong> to watch the network play the game.
+        </p>
+        <div class="si-controls" style="margin-top: 8px; margin-bottom: 8px;">
+            <button class="si-btn" id="ml-train-btn" onclick="mlTrain()">Train</button>
+            <button class="si-btn" id="ml-play-btn" onclick="mlPlay()" style="display:none;">Play</button>
+            <button class="si-btn" id="ml-stop-btn" onclick="mlStop()" style="display:none;">Stop</button>
+            <span id="ml-stats" style="font-size: 11px; color: #6e6e73; margin-left: 8px;"></span>
+        </div>
+        <div id="ml-viz" style="display:none;">
+            <div style="background:#fff; border-radius:12px; padding:16px; margin-top:8px; box-shadow:0 1px 3px rgba(0,0,0,0.08);">
+                <h3 style="font-size:14px; margin:0 0 8px;">Network Activations</h3>
+                <div id="ml-network-svg"></div>
+                <h3 style="font-size:14px; margin:16px 0 8px;">Training Loss</h3>
+                <canvas id="ml-loss-canvas" width="600" height="80" style="width:100%; max-width:600px;"></canvas>
+            </div>
+        </div>
     </div>
 
     <!-- ═══ HOW IT WORKS ═══ -->
@@ -2602,9 +2627,19 @@
         document.getElementById('human-btn').classList.remove('active');
         document.getElementById('rules-btn').classList.remove('active');
         document.getElementById('dqn-btn').classList.remove('active');
+        document.getElementById('ml-btn').classList.remove('active');
+
+        // Hide ML section when switching away from ML mode
+        var mlSection = document.getElementById('ml-section');
+        if (mlSection && mode !== 'ml') mlSection.style.display = 'none';
+        // Stop ML agent when switching modes
+        if (mode !== 'ml' && window.mlStop) window.mlStop();
 
         if (mode === 'off') {
             document.getElementById('human-btn').classList.add('active');
+        } else if (mode === 'ml') {
+            document.getElementById('ml-btn').classList.add('active');
+            if (mlSection) mlSection.style.display = '';
         } else if (mode === 'rules') {
             simAgent.enabled = true;
             simAgent._vizEnabled = true;
@@ -3013,6 +3048,480 @@
                 r.playSound(r.soundFx.BUTTON_PRESS);
             }
         }
+    };
+})();
+</script>
+
+<!-- ═══ ML Neural Network Agent ═══ -->
+<script>
+(function () {
+    'use strict';
+
+    var NUM_FEATURES = 10; // matches extractState in dqn section
+    var NUM_HIDDEN   = 16;
+    var NUM_ACTIONS  = 3;
+    var TARGET_FRAMES = 4000;
+
+    var FEATURE_NAMES = [
+        'dist₁', 'yPos₁', 'ptero₁', 'height₁', 'width₁', 'dist₂',
+        'speed', 'jumpH', 'jumpV', 'ducking'
+    ];
+    var ACTION_NAMES = ['RUN', 'JUMP', 'DUCK'];
+
+    // Model weights
+    var W1 = null, b1 = null, W2 = null, b2 = null;
+    var _trained = false, _playing = false, _collecting = false;
+    var _deaths = 0, _bestScore = 0, _statsInterval = null;
+
+    function initWeights() {
+        var s1 = Math.sqrt(2.0 / NUM_FEATURES);
+        var s2 = Math.sqrt(2.0 / NUM_HIDDEN);
+        W1 = new Float64Array(NUM_HIDDEN * NUM_FEATURES);
+        b1 = new Float64Array(NUM_HIDDEN);
+        W2 = new Float64Array(NUM_ACTIONS * NUM_HIDDEN);
+        b2 = new Float64Array(NUM_ACTIONS);
+        for (var i = 0; i < W1.length; i++) W1[i] = (Math.random() - 0.5) * 2 * s1;
+        for (var i = 0; i < W2.length; i++) W2[i] = (Math.random() - 0.5) * 2 * s2;
+    }
+
+    function forwardFull(x) {
+        var hiddenRaw = new Float64Array(NUM_HIDDEN);
+        var hidden = new Float64Array(NUM_HIDDEN);
+        for (var h = 0; h < NUM_HIDDEN; h++) {
+            hiddenRaw[h] = b1[h];
+            for (var f = 0; f < NUM_FEATURES; f++)
+                hiddenRaw[h] += W1[h * NUM_FEATURES + f] * x[f];
+            hidden[h] = hiddenRaw[h] > 0 ? hiddenRaw[h] : 0;
+        }
+        var logits = new Float64Array(NUM_ACTIONS);
+        for (var a = 0; a < NUM_ACTIONS; a++) {
+            logits[a] = b2[a];
+            for (var h = 0; h < NUM_HIDDEN; h++)
+                logits[a] += W2[a * NUM_HIDDEN + h] * hidden[h];
+        }
+        return { hidden: hidden, hiddenRaw: hiddenRaw, output: softmax(logits), logits: logits };
+    }
+
+    function forwardPass(x) { return forwardFull(x).output; }
+
+    function softmax(logits) {
+        var mx = -Infinity;
+        for (var i = 0; i < logits.length; i++) if (logits[i] > mx) mx = logits[i];
+        var sum = 0, out = new Float64Array(logits.length);
+        for (var i = 0; i < logits.length; i++) { out[i] = Math.exp(logits[i] - mx); sum += out[i]; }
+        for (var i = 0; i < logits.length; i++) out[i] /= sum;
+        return out;
+    }
+
+    function argmax(a) { var b = 0; for (var i = 1; i < a.length; i++) if (a[i] > a[b]) b = i; return b; }
+
+    // Use the page's extractState (from the DQN section)
+    // It's defined in the DQN script block and accessible via closure.
+    // We need a reference — grab it from the dqn agent's scope.
+    // Actually, extractState is a local function in the DQN IIFE, not exported.
+    // We'll define our own identical version here.
+    function mlExtractState(r) {
+        var tRex = r.tRex;
+        var obstacles = r.horizon.obstacles;
+        var CW = r.dimensions.WIDTH;
+        var sorted = [];
+        for (var i = 0; i < obstacles.length; i++) {
+            if (obstacles[i].xPos + obstacles[i].width > tRex.xPos)
+                sorted.push(obstacles[i]);
+        }
+        sorted.sort(function (a, b) { return a.xPos - b.xPos; });
+
+        var obs1Dist = 1, obs1Y = 0, obs1Type = 0, obs1H = 0, obs1W = 0, obs2Dist = 1;
+        if (sorted.length > 0) {
+            var o = sorted[0];
+            obs1Dist = Math.max(0, o.xPos - tRex.xPos) / CW;
+            obs1Y = o.yPos / 150;
+            obs1Type = (o.typeConfig && o.typeConfig.type === 'PTERODACTYL') ? 1 : 0;
+            obs1H = (o.typeConfig ? o.typeConfig.height : 35) / 60;
+            obs1W = (o.width || 25) / 150;
+        }
+        if (sorted.length > 1) {
+            obs2Dist = Math.max(0, sorted[1].xPos - tRex.xPos) / CW;
+        }
+        var groundY = tRex.groundYPos;
+        var jumpHeight = tRex.jumping ? (groundY - tRex.yPos) / 80 : 0;
+        var jumpVel = tRex.jumping ? tRex.jumpVelocity / 10 : 0;
+        return [obs1Dist, obs1Y, obs1Type, obs1H, obs1W, obs2Dist,
+                (r.currentSpeed - 6) / 7, jumpHeight, jumpVel, tRex.ducking ? 1 : 0];
+    }
+
+    function mlExecuteAction(action, r) {
+        var tRex = r.tRex;
+        var speed = r.currentSpeed;
+        switch (action) {
+            case 0: if (tRex.ducking) tRex.setDuck(false); break;
+            case 1:
+                if (!tRex.jumping) {
+                    if (tRex.ducking) tRex.setDuck(false);
+                    tRex.startJump(speed);
+                }
+                break;
+            case 2:
+                if (tRex.jumping) { if (!tRex.speedDrop) tRex.setSpeedDrop(); }
+                else { if (!tRex.ducking) tRex.setDuck(true); }
+                break;
+        }
+    }
+
+    // --- Data collection ---
+    function collectData(runner, onProgress, onDone) {
+        var simAgent = window._simAgent;
+        if (!simAgent) return;
+        // Create a fresh sim agent for collection
+        var collector = new window.AIAgent();
+        collector.enabled = true;
+        var dataset = [];
+        _collecting = true;
+
+        var wrapper = {
+            enabled: true,
+            update: function (r) {
+                if (!r.playing || !_collecting) return;
+                var state = mlExtractState(r);
+                var wasJumping = r.tRex.jumping;
+                var wasDucking = r.tRex.ducking;
+                collector.update(r);
+                var action = 0;
+                if (r.tRex.jumping && !wasJumping) action = 1;
+                else if (r.tRex.ducking && !wasDucking) action = 2;
+                else if (r.tRex.speedDrop) action = 2;
+                dataset.push({ input: state, label: action });
+                if (dataset.length % 200 === 0) onProgress(dataset.length);
+                if (dataset.length >= TARGET_FRAMES) {
+                    _collecting = false;
+                    r.aiAgent = null;
+                    onDone(dataset);
+                }
+            },
+            onCrash: function (r) { collector.onCrash(r); },
+            recordPrediction: function () {},
+            checkGhostCollisions: function () {}
+        };
+
+        runner.aiAgent = wrapper;
+        runner.suppressCollision = false;
+        if (runner.crashed || !runner.playing) {
+            runner.playing = true;
+            runner.activated = true;
+            runner.tRex.playingIntro = false;
+            runner.playingIntro = false;
+            runner.setArcadeMode();
+            runner.containerEl.style.width = runner.dimensions.WIDTH + 'px';
+            runner.tRex.startJump(runner.currentSpeed);
+            runner.update();
+        }
+    }
+
+    // --- Training ---
+    function shuffle(arr) {
+        for (var i = arr.length - 1; i > 0; i--) {
+            var j = Math.floor(Math.random() * (i + 1));
+            var tmp = arr[i]; arr[i] = arr[j]; arr[j] = tmp;
+        }
+    }
+
+    function trainSGD(dataset, nEpochs, onProgress, onDone) {
+        var lr = 0.05, batchSize = 32;
+        var lossHistory = [];
+        var epoch = 0, CHUNK = 5;
+
+        function runChunk() {
+            var end = Math.min(epoch + CHUNK, nEpochs);
+            for (; epoch < end; epoch++) {
+                shuffle(dataset);
+                var epochLoss = 0;
+                for (var bStart = 0; bStart < dataset.length; bStart += batchSize) {
+                    var bEnd = Math.min(bStart + batchSize, dataset.length);
+                    var gW1 = new Float64Array(NUM_HIDDEN * NUM_FEATURES);
+                    var gb1 = new Float64Array(NUM_HIDDEN);
+                    var gW2 = new Float64Array(NUM_ACTIONS * NUM_HIDDEN);
+                    var gb2 = new Float64Array(NUM_ACTIONS);
+
+                    for (var s = bStart; s < bEnd; s++) {
+                        var x = dataset[s].input, label = dataset[s].label;
+                        var fwd = forwardFull(x);
+                        epochLoss -= Math.log(fwd.output[label] + 1e-10);
+
+                        var dLogits = new Float64Array(NUM_ACTIONS);
+                        for (var a = 0; a < NUM_ACTIONS; a++)
+                            dLogits[a] = fwd.output[a] - (a === label ? 1 : 0);
+
+                        for (var a = 0; a < NUM_ACTIONS; a++) {
+                            gb2[a] += dLogits[a];
+                            for (var h = 0; h < NUM_HIDDEN; h++)
+                                gW2[a * NUM_HIDDEN + h] += dLogits[a] * fwd.hidden[h];
+                        }
+
+                        var dHidden = new Float64Array(NUM_HIDDEN);
+                        for (var h = 0; h < NUM_HIDDEN; h++) {
+                            for (var a = 0; a < NUM_ACTIONS; a++)
+                                dHidden[h] += W2[a * NUM_HIDDEN + h] * dLogits[a];
+                            if (fwd.hiddenRaw[h] <= 0) dHidden[h] = 0;
+                        }
+
+                        for (var h = 0; h < NUM_HIDDEN; h++) {
+                            gb1[h] += dHidden[h];
+                            for (var f = 0; f < NUM_FEATURES; f++)
+                                gW1[h * NUM_FEATURES + f] += dHidden[h] * x[f];
+                        }
+                    }
+
+                    var scale = lr / (bEnd - bStart);
+                    for (var i = 0; i < gW2.length; i++) W2[i] -= scale * gW2[i];
+                    for (var i = 0; i < gb2.length; i++) b2[i] -= scale * gb2[i];
+                    for (var i = 0; i < gW1.length; i++) W1[i] -= scale * gW1[i];
+                    for (var i = 0; i < gb1.length; i++) b1[i] -= scale * gb1[i];
+                }
+                lossHistory.push(epochLoss / dataset.length);
+            }
+
+            var correct = 0;
+            for (var i = 0; i < dataset.length; i++) {
+                if (argmax(forwardPass(dataset[i].input)) === dataset[i].label) correct++;
+            }
+            var acc = correct / dataset.length;
+            if (onProgress) onProgress(epoch, lossHistory, acc);
+            if (epoch < nEpochs) setTimeout(runChunk, 0);
+            else if (onDone) onDone(lossHistory, acc);
+        }
+        runChunk();
+    }
+
+    // --- Visualization ---
+    function renderLossCurve(canvasId, lossHistory) {
+        var canvas = document.getElementById(canvasId);
+        if (!canvas) return;
+        var ctx = canvas.getContext('2d');
+        var W_C = canvas.width, H_C = canvas.height;
+        var padL = 40, padR = 10, padT = 8, padB = 18;
+        var plotW = W_C - padL - padR, plotH = H_C - padT - padB;
+        ctx.clearRect(0, 0, W_C, H_C);
+        if (lossHistory.length < 2) return;
+        var maxLoss = 0;
+        for (var i = 0; i < lossHistory.length; i++) if (lossHistory[i] > maxLoss) maxLoss = lossHistory[i];
+        maxLoss = Math.max(maxLoss, 0.1);
+        ctx.strokeStyle = '#555'; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(padL, padT); ctx.lineTo(padL, padT + plotH);
+        ctx.lineTo(padL + plotW, padT + plotH); ctx.stroke();
+        ctx.fillStyle = '#888'; ctx.font = '10px monospace'; ctx.textAlign = 'right';
+        ctx.fillText(maxLoss.toFixed(2), padL - 4, padT + 8);
+        ctx.fillText('0', padL - 4, padT + plotH);
+        ctx.textAlign = 'center';
+        ctx.fillText('Epoch', padL + plotW / 2, H_C - 3);
+        ctx.strokeStyle = '#30d158'; ctx.lineWidth = 2; ctx.beginPath();
+        for (var i = 0; i < lossHistory.length; i++) {
+            var x = padL + (i / (lossHistory.length - 1)) * plotW;
+            var y = padT + plotH - (lossHistory[i] / maxLoss) * plotH;
+            if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+    }
+
+    function renderNetwork(containerId, activeState) {
+        var el = document.getElementById(containerId);
+        if (!el || !W1 || !W2) return;
+        var svgW = 500, svgH = 220;
+        var layerX = [70, 250, 430];
+        var inputAct = activeState || null;
+        var hiddenAct = null, outputAct = null, winner = -1;
+        if (inputAct) {
+            var fwd = forwardFull(inputAct);
+            hiddenAct = fwd.hidden; outputAct = fwd.output; winner = argmax(outputAct);
+        }
+
+        var inputY = [], hiddenY = [], outputY = [];
+        var iS = Math.min(20, (svgH - 20) / NUM_FEATURES);
+        var iStart = (svgH - (NUM_FEATURES - 1) * iS) / 2;
+        for (var i = 0; i < NUM_FEATURES; i++) inputY.push(iStart + i * iS);
+        var hS = Math.min(13, (svgH - 20) / NUM_HIDDEN);
+        var hStart = (svgH - (NUM_HIDDEN - 1) * hS) / 2;
+        for (var i = 0; i < NUM_HIDDEN; i++) hiddenY.push(hStart + i * hS);
+        var oS = 40, oStart = (svgH - (NUM_ACTIONS - 1) * oS) / 2;
+        for (var i = 0; i < NUM_ACTIONS; i++) outputY.push(oStart + i * oS);
+
+        var maxW = 0.01;
+        for (var i = 0; i < W1.length; i++) if (Math.abs(W1[i]) > maxW) maxW = Math.abs(W1[i]);
+        for (var i = 0; i < W2.length; i++) if (Math.abs(W2[i]) > maxW) maxW = Math.abs(W2[i]);
+
+        var svg = '<svg width="' + svgW + '" height="' + svgH + '" style="display:block;margin:0 auto;">';
+
+        // Edges input->hidden
+        for (var h = 0; h < NUM_HIDDEN; h++) {
+            for (var f = 0; f < NUM_FEATURES; f++) {
+                var w = W1[h * NUM_FEATURES + f];
+                var int = Math.abs(w) / maxW;
+                if (int < 0.15) continue;
+                var c = w >= 0 ? '74,158,255' : '232,100,100';
+                svg += '<line x1="' + (layerX[0]+4) + '" y1="' + inputY[f] + '" x2="' + (layerX[1]-4) +
+                    '" y2="' + hiddenY[h] + '" stroke="rgba(' + c + ',' + (int*0.4).toFixed(2) +
+                    ')" stroke-width="' + (0.5+int*1.5).toFixed(1) + '"/>';
+            }
+        }
+        // Edges hidden->output
+        for (var a = 0; a < NUM_ACTIONS; a++) {
+            for (var h = 0; h < NUM_HIDDEN; h++) {
+                var w = W2[a * NUM_HIDDEN + h];
+                var int = Math.abs(w) / maxW;
+                if (int < 0.1) continue;
+                var c = w >= 0 ? '74,158,255' : '232,100,100';
+                svg += '<line x1="' + (layerX[1]+4) + '" y1="' + hiddenY[h] + '" x2="' + (layerX[2]-4) +
+                    '" y2="' + outputY[a] + '" stroke="rgba(' + c + ',' + (int*0.5).toFixed(2) +
+                    ')" stroke-width="' + (0.5+int*2).toFixed(1) + '"/>';
+            }
+        }
+        // Input nodes
+        for (var i = 0; i < NUM_FEATURES; i++) {
+            var act = inputAct ? Math.min(1, Math.abs(inputAct[i])) : 0;
+            svg += '<circle cx="' + layerX[0] + '" cy="' + inputY[i] + '" r="4" fill="rgba(74,158,255,' +
+                (0.15+act*0.7).toFixed(2) + ')" stroke="#999" stroke-width="0.5"/>';
+            svg += '<text x="' + (layerX[0]-10) + '" y="' + (inputY[i]+3) +
+                '" text-anchor="end" font-size="8" fill="#86868b">' + FEATURE_NAMES[i] + '</text>';
+        }
+        // Hidden nodes
+        for (var i = 0; i < NUM_HIDDEN; i++) {
+            var act = hiddenAct ? Math.min(1, hiddenAct[i] / 2) : 0;
+            svg += '<circle cx="' + layerX[1] + '" cy="' + hiddenY[i] + '" r="4" fill="rgba(48,209,88,' +
+                (0.15+act*0.7).toFixed(2) + ')" stroke="#999" stroke-width="0.5"/>';
+        }
+        // Output nodes
+        var oColors = ['#86868b', '#4a9eff', '#ff9f0a'];
+        for (var i = 0; i < NUM_ACTIONS; i++) {
+            var isW = (i === winner), act = outputAct ? outputAct[i] : 0, r = isW ? 8 : 6;
+            svg += '<circle cx="' + layerX[2] + '" cy="' + outputY[i] + '" r="' + r + '" fill="' + oColors[i] +
+                '" opacity="' + (0.3+act*0.7).toFixed(2) + '" stroke="' + (isW?'#1d1d1f':'#999') +
+                '" stroke-width="' + (isW?2:0.5) + '"/>';
+            var prob = outputAct ? (outputAct[i]*100).toFixed(0)+'%' : '';
+            svg += '<text x="' + (layerX[2]+14) + '" y="' + (outputY[i]+4) + '" font-size="11" font-weight="' +
+                (isW?'800':'400') + '" fill="' + (isW?'#1d1d1f':'#86868b') + '">' +
+                ACTION_NAMES[i] + (prob ? ' '+prob : '') + '</text>';
+        }
+        svg += '<text x="'+layerX[0]+'" y="14" text-anchor="middle" font-size="9" fill="#86868b">Input (10)</text>';
+        svg += '<text x="'+layerX[1]+'" y="14" text-anchor="middle" font-size="9" fill="#86868b">Hidden (16)</text>';
+        svg += '<text x="'+layerX[2]+'" y="14" text-anchor="middle" font-size="9" fill="#86868b">Output (3)</text>';
+        svg += '</svg>';
+        el.innerHTML = svg;
+    }
+
+    // --- Public API ---
+    window.mlTrain = function () {
+        var runner = window.runner;
+        if (!runner) return;
+        var statsEl = document.getElementById('ml-stats');
+        var vizEl = document.getElementById('ml-viz');
+        var playBtn = document.getElementById('ml-play-btn');
+        var stopBtn = document.getElementById('ml-stop-btn');
+        if (playBtn) playBtn.style.display = 'none';
+        if (stopBtn) stopBtn.style.display = 'none';
+        _trained = false;
+
+        // Stop current AI
+        runner.aiAgent = null;
+        runner.postRenderHook = null;
+        if (_statsInterval) { clearInterval(_statsInterval); _statsInterval = null; }
+
+        initWeights();
+        if (statsEl) statsEl.textContent = 'Collecting data from sim AI...';
+
+        collectData(runner,
+            function onProgress(n) {
+                if (statsEl) statsEl.textContent = 'Collecting: ' + n + ' / ' + TARGET_FRAMES + ' frames';
+            },
+            function onDone(dataset) {
+                if (statsEl) statsEl.textContent = 'Training (epoch 0/100)...';
+                if (vizEl) vizEl.style.display = 'block';
+                renderNetwork('ml-network-svg', null);
+
+                trainSGD(dataset, 100,
+                    function onProgress(epoch, loss, acc) {
+                        if (statsEl) statsEl.textContent =
+                            'Training: epoch ' + epoch + '/100 | Loss: ' +
+                            loss[loss.length-1].toFixed(4) + ' | Acc: ' + (acc*100).toFixed(1) + '%';
+                        renderLossCurve('ml-loss-canvas', loss);
+                        renderNetwork('ml-network-svg', null);
+                    },
+                    function onDone(loss, acc) {
+                        _trained = true;
+                        if (statsEl) statsEl.textContent =
+                            'Trained! Acc: ' + (acc*100).toFixed(1) + '% | 211 params | Loss: ' +
+                            loss[loss.length-1].toFixed(4);
+                        renderLossCurve('ml-loss-canvas', loss);
+                        renderNetwork('ml-network-svg', null);
+                        if (playBtn) playBtn.style.display = '';
+                    });
+            });
+    };
+
+    window.mlPlay = function () {
+        var runner = window.runner;
+        if (!runner || !_trained) return;
+        var playBtn = document.getElementById('ml-play-btn');
+        var stopBtn = document.getElementById('ml-stop-btn');
+        var statsEl = document.getElementById('ml-stats');
+
+        if (_playing) { window.mlStop(); return; }
+
+        _playing = true;
+        _deaths = 0; _bestScore = 0;
+        if (playBtn) playBtn.style.display = 'none';
+        if (stopBtn) stopBtn.style.display = '';
+
+        var frameCount = 0;
+        var agent = {
+            enabled: true,
+            update: function (r) {
+                if (!r.playing) return;
+                var state = mlExtractState(r);
+                var action = argmax(forwardPass(state));
+                mlExecuteAction(action, r);
+                frameCount++;
+                if (frameCount % 6 === 0) renderNetwork('ml-network-svg', state);
+            },
+            onCrash: function (r) {
+                _deaths++;
+                var score = Math.round(r.distanceRan * 0.025);
+                if (score > _bestScore) _bestScore = score;
+            },
+            recordPrediction: function () {},
+            checkGhostCollisions: function () {}
+        };
+
+        runner.aiAgent = agent;
+        runner.suppressCollision = false;
+        if (runner.crashed || !runner.playing) {
+            runner.playing = true;
+            runner.activated = true;
+            runner.tRex.playingIntro = false;
+            runner.playingIntro = false;
+            runner.setArcadeMode();
+            runner.containerEl.style.width = runner.dimensions.WIDTH + 'px';
+            runner.tRex.startJump(runner.currentSpeed);
+            runner.update();
+        }
+
+        if (_statsInterval) clearInterval(_statsInterval);
+        _statsInterval = setInterval(function () {
+            if (!_playing) { clearInterval(_statsInterval); return; }
+            var score = Math.round(runner.distanceRan * 0.025);
+            if (statsEl) statsEl.textContent =
+                'Deaths: ' + _deaths + ' | Best: ' + _bestScore + ' | Score: ' + score;
+        }, 200);
+    };
+
+    window.mlStop = function () {
+        _playing = false;
+        _collecting = false;
+        var runner = window.runner;
+        if (runner) { runner.aiAgent = null; runner.postRenderHook = null; }
+        if (_statsInterval) { clearInterval(_statsInterval); _statsInterval = null; }
+        var playBtn = document.getElementById('ml-play-btn');
+        var stopBtn = document.getElementById('ml-stop-btn');
+        if (playBtn && _trained) playBtn.style.display = '';
+        if (stopBtn) stopBtn.style.display = 'none';
     };
 })();
 </script>
