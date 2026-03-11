@@ -1425,7 +1425,10 @@ window.setMode = function (m) {
     gameMode = m;
     document.getElementById('human-btn').classList.toggle('active', m === 'off');
     document.getElementById('rules-btn').classList.toggle('active', m === 'rules');
-    if (m !== 'off') inputQueue = [];
+    if (m !== 'off') {
+        inputQueue = [];
+        if (!vizOn) toggleViz();  // auto-enable viz when AI activated
+    }
     aiMoveTimer = 0;
 };
 
