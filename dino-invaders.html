@@ -148,6 +148,10 @@
                     }
                 }
 
+                // Center pull — prevent drifting to corners and getting stuck
+                var centerDist = Math.abs(finalPx - CANVAS_W / 2);
+                s -= centerDist * 0.015;
+
                 // Targeting bonus: extra reward for hitting aliens in dangerous columns
                 if (r.hitAlienCol >= 0 && threats.colBottomY[r.hitAlienCol] >= 0) {
                     var colThreat = threats.colBottomY[r.hitAlienCol] / PLAYER_Y;
