@@ -428,7 +428,7 @@ function addSparks(x, y, n, sz) {
 }
 
 // ─── AI (Simulation + Rules) ────────────────────────────────────────────────
-var SIM_FRAMES = 35;
+var SIM_FRAMES = 50;
 // 12 candidate actions: [rotation, thrust, fire]
 var SIM_ACTS = [
     [0,0,0], [-1,0,0], [1,0,0],       // coast, left, right
@@ -637,15 +637,18 @@ function computeAI() {
 
     for (var a=0; a<SIM_ACTS.length; a++) {
         var act=SIM_ACTS[a], s=simClone();
+        var deathFrame=-1;
 
         for (var f=0; f<SIM_FRAMES; f++) {
             simStep(s, act[0], act[1], act[2]);
-            if (s.dead) break;
+            if (s.dead) { deathFrame=f; break; }
         }
 
         var score=0;
         if (s.dead) {
-            score = -10000;
+            // Graduated death penalty: dying later is less bad (more time
+            // to re-evaluate next frame). Frame 0 = -10000, frame 49 = -7550
+            score = -10000 + deathFrame * 50;
         } else {
             // Kill bonuses (aligned with priority hierarchy)
             var killedTgt=false;
@@ -668,8 +671,8 @@ function computeAI() {
                 score += (Math.PI - Math.abs(normA(s.pa-aimA))) * 20; // up to ~63
             }
 
-            // Safety margin: reward distance from nearest rock
-            score += Math.min(s.minRD, 120) * 0.3;  // up to 36
+            // Safety margin: reward distance from nearest rock (stronger weight)
+            score += Math.min(s.minRD, 150) * 0.5;  // up to 75
 
             // Penalize wasted shots (fire actions that hit nothing)
             if (act[2] && s.kills.length===0) score -= 25;
