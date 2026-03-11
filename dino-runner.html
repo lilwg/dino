@@ -155,11 +155,11 @@
 
     <!-- ═══ Q-LEARNING ═══ -->
     <div id="ql-section" style="display:none;">
-        <h2 style="margin-top: 16px;">Q-Learning (Tabular RL)</h2>
+        <h2 style="margin-top: 16px;">Q-Learning (Linear Function Approximation)</h2>
         <p class="si-prose">
             No teacher &mdash; learns from scratch by playing the game headlessly at maximum speed.
-            Discretizes the state into 256 bins and builds a Q-table via Bellman updates with experience replay.
-            It will die a lot at first while exploring, then gradually improve.
+            Uses linear function approximation with 25 engineered features (including interaction terms like
+            distance&times;speed) instead of a discrete Q-table, so it can generalize across continuous states.
             Click <strong>Start</strong> to train, then <strong>Play</strong> to watch the learned policy.
         </p>
         <div class="si-controls" style="margin-top: 8px; margin-bottom: 8px;">
@@ -3967,65 +3967,108 @@
     'use strict';
 
     // --- Hyperparameters ---
-    var ALPHA         = 0.10;
+    var ALPHA         = 0.001;   // smaller LR for function approx (gradient-based)
     var GAMMA         = 0.95;
     var EPSILON_START = 1.0;
     var EPSILON_MIN   = 0.03;
-    var EPSILON_DECAY = 0.9985;  // per-death decay — slower to explore more
-    var DEATH_PENALTY = -50;
-    var ALIVE_REWARD  = 1;
+    var EPSILON_DECAY = 0.9985;
+    var DEATH_PENALTY = -20;
+    var ALIVE_REWARD  = 0.1;
     var NUM_ACTIONS   = 3;
 
-    // --- State discretization ---
-    // state = [obs1Dist, obs1Y, obs1Type, obs1H, obs1W, obs2Dist, speed, jumpHeight, jumpVel, ducking]
-    // Key insight: distance and obstacle height/type matter most for timing jumps/ducks.
-    // Use more distance bins (16) and add obstacle height to distinguish cactus vs pterodactyl altitude.
-    // dist(16) × obsY(3) × type(2) × speed(4) × jumping(3) × ducking(2) = 2304 states
-    var DIST_BINS  = 16;
-    var OBSY_BINS  = 3;   // ground-level, mid, high
-    var TYPE_BINS  = 2;
-    var SPEED_BINS = 4;
-    var JUMP_BINS  = 3;   // grounded, ascending, descending
-    var DUCK_BINS  = 2;
-    var NUM_STATES = DIST_BINS * OBSY_BINS * TYPE_BINS * SPEED_BINS * JUMP_BINS * DUCK_BINS; // 2304
+    // --- Linear function approximation ---
+    // Instead of a Q-table, we use Q(s,a) = w_a · φ(s)
+    // φ(s) = engineered feature vector from the raw 10-dim state
+    var NUM_FEATURES = 0; // set by buildFeatures
 
-    function discretize(state) {
-        // Non-linear distance bins — more resolution when close (where decisions matter)
-        var rawDist = state[0]; // 0..1
-        var dist;
-        if (rawDist < 0.3) {
-            // 10 bins for close range (0..0.3)
-            dist = Math.min(9, Math.floor(rawDist / 0.3 * 10));
-        } else {
-            // 6 bins for far range (0.3..1.0)
-            dist = Math.min(DIST_BINS - 1, 10 + Math.floor((rawDist - 0.3) / 0.7 * 6));
+    // Feature vector: raw features + key interactions + nonlinear terms
+    // This lets the agent generalize across continuous states
+    function buildFeatures(state) {
+        // state = [obs1Dist, obs1Y, obs1Type, obs1H, obs1W, obs2Dist, speed, jumpHeight, jumpVel, ducking]
+        var dist = state[0], obsY = state[1], type = state[2], obsH = state[3], obsW = state[4];
+        var dist2 = state[5], speed = state[6], jumpH = state[7], jumpV = state[8], duck = state[9];
+        return [
+            1,                      // bias
+            dist,                   // distance to obstacle
+            dist * dist,            // quadratic distance (nonlinear timing)
+            obsY,                   // obstacle Y
+            type,                   // pterodactyl flag
+            obsH,                   // obstacle height
+            obsW,                   // obstacle width
+            dist2,                  // distance to 2nd obstacle
+            speed,                  // current speed
+            speed * speed,          // quadratic speed
+            jumpH,                  // jump height
+            jumpV,                  // jump velocity
+            duck,                   // ducking flag
+            dist * speed,           // key interaction: distance × speed (timing)
+            dist * type,            // distance × pterodactyl
+            dist * obsY,            // distance × obstacle height
+            jumpH * dist,           // in air + distance (landing timing)
+            jumpV * dist,           // jump velocity × distance
+            speed * type,           // speed × pterodactyl
+            speed * jumpH,          // speed × jump height
+            duck * type,            // ducking under pterodactyl
+            duck * obsY,            // ducking × obstacle Y
+            1 - dist,              // closeness (inverse distance)
+            (1 - dist) * speed,    // closeness × speed (urgency)
+            (1 - dist) * (1 - dist) // quadratic closeness
+        ];
+    }
+    NUM_FEATURES = buildFeatures([0,0,0,0,0,0,0,0,0,0]).length; // 25
+
+    // Weight vectors: one per action
+    var W = [];
+    function initWeights() {
+        W = [];
+        for (var a = 0; a < NUM_ACTIONS; a++) {
+            W[a] = new Float64Array(NUM_FEATURES);
         }
-        // Obstacle Y position: ground (cactus), mid-ptera, high-ptera
-        var obsY = state[1]; // yPos/150
-        var obsYBin;
-        if (obsY > 0.6) obsYBin = 0;      // ground level
-        else if (obsY > 0.3) obsYBin = 1;  // mid
-        else obsYBin = 2;                   // high
-        var type  = state[2] > 0.5 ? 1 : 0;
-        var speed = Math.min(SPEED_BINS - 1, Math.floor(state[6] * SPEED_BINS));
-        // Jump phase: grounded(0), ascending(1), descending(2)
-        var jumpPhase;
-        if (state[7] <= 0) jumpPhase = 0;          // not jumping
-        else if (state[8] < 0) jumpPhase = 1;       // ascending (negative velocity = going up)
-        else jumpPhase = 2;                          // descending
-        var duck  = state[9] > 0.5 ? 1 : 0;
-        return dist + DIST_BINS * (obsYBin + OBSY_BINS * (type + TYPE_BINS * (speed + SPEED_BINS * (jumpPhase + JUMP_BINS * duck))));
+    }
+    initWeights();
+
+    function qValue(features, action) {
+        var w = W[action], sum = 0;
+        for (var i = 0; i < NUM_FEATURES; i++) sum += w[i] * features[i];
+        return sum;
     }
 
-    // --- Experience replay ---
-    var REPLAY_SIZE    = 5000;
+    function bestAction(features) {
+        var bestA = 0, bestQ = qValue(features, 0);
+        for (var a = 1; a < NUM_ACTIONS; a++) {
+            var q = qValue(features, a);
+            if (q > bestQ) { bestQ = q; bestA = a; }
+        }
+        return bestA;
+    }
+
+    function bestQValue(features) {
+        var bestQ = qValue(features, 0);
+        for (var a = 1; a < NUM_ACTIONS; a++) {
+            var q = qValue(features, a);
+            if (q > bestQ) bestQ = q;
+        }
+        return bestQ;
+    }
+
+    // Semi-gradient TD update: w_a += α * δ * φ(s)
+    function updateWeights(features, action, tdError) {
+        var w = W[action];
+        for (var i = 0; i < NUM_FEATURES; i++) {
+            w[i] += ALPHA * tdError * features[i];
+            // Weight clipping to prevent divergence
+            if (w[i] > 50) w[i] = 50;
+            if (w[i] < -50) w[i] = -50;
+        }
+    }
+
+    // --- Experience replay (stores features, not discrete states) ---
+    var REPLAY_SIZE    = 10000;
     var REPLAY_BATCH   = 64;
     var REPLAY_BATCHES = 4;
 
-    // --- Q-table ---
-    var Q = {};
     var epsilon = EPSILON_START;
-    var prevState = null, prevAction = null;
+    var prevFeatures = null, prevAction = null;
     var replay = new Array(REPLAY_SIZE);
     var replayIdx = 0, replayCount = 0;
 
@@ -4034,19 +4077,8 @@
     var scoreHistory = [];
     var _playing = false, _statsInterval = null;
 
-    function getQ(s) {
-        if (!Q[s]) Q[s] = new Float64Array(NUM_ACTIONS);
-        return Q[s];
-    }
-
-    function argmax(arr) {
-        var best = 0;
-        for (var i = 1; i < arr.length; i++) if (arr[i] > arr[best]) best = i;
-        return best;
-    }
-
-    function storeTransition(s, a, r, sn, terminal) {
-        replay[replayIdx] = { s: s, a: a, r: r, sn: sn, t: terminal };
+    function storeTransition(feat, a, r, featNext, terminal) {
+        replay[replayIdx] = { f: feat, a: a, r: r, fn: featNext, t: terminal };
         replayIdx = (replayIdx + 1) % REPLAY_SIZE;
         if (replayCount < REPLAY_SIZE) replayCount++;
     }
@@ -4057,16 +4089,16 @@
             for (var i = 0; i < REPLAY_BATCH; i++) {
                 var idx = Math.floor(Math.random() * replayCount);
                 var tr = replay[idx];
-                var qS = getQ(tr.s);
-                var target = tr.t ? tr.r : tr.r + GAMMA * getQ(tr.sn)[argmax(getQ(tr.sn))];
-                qS[tr.a] += ALPHA * (target - qS[tr.a]);
+                var predicted = qValue(tr.f, tr.a);
+                var target = tr.t ? tr.r : tr.r + GAMMA * bestQValue(tr.fn);
+                updateWeights(tr.f, tr.a, target - predicted);
             }
         }
     }
 
-    function chooseAction(s) {
+    function chooseAction(features) {
         if (Math.random() < epsilon) return Math.floor(Math.random() * NUM_ACTIONS);
-        return argmax(getQ(s));
+        return bestAction(features);
     }
 
     // --- Score chart ---
@@ -4074,8 +4106,8 @@
         var canvas = document.getElementById(canvasId);
         if (!canvas) return;
         var ctx = canvas.getContext('2d');
-        var W = canvas.width, H = canvas.height;
-        ctx.clearRect(0, 0, W, H);
+        var cW = canvas.width, cH = canvas.height;
+        ctx.clearRect(0, 0, cW, cH);
         if (scores.length < 2) return;
 
         var maxScore = 0;
@@ -4085,11 +4117,11 @@
         ctx.strokeStyle = '#0071e3';
         ctx.lineWidth = 1.5;
         ctx.beginPath();
-        var n = Math.min(scores.length, W);
+        var n = Math.min(scores.length, cW);
         var start = scores.length - n;
         for (var i = 0; i < n; i++) {
-            var x = (i / (n - 1)) * W;
-            var y = H - (scores[start + i] / maxScore) * (H - 4) - 2;
+            var x = (i / (n - 1)) * cW;
+            var y = cH - (scores[start + i] / maxScore) * (cH - 4) - 2;
             if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
         }
         ctx.stroke();
@@ -4104,27 +4136,12 @@
                 var sum = 0, count = 0;
                 for (var j = Math.max(0, idx - windowSize); j <= idx; j++) { sum += scores[j]; count++; }
                 var avg = sum / count;
-                var x = (i / (n - 1)) * W;
-                var y = H - (avg / maxScore) * (H - 4) - 2;
+                var x = (i / (n - 1)) * cW;
+                var y = cH - (avg / maxScore) * (cH - 4) - 2;
                 if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
             }
             ctx.stroke();
         }
-    }
-
-    // --- Reward shaping ---
-    // Sparse +1/-100 doesn't teach timing. Shape rewards based on proximity:
-    // - Bonus when obstacle distance decreases (approaching but alive = good)
-    // - Extra bonus when obstacle passes behind tRex (survived!)
-    var PASS_BONUS = 10;
-
-    function shapeReward(prevRaw, curRaw) {
-        var r = ALIVE_REWARD;
-        // Obstacle just passed (prev dist was small positive, now it's much bigger = new obstacle)
-        if (prevRaw && prevRaw[0] < 0.1 && curRaw[0] > 0.3) {
-            r += PASS_BONUS;
-        }
-        return r;
     }
 
     // --- Headless training loop ---
@@ -4139,33 +4156,34 @@
 
         _training = true;
         var _channel = new MessageChannel();
-        var prevRawState = null;
 
         _channel.port1.onmessage = function () {
             if (!_training) { onDone(); return; }
             for (var step = 0; step < STEPS_PER_TICK; step++) {
                 var rawState = window.mlExtractState(r);
-                var s = discretize(rawState);
-                var a = chooseAction(s);
+                var features = buildFeatures(rawState);
+                var a = chooseAction(features);
 
-                // Update previous transition with shaped reward
-                if (prevState !== null) {
-                    var reward = shapeReward(prevRawState, rawState);
-                    storeTransition(prevState, prevAction, reward, s, false);
+                // TD update for previous step
+                if (prevFeatures !== null) {
+                    var predicted = qValue(prevFeatures, prevAction);
+                    var target = ALIVE_REWARD + GAMMA * bestQValue(features);
+                    updateWeights(prevFeatures, prevAction, target - predicted);
+                    storeTransition(prevFeatures, prevAction, ALIVE_REWARD, features, false);
                 }
-                prevState = s;
+                prevFeatures = features;
                 prevAction = a;
-                prevRawState = rawState;
 
                 var collision = window._mlTrainStep(r, a);
                 if (collision) {
-                    // Terminal update
-                    storeTransition(prevState, prevAction, DEATH_PENALTY, 0, true);
-                    var qS = getQ(prevState);
-                    qS[prevAction] += ALPHA * (DEATH_PENALTY - qS[prevAction]);
-                    prevState = null;
+                    // Terminal TD update
+                    if (prevFeatures !== null) {
+                        var predicted = qValue(prevFeatures, prevAction);
+                        updateWeights(prevFeatures, prevAction, DEATH_PENALTY - predicted);
+                        storeTransition(prevFeatures, prevAction, DEATH_PENALTY, null, true);
+                    }
+                    prevFeatures = null;
                     prevAction = null;
-                    prevRawState = null;
 
                     replayBatch();
                     epsilon = Math.max(EPSILON_MIN, epsilon * EPSILON_DECAY);
@@ -4176,7 +4194,7 @@
                     if (score > bestScore) bestScore = score;
                     scoreHistory.push(score);
 
-                    // Restart at random speed — bias toward harder speeds
+                    // Restart at random speed
                     var speeds = [6, 15, 25, 35, 42, 50, 50];
                     window._mlTrainRestart(r, speeds[Math.floor(Math.random() * speeds.length)]);
                 }
@@ -4193,7 +4211,7 @@
         var stopBtn  = document.getElementById('ql-stop-btn');
         var playBtn  = document.getElementById('ql-play-btn');
         var resetBtn = document.getElementById('ql-reset-btn');
-        var hasQ = Object.keys(Q).length > 0;
+        var hasTrained = deaths > 0;
         if (mode === 'training') {
             if (startBtn) { startBtn.style.display = 'none'; }
             if (stopBtn) stopBtn.style.display = '';
@@ -4205,10 +4223,10 @@
             if (playBtn) playBtn.style.display = 'none';
             if (resetBtn) resetBtn.style.display = 'none';
         } else { // stopped
-            if (startBtn) { startBtn.textContent = hasQ ? 'Continue' : 'Start'; startBtn.style.display = ''; }
+            if (startBtn) { startBtn.textContent = hasTrained ? 'Continue' : 'Start'; startBtn.style.display = ''; }
             if (stopBtn) stopBtn.style.display = 'none';
-            if (playBtn) playBtn.style.display = hasQ ? '' : 'none';
-            if (resetBtn) resetBtn.style.display = hasQ ? '' : 'none';
+            if (playBtn) playBtn.style.display = hasTrained ? '' : 'none';
+            if (resetBtn) resetBtn.style.display = hasTrained ? '' : 'none';
         }
     }
 
@@ -4219,25 +4237,23 @@
 
         if (_training) { window.qlStop(); return; }
 
-        // Don't reset Q-table — just resume training
-        prevState = null; prevAction = null;
+        // Don't reset weights — just resume training
+        prevFeatures = null; prevAction = null;
 
         qlUpdateButtons('training');
         if (vizEl) vizEl.style.display = '';
 
         qlTrainHeadless(
             function onProgress() {
-                var statesVisited = Object.keys(Q).length;
                 if (statsEl) statsEl.textContent =
                     'Training (headless) | Deaths: ' + deaths + ' | Best: ' + bestScore + ' | Last: ' + lastScore +
-                    ' | ε: ' + epsilon.toFixed(3) + ' | States: ' + statesVisited + '/' + NUM_STATES;
+                    ' | ε: ' + epsilon.toFixed(3) + ' | ' + NUM_FEATURES + ' features × ' + NUM_ACTIONS + ' actions';
                 renderScoreChart('ql-score-canvas', scoreHistory);
             },
             function onDone() {
-                var statesVisited = Object.keys(Q).length;
                 if (statsEl) statsEl.textContent =
                     'Paused | Deaths: ' + deaths + ' | Best: ' + bestScore +
-                    ' | ε: ' + epsilon.toFixed(3) + ' | States: ' + statesVisited + '/' + NUM_STATES;
+                    ' | ε: ' + epsilon.toFixed(3);
                 renderScoreChart('ql-score-canvas', scoreHistory);
                 qlUpdateButtons('stopped');
             }
@@ -4246,7 +4262,7 @@
 
     window.qlPlay = function () {
         var runner = window.runner;
-        if (!runner || Object.keys(Q).length === 0) return;
+        if (!runner || deaths === 0) return;
         var statsEl = document.getElementById('ql-stats');
 
         if (_playing) { window.qlStop(); return; }
@@ -4260,8 +4276,8 @@
             update: function (r) {
                 if (!r.playing) return;
                 var rawState = window.mlExtractState(r);
-                var s = discretize(rawState);
-                var a = argmax(getQ(s));
+                var features = buildFeatures(rawState);
+                var a = bestAction(features);
                 window.mlExecuteAction(a, r);
             },
             onCrash: function (r) {
@@ -4306,8 +4322,9 @@
 
     window.qlReset = function () {
         window.qlStop();
-        Q = {}; epsilon = EPSILON_START;
-        prevState = null; prevAction = null;
+        initWeights();
+        epsilon = EPSILON_START;
+        prevFeatures = null; prevAction = null;
         replay = new Array(REPLAY_SIZE);
         replayIdx = 0; replayCount = 0;
         deaths = 0; bestScore = 0; lastScore = 0;
