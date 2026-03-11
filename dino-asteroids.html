@@ -1143,10 +1143,11 @@ var wdx = window._astWdx, wdy = window._astWdy, normA = window._astNormA;
 // Per rock (8): angle_sin, angle_cos, dist, rel_vx, rel_vy, closing_speed, size, danger
 // Ship (5): speed, vx, vy, angle sin/cos
 // Cooldown (1)
+// Global threat (3): min_ttc, max_danger, num_close_threats
 // UFO (5): present, angle_sin, angle_cos, dist, closing_speed
 // Nearest enemy bullet (4): angle_sin, angle_cos, dist, closing_speed
 var N_ROCKS = 5;
-var N_FEAT = N_ROCKS * 8 + 5 + 1 + 5 + 4; // 55
+var N_FEAT = N_ROCKS * 8 + 5 + 1 + 3 + 5 + 4; // 58
 
 function extractState() {
     var st = window._astState();
@@ -1155,53 +1156,67 @@ function extractState() {
 
     var feat = new Float32Array(N_FEAT);
     var fi = 0;
-    var maxDist = Math.sqrt(C.CW*C.CW + C.CH*C.CH) * 0.5; // half diagonal (wrap)
+    var maxDist = Math.sqrt(C.CW*C.CW + C.CH*C.CH) * 0.5;
 
-    // Ship state (5): speed, velocity components, heading
+    // Ship state (5)
     var spd = Math.sqrt(p.vx*p.vx + p.vy*p.vy);
     feat[fi++] = spd / C.VMAX;
     feat[fi++] = p.vx / C.VMAX;
     feat[fi++] = p.vy / C.VMAX;
     feat[fi++] = Math.cos(p.angle);
     feat[fi++] = Math.sin(p.angle);
-    // Cooldown (1)
     feat[fi++] = p.cooldown / 6;
 
-    // Sort rocks by distance
+    // Build rock features + global threat metrics
     var rks = [];
+    var minTTC = 999, maxDanger = 0, numClose = 0;
     for (var i = 0; i < st.rocks.length; i++) {
         var r = st.rocks[i];
         var dx = wdx(r.x, p.x), dy = wdy(r.y, p.y);
         var d = Math.sqrt(dx*dx + dy*dy) || 1;
         var rvx = r.vx - p.vx, rvy = r.vy - p.vy;
-        var closing = (dx*rvx + dy*rvy) / d; // positive = approaching
+        var closing = (dx*rvx + dy*rvy) / d;
         var angToRock = Math.atan2(dy, dx);
-        var relAng = normA(angToRock - p.angle); // angle relative to ship heading
+        var relAng = normA(angToRock - p.angle);
+        var eff = d - r.r - C.SHIP_R;
+        var danger = 0;
+        if (closing > 0.1) {
+            var ttc = Math.max(0, eff) / closing;
+            if (ttc < minTTC) minTTC = ttc;
+            if (ttc < 150) danger = Math.pow((150 - ttc) / 150, 2);
+        } else if (eff < 70) {
+            danger = ((70 - eff) / 70) * 0.5;
+        }
+        if (danger > maxDanger) maxDanger = danger;
+        if (d < 130) numClose++;
         rks.push({ dx:dx, dy:dy, d:d, rvx:rvx, rvy:rvy, closing:closing,
-                    relAng:relAng, sz:r.sz, r:r.r });
+                    relAng:relAng, sz:r.sz, r:r.r, danger:danger });
     }
     rks.sort(function(a,b) { return a.d - b.d; });
 
-    // Nearest N_ROCKS rocks (8 features each)
+    // Global threat features (3) — mirrors computeAI's dodge logic
+    feat[fi++] = Math.min(minTTC / 150, 1); // 0 = imminent collision
+    feat[fi++] = Math.min(maxDanger, 1);
+    feat[fi++] = Math.min(numClose / 5, 1);
+
+    // Nearest N_ROCKS rocks (8 each)
     for (var i = 0; i < N_ROCKS; i++) {
         if (i < rks.length) {
             var rk = rks[i];
-            feat[fi++] = Math.sin(rk.relAng);        // angle to rock (relative to heading)
+            feat[fi++] = Math.sin(rk.relAng);
             feat[fi++] = Math.cos(rk.relAng);
-            feat[fi++] = Math.min(rk.d / maxDist, 1); // normalised distance
-            feat[fi++] = rk.rvx / (C.VMAX * 2);      // relative velocity
+            feat[fi++] = Math.min(rk.d / maxDist, 1);
+            feat[fi++] = rk.rvx / (C.VMAX * 2);
             feat[fi++] = rk.rvy / (C.VMAX * 2);
-            feat[fi++] = rk.closing / (C.VMAX * 2);   // closing speed
-            feat[fi++] = rk.sz / 3;                    // size
-            // danger: high when close and approaching
-            var danger = rk.closing > 0 ? Math.max(0, 1 - rk.d / 150) * (rk.closing / 3) : 0;
-            feat[fi++] = Math.min(danger, 1);
+            feat[fi++] = rk.closing / (C.VMAX * 2);
+            feat[fi++] = rk.sz / 3;
+            feat[fi++] = Math.min(rk.danger, 1);
         } else {
-            fi += 8; // zeros (no rock)
+            fi += 8;
         }
     }
 
-    // UFO (5): present, relative angle, distance, closing speed
+    // UFO (5)
     if (st.ufo) {
         var udx = wdx(st.ufo.x, p.x), udy = wdy(st.ufo.y, p.y);
         var ud = Math.sqrt(udx*udx + udy*udy) || 1;
@@ -1216,7 +1231,7 @@ function extractState() {
         fi += 5;
     }
 
-    // Nearest enemy bullet (4): relative angle, distance, closing speed
+    // Nearest enemy bullet (4)
     var bestBD = Infinity, bestBul = null, bestBdx = 0, bestBdy = 0;
     for (var i = 0; i < st.bullets.length; i++) {
         var b = st.bullets[i];
@@ -1233,23 +1248,22 @@ function extractState() {
         var brvx = bestBul.vx - p.vx, brvy = bestBul.vy - p.vy;
         feat[fi++] = (bestBdx*brvx + bestBdy*brvy) / (bestBD * C.B_SPD);
     }
-    // else zeros
 
     return feat;
 }
 
-// Action encoding: 3 independent binary outputs
-// [0] rotate: -1→0, 0→0.5, 1→1 (but we'll use 3-class for rotate)
-// Actually let's use: rot_left, rot_right, thrust, fire = 4 binary outputs
+// Action: rotation as 3-class (left=0, none=1, right=2), thrust (binary), fire (binary)
+// Stored as [rot_class, thrust, fire]
 function extractAction() {
     var ai = window._astAiIn;
-    return [ai.rot < 0 ? 1 : 0, ai.rot > 0 ? 1 : 0, ai.thrust ? 1 : 0, ai.fire ? 1 : 0];
+    var rotClass = ai.rot < 0 ? 0 : ai.rot > 0 ? 2 : 1;
+    return [rotClass, ai.thrust ? 1 : 0, ai.fire ? 1 : 0];
 }
 
 // ── Headless data collection ────────────────────────────────────────────
 var dataX = [], dataY = [];
 var collecting = false;
-var TARGET_SAMPLES = 30000;
+var TARGET_SAMPLES = 60000;
 var BATCH_PER_FRAME = 200; // ticks per animation frame (headless speed)
 
 window.mlCollect = function() {
@@ -1334,8 +1348,9 @@ function finishCollect() {
         dataX.length + ' samples collected. Ready to train.';
 }
 
-// ── Neural network (MLP: N_FEAT → 128 → 64 → 4) ───────────────────────
-var N_H1 = 128, N_H2 = 64, N_OUT = 4;
+// ── Neural network (MLP: N_FEAT → 128 → 64 → 5) ───────────────────────
+// Output: 3 rotation logits (softmax) + thrust sigmoid + fire sigmoid
+var N_H1 = 128, N_H2 = 64, N_OUT = 5;
 var W1, b1, W2, b2, W3, b3;
 
 function initWeights() {
@@ -1353,7 +1368,8 @@ function randn() {
 }
 
 // Pre-allocated scratch buffers (avoid GC pressure in hot loop)
-var _h1 = new Float32Array(N_H1), _h2 = new Float32Array(N_H2), _out = new Float32Array(N_OUT);
+var _h1 = new Float32Array(N_H1), _h2 = new Float32Array(N_H2);
+var _out = new Float32Array(N_OUT), _logits = new Float32Array(N_OUT);
 var _dOut = new Float32Array(N_OUT), _dH2 = new Float32Array(N_H2), _dH1 = new Float32Array(N_H1);
 
 // Forward pass into pre-allocated buffers
@@ -1369,10 +1385,21 @@ function forward(x) {
         for (i = 0; i < N_H1; i++) s += W2[off+i] * _h1[i];
         _h2[j] = s > 0 ? s : 0;
     }
+    // Compute raw logits
     for (j = 0; j < N_OUT; j++) {
         s = b3[j]; var off = j*N_H2;
         for (i = 0; i < N_H2; i++) s += W3[off+i] * _h2[i];
-        _out[j] = 1 / (1 + Math.exp(-(s > 15 ? 15 : s < -15 ? -15 : s)));
+        _logits[j] = s;
+    }
+    // Softmax for rotation (outputs 0,1,2)
+    var maxL = _logits[0]; if (_logits[1]>maxL) maxL=_logits[1]; if (_logits[2]>maxL) maxL=_logits[2];
+    var e0=Math.exp(_logits[0]-maxL), e1=Math.exp(_logits[1]-maxL), e2=Math.exp(_logits[2]-maxL);
+    var eSum = e0+e1+e2;
+    _out[0] = e0/eSum; _out[1] = e1/eSum; _out[2] = e2/eSum;
+    // Sigmoid for thrust, fire (outputs 3,4)
+    for (j = 3; j < N_OUT; j++) {
+        s = _logits[j]; s = s > 15 ? 15 : s < -15 ? -15 : s;
+        _out[j] = 1 / (1 + Math.exp(-s));
     }
 }
 
@@ -1395,11 +1422,25 @@ function accumGrads(x, y) {
     var j, i, d, off;
 
     // Output loss + dOut
+    // y[0] = rotation class (0,1,2), y[1] = thrust (0/1), y[2] = fire (0/1)
     var loss = 0;
-    for (j = 0; j < N_OUT; j++) {
+    var rotClass = y[0];
+    // Softmax cross-entropy for rotation: dL/d_logit_j = p_j - (j==class)
+    for (j = 0; j < 3; j++) {
+        var p = Math.max(1e-7, _out[j]);
+        if (j === rotClass) loss -= Math.log(p);
+        _dOut[j] = _out[j] - (j === rotClass ? 1 : 0);
+    }
+    // Weighted binary CE for thrust (weight 2x) and fire (weight 3x)
+    var bceW = [2.0, 3.0]; // thrust, fire weights
+    for (j = 3; j < N_OUT; j++) {
         var o = _out[j]; o = o < 1e-7 ? 1e-7 : o > 0.9999999 ? 0.9999999 : o;
-        loss += -(y[j] * Math.log(o) + (1-y[j]) * Math.log(1-o));
-        _dOut[j] = o - y[j];
+        var yj = y[j - 2]; // y[1]=thrust, y[2]=fire
+        var w = bceW[j-3];
+        // Positive-class upweighting: when yj=1, weight the loss more
+        var pw = yj === 1 ? w : 1;
+        loss += pw * -(yj * Math.log(o) + (1-yj) * Math.log(1-o));
+        _dOut[j] = pw * (o - yj);
     }
 
     // Layer 3: dH2 from current weights, then accumulate grads
@@ -1578,13 +1619,13 @@ window._mlComputeAI = function() {
     forward(feat);
     var ai = window._astAiIn;
 
-    // _out[0]=rot_left, _out[1]=rot_right, _out[2]=thrust, _out[3]=fire
-    ai.rot = 0;
-    if (_out[0] > 0.5 && _out[1] <= 0.5) ai.rot = -1;
-    else if (_out[1] > 0.5 && _out[0] <= 0.5) ai.rot = 1;
-    else if (_out[0] > 0.5 && _out[1] > 0.5) ai.rot = _out[1] > _out[0] ? 1 : -1;
-    ai.thrust = _out[2] > 0.5;
-    ai.fire = _out[3] > 0.5;
+    // _out[0,1,2] = softmax(left, none, right), _out[3]=thrust, _out[4]=fire
+    // Pick argmax of rotation softmax
+    if (_out[0] > _out[1] && _out[0] > _out[2]) ai.rot = -1;      // left
+    else if (_out[2] > _out[1] && _out[2] > _out[0]) ai.rot = 1;   // right
+    else ai.rot = 0;                                                  // none
+    ai.thrust = _out[3] > 0.5;
+    ai.fire = _out[4] > 0.5;
 };
 
 })();
