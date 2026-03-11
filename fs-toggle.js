@@ -45,23 +45,30 @@ function applyFullscreenScale() {
     var contentW = canvas.offsetWidth;
     var contentH = canvas.offsetHeight;
 
-    if (wrapper) {
-        // Constrain wrapper to the canvas natural size so it doesn't fill the screen
-        wrapper.style.flex = 'none';
-        wrapper.style.width = contentW + 'px';
-        wrapper.style.height = contentH + 'px';
-        wrapper.style.overflow = 'hidden';
-    }
-
-    // Available space
+    // Measure controls before any layout changes
     var controls = box.querySelector('.si-controls');
-    var controlsH = controls ? controls.offsetHeight + 20 : 60;
+    var helpText = box.querySelector('.si-help');
+    var controlsH = 0;
+    if (controls) controlsH += controls.offsetHeight;
+    if (helpText) controlsH += helpText.offsetHeight;
+    controlsH += 40; // padding
+
     var availW = window.innerWidth;
     var availH = window.innerHeight - controlsH;
 
     var scale = Math.min(availW / contentW, availH / contentH);
 
-    target.style.transformOrigin = 'center center';
+    if (wrapper) {
+        // Pin wrapper to canvas size and scale from top-center
+        wrapper.style.flex = 'none';
+        wrapper.style.width = contentW + 'px';
+        wrapper.style.height = contentH + 'px';
+        wrapper.style.overflow = 'hidden';
+        // Reserve visual space below so controls aren't covered
+        wrapper.style.marginBottom = (contentH * (scale - 1)) + 'px';
+    }
+
+    target.style.transformOrigin = 'top center';
     target.style.transform = 'scale(' + scale + ')';
 }
 
@@ -74,6 +81,7 @@ function removeFullscreenScale() {
         wrapper.style.width = '';
         wrapper.style.height = '';
         wrapper.style.overflow = '';
+        wrapper.style.marginBottom = '';
     }
     var canvases = document.querySelectorAll('.si-game-box > canvas');
     for (var i = 0; i < canvases.length; i++) {
