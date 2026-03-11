@@ -170,6 +170,11 @@
             var minBulletDist = 9999;
             var positions = [];
             var bulletPositions = [];
+            // Snapshot which aliens are alive before sim
+            var alivesBefore = [];
+            for (var i = 0; i < simGame.aliens.length; i++) {
+                alivesBefore.push(simGame.aliens[i].alive);
+            }
 
             // Track the target alien's index in the sim
             var targetIdx = -1;
@@ -233,13 +238,24 @@
                 score -= Math.abs(finalCx - targetCx) * 0.1;
             }
 
+            // Record which aliens were killed during this sim
+            var killedAliens = [];
+            for (var i = 0; i < simGame.aliens.length; i++) {
+                if (alivesBefore[i] && !simGame.aliens[i].alive) {
+                    killedAliens.push({ row: simGame.aliens[i].row, col: simGame.aliens[i].col });
+                }
+            }
+            var killedMystery = !!(target && target.isMystery && killedTarget);
+
             return {
                 score: score,
                 killedTarget: killedTarget,
                 scoreGain: scoreGain,
                 died: died,
                 positions: positions,
-                bulletPositions: bulletPositions
+                bulletPositions: bulletPositions,
+                killedAliens: killedAliens,
+                killedMystery: killedMystery
             };
         }
     };
@@ -278,28 +294,46 @@
             ctx.stroke();
         }
 
-        // Gray dotted circles around non-target aliens (opportunistic targets)
-        ctx.setLineDash([3, 3]);
-        ctx.lineWidth = 1.5;
-        ctx.strokeStyle = '#8e8e93';
-        ctx.globalAlpha = 0.35;
-        for (var i = 0; i < game.aliens.length; i++) {
-            var a = game.aliens[i];
-            if (!a.alive) continue;
-            if (d.target && !d.target.isMystery && a.row === d.target.row && a.col === d.target.col) continue;
-            var acx = a.x + a.w / 2, acy = a.y + a.h / 2;
-            var r = Math.max(a.w, a.h) / 2 + 4;
-            ctx.beginPath();
-            ctx.arc(acx, acy, r, 0, Math.PI * 2);
-            ctx.stroke();
+        // Gray dotted circles around aliens the chosen action would kill (opportunistic)
+        var chosen = d.simResults[d.chosenAction];
+        if (chosen.killedAliens.length > 0) {
+            ctx.setLineDash([3, 3]);
+            ctx.lineWidth = 1.5;
+            ctx.strokeStyle = '#8e8e93';
+            ctx.globalAlpha = 0.45;
+            for (var i = 0; i < game.aliens.length; i++) {
+                var a = game.aliens[i];
+                if (!a.alive) continue;
+                // Skip the main target (already has green crosshair)
+                if (d.target && !d.target.isMystery && a.row === d.target.row && a.col === d.target.col) continue;
+                // Only circle if this alien is in the killed list
+                var isKilled = false;
+                for (var k = 0; k < chosen.killedAliens.length; k++) {
+                    if (chosen.killedAliens[k].row === a.row && chosen.killedAliens[k].col === a.col) {
+                        isKilled = true; break;
+                    }
+                }
+                if (!isKilled) continue;
+                var acx = a.x + a.w / 2, acy = a.y + a.h / 2;
+                var r = Math.max(a.w, a.h) / 2 + 4;
+                ctx.beginPath();
+                ctx.arc(acx, acy, r, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+            ctx.setLineDash([]);
         }
-        if (game.mystery && !(d.target && d.target.isMystery)) {
+        // Gray circle on mystery if it's an opportunistic kill (not main target)
+        if (chosen.killedMystery && game.mystery && !(d.target && d.target.isMystery)) {
+            ctx.setLineDash([3, 3]);
+            ctx.lineWidth = 1.5;
+            ctx.strokeStyle = '#8e8e93';
+            ctx.globalAlpha = 0.45;
             var mx = game.mystery.x + 20, my = game.mystery.y + 8;
             ctx.beginPath();
             ctx.arc(mx, my, 24, 0, Math.PI * 2);
             ctx.stroke();
+            ctx.setLineDash([]);
         }
-        ctx.setLineDash([]);
 
         // Bullet trajectory for chosen action
         var chosen = d.simResults[d.chosenAction];
