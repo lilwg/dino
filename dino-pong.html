@@ -320,7 +320,7 @@
         c.fillStyle = '#535353';
         c.textAlign = 'left'; c.fillText('T-REX  ' + pad2(g.aPts), 10, 18);
         c.textAlign = 'right'; c.fillText(pad2(g.oPts) + '  PTERO', CW - 10, 18);
-        c.textAlign = 'center'; c.fillText('RALLY ' + g.rally, CW / 2, 18);
+        c.textAlign = 'center'; c.fillText('HI ' + pad2(pongHiWins), CW / 2, 18);
         c.textAlign = 'left';
     }
 
@@ -720,6 +720,7 @@
     window.playGame = playGame;
     var playKeys = {};
     var playOver = false;
+    var pongHiWins = parseInt(localStorage.getItem('dino-pong-hi')) || 0;
     var playAnim = 0, playFrame = 0;
     var gameStarted = false;
     var paused = false;
@@ -863,6 +864,7 @@
         if (r.done) {
             playOver = true;
             scorePauseTimer = 0; // don't freeze on game over
+            if (playGame.aPts > pongHiWins) { pongHiWins = playGame.aPts; localStorage.setItem('dino-pong-hi', pongHiWins); }
             // Auto-restart when non-human AI is playing (not spectate)
             if (aiMode !== 'off' && aiMode !== 'spectate') {
                 setTimeout(function () {

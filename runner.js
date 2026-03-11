@@ -50,7 +50,7 @@
         this.distanceMeter = null;
         this.distanceRan = 0;
 
-        this.highestScore = 0;
+        this.highestScore = parseInt(localStorage.getItem('dino-runner-hi')) || 0;
 
         this.time = 0;
         this.runningTime = 0;
@@ -886,6 +886,7 @@
             if (this.distanceRan > this.highestScore) {
                 this.highestScore = Math.ceil(this.distanceRan);
                 this.distanceMeter.setHighScore(this.highestScore);
+                localStorage.setItem('dino-runner-hi', this.highestScore);
             }
 
             // Reset the time clock.
