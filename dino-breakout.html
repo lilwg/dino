@@ -2714,10 +2714,10 @@
         slider.value = val;
         document.getElementById('play-diff-val').textContent = val;
 
-        // Viz off by default when entering AI mode
+        // Viz on by default when entering AI mode
         if (mode === 'rules' && window.breakoutSimAI) {
-            window.breakoutSimAI._vizEnabled = false;
-            document.getElementById('viz-btn').classList.remove('active');
+            window.breakoutSimAI._vizEnabled = true;
+            document.getElementById('viz-btn').classList.add('active');
         }
 
         // Clear pause state

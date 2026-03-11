@@ -2869,13 +2869,13 @@
         origSetMode(mode);
         var simAgent = window._simAgent;
         var simViz = window._simVisualizer;
-        // Turn viz OFF by default when entering AI mode
+        // Turn viz ON by default when entering AI mode
         if (mode === 'rules') {
-            if (simAgent) simAgent._vizEnabled = false;
-            if (simViz) simViz.enabled = false;
-            if (r) r.postRenderHook = null;
+            if (simAgent) simAgent._vizEnabled = true;
+            if (simViz) simViz.enabled = true;
+            if (r && simViz) r.postRenderHook = function(ctx, runner) { simViz.draw(ctx, runner); };
             var vizBtn = document.getElementById('viz-btn');
-            if (vizBtn) vizBtn.classList.remove('active');
+            if (vizBtn) vizBtn.classList.add('active');
         }
         // Set default speed per mode
         var slider = document.getElementById('max-speed-slider');

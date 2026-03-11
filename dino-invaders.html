@@ -836,10 +836,10 @@
         document.getElementById('human-btn').classList.toggle('active', mode === 'off');
         // rules-btn active state is already handled by setAIMode
 
-        // Viz off by default when entering AI mode
+        // Viz on by default when entering AI mode
         if (mode === 'rules' && window.invadersSimAI) {
-            window.invadersSimAI._vizEnabled = false;
-            document.getElementById('viz-btn').classList.remove('active');
+            window.invadersSimAI._vizEnabled = true;
+            document.getElementById('viz-btn').classList.add('active');
         }
 
         // Unpause when switching modes
