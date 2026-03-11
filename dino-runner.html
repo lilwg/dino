@@ -4158,8 +4158,15 @@
         _training = true;
         var mySession = ++_trainSession;
         var curIndiv = 0, curEval = 0, curScoreSum = 0;
-        var speeds = [6, 10, 20, 30, 40, 50];
-        window._mlTrainRestart(r, speeds[Math.floor(Math.random() * speeds.length)]);
+        // Curriculum: start with slow speeds so early genomes can discover jumping,
+        // then gradually introduce faster speeds as generations progress.
+        var allSpeeds = [6, 10, 20, 30, 40, 50];
+        function pickSpeed() {
+            // Unlock one more speed tier every 3 generations (full set by gen 15)
+            var tier = Math.min(allSpeeds.length, Math.floor(generation / 3) + 2);
+            return allSpeeds[Math.floor(Math.random() * tier)];
+        }
+        window._mlTrainRestart(r, pickSpeed());
 
         var _channel = new MessageChannel();
         _channel.port1.onmessage = function () {
@@ -4208,7 +4215,7 @@
                             curIndiv = 0;
                         }
                     }
-                    window._mlTrainRestart(r, speeds[Math.floor(Math.random() * speeds.length)]);
+                    window._mlTrainRestart(r, pickSpeed());
                 }
             }
             onProgress();
