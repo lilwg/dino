@@ -1231,7 +1231,7 @@ function draw() {
     // Draw disc under player during disc ride
     if (discRide) {
         ctx.save();
-        ctx.translate(Math.round(player.px), Math.round(player.py + TILE_H / 2 + 2));
+        ctx.translate(Math.round(player.px), Math.round(player.py));
         // Outer disc
         ctx.beginPath();
         ctx.ellipse(0, 0, 20, 10, 0, 0, Math.PI * 2);
