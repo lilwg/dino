@@ -173,7 +173,7 @@
         <div id="ql-viz" style="display:none;">
             <div style="background:#fff; border-radius:12px; padding:16px; margin-top:8px; box-shadow:0 1px 3px rgba(0,0,0,0.08);">
                 <h3 style="font-size:14px; margin:0 0 8px;">Score History</h3>
-                <canvas id="ql-score-canvas" width="600" height="80" style="width:100%; max-width:600px;"></canvas>
+                <canvas id="ql-score-canvas" width="600" height="100" style="width:100%; max-width:600px;"></canvas>
             </div>
         </div>
     </div>
@@ -4053,7 +4053,7 @@
         scoreHistory = [];
     }
 
-    // --- Score chart ---
+    // --- Score chart with axes ---
     function renderScoreChart(canvasId, scores) {
         var canvas = document.getElementById(canvasId);
         if (!canvas) return;
@@ -4062,34 +4062,83 @@
         ctx.clearRect(0, 0, cW, cH);
         if (scores.length < 2) return;
 
+        // Chart area with margins for labels
+        var mLeft = 40, mRight = 8, mTop = 6, mBottom = 18;
+        var pW = cW - mLeft - mRight, pH = cH - mTop - mBottom;
+
         var maxScore = 0;
         for (var i = 0; i < scores.length; i++) if (scores[i] > maxScore) maxScore = scores[i];
         if (maxScore === 0) maxScore = 1;
+        // Round max up to a nice number for axis ticks
+        var niceMax = Math.ceil(maxScore / 10) * 10 || 10;
 
+        // Helper to map data → pixel
+        function px(dataIdx, n, start) { return mLeft + ((dataIdx) / (n - 1)) * pW; }
+        function py(val) { return mTop + pH - (val / niceMax) * pH; }
+
+        // --- Axes ---
+        ctx.strokeStyle = '#888';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(mLeft, mTop);
+        ctx.lineTo(mLeft, mTop + pH);
+        ctx.lineTo(mLeft + pW, mTop + pH);
+        ctx.stroke();
+
+        // Y-axis ticks (3 ticks: 0, mid, max)
+        ctx.fillStyle = '#888';
+        ctx.font = '10px sans-serif';
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'middle';
+        var yTicks = [0, Math.round(niceMax / 2), niceMax];
+        for (var t = 0; t < yTicks.length; t++) {
+            var yy = py(yTicks[t]);
+            ctx.fillText(yTicks[t], mLeft - 4, yy);
+            if (yTicks[t] > 0) {
+                ctx.strokeStyle = '#e0e0e0';
+                ctx.beginPath();
+                ctx.moveTo(mLeft + 1, yy);
+                ctx.lineTo(mLeft + pW, yy);
+                ctx.stroke();
+            }
+        }
+
+        // X-axis ticks (generation numbers)
+        var n = Math.min(scores.length, Math.floor(pW));
+        var start = scores.length - n;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        ctx.fillStyle = '#888';
+        var xTickCount = Math.min(5, n);
+        for (var t = 0; t < xTickCount; t++) {
+            var di = Math.round(t * (n - 1) / (xTickCount - 1));
+            var xp = px(di, n, start);
+            ctx.fillText(start + di + 1, xp, mTop + pH + 4);
+        }
+
+        // --- Data line ---
         ctx.strokeStyle = '#0071e3';
         ctx.lineWidth = 1.5;
         ctx.beginPath();
-        var n = Math.min(scores.length, cW);
-        var start = scores.length - n;
         for (var i = 0; i < n; i++) {
-            var x = (i / (n - 1)) * cW;
-            var y = cH - (scores[start + i] / maxScore) * (cH - 4) - 2;
+            var x = px(i, n, start);
+            var y = py(scores[start + i]);
             if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
         }
         ctx.stroke();
 
-        // Moving average
+        // --- Moving average ---
         if (scores.length > 10) {
-            ctx.strokeStyle = 'rgba(255,100,0,0.6)';
+            ctx.strokeStyle = 'rgba(255,100,0,0.7)';
+            ctx.lineWidth = 2;
             ctx.beginPath();
             var windowSize = Math.min(20, Math.floor(scores.length / 2));
             for (var i = 0; i < n; i++) {
                 var idx = start + i;
                 var sum = 0, count = 0;
                 for (var j = Math.max(0, idx - windowSize); j <= idx; j++) { sum += scores[j]; count++; }
-                var avg = sum / count;
-                var x = (i / (n - 1)) * cW;
-                var y = cH - (avg / maxScore) * (cH - 4) - 2;
+                var x = px(i, n, start);
+                var y = py(sum / count);
                 if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
             }
             ctx.stroke();
@@ -4098,6 +4147,7 @@
 
     // --- Headless evolution loop ---
     var STEPS_PER_TICK = 2000;
+    var _trainSession = 0; // monotonic ID to detect stale callbacks
 
     function evoTrainHeadless(onProgress, onDone) {
         var r = window._mlCreateTrainRunner();
@@ -4106,13 +4156,14 @@
         if (!population) initPopulation();
 
         _training = true;
+        var mySession = ++_trainSession;
         var curIndiv = 0, curEval = 0, curScoreSum = 0;
         var speeds = [6, 10, 20, 30, 40, 50];
         window._mlTrainRestart(r, speeds[Math.floor(Math.random() * speeds.length)]);
 
         var _channel = new MessageChannel();
         _channel.port1.onmessage = function () {
-            if (!_training) { onDone(); return; }
+            if (!_training || mySession !== _trainSession) { onDone(); return; }
 
             for (var step = 0; step < STEPS_PER_TICK; step++) {
                 var rawState = window.mlExtractState(r);
@@ -4209,11 +4260,14 @@
                 renderScoreChart('ql-score-canvas', scoreHistory);
             },
             function onDone() {
-                if (statsEl) statsEl.textContent =
-                    'Paused | Gen: ' + generation + ' | Best: ' + bestScore +
-                    ' | σ: ' + sigma.toFixed(3);
-                renderScoreChart('ql-score-canvas', scoreHistory);
-                qlUpdateButtons('stopped');
+                // Only update UI if no newer session has started
+                if (!_training) {
+                    if (statsEl) statsEl.textContent =
+                        'Paused | Gen: ' + generation + ' | Best: ' + bestScore +
+                        ' | σ: ' + sigma.toFixed(3);
+                    renderScoreChart('ql-score-canvas', scoreHistory);
+                    qlUpdateButtons('stopped');
+                }
             }
         );
     };
