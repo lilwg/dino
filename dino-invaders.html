@@ -84,19 +84,15 @@
     var aiMode = 'off';
 
     // ═══════════════════════════════════════════════════════════════
-    //  RULES AI — priority-based decision making
-    //  1. Dodge enemy bullets that will hit you
-    //  2. Shoot the UFO if it's on screen
-    //  3. Move toward and shoot the lowest alien
-    //  4. Fire opportunistically while moving
+    //  RULES AI — target selection + simulation for everything else
+    //  1. Pick target: UFO if on screen, else lowest alien
+    //  2. Simulate all 6 actions — sim handles dodging (enemy bullets
+    //     are live), aiming (alien movement is real), and bunkers
+    //  3. Pick the action with the best score
     // ═══════════════════════════════════════════════════════════════
-    var PLAYER_CX_OFFSET = 22;  // player center X offset from player.x
-    var PLAYER_W_CONST = 44;
-    var PLAYER_SPEED_CONST = 4;
-    var BULLET_SPEED_CONST = 6;
-    var ENEMY_BULLET_SPEED_CONST = 3;
-    var DODGE_FRAMES_AHEAD = 30;  // how many frames ahead to check for bullet threats
-    var AIM_TOLERANCE = 6;        // how close to target X before firing
+    var simGame = new SpaceInvadersGame(document.createElement('canvas'), { primary: false });
+
+    var SIM_STEPS = 80; // enough for bullet to cross the screen
 
     var invadersSimAI = {
         enabled: false,
@@ -104,178 +100,165 @@
         _vizData: null,
 
         update: function (g) {
-            var playerCx = g.player.x + PLAYER_CX_OFFSET;
-            var playerY = g.player.y;
-            var canFire = g.player.cooldown === 0 && g.bullets.length === 0;
+            var playerCx = g.player.x + 22;
 
-            // --- 1. DODGE: find enemy bullets that will hit us ---
-            var dodgeDir = 0; // -1 = go left, 1 = go right, 0 = safe
-            var closestThreatFrames = Infinity;
-
-            for (var i = 0; i < g.enemyBullets.length; i++) {
-                var eb = g.enemyBullets[i];
-                var ebCx = eb.x + 1.5;
-                var framesUntilPlayerY = (playerY - eb.y) / ENEMY_BULLET_SPEED_CONST;
-                if (framesUntilPlayerY < 0 || framesUntilPlayerY > DODGE_FRAMES_AHEAD) continue;
-
-                // Will bullet overlap the player hitbox horizontally?
-                var halfW = PLAYER_W_CONST / 2 + 4; // small margin
-                if (Math.abs(ebCx - playerCx) < halfW) {
-                    if (framesUntilPlayerY < closestThreatFrames) {
-                        closestThreatFrames = framesUntilPlayerY;
-                        // Dodge away from bullet — prefer direction with more room
-                        var spaceLeft = g.player.x;
-                        var spaceRight = 600 - (g.player.x + PLAYER_W_CONST);
-                        if (ebCx < playerCx) {
-                            dodgeDir = spaceRight > 30 ? 1 : -1; // bullet from left, dodge right
-                        } else {
-                            dodgeDir = spaceLeft > 30 ? -1 : 1;  // bullet from right, dodge left
-                        }
-                    }
-                }
-            }
-
-            // --- 2. TARGET SELECTION: UFO > lowest alien ---
-            var targetX = null;
+            // --- 1. TARGET SELECTION: UFO > lowest alien ---
+            var target = null;
             var targetReason = 'none';
 
             if (g.mystery) {
-                // UFO: lead the shot — mystery moves at constant speed
-                var myCx = g.mystery.x + 20;
-                var bulletFrames = (playerY - g.mystery.y - 8) / BULLET_SPEED_CONST;
-                targetX = myCx + g.mystery.dir * 1.5 * bulletFrames; // MYSTERY_SPEED=1.5
+                target = { x: g.mystery.x, y: g.mystery.y, w: 40, h: 16, isMystery: true };
                 targetReason = 'ufo';
             } else {
-                // Find the lowest alive alien (most threatening)
                 var lowestAlien = null;
                 var lowestY = -1;
                 for (var i = 0; i < g.aliens.length; i++) {
                     var a = g.aliens[i];
                     if (!a.alive) continue;
-                    var ay = a.y + a.h;
-                    if (ay > lowestY) {
-                        lowestY = ay;
+                    if (a.y + a.h > lowestY) {
+                        lowestY = a.y + a.h;
                         lowestAlien = a;
                     }
                 }
                 if (lowestAlien) {
-                    // Lead the shot: predict where alien will be when bullet arrives
-                    var alienCx = lowestAlien.x + lowestAlien.w / 2;
-                    var bulletFrames = (playerY - lowestAlien.y - lowestAlien.h / 2) / BULLET_SPEED_CONST;
-                    var moveSteps = Math.floor(bulletFrames / Math.max(1, g.alienMoveInterval - g.alienMoveTimer));
-                    // After first step, subsequent steps are at full interval
-                    if (bulletFrames > g.alienMoveInterval - g.alienMoveTimer) {
-                        var remaining = bulletFrames - (g.alienMoveInterval - g.alienMoveTimer);
-                        moveSteps = 1 + Math.floor(remaining / Math.max(1, g.alienMoveInterval));
-                    }
-                    var leadX = alienCx + g.alienDir * g.alienSpeed * 8 * moveSteps;
-                    // Clamp to canvas — aliens bounce off walls
-                    leadX = Math.max(lowestAlien.w / 2, Math.min(600 - lowestAlien.w / 2, leadX));
-                    targetX = leadX;
+                    target = lowestAlien;
                     targetReason = 'lowest';
                 }
             }
 
-            // --- 3. DECIDE ACTION ---
-            var moveDir = 0;  // -1=left, 0=stay, 1=right
-            var shouldFire = false;
+            // --- 2. SIMULATE all 6 actions ---
+            var snap = g.snapshotState();
+            var simResults = [];
+            var bestAction = 5;
+            var bestScore = -Infinity;
 
-            if (dodgeDir !== 0) {
-                // Priority 1: dodge
-                moveDir = dodgeDir;
-                // Still fire if we happen to be lined up with something
-                shouldFire = canFire && this._hasTargetAbove(g, playerCx);
-            } else if (targetX !== null) {
-                // Priority 2/3: move toward target
-                var dx = targetX - playerCx;
-                if (Math.abs(dx) <= AIM_TOLERANCE) {
-                    // Lined up — fire if no bunker in the way
-                    moveDir = 0;
-                    shouldFire = canFire && !this._bunkerBlocks(g, playerCx);
-                } else {
-                    // Move toward target
-                    moveDir = dx > 0 ? 1 : -1;
-                    // Fire opportunistically while moving if anything is above us
-                    shouldFire = canFire && this._hasTargetAbove(g, playerCx);
+            for (var a = 0; a < 6; a++) {
+                var result = this._simulate(snap, a, target);
+                simResults.push(result);
+                if (result.score > bestScore) {
+                    bestScore = result.score;
+                    bestAction = a;
                 }
             }
 
-            // Convert to action: 0=LEFT, 1=RIGHT, 2=FIRE, 3=LEFT+FIRE, 4=RIGHT+FIRE, 5=STAY
-            var action;
-            if (moveDir === -1 && shouldFire) action = 3;
-            else if (moveDir === 1 && shouldFire) action = 4;
-            else if (moveDir === -1) action = 0;
-            else if (moveDir === 1) action = 1;
-            else if (shouldFire) action = 2;
-            else action = 5;
-
-            // Store viz data
             if (this._vizEnabled) {
                 this._vizData = {
                     playerX: g.player.x,
                     playerY: g.player.y,
                     playerCx: playerCx,
-                    targetX: targetX,
+                    targetX: target ? target.x + target.w / 2 : null,
                     targetReason: targetReason,
-                    dodgeDir: dodgeDir,
-                    chosenAction: action,
-                    canFire: canFire
+                    chosenAction: bestAction,
+                    simResults: simResults
                 };
             }
 
-            g.executeAction(action);
+            g.executeAction(bestAction);
         },
 
-        // Check if any alien or UFO is roughly above the player (within bullet width tolerance)
-        _hasTargetAbove: function (g, px) {
-            if (this._bunkerBlocks(g, px)) return false;
-            var tolerance = 24; // generous — bullets are thin but aliens are wide
-            if (g.mystery) {
-                var mx = g.mystery.x + 20;
-                if (Math.abs(mx - px) < tolerance + 20) return true;
-            }
-            for (var i = 0; i < g.aliens.length; i++) {
-                var a = g.aliens[i];
-                if (!a.alive) continue;
-                var acx = a.x + a.w / 2;
-                if (Math.abs(acx - px) < tolerance) return true;
-            }
-            return false;
-        },
+        _simulate: function (snap, action, target) {
+            simGame.restoreState(snap);
+            // Enemy bullets stay live — sim discovers dodging naturally
+            simGame._suppressEnemyFire = true; // no NEW enemy fire, but existing bullets fly
 
-        // Check if a bunker would block a bullet fired from px
-        _bunkerBlocks: function (g, px) {
-            for (var i = 0; i < g.bunkers.length; i++) {
-                var bk = g.bunkers[i];
-                // Check if player X is within bunker's horizontal span
-                if (px >= bk.x && px <= bk.x + bk.w) {
-                    // Check if bunker still has solid pixels in this column
-                    var lx = Math.floor(px - bk.x);
-                    var bkCtx = bk.canvas.getContext('2d');
-                    var col = bkCtx.getImageData(lx, 0, 1, bk.h);
-                    for (var y = 0; y < bk.h; y++) {
-                        if (col.data[y * 4 + 3] > 0) return true; // solid pixel
+            var startScore = simGame.score;
+            var startLives = simGame.lives;
+            var died = false;
+            var killedTarget = false;
+            var scoreGain = 0;
+            var minBulletDist = 9999;
+            var positions = [];
+            var bulletPositions = [];
+
+            // Track the target alien's index in the sim
+            var targetIdx = -1;
+            if (target && !target.isMystery) {
+                for (var i = 0; i < simGame.aliens.length; i++) {
+                    if (simGame.aliens[i].row === target.row &&
+                        simGame.aliens[i].col === target.col) {
+                        targetIdx = i;
+                        break;
                     }
                 }
             }
-            return false;
+
+            for (var i = 0; i < SIM_STEPS; i++) {
+                simGame.executeAction(action);
+                simGame.update();
+
+                positions.push({ x: simGame.player.x + 22, y: simGame.player.y + 23 });
+                if (simGame.bullets.length > 0) {
+                    bulletPositions.push({ x: simGame.bullets[0].x + 1.5, y: simGame.bullets[0].y });
+                }
+
+                // Track closest enemy bullet for dodging score
+                var px = simGame.player.x + 22;
+                var py = simGame.player.y;
+                for (var j = 0; j < simGame.enemyBullets.length; j++) {
+                    var eb = simGame.enemyBullets[j];
+                    var dx = eb.x - px, dy = eb.y - py;
+                    var dist = Math.sqrt(dx * dx + dy * dy);
+                    if (dist < minBulletDist) minBulletDist = dist;
+                }
+
+                if (simGame.lives < startLives) { died = true; break; }
+                if (simGame.gameOver) { died = true; break; }
+
+                // Check if target was killed
+                if (target && target.isMystery && !simGame.mystery && simGame.score > startScore) {
+                    killedTarget = true;
+                }
+                if (targetIdx >= 0 && !simGame.aliens[targetIdx].alive) {
+                    killedTarget = true;
+                }
+
+                scoreGain = simGame.score - startScore;
+            }
+
+            // Scoring priorities:
+            // 1. Survival (don't die)
+            // 2. Kill the target
+            // 3. Kill anything
+            // 4. Stay away from enemy bullets
+            // 5. Move toward target
+            var score = 0;
+            if (died) score -= 10000;
+            if (killedTarget) score += 500;
+            score += scoreGain * 10;
+            score += Math.min(minBulletDist, 200) * 0.5;
+            if (target) {
+                var targetCx = target.x + target.w / 2;
+                var finalCx = simGame.player.x + 22;
+                score -= Math.abs(finalCx - targetCx) * 0.1;
+            }
+
+            return {
+                score: score,
+                killedTarget: killedTarget,
+                scoreGain: scoreGain,
+                died: died,
+                positions: positions,
+                bulletPositions: bulletPositions
+            };
         }
     };
 
     // ═══════════════════════════════════════════════════════════════
-    //  RULES AI VISUALIZATION
+    //  SIMULATION VISUALIZATION
     // ═══════════════════════════════════════════════════════════════
+    var ACTION_FAMILY = [0, 2, 1, 0, 2, 1]; // LEFT=0(blue), RIGHT=2(orange), FIRE/STAY=1(grey)
+    var FAMILY_COLORS = ['#0071e3', '#8e8e93', '#ff9f0a'];
     var ACTION_NAMES = ['\u2190 LEFT', '\u2192 RIGHT', '\u2191 FIRE', '\u2190 L+F', '\u2192 R+F', '\u00b7 STAY'];
 
     function drawInvadersSimViz(ctx) {
         var d = invadersSimAI._vizData;
-        if (!d) return;
+        if (!d || !d.simResults) return;
 
         ctx.save();
         var pcx = d.playerCx;
         var py = d.playerY;
 
-        // Target line: dashed line from player to target X
+        // Target crosshair
         if (d.targetX !== null) {
             var color = d.targetReason === 'ufo' ? '#ff9f0a' : '#0071e3';
             ctx.strokeStyle = color;
@@ -286,34 +269,37 @@
             ctx.moveTo(pcx, py + 10);
             ctx.lineTo(d.targetX, py + 10);
             ctx.stroke();
-
-            // Target crosshair
             ctx.setLineDash([]);
             ctx.globalAlpha = 0.7;
             ctx.beginPath();
             ctx.moveTo(d.targetX, py - 5);
             ctx.lineTo(d.targetX, py + 25);
             ctx.stroke();
-            ctx.beginPath();
-            ctx.moveTo(d.targetX - 8, py + 10);
-            ctx.lineTo(d.targetX + 8, py + 10);
-            ctx.stroke();
         }
 
-        // Dodge warning: red arrow showing dodge direction
-        if (d.dodgeDir !== 0) {
-            ctx.globalAlpha = 0.85;
-            ctx.fillStyle = '#ff3b30';
-            ctx.font = 'bold 14px "Courier New", monospace';
-            ctx.textAlign = 'center';
-            var dodgeLabel = d.dodgeDir < 0 ? '\u00ab DODGE' : 'DODGE \u00bb';
-            ctx.fillText(dodgeLabel, pcx, py - 8);
+        // Bullet trajectory for chosen action
+        var chosen = d.simResults[d.chosenAction];
+        if (chosen.bulletPositions.length > 0) {
+            ctx.strokeStyle = FAMILY_COLORS[ACTION_FAMILY[d.chosenAction]];
+            ctx.globalAlpha = 0.4;
+            ctx.setLineDash([3, 3]);
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            for (var i = 0; i < chosen.bulletPositions.length; i++) {
+                var bp = chosen.bulletPositions[i];
+                if (i === 0) ctx.moveTo(bp.x, bp.y);
+                else ctx.lineTo(bp.x, bp.y);
+            }
+            ctx.stroke();
+            ctx.setLineDash([]);
         }
 
         // Decision badge below player
-        var reason = d.dodgeDir !== 0 ? 'dodge' : d.targetReason;
-        var badgeColor = reason === 'dodge' ? '#ff3b30' : (reason === 'ufo' ? '#ff9f0a' : '#0071e3');
-        var decLabel = ACTION_NAMES[d.chosenAction] + (reason === 'dodge' ? ' !' : reason === 'ufo' ? ' \u2605' : '');
+        var r = d.simResults[d.chosenAction];
+        var badgeColor = r.died ? '#ff3b30' : (d.targetReason === 'ufo' ? '#ff9f0a' : '#0071e3');
+        var decLabel = ACTION_NAMES[d.chosenAction];
+        if (r.killedTarget) decLabel += ' \u2713';
+        if (r.died) decLabel += ' !';
 
         ctx.globalAlpha = 0.9;
         ctx.font = '600 10px "Courier New", monospace';
