@@ -163,7 +163,7 @@ var isTouchDevice = ('ontouchstart' in window || navigator.maxTouchPoints > 0);
 var keys = {}, paused = false;
 var inv, dayT, nightA, moonPh, moonX, stars;
 
-hi = 0;
+hi = parseInt(localStorage.getItem('dino-asteroids-hi')) || 0;
 
 // ─── Night cycle helpers ──────────────────────────────────────────────────────
 function placeStars() {
@@ -358,7 +358,7 @@ function stepBullets() {
 function smashRock(idx) {
     var r = rocks[idx];
     addSparks(r.x, r.y, 8+r.sz*4, r.sz);
-    sc += APTS[r.sz]; if (sc > hi) hi = sc;
+    sc += APTS[r.sz]; if (sc > hi) { hi = sc; localStorage.setItem('dino-asteroids-hi', hi); }
     DinoSounds.press();
     if (r.sz > 1) { addRock(r.sz-1,r.x,r.y); addRock(r.sz-1,r.x,r.y); }
     rocks.splice(idx, 1);
@@ -404,7 +404,7 @@ function stepUFO() {
 }
 
 function killUFO() {
-    sc += UPTS[ufo.big?2:1]; if (sc > hi) hi = sc;
+    sc += UPTS[ufo.big?2:1]; if (sc > hi) { hi = sc; localStorage.setItem('dino-asteroids-hi', hi); }
     addSparks(ufo.x, ufo.y, 18, 2);
     DinoSounds.reached();
     ufo = null;
@@ -1014,6 +1014,11 @@ window.setMode = function(m) {
     aiMode = m;
     document.getElementById('human-btn').classList.toggle('active', m==='off');
     document.getElementById('rules-btn').classList.toggle('active', m==='ai');
+    // Viz on by default when entering AI mode
+    if (m === 'ai') {
+        aiViz = true;
+        document.getElementById('viz-btn').classList.add('active');
+    }
     // If AI is selected while on the start/gameover screen, kick off the game
     if (m === 'ai' && (gs === 'start' || gs === 'gameover')) initGame();
 };

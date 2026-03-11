@@ -443,7 +443,7 @@
         ctx.font = '600 13px "Courier New", monospace';
         ctx.fillStyle = '#535353';
         ctx.textAlign = 'left';
-        ctx.fillText('HI ' + padScore(g.score), 10, 18);
+        ctx.fillText('HI ' + padScore(Math.max(g.score, breakoutHi)), 10, 18);
         ctx.textAlign = 'right';
         ctx.fillText(g.lives + '\u00d7', CW - 10 - g.lives * 26, 17);
         for (var i = 0; i < g.lives; i++) {
@@ -2019,6 +2019,7 @@
     var playKeys = {};
     var playAnim = 0, playFrame = 0, playLastAction = 1, playLastDir = 2;
     var gameStarted = false;
+    var breakoutHi = parseInt(localStorage.getItem('dino-breakout-hi')) || 0;
     var paused = false;
     var aiMode = 'off';
 
@@ -2186,6 +2187,7 @@
             playCtx.fillStyle = '#535353';
             playCtx.font = '600 20px "Courier New", monospace';
             playCtx.textAlign = 'center';
+            if (playGame.score > breakoutHi) { breakoutHi = playGame.score; localStorage.setItem('dino-breakout-hi', breakoutHi); }
             playCtx.fillText(playGame.won ? 'YOU WIN!' : 'GAME OVER', CW / 2, CH / 2 - 5);
             playCtx.font = '13px "Courier New", monospace';
             playCtx.fillText('Score: ' + padScore(playGame.score), CW / 2, CH / 2 + 16);
@@ -2712,10 +2714,10 @@
         slider.value = val;
         document.getElementById('play-diff-val').textContent = val;
 
-        // Viz off by default when entering AI mode
+        // Viz on by default when entering AI mode
         if (mode === 'rules' && window.breakoutSimAI) {
-            window.breakoutSimAI._vizEnabled = false;
-            document.getElementById('viz-btn').classList.remove('active');
+            window.breakoutSimAI._vizEnabled = true;
+            document.getElementById('viz-btn').classList.add('active');
         }
 
         // Clear pause state
