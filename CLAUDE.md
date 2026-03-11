@@ -5,7 +5,7 @@
 Dino Arcade is an interactive web platform recreating classic arcade games (DinoRunner, DinoInvaders, DinoPong, DinoBreakout, DinoAsteroids, DinoQbert) in the visual style of Chrome's offline dinosaur game. It serves as an educational exploration of AI techniques for game-playing, from rule-based systems to neural networks.
 
 **Live site:** https://dino.lilwg.com
-**Deployed on:** Netlify (static files, no server-side processing)
+**Deployed on:** Cloudflare Pages (static files, no server-side processing)
 
 ## Architecture
 
@@ -66,7 +66,7 @@ Dino Arcade is an interactive web platform recreating classic arcade games (Dino
 │   ├── default_100_percent/100-offline-sprite.png
 │   └── default_200_percent/200-offline-sprite.png
 │
-├── _headers                Netlify cache headers (no-cache on all files)
+├── _headers                Cloudflare Pages cache headers (no-cache on all files)
 └── .gitignore
 ```
 
@@ -107,7 +107,7 @@ No automated tests exist. Testing is manual/visual in the browser. Verify:
 - Responsive layout works on different screen sizes.
 
 ### Deployment
-Push to `master` — Netlify auto-deploys static files. The `_headers` file disables caching on all resources.
+Push to `master` — Cloudflare Pages auto-deploys static files. The `_headers` file disables caching on all resources.
 
 ### Git conventions
 - Commit messages follow: `<GameName>: <description>` (e.g., `DinoAsteroids: fix broken rock shapes`).
