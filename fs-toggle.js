@@ -38,22 +38,22 @@ function applyFullscreenScale() {
 
     var target = wrapper || canvas;
 
-    // Reset transform to measure natural size
+    // Reset any previous scaling
     target.style.transform = 'none';
 
-    // Temporarily shrink-wrap the wrapper to get its natural content width
+    // Get the canvas intrinsic rendered size
+    var contentW = canvas.offsetWidth;
+    var contentH = canvas.offsetHeight;
+
     if (wrapper) {
-        wrapper.style.width = 'fit-content';
+        // Constrain wrapper to the canvas natural size so it doesn't fill the screen
+        wrapper.style.flex = 'none';
+        wrapper.style.width = contentW + 'px';
+        wrapper.style.height = contentH + 'px';
+        wrapper.style.overflow = 'hidden';
     }
 
-    var contentW = target.offsetWidth;
-    var contentH = target.offsetHeight;
-
-    // Restore wrapper width
-    if (wrapper) {
-        wrapper.style.width = '';
-    }
-
+    // Available space
     var controls = box.querySelector('.si-controls');
     var controlsH = controls ? controls.offsetHeight + 20 : 60;
     var availW = window.innerWidth;
@@ -66,9 +66,18 @@ function applyFullscreenScale() {
 }
 
 function removeFullscreenScale() {
-    var targets = document.querySelectorAll('.game-wrapper, .si-game-box > canvas');
-    for (var i = 0; i < targets.length; i++) {
-        targets[i].style.transform = '';
-        targets[i].style.transformOrigin = '';
+    var wrapper = document.querySelector('.game-wrapper');
+    if (wrapper) {
+        wrapper.style.transform = '';
+        wrapper.style.transformOrigin = '';
+        wrapper.style.flex = '';
+        wrapper.style.width = '';
+        wrapper.style.height = '';
+        wrapper.style.overflow = '';
+    }
+    var canvases = document.querySelectorAll('.si-game-box > canvas');
+    for (var i = 0; i < canvases.length; i++) {
+        canvases[i].style.transform = '';
+        canvases[i].style.transformOrigin = '';
     }
 }
