@@ -3242,10 +3242,12 @@
         return collision;
     }
 
-    function mlTrainRestart(r) {
+    function mlTrainRestart(r, startSpeed) {
         r.runningTime = 0; r.playing = true; r.crashed = false;
         r.activated = true; r.playingIntro = false; r.distanceRan = 0;
-        r.setSpeed(r.config.SPEED);
+        var spd = startSpeed || r.config.SPEED;
+        r.setSpeed(spd);
+        r.currentSpeed = spd;
         r.time = performance.now();
         if (r.distanceMeter) r.distanceMeter.reset(0);
         r.horizon.reset(); r.tRex.reset();
@@ -3256,22 +3258,30 @@
     var createAdjustedCollisionBox = window.createAdjustedCollisionBox;
     var Trex = window.Trex;
 
-    // --- Data collection (headless, tight loop) ---
+    // --- Data collection (headless, speed-stratified) ---
+    // Collect across multiple speed tiers so the network sees high-speed play.
     var STEPS_PER_TICK = 500;
+    var SPEED_TIERS = [6, 10, 14, 18, 22, 28, 35];
 
     function collectData(onProgress, onDone) {
         if (!_mlTrainRunner) _mlTrainRunner = createMLTrainRunner();
         var r = _mlTrainRunner;
-        mlTrainRestart(r);
 
         var collector = new window.AIAgent();
         collector.enabled = true;
-        // Wire collector into the runner so it can read obstacles
         r.aiAgent = { enabled: true, update: function(){}, recordPrediction: function(){},
                       onCrash: function(){}, checkGhostCollisions: function(){} };
 
         var dataset = [];
         _collecting = true;
+        var tierIdx = 0;
+        var framesPerTier = Math.ceil(TARGET_FRAMES / SPEED_TIERS.length);
+        var tierFrames = 0;
+
+        // Start first tier
+        r.config.MAX_SPEED = SPEED_TIERS[SPEED_TIERS.length - 1] + 5;
+        mlTrainRestart(r, SPEED_TIERS[0]);
+
         var _channel = new MessageChannel();
 
         _channel.port1.onmessage = function () {
@@ -3281,18 +3291,24 @@
                 var wasJumping = r.tRex.jumping;
                 var wasDucking = r.tRex.ducking;
                 var wasSpeedDrop = r.tRex.speedDrop;
-                // Let the sim AI decide and apply its action to tRex
                 collector.update(r);
                 var action = 0;
                 if (r.tRex.jumping && !wasJumping) action = 1;
                 else if ((r.tRex.ducking && !wasDucking) || (r.tRex.speedDrop && !wasSpeedDrop)) action = 2;
                 dataset.push({ input: state, label: action });
+                tierFrames++;
 
-                // Step physics headlessly (action=-1 means sim AI already applied it)
                 var collision = mlTrainStep(r, -1);
                 if (collision) {
                     collector.onCrash(r);
-                    mlTrainRestart(r);
+                    mlTrainRestart(r, SPEED_TIERS[tierIdx]);
+                }
+
+                // Move to next speed tier
+                if (tierFrames >= framesPerTier && tierIdx < SPEED_TIERS.length - 1) {
+                    tierIdx++;
+                    tierFrames = 0;
+                    mlTrainRestart(r, SPEED_TIERS[tierIdx]);
                 }
 
                 if (dataset.length >= TARGET_FRAMES) {
@@ -3301,7 +3317,7 @@
                     return;
                 }
             }
-            onProgress(dataset.length);
+            onProgress(dataset.length, SPEED_TIERS[tierIdx]);
             _channel.port2.postMessage(0);
         };
         _channel.port2.postMessage(0);
@@ -3534,8 +3550,9 @@
         if (statsEl) statsEl.textContent = 'Collecting data from sim AI (headless)...';
 
         collectData(
-            function onProgress(n) {
-                if (statsEl) statsEl.textContent = 'Collecting (headless): ' + n + ' / ' + TARGET_FRAMES + ' frames';
+            function onProgress(n, speed) {
+                if (statsEl) statsEl.textContent = 'Collecting (headless): ' + n + ' / ' + TARGET_FRAMES +
+                    ' frames | speed tier ' + speed;
             },
             function onDone(dataset) {
                 if (trainBtn) { trainBtn.textContent = 'Train'; trainBtn.onclick = window.mlTrain; }
