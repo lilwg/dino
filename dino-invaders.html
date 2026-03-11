@@ -92,7 +92,7 @@
     // ═══════════════════════════════════════════════════════════════
     var simGame = new SpaceInvadersGame(document.createElement('canvas'), { primary: false });
 
-    var SIM_STEPS = 45;    // frames to simulate per rollout
+    var SIM_STEPS = 90;    // frames per rollout (~360px horizontal reach, covers most of board)
     var NUM_ROLLOUTS = 5;  // rollouts per action (with random enemy fire)
 
     var invadersSimAI = {
