@@ -1983,7 +1983,7 @@
         var jumpVel = tRex.jumping ? tRex.jumpVelocity / 10 : 0;
         return [
             obs1Dist, obs1Y, obs1Type, obs1H, obs1W, obs2Dist,
-            (r.currentSpeed - 6) / 7,
+            (r.currentSpeed - 6) / 44,
             jumpHeight, jumpVel,
             tRex.ducking ? 1 : 0
         ];
@@ -3061,7 +3061,7 @@
     var NUM_FEATURES = 10; // matches extractState in dqn section
     var NUM_HIDDEN   = 64;
     var NUM_ACTIONS  = 3;
-    var TARGET_FRAMES = 30000;
+    var TARGET_FRAMES = 40000;
 
     var FEATURE_NAMES = [
         'dist₁', 'yPos₁', 'ptero₁', 'height₁', 'width₁', 'dist₂',
@@ -3159,7 +3159,7 @@
         var jumpHeight = tRex.jumping ? (groundY - tRex.yPos) / 80 : 0;
         var jumpVel = tRex.jumping ? tRex.jumpVelocity / 10 : 0;
         return [obs1Dist, obs1Y, obs1Type, obs1H, obs1W, obs2Dist,
-                (r.currentSpeed - 6) / 7, jumpHeight, jumpVel, tRex.ducking ? 1 : 0];
+                (r.currentSpeed - 6) / 44, jumpHeight, jumpVel, tRex.ducking ? 1 : 0];
     }
 
     function mlExecuteAction(action, r) {
@@ -3272,7 +3272,7 @@
     // --- Data collection (headless, speed-stratified) ---
     // Collect across multiple speed tiers so the network sees high-speed play.
     var STEPS_PER_TICK = 500;
-    var SPEED_TIERS = [6, 10, 14, 18, 22, 28, 35];
+    var SPEED_TIERS = [6, 12, 20, 28, 35, 42, 50];
 
     function collectData(onProgress, onDone) {
         if (!_mlTrainRunner) _mlTrainRunner = createMLTrainRunner();
@@ -3286,7 +3286,13 @@
         var dataset = [];
         _collecting = true;
         var tierIdx = 0;
-        var framesPerTier = Math.ceil(TARGET_FRAMES / SPEED_TIERS.length);
+        // Weight later (harder) tiers more: [1,1,2,2,3,3,4] → top 4 tiers get ~75% of data
+        var tierWeights = [1, 1, 2, 2, 3, 3, 4];
+        var totalWeight = 0;
+        for (var tw = 0; tw < tierWeights.length; tw++) totalWeight += tierWeights[tw];
+        var tierLimits = [];
+        for (var tw = 0; tw < tierWeights.length; tw++)
+            tierLimits.push(Math.ceil(TARGET_FRAMES * tierWeights[tw] / totalWeight));
         var tierFrames = 0;
 
         // Start first tier
@@ -3316,7 +3322,7 @@
                 }
 
                 // Move to next speed tier
-                if (tierFrames >= framesPerTier && tierIdx < SPEED_TIERS.length - 1) {
+                if (tierFrames >= tierLimits[tierIdx] && tierIdx < SPEED_TIERS.length - 1) {
                     tierIdx++;
                     tierFrames = 0;
                     mlTrainRestart(r, SPEED_TIERS[tierIdx]);
