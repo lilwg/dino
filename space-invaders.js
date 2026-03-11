@@ -221,6 +221,7 @@
 
         this.aiAgent = null;
         this.speedMultiplier = 1;
+        this.difficultyLevel = 1; // 1=Normal, 2=Hard, 3=Brutal
 
         createExplosionSprite();
         this._placeNightStars();
@@ -267,13 +268,18 @@
     // Spawning
     // -------------------------------------------------------------------------
     Game.prototype._spawnAliens = function () {
+        // Difficulty adds extra "phantom waves" — aliens start lower, move faster, fire more
+        var extraWaves = [0, 2, 5][Math.min(this.difficultyLevel, 3) - 1] || 0;
+        var effectiveWave = this.wave + extraWaves;
+        var dropRows = Math.min(extraWaves, 4); // how many rows lower aliens start
+
         this.aliens = [];
         for (var row = 0; row < ALIEN_ROWS; row++) {
             for (var col = 0; col < ALIEN_COLS; col++) {
                 var type = ALIEN_TYPES[row];
                 this.aliens.push({
                     x: ALIEN_START_X + col * ALIEN_SPACING_X + (ALIEN_TYPES[0].w - type.w) / 2,
-                    y: ALIEN_START_Y + row * ALIEN_SPACING_Y,
+                    y: ALIEN_START_Y + row * ALIEN_SPACING_Y + dropRows * ALIEN_DROP,
                     w: type.w,
                     h: type.h,
                     type: type.name,
@@ -286,8 +292,8 @@
         }
         this.alienDir = 1;
         this.alienMoveTimer = 0;
-        this.alienMoveInterval = Math.max(8, 30 - (this.wave - 1) * 3);
-        this.alienSpeed = ALIEN_MOVE_SPEED + (this.wave - 1) * 0.3;
+        this.alienMoveInterval = Math.max(8, 30 - (effectiveWave - 1) * 3);
+        this.alienSpeed = ALIEN_MOVE_SPEED + (effectiveWave - 1) * 0.3;
     };
 
     Game.prototype._spawnBunkers = function () {
@@ -500,7 +506,9 @@
         if (this._suppressEnemyFire) return;
         var alive = 0;
         for (var i = 0; i < this.aliens.length; i++) if (this.aliens[i].alive) alive++;
-        var fireChance = Math.min(ENEMY_FIRE_CHANCE * 4, ENEMY_FIRE_CHANCE * (ALIEN_ROWS * ALIEN_COLS) / Math.max(alive, 1));
+        var extraWaves = [0, 2, 5][Math.min(this.difficultyLevel, 3) - 1] || 0;
+        var diffFireMult = 1 + extraWaves * 0.4;
+        var fireChance = Math.min(ENEMY_FIRE_CHANCE * 4 * diffFireMult, ENEMY_FIRE_CHANCE * diffFireMult * (ALIEN_ROWS * ALIEN_COLS) / Math.max(alive, 1));
         for (var i = 0; i < this.aliens.length; i++) {
             var a = this.aliens[i]; if (!a.alive) continue;
             if (Math.random() < fireChance) {
