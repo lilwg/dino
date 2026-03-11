@@ -96,7 +96,7 @@
             <button class="si-btn" id="rules-btn" onclick="setMode('rules')">AI</button>
             <button class="si-btn" id="ml-btn" onclick="setMode('ml')">MLP</button>
             <button class="si-btn" id="knn-btn" onclick="setMode('knn')">k-NN</button>
-            <button class="si-btn" id="ql-btn" onclick="setMode('ql')">Q-Learn</button>
+            <button class="si-btn" id="ql-btn" onclick="setMode('ql')">Evolve</button>
             <button class="si-btn" id="viz-btn" onclick="toggleViz()">Viz</button>
             <button class="si-btn" onclick="restartGame()">Restart</button>
             <button class="si-btn" id="pause-btn" onclick="togglePause()">Pause</button>
@@ -153,7 +153,7 @@
         </div>
     </div>
 
-    <!-- ═══ Q-LEARNING ═══ -->
+    <!-- ═══ NEUROEVOLUTION ═══ -->
     <div id="ql-section" style="display:none;">
         <h2 style="margin-top: 16px;">Neuroevolution (Evolutionary RL)</h2>
         <p class="si-prose">
@@ -3961,7 +3961,7 @@
 </script>
 
 <!-- ═══════════════════════════════════════════════════════════════════════ -->
-<!--  Q-LEARNING AGENT                                                     -->
+<!--  NEUROEVOLUTION AGENT                                                     -->
 <!-- ═══════════════════════════════════════════════════════════════════════ -->
 <script>
 (function () {
