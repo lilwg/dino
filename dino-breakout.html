@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DinoBreakout</title>
     <link rel="stylesheet" href="si-styles.css?v=2">
+    <script src="fullscreen.js"></script>
     <script src="dino-sounds.js"></script>
     <style>
         #game-canvas { width: 100%; height: auto; max-width: none !important; }
@@ -29,6 +30,7 @@
                 <button class="si-btn" id="viz-btn" onclick="toggleViz()">Viz</button>
                 <button class="si-btn" onclick="restartGame()">Restart</button>
                 <button class="si-btn" id="pause-btn" onclick="togglePause()">Pause</button>
+                <button class="si-btn" id="fs-btn" onclick="toggleFullscreen()">Fullscreen</button>
                 <div class="si-speed" style="font-size: 11px;">
                     Difficulty: <input type="range" id="play-diff" min="1" max="10" value="1">
                     <span id="play-diff-val">1</span>
