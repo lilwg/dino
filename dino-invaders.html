@@ -148,6 +148,7 @@
                     playerCx: playerCx,
                     targetX: target ? target.x + target.w / 2 : null,
                     targetReason: targetReason,
+                    target: target,
                     chosenAction: bestAction,
                     simResults: simResults
                 };
@@ -276,6 +277,44 @@
             ctx.lineTo(d.targetX, py + 25);
             ctx.stroke();
         }
+
+        // Dotted circles around aliens: green for main target, gray for others
+        ctx.setLineDash([3, 3]);
+        ctx.lineWidth = 1.5;
+        // Draw gray circles on non-target aliens first (behind green)
+        ctx.strokeStyle = '#8e8e93';
+        ctx.globalAlpha = 0.35;
+        for (var i = 0; i < game.aliens.length; i++) {
+            var a = game.aliens[i];
+            if (!a.alive) continue;
+            if (d.target && !d.target.isMystery && a.row === d.target.row && a.col === d.target.col) continue;
+            var acx = a.x + a.w / 2, acy = a.y + a.h / 2;
+            var r = Math.max(a.w, a.h) / 2 + 4;
+            ctx.beginPath();
+            ctx.arc(acx, acy, r, 0, Math.PI * 2);
+            ctx.stroke();
+        }
+        // Green circle on main target
+        if (d.target) {
+            ctx.strokeStyle = '#30d158';
+            ctx.globalAlpha = 0.8;
+            var t = d.target;
+            var tcx = t.x + t.w / 2, tcy = t.y + t.h / 2;
+            var tr = Math.max(t.w, t.h) / 2 + 5;
+            ctx.beginPath();
+            ctx.arc(tcx, tcy, tr, 0, Math.PI * 2);
+            ctx.stroke();
+        }
+        // Gray circle on mystery ship if it's not the target
+        if (game.mystery && !(d.target && d.target.isMystery)) {
+            ctx.strokeStyle = '#8e8e93';
+            ctx.globalAlpha = 0.35;
+            var mx = game.mystery.x + 20, my = game.mystery.y + 8;
+            ctx.beginPath();
+            ctx.arc(mx, my, 24, 0, Math.PI * 2);
+            ctx.stroke();
+        }
+        ctx.setLineDash([]);
 
         // Bullet trajectory for chosen action
         var chosen = d.simResults[d.chosenAction];
