@@ -1156,6 +1156,7 @@ function loop() {
 // ─── Public API ───────────────────────────────────────────────────────────────
 window.restartGame = function () {
     hiScore = Math.max(hiScore || 0, score || 0);
+    if (hiScore > 0) localStorage.setItem('dino-qbert-hi', hiScore);
     score   = 0;
     lives   = 3;
     round   = 1;
@@ -1207,7 +1208,7 @@ document.addEventListener('keydown', function (e) {
 });
 
 // ─── Start ────────────────────────────────────────────────────────────────────
-hiScore = 0;
+hiScore = parseInt(localStorage.getItem('dino-qbert-hi')) || 0;
 restartGame();
 requestAnimationFrame(loop);
 
