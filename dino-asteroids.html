@@ -20,6 +20,11 @@
                 <button class="si-btn" id="viz-btn" onclick="toggleViz()">Viz</button>
                 <button class="si-btn" onclick="restartGame()">Restart</button>
                 <button class="si-btn" id="pause-btn" onclick="togglePause()">Pause</button>
+                <span class="si-speed" id="diff-wrap">
+                    <label for="diff-slider">Difficulty</label>
+                    <input type="range" id="diff-slider" min="0" max="100" value="50" oninput="setDifficulty(this.value)">
+                    <span id="diff-label">50</span>
+                </span>
             </div>
             <p class="si-help" style="text-align:center;">↑ thrust &nbsp;|&nbsp; ←→ rotate &nbsp;|&nbsp; Space fire &nbsp;|&nbsp; H hyperspace &nbsp;|&nbsp; R restart</p>
             <!-- Mobile touch controls -->
@@ -129,15 +134,31 @@ var SHAPES = [
 var DODGE_HARD = 75;   // hard panic radius (px)
 var DODGE_SOFT = 130;  // combined-flee influence radius (px)
 var RADII  = [0, 11, 20, 38];
-var SPEEDS = [0, 1.8, 1.1, 0.6];
+var SPEEDS_BASE = [0, 1.8, 1.1, 0.6];
 var APTS   = [0, 100, 50, 20];
 var UPTS   = [0, 1000, 200];  // UFO pts: small=1, large=2
+
+// ─── Difficulty helpers ──────────────────────────────────────────────────────
+// d = gameDiff/100, 0 = easiest, 1 = hardest
+// Rock speed multiplier:      d=0 → 0.5x,  d=0.5 → 1x,  d=1 → 1.8x
+function diffRockSpd()  { var d=gameDiff/100; return 0.5 + 1.3*d; }
+// Starting rock count bonus:  d=0 → -2,    d=0.5 → 0,   d=1 → +4
+function diffRockBonus(){ var d=gameDiff/100; return Math.round(-2 + 6*d); }
+// Rock cap per level:         d=0 → 7,     d=0.5 → 11,  d=1 → 16
+function diffRockCap()  { var d=gameDiff/100; return Math.round(7 + 9*d); }
+// UFO spawn interval:         d=0 → 2200,  d=0.5 → 1500, d=1 → 800
+function diffUfoInt()   { var d=gameDiff/100; return Math.round(2200 - 1400*d); }
+// UFO shot interval scale:    d=0 → 1.6x,  d=0.5 → 1x,  d=1 → 0.55x (faster)
+function diffUfoShot()  { var d=gameDiff/100; return 1.6 - 1.05*d; }
+// Small UFO chance:           d=0 → 0.15,  d=0.5 → 0.4, d=1 → 0.75
+function diffSmallUfo() { var d=gameDiff/100; return 0.15 + 0.6*d; }
 
 // ─── State ───────────────────────────────────────────────────────────────────
 var gs, player, bullets, rocks, sparks, ufo;
 var sc, hi, lv, lives, ufoT, tick;
 var aiMode = 'off', aiIn = { rot:0, thrust:false };
 var aiViz = false, aiVizData = null;
+var gameDiff = 50; // 0-100 game difficulty slider
 var isTouchDevice = ('ontouchstart' in window || navigator.maxTouchPoints > 0);
 var keys = {}, paused = false;
 var inv, dayT, nightA, moonPh, moonX, stars;
@@ -168,7 +189,7 @@ function initGame() {
     inv=false; dayT=0; nightA=0; moonPh=0; moonX=CW;
     placeStars();
     spawnPlayer();
-    spawnRocks(4);
+    spawnRocks(Math.max(2, 4 + diffRockBonus()));
     gs='playing';
 }
 
@@ -191,7 +212,7 @@ function addRock(sz, x, y) {
         while (tries < 20 && dst(x,y,px,py) < 110);
     }
     var ang = Math.random()*Math.PI*2;
-    var spd = SPEEDS[sz] * (0.7 + Math.random()*0.6);
+    var spd = SPEEDS_BASE[sz] * diffRockSpd() * (0.7 + Math.random()*0.6);
     var rock = { x:x, y:y, vx:Math.cos(ang)*spd, vy:Math.sin(ang)*spd,
                  sz:sz, r:RADII[sz],
                  sh:Math.floor(Math.random()*SHAPES.length),
@@ -224,7 +245,7 @@ function update() {
     if (rocks.length === 0 && !ufo) {
         lv++;
         DinoSounds.reached();
-        var n = Math.min(2 + lv*2, 11);  // Atari: 4,6,8,10,11,11…
+        var n = Math.max(2, Math.min(2 + lv*2 + diffRockBonus(), diffRockCap()));
         spawnRocks(n);
         if (player) { player.vx=0; player.vy=0; player.iframes=120; }
     }
@@ -345,15 +366,18 @@ function smashRock(idx) {
 
 function stepUFO() {
     ufoT++;
-    if (lv >= 2 && !ufo && ufoT > Math.max(600, UFO_INT - lv*80)) {
+    var ufoInterval = diffUfoInt();
+    if (lv >= 2 && !ufo && ufoT > Math.max(400, ufoInterval - lv*80)) {
         ufoT = 0;
         var side = Math.random() < .5 ? -20 : CW+20;
-        var big  = lv < 5 || Math.random() < .6;
+        var big  = lv < 5 ? (Math.random() >= diffSmallUfo()) : (Math.random() < (1 - diffSmallUfo()));
         var spd  = big ? 1.8 : 2.5;
+        var shotScale = diffUfoShot();
         ufo = { x:side, y:60+Math.random()*(CH-120),
                 vx:side<0?spd:-spd, vy:0,
                 r:big?18:12, big:big,
-                shotT:big?100:65, wobT:0, frame:0, frameT:0 };
+                shotT:Math.round((big?100:65)*shotScale), shotInt:Math.round((big?100:65)*shotScale),
+                wobT:0, frame:0, frameT:0 };
     }
     if (!ufo) return;
     ufo.x += ufo.vx; ufo.y += ufo.vy;
@@ -366,7 +390,7 @@ function stepUFO() {
     if (player && !player.dead) {
         ufo.shotT--;
         if (ufo.shotT <= 0) {
-            ufo.shotT = ufo.big ? 100 : 65;
+            ufo.shotT = ufo.shotInt;
             var ang = ufo.big ? Math.random()*Math.PI*2
                               : Math.atan2(player.y-ufo.y, player.x-ufo.x);
             bullets.push({ x:ufo.x, y:ufo.y,
@@ -416,18 +440,14 @@ function computeAI() {
         var dx=wdx(p.x,tx), dy=wdy(p.y,ty);
         var d=Math.sqrt(dx*dx+dy*dy)||1;
         var eff=d-tr-SHIP_R;   // gap between surfaces
-        // Closing speed: rate at which gap is shrinking (positive = approaching)
-        // d(d)/dt = (t-p)·(tvx-pvx,tvy-pvy)/d = (-dx*(tvx-pvx)-dy*(tvy-pvy))/d
-        // closing = -d(d)/dt = (dx*(tvx-pvx)+dy*(tvy-pvy))/d
         var rvx=tvx-p.vx, rvy=tvy-p.vy;
-        var closing=(dx*rvx+dy*rvy)/d;  // positive = threat approaching ship
+        var closing=(dx*rvx+dy*rvy)/d;
         var w=0;
         if (closing>0.1) {
             var ttc=Math.max(0,eff)/closing;
             if (ttc<minTTC) minTTC=ttc;
             if (ttc<150) { w=Math.pow((150-ttc)/150,2)*mul; if(ttc<30)hardThreat=true; }
         } else if (eff<70) {
-            // Stationary/retreating but very close — still push away
             w=((70-eff)/70)*0.5*mul;
             if (eff<15) hardThreat=true;
         }
@@ -442,7 +462,6 @@ function computeAI() {
     var fleeA=dodging?Math.atan2(fleeY,fleeX):0;
 
     // ── 2. Intercept helper + target selection ────────────────────────────────
-    // Returns {a, tt, rx, ry} or null. Works in relative frame (ship = origin).
     function interceptA(t) {
         var rx=wdx(t.x,p.x), ry=wdy(t.y,p.y);
         var rvx=(t.vx||0)-p.vx, rvy=(t.vy||0)-p.vy;
@@ -462,9 +481,6 @@ function computeAI() {
         return { a:Math.atan2(ry+rvy*tt, rx+rvx*tt), tt:tt, rx:rx, ry:ry };
     }
 
-    // UFO first (it shoots back); otherwise prefer rocks inside the outer danger
-    // circle (DODGE_SOFT), picking the one needing least rotation. Fall back to
-    // the globally easiest rock if none are inside the circle.
     var tgt=null;
     if (ufo && wdst(p.x,p.y,ufo.x,ufo.y)<350) {
         tgt=ufo;
@@ -473,13 +489,11 @@ function computeAI() {
         for (var i=0; i<rocks.length; i++) {
             var r=rocks[i];
             var ric=interceptA(r);
-            // Small rocks score lower (preferred): add (sz-1)*π/2 bias so a large
-            // rock must be ~180° closer in heading than a small one to be chosen.
             var rot=(ric ? Math.abs(normA(ric.a-p.angle)) : Math.PI) + (r.sz-1)*Math.PI/2;
             if (rot<bestRotAll) { bestRotAll=rot; tgtAll=r; }
             if (wdst(p.x,p.y,r.x,r.y) < DODGE_SOFT && rot<bestRot) { bestRot=rot; tgt=r; }
         }
-        if (!tgt) tgt=tgtAll; // no rocks inside circle — use global best
+        if (!tgt) tgt=tgtAll;
     }
 
     var leadX=null, leadY=null, aimA=null, aimDiff=null;
@@ -490,22 +504,18 @@ function computeAI() {
             leadX=p.x+ic.rx+(tgt.vx||0)*ic.tt;
             leadY=p.y+ic.ry+(tgt.vy||0)*ic.tt;
         } else {
-            aimA=Math.atan2(wdy(tgt.y,p.y), wdx(tgt.x,p.x));  // fallback: direct
+            aimA=Math.atan2(wdy(tgt.y,p.y), wdx(tgt.x,p.x));
         }
         aimDiff=normA(aimA-p.angle);
     }
 
-    // Fire at primary target if aligned; then scan every other object
-    // for opportunistic shots — anything the crosshairs sweep through.
-    // Tolerance = angular half-size of the target at intercept distance,
-    // so a bullet on the edge of the window still clips the rock.
+    // ── 3. Firing ─────────────────────────────────────────────────────────────
     if (p.cooldown===0) {
         var fired=false;
         if (ic && aimDiff!==null) {
             var primTol = Math.atan2((tgt.r||15) * 1.5, B_SPD * ic.tt);
             if (Math.abs(aimDiff) < primTol) { fireBullet(); p.cooldown=6; fired=true; }
         }
-        // Opportunistic shots — fire at any rock already in crosshairs, even while dodging
         if (!fired) {
             var opps = ufo ? rocks.concat([ufo]) : rocks;
             for (var i=0; i<opps.length&&!fired; i++) {
@@ -526,7 +536,6 @@ function computeAI() {
         var diff=normA(fleeA-p.angle);
         if(diff>0.1)aiIn.rot=1; else if(diff<-0.1)aiIn.rot=-1;
         aiIn.thrust=hardThreat||Math.abs(diff)<0.5;
-        // Last resort: hyperspace when imminent unavoidable collision
         if (minTTC<10) { keys[72]=true; setTimeout(function(){keys[72]=false;},120); }
     } else if (aimA!==null) {
         if(aimDiff>0.1)aiIn.rot=1; else if(aimDiff<-0.1)aiIn.rot=-1;
@@ -749,6 +758,10 @@ window.setMode = function(m) {
     document.getElementById('rules-btn').classList.toggle('active', m==='ai');
     // If AI is selected while on the start/gameover screen, kick off the game
     if (m === 'ai' && (gs === 'start' || gs === 'gameover')) initGame();
+};
+window.setDifficulty = function(v) {
+    gameDiff = parseInt(v, 10);
+    document.getElementById('diff-label').textContent = v;
 };
 window.restartGame = function() { initGame(); };
 window.togglePause = function() {
