@@ -294,6 +294,21 @@
             ctx.stroke();
         }
 
+        // Green dotted circle around the main target alien/UFO
+        if (d.target) {
+            ctx.setLineDash([3, 3]);
+            ctx.lineWidth = 1.5;
+            ctx.strokeStyle = '#30d158';
+            ctx.globalAlpha = 0.8;
+            var t = d.target;
+            var tcx = t.x + t.w / 2, tcy = t.y + t.h / 2;
+            var tr = Math.max(t.w, t.h) / 2 + 5;
+            ctx.beginPath();
+            ctx.arc(tcx, tcy, tr, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
+
         // Gray dotted circles around aliens the chosen action would kill (opportunistic)
         var chosen = d.simResults[d.chosenAction];
         if (chosen.killedAliens.length > 0) {
