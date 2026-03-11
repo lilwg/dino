@@ -3568,7 +3568,7 @@
                 ACTION_NAMES[i] + (prob ? ' '+prob : '') + '</text>';
         }
         svg += '<text x="'+layerX[0]+'" y="14" text-anchor="middle" font-size="9" fill="#86868b">Input (10)</text>';
-        svg += '<text x="'+layerX[1]+'" y="14" text-anchor="middle" font-size="9" fill="#86868b">Hidden (16)</text>';
+        svg += '<text x="'+layerX[1]+'" y="14" text-anchor="middle" font-size="9" fill="#86868b">Hidden ('+NUM_HIDDEN+')</text>';
         svg += '<text x="'+layerX[2]+'" y="14" text-anchor="middle" font-size="9" fill="#86868b">Output (3)</text>';
         svg += '</svg>';
         el.innerHTML = svg;
