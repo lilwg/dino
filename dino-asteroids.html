@@ -1124,7 +1124,7 @@ window._astConst = { CW:CW, CH:CH, SHIP_R:SHIP_R, TURN:TURN, ACCEL:ACCEL, FRIC:F
 window._astWdx = wdx; window._astWdy = wdy; window._astWdst = wdst; window._astNormA = normA;
 window._astUpdate = update;
 window._astInitGame = initGame;
-window._astSetHeadless = function(v) { _headless = v; };
+window._astSetHeadless = function(v) { _headless = v; DinoSounds.mute(v); };
 
 })();
 </script>

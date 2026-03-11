@@ -44,11 +44,14 @@
         for (var k in SOUNDS) loadSound(k);
     }
 
+    var muted = false;
+
     window.DinoSounds = {
         init: init,
-        press: function () { play('PRESS'); },
-        hit: function () { play('HIT'); },
-        reached: function () { play('REACHED'); }
+        press: function () { if (!muted) play('PRESS'); },
+        hit: function () { if (!muted) play('HIT'); },
+        reached: function () { if (!muted) play('REACHED'); },
+        mute: function (v) { muted = v; }
     };
 
     // Auto-init on first user interaction
