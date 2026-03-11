@@ -157,13 +157,14 @@
     <div id="ql-section" style="display:none;">
         <h2 style="margin-top: 16px;">Q-Learning (Tabular RL)</h2>
         <p class="si-prose">
-            No teacher &mdash; learns from scratch by playing the game. Discretizes the state into bins
-            and builds a Q-table via Bellman updates with experience replay.
+            No teacher &mdash; learns from scratch by playing the game headlessly at maximum speed.
+            Discretizes the state into 256 bins and builds a Q-table via Bellman updates with experience replay.
             It will die a lot at first while exploring, then gradually improve.
-            Click <strong>Start</strong> to begin learning.
+            Click <strong>Start</strong> to train, then <strong>Play</strong> to watch the learned policy.
         </p>
         <div class="si-controls" style="margin-top: 8px; margin-bottom: 8px;">
             <button class="si-btn" id="ql-start-btn" onclick="qlStart()">Start</button>
+            <button class="si-btn" id="ql-play-btn" onclick="qlPlay()" style="display:none;">Play</button>
             <button class="si-btn" id="ql-stop-btn" onclick="qlStop()" style="display:none;">Stop</button>
             <span id="ql-stats" style="font-size: 11px; color: #6e6e73; margin-left: 8px;"></span>
         </div>
@@ -3329,7 +3330,10 @@
     var STEPS_PER_TICK = 500;
     var SPEED_TIERS = [6, 12, 20, 28, 35, 42, 50];
 
-    function collectData(onProgress, onDone) {
+    var TIER_WEIGHTS_MLP = [1, 1, 2, 2, 3, 3, 4]; // bias toward high speed for MLP
+    var TIER_WEIGHTS_FLAT = [1, 1, 1, 1, 1, 1, 1]; // equal coverage for k-NN
+
+    function collectData(onProgress, onDone, opts) {
         if (!_mlTrainRunner) _mlTrainRunner = createMLTrainRunner();
         var r = _mlTrainRunner;
 
@@ -3341,8 +3345,7 @@
         var dataset = [];
         _collecting = true;
         var tierIdx = 0;
-        // Weight later (harder) tiers more: [1,1,2,2,3,3,4] → top 4 tiers get ~75% of data
-        var tierWeights = [1, 1, 2, 2, 3, 3, 4];
+        var tierWeights = (opts && opts.weights) || TIER_WEIGHTS_MLP;
         var totalWeight = 0;
         for (var tw = 0; tw < tierWeights.length; tw++) totalWeight += tierWeights[tw];
         var tierLimits = [];
@@ -3635,7 +3638,14 @@
     window._knnCollectData = collectData;
     window._knnSpeedTiers = SPEED_TIERS;
     window._knnTargetFrames = TARGET_FRAMES;
+    window._knnTierWeightsFlat = TIER_WEIGHTS_FLAT;
     window._knnStopCollecting = function () { _collecting = false; };
+    window._mlCreateTrainRunner = function () {
+        if (!_mlTrainRunner) _mlTrainRunner = createMLTrainRunner();
+        return _mlTrainRunner;
+    };
+    window._mlTrainStep = mlTrainStep;
+    window._mlTrainRestart = mlTrainRestart;
 
     // --- Public API ---
     window.mlTrain = function () {
@@ -3873,7 +3883,8 @@
                 if (collectBtn) { collectBtn.textContent = 'Collect'; collectBtn.onclick = window.knnCollect; }
                 if (statsEl) statsEl.textContent = 'Ready! ' + dataset.length + ' examples (' + _playDataset.length + ' for inference)';
                 if (playBtn) playBtn.style.display = '';
-            }
+            },
+            { weights: window._knnTierWeightsFlat }
         );
     };
 
@@ -4078,34 +4089,22 @@
         }
     }
 
-    // --- Public API ---
-    window.qlStart = function () {
-        var runner = window.runner;
-        if (!runner) return;
-        var startBtn = document.getElementById('ql-start-btn');
-        var stopBtn = document.getElementById('ql-stop-btn');
-        var statsEl = document.getElementById('ql-stats');
-        var vizEl = document.getElementById('ql-viz');
+    // --- Headless training loop ---
+    var STEPS_PER_TICK = 500;
+    var _training = false;
+    var _trained = false;
 
-        if (_playing) { window.qlStop(); return; }
+    function qlTrainHeadless(onProgress, onDone) {
+        var r = window._mlCreateTrainRunner();
+        r.config.MAX_SPEED = 55;
+        window._mlTrainRestart(r, 6);
 
-        // Reset
-        Q = {}; epsilon = EPSILON_START;
-        prevState = null; prevAction = null;
-        replay = new Array(REPLAY_SIZE);
-        replayIdx = 0; replayCount = 0;
-        deaths = 0; bestScore = 0; lastScore = 0;
-        scoreHistory = [];
+        _training = true;
+        var _channel = new MessageChannel();
 
-        _playing = true;
-        if (startBtn) startBtn.style.display = 'none';
-        if (stopBtn) stopBtn.style.display = '';
-        if (vizEl) vizEl.style.display = '';
-
-        var agent = {
-            enabled: true,
-            update: function (r) {
-                if (!r.playing) return;
+        _channel.port1.onmessage = function () {
+            if (!_training) { onDone(); return; }
+            for (var step = 0; step < STEPS_PER_TICK; step++) {
                 var rawState = window.mlExtractState(r);
                 var s = discretize(rawState);
                 var a = chooseAction(s);
@@ -4117,30 +4116,108 @@
                 prevState = s;
                 prevAction = a;
 
-                window.mlExecuteAction(a, r);
-            },
-            onCrash: function (r) {
-                // Terminal update
-                if (prevState !== null) {
+                var collision = window._mlTrainStep(r, a);
+                if (collision) {
+                    // Terminal update
                     storeTransition(prevState, prevAction, DEATH_PENALTY, 0, true);
                     var qS = getQ(prevState);
                     qS[prevAction] += ALPHA * (DEATH_PENALTY - qS[prevAction]);
+                    prevState = null;
+                    prevAction = null;
+
+                    replayBatch();
+                    epsilon = Math.max(EPSILON_MIN, epsilon * EPSILON_DECAY);
+
+                    deaths++;
+                    var score = Math.round(r.distanceRan * 0.025);
+                    lastScore = score;
+                    if (score > bestScore) bestScore = score;
+                    scoreHistory.push(score);
+
+                    // Restart at random speed for diversity
+                    var speeds = [6, 12, 20, 28, 35, 42, 50];
+                    window._mlTrainRestart(r, speeds[Math.floor(Math.random() * speeds.length)]);
                 }
-                prevState = null;
-                prevAction = null;
+            }
+            onProgress();
+            _channel.port2.postMessage(0);
+        };
+        _channel.port2.postMessage(0);
+    }
 
-                // Replay
-                replayBatch();
+    // --- Public API ---
+    window.qlStart = function () {
+        var startBtn = document.getElementById('ql-start-btn');
+        var stopBtn = document.getElementById('ql-stop-btn');
+        var playBtn = document.getElementById('ql-play-btn');
+        var statsEl = document.getElementById('ql-stats');
+        var vizEl = document.getElementById('ql-viz');
 
-                // Decay epsilon
-                epsilon = Math.max(EPSILON_MIN, epsilon * EPSILON_DECAY);
+        if (_training) { window.qlStop(); return; }
 
-                // Stats
-                deaths++;
+        // Reset
+        Q = {}; epsilon = EPSILON_START;
+        prevState = null; prevAction = null;
+        replay = new Array(REPLAY_SIZE);
+        replayIdx = 0; replayCount = 0;
+        deaths = 0; bestScore = 0; lastScore = 0;
+        scoreHistory = [];
+        _trained = false;
+
+        if (startBtn) { startBtn.textContent = 'Stop'; startBtn.onclick = function () { window.qlStop(); }; }
+        if (playBtn) playBtn.style.display = 'none';
+        if (vizEl) vizEl.style.display = '';
+
+        qlTrainHeadless(
+            function onProgress() {
+                var statesVisited = Object.keys(Q).length;
+                if (statsEl) statsEl.textContent =
+                    'Training (headless) | Deaths: ' + deaths + ' | Best: ' + bestScore + ' | Last: ' + lastScore +
+                    ' | ε: ' + epsilon.toFixed(3) + ' | States: ' + statesVisited + '/' + NUM_STATES;
+                renderScoreChart('ql-score-canvas', scoreHistory);
+            },
+            function onDone() {
+                _trained = true;
+                var statesVisited = Object.keys(Q).length;
+                if (statsEl) statsEl.textContent =
+                    'Done! Deaths: ' + deaths + ' | Best: ' + bestScore +
+                    ' | ε: ' + epsilon.toFixed(3) + ' | States: ' + statesVisited + '/' + NUM_STATES;
+                renderScoreChart('ql-score-canvas', scoreHistory);
+                if (startBtn) { startBtn.textContent = 'Start'; startBtn.onclick = window.qlStart; startBtn.style.display = ''; }
+                if (stopBtn) stopBtn.style.display = 'none';
+                if (playBtn) playBtn.style.display = '';
+            }
+        );
+    };
+
+    window.qlPlay = function () {
+        var runner = window.runner;
+        if (!runner || !_trained) return;
+        var playBtn = document.getElementById('ql-play-btn');
+        var stopBtn = document.getElementById('ql-stop-btn');
+        var statsEl = document.getElementById('ql-stats');
+
+        if (_playing) { window.qlStop(); return; }
+
+        _playing = true;
+        var playDeaths = 0, playBest = 0;
+        if (playBtn) playBtn.style.display = 'none';
+        if (stopBtn) stopBtn.style.display = '';
+
+        var agent = {
+            enabled: true,
+            update: function (r) {
+                if (!r.playing) return;
+                var rawState = window.mlExtractState(r);
+                var s = discretize(rawState);
+                // Greedy — no exploration during play
+                var a = argmax(getQ(s));
+                window.mlExecuteAction(a, r);
+            },
+            onCrash: function (r) {
+                playDeaths++;
                 var score = Math.round(r.distanceRan * 0.025);
-                lastScore = score;
-                if (score > bestScore) bestScore = score;
-                scoreHistory.push(score);
+                if (score > playBest) playBest = score;
             },
             recordPrediction: function () {},
             checkGhostCollisions: function () {}
@@ -4162,23 +4239,24 @@
         if (_statsInterval) clearInterval(_statsInterval);
         _statsInterval = setInterval(function () {
             if (!_playing) { clearInterval(_statsInterval); return; }
-            var statesVisited = Object.keys(Q).length;
+            var score = Math.round(runner.distanceRan * 0.025);
             if (statsEl) statsEl.textContent =
-                'Deaths: ' + deaths + ' | Best: ' + bestScore + ' | Last: ' + lastScore +
-                ' | ε: ' + epsilon.toFixed(3) + ' | States: ' + statesVisited + '/' + NUM_STATES;
-            renderScoreChart('ql-score-canvas', scoreHistory);
-        }, 300);
+                'Playing (greedy) | Deaths: ' + playDeaths + ' | Best: ' + playBest + ' | Score: ' + score;
+        }, 200);
     };
 
     window.qlStop = function () {
         _playing = false;
+        _training = false;
         var runner = window.runner;
         if (runner) { runner.aiAgent = null; runner.postRenderHook = null; }
         if (_statsInterval) { clearInterval(_statsInterval); _statsInterval = null; }
         var startBtn = document.getElementById('ql-start-btn');
         var stopBtn = document.getElementById('ql-stop-btn');
-        if (startBtn) startBtn.style.display = '';
+        var playBtn = document.getElementById('ql-play-btn');
+        if (startBtn) { startBtn.textContent = 'Start'; startBtn.onclick = window.qlStart; startBtn.style.display = ''; }
         if (stopBtn) stopBtn.style.display = 'none';
+        if (playBtn && _trained) playBtn.style.display = '';
     };
 })();
 </script>
