@@ -4335,6 +4335,12 @@
         var runner = window.runner;
         if (runner) { runner.aiAgent = null; runner.postRenderHook = null; }
         if (_statsInterval) { clearInterval(_statsInterval); _statsInterval = null; }
+        // Immediately update chart and stats so they reflect final state
+        var statsEl = document.getElementById('ql-stats');
+        if (statsEl && generation > 0) statsEl.textContent =
+            'Paused | Gen: ' + generation + ' | Best: ' + bestScore +
+            ' | σ: ' + sigma.toFixed(3);
+        renderScoreChart('ql-score-canvas', scoreHistory);
         qlUpdateButtons('stopped');
     };
 
