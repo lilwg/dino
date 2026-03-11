@@ -91,7 +91,8 @@
     // ═══════════════════════════════════════════════════════════════
     var simGame = new SpaceInvadersGame(document.createElement('canvas'), { primary: false });
 
-    var SIM_STEPS = 150;   // frames per sim (~600px horizontal reach, full board)
+    var SIM_STEPS = 150;   // total frames per sim (full board reach)
+    var DECISION_INTERVAL = 15; // re-evaluate action every N frames within sim
 
     var invadersSimAI = {
         enabled: false,
@@ -101,7 +102,7 @@
         update: function (g) {
             var snap = g.snapshotState();
 
-            // One deterministic sim per action — only existing bullets matter
+            // One deterministic sim per initial action — greedy re-eval after first interval
             var detResults = [];
             var avgScores = new Array(6);
 
@@ -140,7 +141,47 @@
             return s;
         },
 
-        _simulate: function (snap, action, nSteps, suppressFire) {
+        // Greedy 1-ply lookahead: pick best action for the next interval
+        _pickGreedyAction: function (simState, stepsLeft) {
+            var horizon = Math.min(DECISION_INTERVAL, stepsLeft);
+            var bestAction = 5;
+            var bestScore = -Infinity;
+            var savedSnap = simGame.snapshotState();
+
+            for (var a = 0; a < 6; a++) {
+                simGame.restoreState(savedSnap);
+                var startScore = simGame.score;
+                var startLives = simGame.lives;
+                var died = false;
+                var minBDist = 9999;
+
+                for (var i = 0; i < horizon; i++) {
+                    simGame.executeAction(a);
+                    simGame.update();
+                    var px = simGame.player.x + 22, py = simGame.player.y;
+                    for (var j = 0; j < simGame.enemyBullets.length; j++) {
+                        var eb = simGame.enemyBullets[j];
+                        var dx = eb.x - px, dy = eb.y - py;
+                        var dist = Math.sqrt(dx * dx + dy * dy);
+                        if (dist < minBDist) minBDist = dist;
+                    }
+                    if (simGame.lives < startLives) { died = true; break; }
+                }
+
+                var score = 0;
+                if (died) score -= 1000;
+                score += (simGame.score - startScore) * 10;
+                score += Math.min(minBDist, 200) * 0.05;
+
+                if (score > bestScore) { bestScore = score; bestAction = a; }
+            }
+
+            // Restore to the state that the best action produced
+            simGame.restoreState(savedSnap);
+            return bestAction;
+        },
+
+        _simulate: function (snap, initialAction, nSteps, suppressFire) {
             simGame.restoreState(snap);
             simGame._suppressEnemyFire = !!suppressFire;
 
@@ -150,9 +191,15 @@
             var bulletPositions = [];
             var died = false;
             var minBulletDist = 9999;
+            var currentAction = initialAction;
 
             for (var i = 0; i < nSteps; i++) {
-                simGame.executeAction(action);
+                // Re-evaluate action at each decision interval (after the first)
+                if (i > 0 && i % DECISION_INTERVAL === 0) {
+                    currentAction = this._pickGreedyAction(null, nSteps - i);
+                }
+
+                simGame.executeAction(currentAction);
                 simGame.update();
 
                 // Player center position
