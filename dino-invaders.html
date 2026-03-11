@@ -354,22 +354,6 @@
             ctx.setLineDash([]);
         }
 
-        // Bullet trajectory for chosen action
-        var chosen = d.simResults[d.chosenAction];
-        if (chosen.bulletPositions.length > 0) {
-            ctx.strokeStyle = FAMILY_COLORS[ACTION_FAMILY[d.chosenAction]];
-            ctx.globalAlpha = 0.4;
-            ctx.setLineDash([3, 3]);
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            for (var i = 0; i < chosen.bulletPositions.length; i++) {
-                var bp = chosen.bulletPositions[i];
-                if (i === 0) ctx.moveTo(bp.x, bp.y);
-                else ctx.lineTo(bp.x, bp.y);
-            }
-            ctx.stroke();
-            ctx.setLineDash([]);
-        }
 
         // Decision badge below player
         var r = d.simResults[d.chosenAction];
