@@ -168,6 +168,7 @@
             <button class="si-btn" id="ql-play-btn" onclick="qlPlay()" style="display:none;">Play</button>
             <button class="si-btn" id="ql-stop-btn" onclick="qlStop()" style="display:none;">Stop</button>
             <button class="si-btn" id="ql-reset-btn" onclick="qlReset()" style="display:none;">Reset</button>
+            <button class="si-btn" id="ql-load-btn" onclick="qlLoadPretrained()" style="display:none;">Load Pretrained</button>
             <span id="ql-stats" style="font-size: 11px; color: #6e6e73; margin-left: 8px;"></span>
         </div>
         <div id="ql-viz" style="display:none;">
@@ -4231,22 +4232,26 @@
         var stopBtn  = document.getElementById('ql-stop-btn');
         var playBtn  = document.getElementById('ql-play-btn');
         var resetBtn = document.getElementById('ql-reset-btn');
+        var loadBtn  = document.getElementById('ql-load-btn');
         var hasTrained = bestGenome !== null;
         if (mode === 'training') {
             if (startBtn) { startBtn.style.display = 'none'; }
             if (stopBtn) stopBtn.style.display = '';
             if (playBtn) playBtn.style.display = 'none';
             if (resetBtn) resetBtn.style.display = 'none';
+            if (loadBtn) loadBtn.style.display = 'none';
         } else if (mode === 'playing') {
             if (startBtn) startBtn.style.display = 'none';
             if (stopBtn) stopBtn.style.display = '';
             if (playBtn) playBtn.style.display = 'none';
             if (resetBtn) resetBtn.style.display = 'none';
+            if (loadBtn) loadBtn.style.display = 'none';
         } else { // stopped
             if (startBtn) { startBtn.textContent = generation > 0 ? 'Continue' : 'Start'; startBtn.style.display = ''; }
             if (stopBtn) stopBtn.style.display = 'none';
             if (playBtn) playBtn.style.display = hasTrained ? '' : 'none';
             if (resetBtn) resetBtn.style.display = hasTrained ? '' : 'none';
+            if (loadBtn) loadBtn.style.display = hasTrained ? 'none' : '';
         }
     }
 
@@ -4357,6 +4362,42 @@
         if (statsEl) statsEl.textContent = '';
         qlUpdateButtons('stopped');
     };
+
+    // --- Load pretrained weights ---
+    function loadWeights(data) {
+        if (!data || !data.genome || data.genome.length !== GENOME_LEN) return false;
+        bestGenome = new Float64Array(data.genome);
+        bestScore = data.bestScore || 0;
+        generation = data.generation || 0;
+        var statsEl = document.getElementById('ql-stats');
+        if (statsEl) statsEl.textContent = 'Pretrained weights loaded | Best: ' + bestScore;
+        qlUpdateButtons('stopped');
+        return true;
+    }
+
+    window.qlLoadPretrained = function () {
+        var statsEl = document.getElementById('ql-stats');
+        if (statsEl) statsEl.textContent = 'Loading pretrained weights...';
+        fetch('dino-cmaes-best.json').then(function (r) {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.json();
+        }).then(function (data) {
+            if (loadWeights(data)) {
+                if (statsEl) statsEl.textContent = 'Pretrained weights loaded (score: ' + (data.bestScore || '?') + ') — click Play!';
+            } else {
+                if (statsEl) statsEl.textContent = 'Error: incompatible weight format';
+            }
+        }).catch(function (err) {
+            if (statsEl) statsEl.textContent = 'Could not load weights: ' + err.message;
+        });
+    };
+
+    // --- Auto-load pretrained weights on page load ---
+    fetch('dino-cmaes-best.json').then(function (r) {
+        if (r.ok) return r.json();
+    }).then(function (data) {
+        if (data) loadWeights(data);
+    }).catch(function () { /* no pretrained weights available */ });
 })();
 </script>
 </body>

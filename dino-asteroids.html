@@ -677,7 +677,7 @@ function simRollout(s, aimAngle) {
 
 // ── Main AI ─────────────────────────────────────────────────────────────────
 function computeAI() {
-    aiIn.rot=0; aiIn.thrust=false;
+    aiIn.rot=0; aiIn.thrust=false; aiIn.fire=false;
     var p=player;
 
     // 1. Rule-based target selection
@@ -780,7 +780,7 @@ function computeAI() {
     aiIn.thrust = !!best[1];
 
     if (best[2] && p.cooldown===0) {
-        fireBullet(); p.cooldown=6;
+        fireBullet(); p.cooldown=6; aiIn.fire=true;
     }
 
     // 6. Opportunistic fire: if sim didn't choose fire, still shoot at
@@ -795,7 +795,7 @@ function computeAI() {
             if (ric) {
                 var tol = Math.atan2((opps[i].r||15)*1.5, B_SPD*ric.tt);
                 if (Math.abs(normA(ric.a-p.angle)) < tol) {
-                    fireBullet(); p.cooldown=6; break;
+                    fireBullet(); p.cooldown=6; aiIn.fire=true; break;
                 }
             }
         }
