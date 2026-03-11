@@ -30,7 +30,7 @@
 
         <h2 style="margin-top:16px;">How it works</h2>
         <p class="si-prose">DinoQbert recreates the 1982 Gottlieb arcade original: hop-based movement, one jump per keypress with a 150ms arc animation, and the classic @!#?@! swear bubble on death. Coily spawns as an egg, bounces randomly down the pyramid, then hatches and chases the player. Slick hops down uncoloring cubes. Two teleport discs on each side let Q*bert escape and kill Coily for a bonus.</p>
-        <p class="si-prose">Tap <strong>Viz</strong> to reveal the AI&rsquo;s plan: a dashed line traces the BFS-shortest path to its next target, with faint dots marking the rest of its queued tour stops. The AI builds a greedy nearest-neighbour tour over all uncolored cubes, then uses BFS to navigate each leg while avoiding tiles adjacent to enemies. If Coily closes to within two hops, the AI abandons the tour and leaps for a disc to reset him.</p>
+        <p class="si-prose">Tap <strong>Viz</strong> to reveal the AI&rsquo;s plan: a dashed line traces the BFS path to its next target, with faint dots marking the rest of its queued tour. The AI forward-simulates Coily&rsquo;s greedy chase 3 steps ahead to build both immediate and predicted danger maps, then plans a danger-weighted nearest-neighbour tour over all uncolored cubes. BFS pathfinding routes around dangerous tiles. Every move is scored by a multi-criteria evaluator: path progress, cube productivity, safety margin, escape-route count, and 2-step lookahead. It intercepts nearby Slicks for bonus points, and triggers disc escapes earlier&mdash;when cornered or when Coily closes to 3 hops&mdash;even maneuvering toward a disc edge when not already on one.</p>
 
         <p style="margin-top:20px;"><a href="/" style="color:#0071e3;font-size:14px;text-decoration:none;">&larr; Back</a></p>
     </div>
@@ -655,8 +655,8 @@ function updatePlayer() {
 
 // ─── AI ──────────────────────────────────────────────────────────────────────
 
-// BFS from (r1,c1) to (r2,c2); returns {dist, path} or null
-function bfsTo(r1, c1, r2, c2) {
+// BFS from (r1,c1) to (r2,c2); optionally avoids tiles in avoidSet
+function bfsTo(r1, c1, r2, c2, avoidSet) {
     if (r1 === r2 && c1 === c2) return { dist: 0, path: [] };
     var visited = {}; visited[r1 + ',' + c1] = true;
     var queue = [{ row: r1, col: c1, path: [] }];
@@ -668,6 +668,7 @@ function bfsTo(r1, c1, r2, c2) {
             if (!isValidPos(nr, nc)) continue;
             var key = nr + ',' + nc;
             if (visited[key]) continue;
+            if (avoidSet && avoidSet[key]) continue;
             visited[key] = true;
             var np = cur.path.concat([DIR_KEYS[k]]);
             if (nr === r2 && nc === c2) return { dist: np.length, path: np };
@@ -684,9 +685,114 @@ function boardSig() {
     return s;
 }
 
-// Nearest-neighbour TSP tour over all uncolored tiles
+// Predict where Coily will be in N steps (greedy chase toward a position)
+function predictCoilyPos(coily, targetRow, targetCol, steps) {
+    var cr = coily.row, cc = coily.col;
+    for (var s = 0; s < steps; s++) {
+        var bestDir = null, bestDist = Infinity;
+        for (var k = 0; k < DIR_KEYS.length; k++) {
+            var dk = DIRS[DIR_KEYS[k]];
+            var nr = cr + dk.dr, nc = cc + dk.dc;
+            if (!isValidPos(nr, nc)) continue;
+            var dist = Math.abs(targetRow - nr) + Math.abs(targetCol - nc);
+            if (dist < bestDist) { bestDist = dist; bestDir = k; }
+        }
+        if (bestDir === null) break;
+        var dd = DIRS[DIR_KEYS[bestDir]];
+        cr += dd.dr; cc += dd.dc;
+    }
+    return { row: cr, col: cc };
+}
+
+// Build danger maps: immediate danger + predicted future danger
+function buildDangerMaps() {
+    var immediate = {};  // tiles dangerous RIGHT NOW (enemy + adjacent)
+    var predicted = {};  // tiles that will be dangerous in 1-3 steps
+    var coilies = [];
+
+    for (var i = 0; i < enemies.length; i++) {
+        var e = enemies[i];
+        if (e.type === 'spawn-timer') continue;
+
+        // Mark enemy tile and all adjacent as immediately dangerous
+        immediate[e.row + ',' + e.col] = true;
+        for (var k = 0; k < DIR_KEYS.length; k++) {
+            var dk = DIRS[DIR_KEYS[k]];
+            var nr = e.row + dk.dr, nc = e.col + dk.dc;
+            if (isValidPos(nr, nc)) immediate[nr + ',' + nc] = true;
+        }
+
+        if (e.type === 'coily') coilies.push(e);
+    }
+
+    // Predict Coily positions 1-3 steps ahead and mark those zones
+    for (var ci = 0; ci < coilies.length; ci++) {
+        for (var step = 1; step <= 3; step++) {
+            var fp = predictCoilyPos(coilies[ci], player.row, player.col, step);
+            predicted[fp.row + ',' + fp.col] = true;
+            for (var k = 0; k < DIR_KEYS.length; k++) {
+                var dk = DIRS[DIR_KEYS[k]];
+                var nr = fp.row + dk.dr, nc = fp.col + dk.dc;
+                if (isValidPos(nr, nc)) predicted[nr + ',' + nc] = true;
+            }
+        }
+    }
+
+    return { immediate: immediate, predicted: predicted, coilies: coilies };
+}
+
+// Count how many safe moves are available from a position
+function countEscapes(row, col, dangerSet) {
+    var count = 0;
+    for (var k = 0; k < DIR_KEYS.length; k++) {
+        var dk = DIRS[DIR_KEYS[k]];
+        var nr = row + dk.dr, nc = col + dk.dc;
+        if (isValidPos(nr, nc) && !dangerSet[nr + ',' + nc]) count++;
+    }
+    return count;
+}
+
+// Score a candidate move for safety (higher = safer)
+function scoreMoveForSafety(nr, nc, danger) {
+    var s = 0;
+    // Immediate danger is very bad
+    if (danger.immediate[nr + ',' + nc]) s -= 100;
+    // Predicted danger is moderately bad
+    if (danger.predicted[nr + ',' + nc]) s -= 30;
+    // Prefer tiles with more escape routes (avoid corners/traps)
+    s += countEscapes(nr, nc, danger.immediate) * 10;
+    // Slightly prefer staying away from edges (more options)
+    if (nc > 0 && nc < nr) s += 3; // not on left or right edge
+    if (nr > 0 && nr < ROWS - 1) s += 2; // not on top or bottom row
+    return s;
+}
+
+// Find nearby Slicks worth intercepting
+function findSlickTarget(danger) {
+    var tgt = targetState();
+    var bestSlick = null, bestDist = Infinity;
+    for (var i = 0; i < enemies.length; i++) {
+        var e = enemies[i];
+        if (e.type !== 'slick') continue;
+        // Only intercept if the Slick is threatening colored cubes or is close
+        var dist = Math.abs(e.row - player.row) + Math.abs(e.col - player.col);
+        if (dist <= 3) {
+            // Predict where Slick will go (it moves DL or DR randomly, we check both)
+            // Try to land on a tile it will pass through
+            var res = bfsTo(player.row, player.col, e.row, e.col, danger.immediate);
+            if (res && res.dist <= 2 && res.dist < bestDist) {
+                bestDist = res.dist;
+                bestSlick = { row: e.row, col: e.col, path: res.path };
+            }
+        }
+    }
+    return bestSlick;
+}
+
+// Build optimized tour: nearest-neighbor with danger weighting
 function buildTour() {
     var tgt = targetState();
+    var danger = buildDangerMaps();
     var remaining = [];
     for (var i = 0; i < cubeStates.length; i++)
         if (cubeStates[i].state < tgt)
@@ -695,11 +801,17 @@ function buildTour() {
     var tour = [];
     var cr = player.row, cc = player.col;
     while (remaining.length > 0) {
-        var best = null, bestDist = Infinity, bestIdx = -1;
+        var best = null, bestCost = Infinity, bestIdx = -1;
         for (var i = 0; i < remaining.length; i++) {
             var res = bfsTo(cr, cc, remaining[i].row, remaining[i].col);
-            if (res && res.dist < bestDist) {
-                bestDist = res.dist; best = remaining[i]; bestIdx = i;
+            if (!res) continue;
+            // Cost = distance + danger penalty
+            var cost = res.dist;
+            if (danger.immediate[remaining[i].row + ',' + remaining[i].col]) cost += 8;
+            if (danger.predicted[remaining[i].row + ',' + remaining[i].col]) cost += 3;
+            // Slight bonus for tiles that color multiple adjacent uncolored cubes on the way
+            if (cost < bestCost) {
+                bestCost = cost; best = remaining[i]; bestIdx = i;
             }
         }
         if (!best) break;
@@ -714,37 +826,75 @@ function buildTour() {
 
 function computeAIMove() {
     var tgt = targetState();
+    var danger = buildDangerMaps();
 
-    // Danger map: enemy tiles + all adjacent tiles
-    var dangerSet = {};
-    for (var i = 0; i < enemies.length; i++) {
-        var e = enemies[i];
-        if (e.type === 'spawn-timer') continue;
-        dangerSet[e.row + ',' + e.col] = true;
-        for (var k = 0; k < DIR_KEYS.length; k++) {
-            var dk = DIRS[DIR_KEYS[k]];
-            var nr = e.row + dk.dr, nc = e.col + dk.dc;
-            if (isValidPos(nr, nc)) dangerSet[nr + ',' + nc] = true;
-        }
+    // ── 1. Disc escape: strategic use when Coily threatens ──
+    var closestCoily = null, coilyDist = 999;
+    for (var i = 0; i < danger.coilies.length; i++) {
+        var c = danger.coilies[i];
+        var d = Math.abs(c.row - player.row) + Math.abs(c.col - player.col);
+        if (d < coilyDist) { coilyDist = d; closestCoily = c; }
     }
 
-    // Disc escape when Coily is close
-    var coilyDist = 999;
-    for (var i = 0; i < enemies.length; i++) {
-        if (enemies[i].type === 'coily') {
-            var d = Math.abs(enemies[i].row - player.row) + Math.abs(enemies[i].col - player.col);
-            if (d < coilyDist) coilyDist = d;
-        }
-    }
-    if (coilyDist <= 2) {
+    // Use disc if Coily is within 3 hops AND we're on the correct edge
+    // Also use disc if we're trapped (no safe moves) and a disc is reachable
+    var shouldEscape = coilyDist <= 3;
+    // Check if we're cornered (0-1 safe moves)
+    var safeMoveCount = countEscapes(player.row, player.col, danger.immediate);
+    if (safeMoveCount <= 1 && coilyDist <= 4) shouldEscape = true;
+
+    if (shouldEscape) {
+        // Left disc: reachable if we're on the left edge (col === 0)
         if (discs[0].active && player.col === 0) return 'UL';
+        // Right disc: reachable if we're on the right edge (col === row)
         if (discs[1].active && player.col === player.row) return 'UR';
+
+        // Not on disc edge — can we reach a disc edge in 1 move?
+        if (coilyDist <= 2) {
+            // Try to reach left disc edge
+            if (discs[0].active) {
+                // UL decreases col: if col-1 === 0 and row-1 valid...
+                var ulD = DIRS['UL'];
+                var ulR = player.row + ulD.dr, ulC = player.col + ulD.dc;
+                if (isValidPos(ulR, ulC) && ulC === 0 && !danger.immediate[ulR + ',' + ulC]) return 'UL';
+                var dlD = DIRS['DL'];
+                var dlR = player.row + dlD.dr, dlC = player.col + dlD.dc;
+                if (isValidPos(dlR, dlC) && dlC === 0 && !danger.immediate[dlR + ',' + dlC]) return 'DL';
+            }
+            // Try to reach right disc edge
+            if (discs[1].active) {
+                var urD = DIRS['UR'];
+                var urR = player.row + urD.dr, urC = player.col + urD.dc;
+                if (isValidPos(urR, urC) && urC === urR && !danger.immediate[urR + ',' + urC]) return 'UR';
+                var drD = DIRS['DR'];
+                var drR = player.row + drD.dr, drC = player.col + drD.dc;
+                if (isValidPos(drR, drC) && drC === drR && !danger.immediate[drR + ',' + drC]) return 'DR';
+            }
+        }
     }
 
-    // Replan tour whenever board state changes
+    // ── 2. Slick interception: catch nearby Slicks for 300 pts ──
+    var slickTarget = findSlickTarget(danger);
+    if (slickTarget && slickTarget.path.length > 0) {
+        var sd = DIRS[slickTarget.path[0]];
+        var snr = player.row + sd.dr, snc = player.col + sd.dc;
+        if (!danger.immediate[snr + ',' + snc]) {
+            // Viz: show path to slick
+            aiDetailPath = [];
+            var sr = player.row, sc = player.col;
+            for (var i = 0; i < slickTarget.path.length; i++) {
+                var sdd = DIRS[slickTarget.path[i]];
+                sr += sdd.dr; sc += sdd.dc;
+                aiDetailPath.push({ row: sr, col: sc });
+            }
+            return slickTarget.path[0];
+        }
+    }
+
+    // ── 3. Replan tour whenever board state changes ──
     if (boardSig() !== aiBoardSig || aiTour.length === 0) buildTour();
 
-    // Advance past targets already colored (e.g. by Slick's uncolor or our own stomps)
+    // Advance past targets already colored
     while (aiTourIdx < aiTour.length) {
         var t = aiTour[aiTourIdx];
         var tc = cubeAt(t.row, t.col);
@@ -752,14 +902,21 @@ function computeAIMove() {
         aiTourIdx++;
     }
 
-    // Helper: try any safe valid move as a last resort (avoids AI freezing)
+    // ── 4. Evaluate the best move using multi-criteria scoring ──
+    // Helper: try any safe valid move as a last resort
     function fallbackMove() {
+        var bestDir = null, bestScore = -Infinity;
         for (var fk = 0; fk < DIR_KEYS.length; fk++) {
             var fd0 = DIRS[DIR_KEYS[fk]];
             var fbr = player.row + fd0.dr, fbc = player.col + fd0.dc;
-            if (isValidPos(fbr, fbc) && !dangerSet[fbr + ',' + fbc]) return DIR_KEYS[fk];
+            if (!isValidPos(fbr, fbc)) continue;
+            var ms = scoreMoveForSafety(fbr, fbc, danger);
+            // Bonus: prefer uncolored cubes even in fallback
+            var cube = cubeAt(fbr, fbc);
+            if (cube && cube.state < tgt) ms += 15;
+            if (ms > bestScore) { bestScore = ms; bestDir = DIR_KEYS[fk]; }
         }
-        return null;
+        return bestDir;
     }
 
     if (aiTourIdx >= aiTour.length) {
@@ -767,9 +924,13 @@ function computeAIMove() {
         return fallbackMove();
     }
 
-    // BFS to the current tour target
+    // BFS to the current tour target, avoiding dangerous tiles
     var target = aiTour[aiTourIdx];
-    var res = bfsTo(player.row, player.col, target.row, target.col);
+    var res = bfsTo(player.row, player.col, target.row, target.col, danger.immediate);
+    // If danger-aware BFS fails, try without avoidance
+    if (!res || res.path.length === 0) {
+        res = bfsTo(player.row, player.col, target.row, target.col);
+    }
     if (!res || res.path.length === 0) {
         aiDetailPath = []; aiTourDots = [];
         return fallbackMove();
@@ -787,22 +948,35 @@ function computeAIMove() {
     for (var i = aiTourIdx + 1; i < aiTour.length; i++)
         aiTourDots.push({ row: aiTour[i].row, col: aiTour[i].col });
 
-    // Take first step; dodge danger if possible
+    // ── 5. Smart first-step selection with multi-step lookahead ──
     var firstDir = res.path[0];
     var fd = DIRS[firstDir];
     var fnr = player.row + fd.dr, fnc = player.col + fd.dc;
-    if (dangerSet[fnr + ',' + fnc]) {
-        for (var k = 0; k < DIR_KEYS.length; k++) {
-            if (DIR_KEYS[k] === firstDir) continue;
-            var ad = DIRS[DIR_KEYS[k]];
-            var anr = player.row + ad.dr, anc = player.col + ad.dc;
-            if (!isValidPos(anr, anc)) continue;
-            if (dangerSet[anr + ',' + anc]) continue;
-            return DIR_KEYS[k];
-        }
+
+    // Score all candidate moves and pick the best one
+    var bestDir = firstDir, bestMoveScore = -Infinity;
+    for (var k = 0; k < DIR_KEYS.length; k++) {
+        var ad = DIRS[DIR_KEYS[k]];
+        var anr = player.row + ad.dr, anc = player.col + ad.dc;
+        if (!isValidPos(anr, anc)) continue;
+
+        var ms = scoreMoveForSafety(anr, anc, danger);
+
+        // Strong bonus for following the planned path
+        if (DIR_KEYS[k] === firstDir) ms += 25;
+
+        // Bonus for stepping on an uncolored cube (productive move)
+        var cube = cubeAt(anr, anc);
+        if (cube && cube.state < tgt) ms += 20;
+
+        // 2-step lookahead: check if we'll have safe moves from the next position
+        var futureEscapes = countEscapes(anr, anc, danger.predicted);
+        ms += futureEscapes * 5;
+
+        if (ms > bestMoveScore) { bestMoveScore = ms; bestDir = DIR_KEYS[k]; }
     }
 
-    return firstDir;
+    return bestDir;
 }
 
 // ─── Update ───────────────────────────────────────────────────────────────────
