@@ -1140,9 +1140,13 @@ var C = window._astConst;
 var wdx = window._astWdx, wdy = window._astWdy, normA = window._astNormA;
 
 // ── Feature extraction ──────────────────────────────────────────────────
-// 5 nearest rocks × 5 features + ship(4) + ufo(4) + nearest enemy bullet(3) = 36
+// Per rock (8): angle_sin, angle_cos, dist, rel_vx, rel_vy, closing_speed, size, danger
+// Ship (5): speed, vx, vy, angle sin/cos
+// Cooldown (1)
+// UFO (5): present, angle_sin, angle_cos, dist, closing_speed
+// Nearest enemy bullet (4): angle_sin, angle_cos, dist, closing_speed
 var N_ROCKS = 5;
-var N_FEAT = N_ROCKS * 5 + 4 + 4 + 3; // 36
+var N_FEAT = N_ROCKS * 8 + 5 + 1 + 5 + 4; // 55
 
 function extractState() {
     var st = window._astState();
@@ -1151,62 +1155,83 @@ function extractState() {
 
     var feat = new Float32Array(N_FEAT);
     var fi = 0;
+    var maxDist = Math.sqrt(C.CW*C.CW + C.CH*C.CH) * 0.5; // half diagonal (wrap)
 
-    // Ship state (4): speed, angle sin/cos, cooldown
+    // Ship state (5): speed, velocity components, heading
     var spd = Math.sqrt(p.vx*p.vx + p.vy*p.vy);
     feat[fi++] = spd / C.VMAX;
+    feat[fi++] = p.vx / C.VMAX;
+    feat[fi++] = p.vy / C.VMAX;
     feat[fi++] = Math.cos(p.angle);
     feat[fi++] = Math.sin(p.angle);
+    // Cooldown (1)
     feat[fi++] = p.cooldown / 6;
 
     // Sort rocks by distance
     var rks = [];
     for (var i = 0; i < st.rocks.length; i++) {
         var r = st.rocks[i];
-        rks.push({ dx: wdx(r.x, p.x), dy: wdy(r.y, p.y), vx: r.vx, vy: r.vy, sz: r.sz,
-                    d: Math.sqrt(wdx(r.x,p.x)*wdx(r.x,p.x) + wdy(r.y,p.y)*wdy(r.y,p.y)) });
+        var dx = wdx(r.x, p.x), dy = wdy(r.y, p.y);
+        var d = Math.sqrt(dx*dx + dy*dy) || 1;
+        var rvx = r.vx - p.vx, rvy = r.vy - p.vy;
+        var closing = (dx*rvx + dy*rvy) / d; // positive = approaching
+        var angToRock = Math.atan2(dy, dx);
+        var relAng = normA(angToRock - p.angle); // angle relative to ship heading
+        rks.push({ dx:dx, dy:dy, d:d, rvx:rvx, rvy:rvy, closing:closing,
+                    relAng:relAng, sz:r.sz, r:r.r });
     }
     rks.sort(function(a,b) { return a.d - b.d; });
 
-    // Nearest N_ROCKS rocks: relative dx, dy, dvx, dvy, size (all normalised)
+    // Nearest N_ROCKS rocks (8 features each)
     for (var i = 0; i < N_ROCKS; i++) {
         if (i < rks.length) {
             var rk = rks[i];
-            feat[fi++] = rk.dx / C.CW;
-            feat[fi++] = rk.dy / C.CH;
-            feat[fi++] = (rk.vx - p.vx) / (C.VMAX * 2);
-            feat[fi++] = (rk.vy - p.vy) / (C.VMAX * 2);
-            feat[fi++] = rk.sz / 3;
+            feat[fi++] = Math.sin(rk.relAng);        // angle to rock (relative to heading)
+            feat[fi++] = Math.cos(rk.relAng);
+            feat[fi++] = Math.min(rk.d / maxDist, 1); // normalised distance
+            feat[fi++] = rk.rvx / (C.VMAX * 2);      // relative velocity
+            feat[fi++] = rk.rvy / (C.VMAX * 2);
+            feat[fi++] = rk.closing / (C.VMAX * 2);   // closing speed
+            feat[fi++] = rk.sz / 3;                    // size
+            // danger: high when close and approaching
+            var danger = rk.closing > 0 ? Math.max(0, 1 - rk.d / 150) * (rk.closing / 3) : 0;
+            feat[fi++] = Math.min(danger, 1);
         } else {
-            fi += 5; // zeros (no rock)
+            fi += 8; // zeros (no rock)
         }
     }
 
-    // UFO (4): present, dx, dy, angular error to UFO
+    // UFO (5): present, relative angle, distance, closing speed
     if (st.ufo) {
+        var udx = wdx(st.ufo.x, p.x), udy = wdy(st.ufo.y, p.y);
+        var ud = Math.sqrt(udx*udx + udy*udy) || 1;
+        var uRelAng = normA(Math.atan2(udy, udx) - p.angle);
+        var urvx = (st.ufo.vx||0) - p.vx, urvy = (st.ufo.vy||0) - p.vy;
         feat[fi++] = 1;
-        feat[fi++] = wdx(st.ufo.x, p.x) / C.CW;
-        feat[fi++] = wdy(st.ufo.y, p.y) / C.CH;
-        var ufoA = Math.atan2(wdy(st.ufo.y, p.y), wdx(st.ufo.x, p.x));
-        feat[fi++] = normA(ufoA - p.angle) / Math.PI;
+        feat[fi++] = Math.sin(uRelAng);
+        feat[fi++] = Math.cos(uRelAng);
+        feat[fi++] = Math.min(ud / maxDist, 1);
+        feat[fi++] = (udx*urvx + udy*urvy) / (ud * C.VMAX * 2);
     } else {
-        fi += 4;
+        fi += 5;
     }
 
-    // Nearest enemy bullet (3): dx, dy, closing speed
-    var bestBD = Infinity, bestBul = null;
+    // Nearest enemy bullet (4): relative angle, distance, closing speed
+    var bestBD = Infinity, bestBul = null, bestBdx = 0, bestBdy = 0;
     for (var i = 0; i < st.bullets.length; i++) {
         var b = st.bullets[i];
         if (b.own) continue;
-        var bd = Math.sqrt(wdx(b.x,p.x)*wdx(b.x,p.x) + wdy(b.y,p.y)*wdy(b.y,p.y));
-        if (bd < bestBD) { bestBD = bd; bestBul = b; }
+        var bdx = wdx(b.x, p.x), bdy = wdy(b.y, p.y);
+        var bd = Math.sqrt(bdx*bdx + bdy*bdy);
+        if (bd < bestBD) { bestBD = bd; bestBul = b; bestBdx = bdx; bestBdy = bdy; }
     }
     if (bestBul) {
-        feat[fi++] = wdx(bestBul.x, p.x) / C.CW;
-        feat[fi++] = wdy(bestBul.y, p.y) / C.CH;
-        var bdx = wdx(bestBul.x, p.x), bdy = wdy(bestBul.y, p.y);
-        var bd = Math.sqrt(bdx*bdx+bdy*bdy) || 1;
-        feat[fi++] = ((bdx*(bestBul.vx-p.vx)+bdy*(bestBul.vy-p.vy))/bd) / C.B_SPD;
+        var bRelAng = normA(Math.atan2(bestBdy, bestBdx) - p.angle);
+        feat[fi++] = Math.sin(bRelAng);
+        feat[fi++] = Math.cos(bRelAng);
+        feat[fi++] = Math.min(bestBD / maxDist, 1);
+        var brvx = bestBul.vx - p.vx, brvy = bestBul.vy - p.vy;
+        feat[fi++] = (bestBdx*brvx + bestBdy*brvy) / (bestBD * C.B_SPD);
     }
     // else zeros
 
@@ -1309,8 +1334,8 @@ function finishCollect() {
         dataX.length + ' samples collected. Ready to train.';
 }
 
-// ── Neural network (MLP: N_FEAT → 64 → 32 → 4) ────────────────────────
-var N_H1 = 64, N_H2 = 32, N_OUT = 4;
+// ── Neural network (MLP: N_FEAT → 128 → 64 → 4) ───────────────────────
+var N_H1 = 128, N_H2 = 64, N_OUT = 4;
 var W1, b1, W2, b2, W3, b3;
 
 function initWeights() {
@@ -1345,17 +1370,30 @@ function forward(x) {
     for (var j = 0; j < N_OUT; j++) {
         var s = b3[j];
         for (var i = 0; i < N_H2; i++) s += W3[j*N_H2+i] * h2[i];
-        out[j] = 1 / (1 + Math.exp(-s)); // sigmoid
+        out[j] = 1 / (1 + Math.exp(-Math.max(-15, Math.min(15, s)))); // sigmoid (clamped)
     }
     return { h1:h1, h2:h2, out:out };
 }
 
-// Binary cross-entropy loss + backprop for one sample
-function trainStep(x, y, lr) {
+// Mini-batch gradient accumulation + weight update
+// Accumulator arrays (allocated once, reused)
+var gW1, gb1, gW2, gb2, gW3, gb3;
+
+function allocGrads() {
+    gW1 = new Float32Array(N_H1 * N_FEAT); gb1 = new Float32Array(N_H1);
+    gW2 = new Float32Array(N_H2 * N_H1);   gb2 = new Float32Array(N_H2);
+    gW3 = new Float32Array(N_OUT * N_H2);   gb3 = new Float32Array(N_OUT);
+}
+
+function zeroGrads() {
+    gW1.fill(0); gb1.fill(0); gW2.fill(0); gb2.fill(0); gW3.fill(0); gb3.fill(0);
+}
+
+// Accumulate gradients for one sample (does NOT update weights)
+function accumGrads(x, y) {
     var fwd = forward(x);
     var out = fwd.out, h2 = fwd.h2, h1 = fwd.h1;
 
-    // dL/dout for binary cross-entropy: out - y
     var dOut = new Float32Array(N_OUT);
     var loss = 0;
     for (var j = 0; j < N_OUT; j++) {
@@ -1364,41 +1402,53 @@ function trainStep(x, y, lr) {
         dOut[j] = o - y[j];
     }
 
-    // W3, b3 gradients
+    // Layer 3: compute dH2 BEFORE accumulating W3 grads (uses current weights)
     var dH2 = new Float32Array(N_H2);
     for (var j = 0; j < N_OUT; j++) {
         var d = dOut[j];
-        b3[j] -= lr * d;
-        for (var i = 0; i < N_H2; i++) {
-            W3[j*N_H2+i] -= lr * d * h2[i];
-            dH2[i] += d * W3[j*N_H2+i];
-        }
+        for (var i = 0; i < N_H2; i++) dH2[i] += d * W3[j*N_H2+i];
+    }
+    // Accumulate W3, b3 grads
+    for (var j = 0; j < N_OUT; j++) {
+        var d = dOut[j];
+        gb3[j] += d;
+        for (var i = 0; i < N_H2; i++) gW3[j*N_H2+i] += d * h2[i];
     }
     // ReLU mask
     for (var i = 0; i < N_H2; i++) if (h2[i] <= 0) dH2[i] = 0;
 
-    // W2, b2 gradients
+    // Layer 2: compute dH1 BEFORE accumulating W2 grads
     var dH1 = new Float32Array(N_H1);
     for (var j = 0; j < N_H2; j++) {
         var d = dH2[j];
-        b2[j] -= lr * d;
-        for (var i = 0; i < N_H1; i++) {
-            W2[j*N_H1+i] -= lr * d * h1[i];
-            dH1[i] += d * W2[j*N_H1+i];
-        }
+        for (var i = 0; i < N_H1; i++) dH1[i] += d * W2[j*N_H1+i];
+    }
+    for (var j = 0; j < N_H2; j++) {
+        var d = dH2[j];
+        gb2[j] += d;
+        for (var i = 0; i < N_H1; i++) gW2[j*N_H1+i] += d * h1[i];
     }
     for (var i = 0; i < N_H1; i++) if (h1[i] <= 0) dH1[i] = 0;
 
-    // W1, b1 gradients
+    // Layer 1: accumulate W1, b1 grads
     for (var j = 0; j < N_H1; j++) {
         var d = dH1[j];
-        b1[j] -= lr * d;
-        for (var i = 0; i < N_FEAT; i++) {
-            W1[j*N_FEAT+i] -= lr * d * x[i];
-        }
+        gb1[j] += d;
+        for (var i = 0; i < N_FEAT; i++) gW1[j*N_FEAT+i] += d * x[i];
     }
 
     return loss / N_OUT;
+}
+
+// Apply accumulated gradients (divide by batch size, then SGD step)
+function applyGrads(lr, batchSize) {
+    var s = lr / batchSize;
+    for (var i = 0; i < W1.length; i++) W1[i] -= s * gW1[i];
+    for (var i = 0; i < b1.length; i++) b1[i] -= s * gb1[i];
+    for (var i = 0; i < W2.length; i++) W2[i] -= s * gW2[i];
+    for (var i = 0; i < b2.length; i++) b2[i] -= s * gb2[i];
+    for (var i = 0; i < W3.length; i++) W3[i] -= s * gW3[i];
+    for (var i = 0; i < b3.length; i++) b3[i] -= s * gb3[i];
 }
 
 // ── Training loop ───────────────────────────────────────────────────────
@@ -1408,6 +1458,7 @@ var trained = false;
 window.mlTrain = function() {
     if (dataX.length < 100) return;
     initWeights();
+    allocGrads();
     lossHistory = [];
     trained = false;
 
@@ -1416,9 +1467,9 @@ window.mlTrain = function() {
     vizEl.style.display = '';
     document.getElementById('ml-train-btn').style.display = 'none';
 
-    var EPOCHS = 20;
-    var BATCH = 32;
-    var lr = 0.003;
+    var EPOCHS = 50;
+    var BATCH = 64;
+    var lr0 = 0.01;
     var epoch = 0;
     var n = dataX.length;
 
@@ -1435,15 +1486,23 @@ window.mlTrain = function() {
 
     function runEpoch() {
         shuffle();
+        var lr = lr0 * Math.pow(0.95, epoch); // decay LR
         var totalLoss = 0;
-        for (var i = 0; i < n; i++) {
-            totalLoss += trainStep(dataX[idx[i]], dataY[idx[i]], lr);
+        // Mini-batch SGD
+        for (var b = 0; b < n; b += BATCH) {
+            var end = Math.min(b + BATCH, n);
+            var bs = end - b;
+            zeroGrads();
+            for (var i = b; i < end; i++) {
+                totalLoss += accumGrads(dataX[idx[i]], dataY[idx[i]]);
+            }
+            applyGrads(lr, bs);
         }
         var avgLoss = totalLoss / n;
         lossHistory.push(avgLoss);
         epoch++;
         statsEl.textContent = 'Training epoch ' + epoch + '/' + EPOCHS +
-            ' | Loss: ' + avgLoss.toFixed(4) + ' | ' + n + ' samples';
+            ' | Loss: ' + avgLoss.toFixed(4) + ' | LR: ' + lr.toFixed(5);
         drawLossChart();
 
         if (epoch < EPOCHS) {
