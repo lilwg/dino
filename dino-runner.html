@@ -3971,11 +3971,11 @@
     // Evolve a small neural network (10→16→3) by playing episodes
     // and selecting the fittest genomes. No gradients needed.
     var N_IN = 10, N_HID = 16, N_OUT = 3;
-    var POP_SIZE    = 50;
-    var ELITE_SIZE  = 10;
-    var SIGMA_START = 0.3;
-    var SIGMA_MIN   = 0.02;
-    var SIGMA_DECAY = 0.995;
+    var POP_SIZE    = 100;
+    var ELITE_SIZE  = 15;
+    var SIGMA_START = 0.5;
+    var SIGMA_MIN   = 0.08;
+    var SIGMA_DECAY = 0.998;
     var EVALS_PER   = 1;      // single run with natural acceleration
     var GENOME_LEN  = (N_IN + 1) * N_HID + (N_HID + 1) * N_OUT; // 227
 
@@ -3992,6 +3992,12 @@
         for (var i = 0; i < N_HID * N_OUT; i++) g[k++] = randn() * s2;
         for (var i = 0; i < N_OUT; i++) g[k++] = 0;
         return g;
+    }
+
+    function crossover(a, b) {
+        var child = new Float64Array(a.length);
+        for (var i = 0; i < a.length; i++) child[i] = Math.random() < 0.5 ? a[i] : b[i];
+        return child;
     }
 
     function mutate(parent, sigma) {
@@ -4199,8 +4205,12 @@
                                 newPop.push({ genome: population[e].genome, fitness: 0 });
                             }
                             while (newPop.length < POP_SIZE) {
-                                var parentIdx = Math.floor(Math.random() * ELITE_SIZE);
-                                newPop.push({ genome: mutate(population[parentIdx].genome, sigma), fitness: 0 });
+                                var p1 = Math.floor(Math.random() * ELITE_SIZE);
+                                var p2 = Math.floor(Math.random() * ELITE_SIZE);
+                                var base = (p1 !== p2 && Math.random() < 0.5)
+                                    ? crossover(population[p1].genome, population[p2].genome)
+                                    : population[p1].genome;
+                                newPop.push({ genome: mutate(base, sigma), fitness: 0 });
                             }
                             population = newPop;
                             curIndiv = 0;
