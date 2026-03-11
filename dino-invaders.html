@@ -85,15 +85,13 @@
 
     // ═══════════════════════════════════════════════════════════════
     //  RULES AI — Monte Carlo forward simulation
-    //  For each action, run multiple rollouts WITH enemy fire enabled.
-    //  Score purely on simulation outcomes (death, score, bullet proximity).
-    //  No hand-tuned positional heuristics — the simulation itself handles
-    //  positioning, targeting, and threat avoidance naturally.
+    //  For each action, run one deterministic sim (enemy fire suppressed).
+    //  Only bullets already in flight matter — no speculative fire.
+    //  Long horizon (150 frames) lets the AI chase aliens across the board.
     // ═══════════════════════════════════════════════════════════════
     var simGame = new SpaceInvadersGame(document.createElement('canvas'), { primary: false });
 
-    var SIM_STEPS = 90;    // frames per rollout (~360px horizontal reach, covers most of board)
-    var NUM_ROLLOUTS = 5;  // rollouts per action (with random enemy fire)
+    var SIM_STEPS = 150;   // frames per sim (~600px horizontal reach, full board)
 
     var invadersSimAI = {
         enabled: false,
@@ -103,21 +101,14 @@
         update: function (g) {
             var snap = g.snapshotState();
 
-            // Run one deterministic sim per action (for viz), plus Monte Carlo rollouts
+            // One deterministic sim per action — only existing bullets matter
             var detResults = [];
             var avgScores = new Array(6);
 
             for (var a = 0; a < 6; a++) {
-                // Deterministic rollout (no enemy fire) — used for visualization
-                detResults.push(this._simulate(snap, a, SIM_STEPS, true));
-
-                // Monte Carlo rollouts (with enemy fire) — used for scoring
-                var total = 0;
-                for (var r = 0; r < NUM_ROLLOUTS; r++) {
-                    var result = this._simulate(snap, a, SIM_STEPS, false);
-                    total += this._scoreResult(result);
-                }
-                avgScores[a] = total / NUM_ROLLOUTS;
+                var result = this._simulate(snap, a, SIM_STEPS, true);
+                detResults.push(result);
+                avgScores[a] = this._scoreResult(result);
             }
 
             // Pick best — STAY (5) wins ties (conservative default)
