@@ -278,9 +278,19 @@ function discRows() {
 function discScreenPos(side) {
     var rows = discRows();
     var row = rows[side];
-    var ref = cubeXY(row, side === 0 ? 0 : row);
-    if (side === 0) return { x: ref.cx - TILE_W - 20, y: ref.cy + TILE_H * 0.5 };
-    else            return { x: ref.cx + TILE_W + 20, y: ref.cy + TILE_H * 0.5 };
+    // Position the disc one diagonal hop off the pyramid edge
+    // Left disc: one UL hop from (row, 0) → would be (row-1, -1)
+    // Right disc: one UR hop from (row, row) → would be (row-1, row)
+    // Use cubeXY math to compute where that off-pyramid position would be
+    if (side === 0) {
+        var offRow = row - 1, offCol = -1;
+        return { cx: PYR_CX + (offCol - offRow / 2) * TILE_W, cy: PYR_TOP_Y + offRow * ROW_STEP,
+                 x: PYR_CX + (offCol - offRow / 2) * TILE_W, y: PYR_TOP_Y + offRow * ROW_STEP };
+    } else {
+        var offRow = row - 1, offCol = row;
+        return { cx: PYR_CX + (offCol - offRow / 2) * TILE_W, cy: PYR_TOP_Y + offRow * ROW_STEP,
+                 x: PYR_CX + (offCol - offRow / 2) * TILE_W, y: PYR_TOP_Y + offRow * ROW_STEP };
+    }
 }
 
 // Which row the player must be on to catch a disc
