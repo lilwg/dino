@@ -41,7 +41,7 @@
         <!-- ═══ HOW IT WORKS ═══ -->
         <h2 style="margin-top: 16px;">How it works</h2>
         <p class="si-prose">
-            The AI uses two-phase forward simulation to decide every move. Each frame it snapshots the game state and tests all six actions &mdash; left, right, fire, fire-left, fire-right, and stay. For each action it commits to that move for 10 frames, then switches to a smart dodge heuristic for the remaining 40 frames, giving a more realistic survival prediction. It analyses which columns have bottom-row aliens (the ones that can fire) and penalises standing below them, rewards centre positioning for better coverage, gives bonus points for hitting aliens in threatening columns and mystery ships, and weights bullet proximity by vertical urgency. Stay wins ties, keeping the player conservative when nothing is pressing.
+            The AI uses forward simulation to decide every move. Each frame, it snapshots the game state and simulates 45 frames ahead for all six actions &mdash; move left, move right, fire, fire-left, fire-right, and stay. It scores each action by the points gained, penalises death, and favours staying clear of enemy bullets. On top of that, it analyses which columns have bottom-row aliens (the ones that can fire) and mildly penalises lingering below them, gives bonus points for hitting aliens in threatening columns, and rewards shooting mystery ships. Stay wins ties, keeping the player conservative when nothing is urgent.
         </p>
         <p class="si-prose">
             Tap <strong>Viz</strong> to watch the AI think. Coloured trails show predicted player positions &mdash; blue for left, orange for right, grey for staying still. A dashed line traces the player bullet&rsquo;s path for the chosen action. Pill badges above the trails show each family&rsquo;s outcome (hit, score, or safe), and a badge below the player names the chosen action.
@@ -91,7 +91,6 @@
 
     var CANVAS_W = SpaceInvadersGame.CANVAS_W;    // 600
     var PLAYER_W = SpaceInvadersGame.PLAYER_W;    // 44
-    var PLAYER_H = SpaceInvadersGame.PLAYER_H;    // 47
     var PLAYER_Y = SpaceInvadersGame.PLAYER_Y;    // 337
     var ALIEN_COLS = SpaceInvadersGame.ALIEN_COLS; // 8
 
@@ -104,46 +103,23 @@
         _analyseThreats: function (g) {
             var colBottomY = new Array(ALIEN_COLS);
             var colBottomX = new Array(ALIEN_COLS);
-            var colAlive = new Array(ALIEN_COLS);
-            for (var c = 0; c < ALIEN_COLS; c++) { colBottomY[c] = -1; colBottomX[c] = 0; colAlive[c] = 0; }
+            for (var c = 0; c < ALIEN_COLS; c++) { colBottomY[c] = -1; colBottomX[c] = 0; }
             for (var i = 0; i < g.aliens.length; i++) {
                 var a = g.aliens[i];
                 if (!a.alive) continue;
                 var c = a.col;
-                colAlive[c]++;
                 if (a.y > colBottomY[c]) { colBottomY[c] = a.y + (a.h || 40); colBottomX[c] = a.x + (a.w || 46) / 2; }
             }
-            return { colBottomY: colBottomY, colBottomX: colBottomX, colAlive: colAlive };
-        },
-
-        // Simple dodge heuristic: move away from nearest threat
-        _dodgeAction: function (px) {
-            var nearDist = 9999, nearX = px;
-            for (var j = 0; j < simGame.enemyBullets.length; j++) {
-                var eb = simGame.enemyBullets[j];
-                var dx = Math.abs(eb.x - px);
-                if (dx < nearDist) { nearDist = dx; nearX = eb.x; }
-            }
-            if (nearDist < 40) {
-                return nearX < px ? 1 : 0; // move away from bullet (RIGHT or LEFT)
-            }
-            // Drift toward center when safe
-            var center = CANVAS_W / 2;
-            if (Math.abs(px - center) > 30) return px < center ? 1 : 0;
-            return 5; // STAY
+            return { colBottomY: colBottomY, colBottomX: colBottomX };
         },
 
         update: function (g) {
             var snap = g.snapshotState();
             var threats = this._analyseThreats(g);
-
-            // Simulation params
-            var ACTION_FRAMES = 10;  // frames we commit to chosen action
-            var TOTAL_FRAMES = 50;   // total lookahead
-
+            var N = 45;
             var results = [];
             for (var a = 0; a < 6; a++) {
-                results.push(this._simulate(snap, a, ACTION_FRAMES, TOTAL_FRAMES, threats));
+                results.push(this._simulate(snap, a, N));
             }
 
             // ── Score each action ──
@@ -152,45 +128,39 @@
                 var r = results[a];
                 var s = 0;
 
-                // Death penalty (massive)
-                if (r.died) s -= 2000;
+                // Death penalty
+                if (r.died) s -= 1000;
 
-                // Reward score gained (aliens killed)
-                s += r.scoreGain * 12;
+                // Reward score gained
+                s += r.scoreGain * 10;
 
-                // Bullet proximity — urgency-weighted: closer & lower bullets matter more
-                s += Math.min(r.minBulletDist, 200) * 0.08;
+                // Bullet proximity — stay clear of enemy bullets
+                s += Math.min(r.minBulletDist, 200) * 0.05;
 
-                // Threat column penalty: penalize standing directly below a firing column
+                // Threat column avoidance: mild penalty for lingering under firing columns
                 var finalPx = r.finalX;
                 for (var c = 0; c < ALIEN_COLS; c++) {
                     if (threats.colBottomY[c] < 0) continue;
                     var colDist = Math.abs(threats.colBottomX[c] - finalPx);
-                    if (colDist < 28) {
-                        // Closer to bottom = more dangerous
-                        var danger = (threats.colBottomY[c] / PLAYER_Y);
-                        s -= (28 - colDist) * 0.15 * danger;
+                    if (colDist < 24) {
+                        var danger = threats.colBottomY[c] / PLAYER_Y; // 0-1, higher = closer to player
+                        s -= (24 - colDist) * 0.06 * danger;
                     }
                 }
 
-                // Center positioning bonus — better coverage for shooting
-                var centerDist = Math.abs(finalPx - CANVAS_W / 2);
-                s += (CANVAS_W / 2 - centerDist) * 0.01;
-
-                // Targeting bonus: reward if bullet trajectory aligns with a threatening column
+                // Targeting bonus: extra reward for hitting aliens in dangerous columns
                 if (r.hitAlienCol >= 0 && threats.colBottomY[r.hitAlienCol] >= 0) {
-                    // Extra reward for hitting aliens in dangerous columns
                     var colThreat = threats.colBottomY[r.hitAlienCol] / PLAYER_Y;
-                    s += 15 * colThreat;
+                    s += 5 * colThreat;
                 }
 
-                // Mystery ship pursuit bonus
-                if (r.hitMystery) s += 25;
+                // Mystery ship bonus
+                if (r.hitMystery) s += 15;
 
                 scores[a] = s;
             }
 
-            // Pick best — STAY wins ties (conservative)
+            // Pick best — STAY wins ties (conservative default)
             var best = 5;
             var bestScore = scores[5];
             for (var a = 0; a < 6; a++) {
@@ -210,7 +180,7 @@
             g.executeAction(best);
         },
 
-        _simulate: function (snap, action, actionFrames, totalFrames, threats) {
+        _simulate: function (snap, action, nSteps) {
             simGame.restoreState(snap);
             simGame._suppressEnemyFire = true;
 
@@ -222,15 +192,10 @@
             var minBulletDist = 9999;
             var hitAlienCol = -1;
             var hitMystery = false;
+            var prevSimScore = startScore;
 
-            for (var i = 0; i < totalFrames; i++) {
-                // Phase 1: execute chosen action; Phase 2: smart dodge
-                if (i < actionFrames) {
-                    simGame.executeAction(action);
-                } else {
-                    var dodgeAct = this._dodgeAction(simGame.player.x + PLAYER_W / 2);
-                    simGame.executeAction(dodgeAct);
-                }
+            for (var i = 0; i < nSteps; i++) {
+                simGame.executeAction(action);
                 simGame.update();
 
                 // Player center position
@@ -241,29 +206,24 @@
                     bulletPositions.push({ x: simGame.bullets[0].x + 1.5, y: simGame.bullets[0].y });
                 }
 
-                // Detect what we hit
-                if (simGame.score > startScore + (hitAlienCol >= 0 ? 0 : -1)) {
-                    var scoreDelta = simGame.score - startScore;
-                    // Check which alien died this frame
+                // Detect what we hit this frame (compare to previous frame, not snapshot)
+                if (simGame.score > prevSimScore) {
                     for (var k = 0; k < simGame.aliens.length; k++) {
-                        if (!simGame.aliens[k].alive && snap.aliens[k] && snap.aliens[k].alive) {
-                            if (hitAlienCol < 0) hitAlienCol = simGame.aliens[k].col;
-                            snap.aliens[k].alive = false; // mark so we don't re-detect
+                        if (!simGame.aliens[k].alive && snap.aliens[k].alive) {
+                            hitAlienCol = simGame.aliens[k].col;
                         }
                     }
-                    // Check mystery ship
                     if (snap.mystery && !simGame.mystery) hitMystery = true;
+                    prevSimScore = simGame.score;
                 }
 
-                // Track closest enemy bullet distance (weighted by Y proximity)
-                var px = simGame.player.x + PLAYER_W / 2;
+                // Track closest enemy bullet distance to player
+                var px = simGame.player.x + 22;
                 var py = simGame.player.y;
                 for (var j = 0; j < simGame.enemyBullets.length; j++) {
                     var eb = simGame.enemyBullets[j];
                     var dx = eb.x - px, dy = eb.y - py;
-                    // Weight by vertical proximity — bullets near player Y are more urgent
-                    var yFactor = Math.max(0.3, 1.0 - Math.abs(dy) / 400);
-                    var dist = Math.sqrt(dx * dx + dy * dy) / yFactor;
+                    var dist = Math.sqrt(dx * dx + dy * dy);
                     if (dist < minBulletDist) minBulletDist = dist;
                 }
 
