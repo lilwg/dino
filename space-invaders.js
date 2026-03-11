@@ -183,7 +183,7 @@
         this.gameOver = false;
         this.paused = false;
         this.score = 0;
-        this.highScore = 0;
+        this.highScore = parseInt(localStorage.getItem('dino-invaders-hi')) || 0;
         this.lives = 3;
         this.wave = 1;
         this.frameCount = 0;
@@ -495,7 +495,7 @@
             else this.aliens[i].x += this.alienDir * this.alienSpeed * 8;
             if (this.aliens[i].y + this.aliens[i].h >= PLAYER_Y) {
                 this.gameOver = true;
-                if (this.score > this.highScore) this.highScore = this.score;
+                if (this.score > this.highScore) { this.highScore = this.score; localStorage.setItem('dino-invaders-hi', this.highScore); }
                 return;
             }
         }
@@ -548,7 +548,7 @@
                 });
                 if (this.lives <= 0) {
                     this.gameOver = true;
-                    if (this.score > this.highScore) this.highScore = this.score;
+                    if (this.score > this.highScore) { this.highScore = this.score; localStorage.setItem('dino-invaders-hi', this.highScore); }
                 } else {
                     this.invincible = 90; // ~1.5s invincibility after hit
                 }
