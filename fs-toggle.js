@@ -18,7 +18,6 @@ function onFullscreenChange() {
     if (btn) btn.textContent = isFs ? 'Exit FS' : 'Fullscreen';
 
     if (isFs) {
-        // Delay slightly so fullscreen layout settles
         requestAnimationFrame(function() {
             requestAnimationFrame(function() {
                 applyFullscreenScale();
@@ -34,29 +33,42 @@ function applyFullscreenScale() {
     if (!box) return;
 
     var wrapper = box.querySelector('.game-wrapper');
-    if (!wrapper) return;
+    var canvas = box.querySelector('canvas');
+    if (!canvas) return;
 
-    // Measure natural size before scaling
-    wrapper.style.transform = 'none';
-    var wrapperW = wrapper.scrollWidth;
-    var wrapperH = wrapper.scrollHeight;
+    var target = wrapper || canvas;
 
-    // Available space: fullscreen viewport minus controls area (~60px)
+    // Reset transform to measure natural size
+    target.style.transform = 'none';
+
+    // Temporarily shrink-wrap the wrapper to get its natural content width
+    if (wrapper) {
+        wrapper.style.width = 'fit-content';
+    }
+
+    var contentW = target.offsetWidth;
+    var contentH = target.offsetHeight;
+
+    // Restore wrapper width
+    if (wrapper) {
+        wrapper.style.width = '';
+    }
+
     var controls = box.querySelector('.si-controls');
     var controlsH = controls ? controls.offsetHeight + 20 : 60;
     var availW = window.innerWidth;
     var availH = window.innerHeight - controlsH;
 
-    var scale = Math.min(availW / wrapperW, availH / wrapperH);
+    var scale = Math.min(availW / contentW, availH / contentH);
 
-    wrapper.style.transformOrigin = 'center center';
-    wrapper.style.transform = 'scale(' + scale + ')';
+    target.style.transformOrigin = 'center center';
+    target.style.transform = 'scale(' + scale + ')';
 }
 
 function removeFullscreenScale() {
-    var wrapper = document.querySelector('.game-wrapper');
-    if (wrapper) {
-        wrapper.style.transform = '';
-        wrapper.style.transformOrigin = '';
+    var targets = document.querySelectorAll('.game-wrapper, .si-game-box > canvas');
+    for (var i = 0; i < targets.length; i++) {
+        targets[i].style.transform = '';
+        targets[i].style.transformOrigin = '';
     }
 }
