@@ -29,9 +29,9 @@
                 <button class="si-btn" onclick="restartGame()">Restart</button>
                 <button class="si-btn" id="pause-btn" onclick="togglePause()">Pause</button>
                 <div class="si-speed" style="font-size: 11px;">
-                    Speed: <input type="range" id="speed-slider" min="1" max="3" value="1" step="1"
-                        oninput="game.speedMultiplier=parseInt(this.value);document.getElementById('speed-val').textContent=this.value+'x'">
-                    <span id="speed-val">1x</span>
+                    Difficulty: <input type="range" id="difficulty-slider" min="1" max="3" value="1" step="1"
+                        oninput="setDifficulty(parseInt(this.value))">
+                    <span id="difficulty-val">Normal</span>
                 </div>
             </div>
 
@@ -41,10 +41,10 @@
         <!-- ═══ HOW IT WORKS ═══ -->
         <h2 style="margin-top: 16px;">How it works</h2>
         <p class="si-prose">
-            The AI uses forward simulation to decide every move. Each frame, it snapshots the game state and simulates 45 frames ahead for all six actions &mdash; move left, move right, fire, fire-left, fire-right, and stay. It scores each action by the points gained, penalises death, and favours staying clear of enemy bullets. Stay wins ties, keeping the player conservative when nothing is urgent.
+            The AI picks a target &mdash; the UFO if it&rsquo;s on screen, otherwise the lowest alien &mdash; then simulates all 6 possible actions (left, right, fire, left+fire, right+fire, stay) for 80 frames each. It scores each outcome: dying is catastrophic (&minus;10000), killing the target is highly rewarded (+500), any other kill earns points, wasted shots are penalized, and proximity to the target breaks ties. The highest-scoring action wins.
         </p>
         <p class="si-prose">
-            Tap <strong>Viz</strong> to watch the AI think. Coloured trails show predicted player positions &mdash; blue for left, orange for right, grey for staying still. A dashed line traces the player bullet&rsquo;s path for the chosen action. Pill badges above the trails show each family&rsquo;s outcome (hit, score, or safe), and a badge below the player names the chosen action.
+            Tap <strong>Viz</strong> to watch the AI think. A green dotted circle highlights the current target, and a dashed line shows the AI moving toward it. Gray circles mark any bonus kills the chosen action would score along the way. The badge below the player shows the winning action.
         </p>
 
         <p style="margin-top: 20px;">
@@ -84,10 +84,15 @@
     var aiMode = 'off';
 
     // ═══════════════════════════════════════════════════════════════
-    //  RULES AI — pure simulation using snapshotState / restoreState
+    //  RULES AI — target selection + simulation for everything else
+    //  1. Pick target: UFO if on screen, else lowest alien
+    //  2. Simulate all 6 actions — sim handles dodging (enemy bullets
+    //     are live), aiming (alien movement is real), and bunkers
+    //  3. Pick the action with the best score
     // ═══════════════════════════════════════════════════════════════
     var simGame = new SpaceInvadersGame(document.createElement('canvas'), { primary: false });
-    simGame._suppressEnemyFire = true;
+
+    var SIM_STEPS = 80; // enough for bullet to cross the screen
 
     var invadersSimAI = {
         enabled: false,
@@ -95,87 +100,152 @@
         _vizData: null,
 
         update: function (g) {
-            var snap = g.snapshotState();
-            var N = 45;
-            var results = [];
-            for (var a = 0; a < 6; a++) {
-                results.push(this._simulate(snap, a, N));
+            var playerCx = g.player.x + 22;
+
+            // --- 1. TARGET SELECTION: UFO > lowest alien ---
+            var target = null;
+            var targetReason = 'none';
+
+            if (g.mystery) {
+                target = { x: g.mystery.x, y: g.mystery.y, w: 40, h: 16, isMystery: true };
+                targetReason = 'ufo';
+            } else {
+                var lowestAlien = null;
+                var lowestY = -1;
+                var closestDx = Infinity;
+                for (var i = 0; i < g.aliens.length; i++) {
+                    var a = g.aliens[i];
+                    if (!a.alive) continue;
+                    var ay = a.y + a.h;
+                    var dx = Math.abs(a.x + a.w / 2 - playerCx);
+                    if (ay > lowestY || (ay === lowestY && dx < closestDx)) {
+                        lowestY = ay;
+                        closestDx = dx;
+                        lowestAlien = a;
+                    }
+                }
+                if (lowestAlien) {
+                    target = lowestAlien;
+                    targetReason = 'lowest';
+                }
             }
 
-            // Pick best action — pure simulation outcomes only
-            // Evaluate STAY (action 5) first so it wins ties (conservative default)
-            var scores = new Array(6);
+            // --- 2. SIMULATE all 6 actions ---
+            var snap = g.snapshotState();
+            var simResults = [];
+            var bestAction = 5;
+            var bestScore = -Infinity;
+
             for (var a = 0; a < 6; a++) {
-                var r = results[a];
-                var s = 0;
-                if (r.died) s -= 1000;
-                s += r.scoreGain * 10;
-                s += Math.min(r.minBulletDist, 200) * 0.05;
-                scores[a] = s;
-            }
-            var best = 5;
-            var bestScore = scores[5];
-            for (var a = 0; a < 6; a++) {
-                if (a === 5) continue;
-                if (scores[a] > bestScore) { bestScore = scores[a]; best = a; }
+                var result = this._simulate(snap, a, target);
+                simResults.push(result);
+                if (result.score > bestScore) {
+                    bestScore = result.score;
+                    bestAction = a;
+                }
             }
 
             if (this._vizEnabled) {
                 this._vizData = {
-                    results: results,
-                    chosenAction: best,
                     playerX: g.player.x,
-                    playerY: g.player.y
+                    playerY: g.player.y,
+                    playerCx: playerCx,
+                    targetX: target ? target.x + target.w / 2 : null,
+                    targetReason: targetReason,
+                    target: target,
+                    chosenAction: bestAction,
+                    simResults: simResults
                 };
             }
 
-            g.executeAction(best);
+            g.executeAction(bestAction);
         },
 
-        _simulate: function (snap, action, nSteps) {
+        _simulate: function (snap, action, target) {
             simGame.restoreState(snap);
-            simGame._suppressEnemyFire = true;
+            // Enemy bullets stay live — sim discovers dodging naturally
+            simGame._suppressEnemyFire = true; // no NEW enemy fire, but existing bullets fly
 
             var startScore = simGame.score;
             var startLives = simGame.lives;
+            var died = false;
+            var killedTarget = false;
+            var scoreGain = 0;
             var positions = [];
             var bulletPositions = [];
-            var died = false;
-            var minBulletDist = 9999;
+            // Snapshot which aliens are alive before sim
+            var alivesBefore = [];
+            for (var i = 0; i < simGame.aliens.length; i++) {
+                alivesBefore.push(simGame.aliens[i].alive);
+            }
 
-            for (var i = 0; i < nSteps; i++) {
+            // Track the target alien's index in the sim
+            var targetIdx = -1;
+            if (target && !target.isMystery) {
+                for (var i = 0; i < simGame.aliens.length; i++) {
+                    if (simGame.aliens[i].row === target.row &&
+                        simGame.aliens[i].col === target.col) {
+                        targetIdx = i;
+                        break;
+                    }
+                }
+            }
+
+            for (var i = 0; i < SIM_STEPS; i++) {
                 simGame.executeAction(action);
                 simGame.update();
 
-                // Player center position
                 positions.push({ x: simGame.player.x + 22, y: simGame.player.y + 23 });
-
-                // Track player bullet for viz
                 if (simGame.bullets.length > 0) {
                     bulletPositions.push({ x: simGame.bullets[0].x + 1.5, y: simGame.bullets[0].y });
                 }
 
-                // Track closest enemy bullet distance to player
-                var px = simGame.player.x + 22;
-                var py = simGame.player.y;
-                for (var j = 0; j < simGame.enemyBullets.length; j++) {
-                    var eb = simGame.enemyBullets[j];
-                    var dx = eb.x - px, dy = eb.y - py;
-                    var dist = Math.sqrt(dx * dx + dy * dy);
-                    if (dist < minBulletDist) minBulletDist = dist;
-                }
-
                 if (simGame.lives < startLives) { died = true; break; }
                 if (simGame.gameOver) { died = true; break; }
+
+                // Check if target was killed
+                if (target && target.isMystery && !simGame.mystery && simGame.score > startScore) {
+                    killedTarget = true;
+                }
+                if (targetIdx >= 0 && !simGame.aliens[targetIdx].alive) {
+                    killedTarget = true;
+                }
+
+                scoreGain = simGame.score - startScore;
             }
 
+            // Scoring: survival (death penalty) > kill target > any kill > proximity
+            var score = 0;
+            if (died) score -= 10000;
+            if (killedTarget) score += 500;
+            score += scoreGain * 10;
+            // Penalize wasted shots (fired but killed nothing — likely hit a bunker)
+            var fires = (action === 2 || action === 3 || action === 4);
+            if (fires && scoreGain === 0) score -= 50;
+            if (target) {
+                var targetCx = target.x + target.w / 2;
+                var finalCx = simGame.player.x + 22;
+                score -= Math.abs(finalCx - targetCx) * 0.1;
+            }
+
+            // Record which aliens were killed during this sim
+            var killedAliens = [];
+            for (var i = 0; i < simGame.aliens.length; i++) {
+                if (alivesBefore[i] && !simGame.aliens[i].alive) {
+                    killedAliens.push({ row: simGame.aliens[i].row, col: simGame.aliens[i].col });
+                }
+            }
+            var killedMystery = !!(target && target.isMystery && killedTarget);
+
             return {
-                scoreGain: simGame.score - startScore,
+                score: score,
+                killedTarget: killedTarget,
+                scoreGain: scoreGain,
                 died: died,
                 positions: positions,
                 bulletPositions: bulletPositions,
-                minBulletDist: minBulletDist,
-                finalX: simGame.player.x + 22
+                killedAliens: killedAliens,
+                killedMystery: killedMystery
             };
         }
     };
@@ -183,93 +253,108 @@
     // ═══════════════════════════════════════════════════════════════
     //  SIMULATION VISUALIZATION
     // ═══════════════════════════════════════════════════════════════
-    // Action families: LEFT(0,3)=blue  STAY(5,2)=grey  RIGHT(1,4)=orange
-    var ACTION_FAMILY = [0, 2, 1, 0, 2, 1];
+    var ACTION_FAMILY = [0, 2, 1, 0, 2, 1]; // LEFT=0(blue), RIGHT=2(orange), FIRE/STAY=1(grey)
     var FAMILY_COLORS = ['#0071e3', '#8e8e93', '#ff9f0a'];
     var ACTION_NAMES = ['\u2190 LEFT', '\u2192 RIGHT', '\u2191 FIRE', '\u2190 L+F', '\u2192 R+F', '\u00b7 STAY'];
 
     function drawInvadersSimViz(ctx) {
         var d = invadersSimAI._vizData;
-        if (!d) return;
+        if (!d || !d.simResults) return;
 
         ctx.save();
+        var pcx = d.playerCx;
+        var py = d.playerY;
 
-        // Player position trails spreading UPWARD (Y decreases with time, X = player center)
-        var trailHeight = 140;
-        var baseY = d.playerY + 10;
-
-        for (var a = 0; a < 6; a++) {
-            var r = d.results[a];
-            var fi = ACTION_FAMILY[a];
-            ctx.fillStyle = FAMILY_COLORS[fi];
-            var n = r.positions.length;
-            for (var i = 0; i < n; i++) {
-                var t = i / Math.max(1, n - 1);
-                var dotY = baseY - t * trailHeight;
-                var dotX = r.positions[i].x;
-                var sz = 2.5 - t * 1.5;
-                ctx.globalAlpha = 0.5 - t * 0.3;
-                ctx.fillRect(dotX - sz / 2, dotY - sz / 2, sz, sz);
-            }
-        }
-
-        // Bullet trajectory for chosen action (dashed line)
-        var chosen = d.results[d.chosenAction];
-        if (chosen.bulletPositions.length > 0) {
-            ctx.strokeStyle = FAMILY_COLORS[ACTION_FAMILY[d.chosenAction]];
-            ctx.globalAlpha = 0.4;
-            ctx.setLineDash([3, 3]);
+        // Target crosshair
+        if (d.targetX !== null) {
+            var color = '#30d158';
+            ctx.strokeStyle = color;
+            ctx.globalAlpha = 0.5;
+            ctx.setLineDash([4, 4]);
             ctx.lineWidth = 1;
             ctx.beginPath();
-            for (var i = 0; i < chosen.bulletPositions.length; i++) {
-                var bp = chosen.bulletPositions[i];
-                if (i === 0) ctx.moveTo(bp.x, bp.y);
-                else ctx.lineTo(bp.x, bp.y);
-            }
+            ctx.moveTo(pcx, py + 10);
+            ctx.lineTo(d.targetX, py + 10);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.globalAlpha = 0.7;
+            ctx.beginPath();
+            ctx.moveTo(d.targetX, py - 5);
+            ctx.lineTo(d.targetX, py + 25);
+            ctx.stroke();
+        }
+
+        // Green dotted circle around the main target alien/UFO
+        if (d.target) {
+            ctx.setLineDash([3, 3]);
+            ctx.lineWidth = 1.5;
+            ctx.strokeStyle = '#30d158';
+            ctx.globalAlpha = 0.8;
+            var t = d.target;
+            var tcx = t.x + t.w / 2, tcy = t.y + t.h / 2;
+            var tr = Math.max(t.w, t.h) / 2 + 5;
+            ctx.beginPath();
+            ctx.arc(tcx, tcy, tr, 0, Math.PI * 2);
             ctx.stroke();
             ctx.setLineDash([]);
         }
 
-        // Outcome badges — one per family
-        ctx.globalAlpha = 0.85;
-        var shownFamilies = {};
-        for (var a = 0; a < 6; a++) {
-            var fi = ACTION_FAMILY[a];
-            if (shownFamilies[fi]) continue;
-            shownFamilies[fi] = true;
-
-            var r = d.results[a];
-            var fx = r.finalX;
-            var fy = baseY - trailHeight - 10;
-            var label = r.died ? '\u2717 HIT' : (r.scoreGain > 0 ? '\u2713 +' + r.scoreGain : '\u2713 safe');
-
-            ctx.font = '600 9px "Courier New", monospace';
-            var tw = ctx.measureText(label).width;
-            var pw = tw + 8;
-
-            // Pill background
-            ctx.fillStyle = FAMILY_COLORS[fi];
+        // Gray dotted circles around aliens the chosen action would kill (opportunistic)
+        var chosen = d.simResults[d.chosenAction];
+        if (chosen.killedAliens.length > 0) {
+            ctx.setLineDash([3, 3]);
+            ctx.lineWidth = 1.5;
+            ctx.strokeStyle = '#8e8e93';
+            ctx.globalAlpha = 0.45;
+            for (var i = 0; i < game.aliens.length; i++) {
+                var a = game.aliens[i];
+                if (!a.alive) continue;
+                // Skip the main target (already has green crosshair)
+                if (d.target && !d.target.isMystery && a.row === d.target.row && a.col === d.target.col) continue;
+                // Only circle if this alien is in the killed list
+                var isKilled = false;
+                for (var k = 0; k < chosen.killedAliens.length; k++) {
+                    if (chosen.killedAliens[k].row === a.row && chosen.killedAliens[k].col === a.col) {
+                        isKilled = true; break;
+                    }
+                }
+                if (!isKilled) continue;
+                var acx = a.x + a.w / 2, acy = a.y + a.h / 2;
+                var r = Math.max(a.w, a.h) / 2 + 4;
+                ctx.beginPath();
+                ctx.arc(acx, acy, r, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+            ctx.setLineDash([]);
+        }
+        // Gray circle on mystery if it's an opportunistic kill (not main target)
+        if (chosen.killedMystery && game.mystery && !(d.target && d.target.isMystery)) {
+            ctx.setLineDash([3, 3]);
+            ctx.lineWidth = 1.5;
+            ctx.strokeStyle = '#8e8e93';
+            ctx.globalAlpha = 0.45;
+            var mx = game.mystery.x + 20, my = game.mystery.y + 8;
             ctx.beginPath();
-            ctx.arc(fx - pw / 2 + 3, fy, 3, Math.PI * 0.5, Math.PI * 1.5);
-            ctx.arc(fx + pw / 2 - 3, fy, 3, -Math.PI * 0.5, Math.PI * 0.5);
-            ctx.closePath();
-            ctx.fill();
-
-            ctx.fillStyle = '#fff';
-            ctx.textAlign = 'center';
-            ctx.fillText(label, fx, fy + 3);
+            ctx.arc(mx, my, 24, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.setLineDash([]);
         }
 
+
         // Decision badge below player
-        var decFi = ACTION_FAMILY[d.chosenAction];
-        var decLabel = '\u2192 ' + ACTION_NAMES[d.chosenAction] + ' \u2713';
+        var r = d.simResults[d.chosenAction];
+        var badgeColor = r.died ? '#ff3b30' : (d.targetReason === 'ufo' ? '#ff9f0a' : '#0071e3');
+        var decLabel = ACTION_NAMES[d.chosenAction];
+        if (r.killedTarget) decLabel += ' \u2713';
+        if (r.died) decLabel += ' !';
+
         ctx.globalAlpha = 0.9;
         ctx.font = '600 10px "Courier New", monospace';
         var dtw = ctx.measureText(decLabel).width;
         var dpw = dtw + 10;
-        var dx = d.playerX + 22, dy = d.playerY + 55;
+        var dx = pcx, dy = py + 55;
 
-        ctx.fillStyle = FAMILY_COLORS[decFi];
+        ctx.fillStyle = badgeColor;
         ctx.beginPath();
         ctx.arc(dx - dpw / 2 + 4, dy, 4, Math.PI * 0.5, Math.PI * 1.5);
         ctx.arc(dx + dpw / 2 - 4, dy, 4, -Math.PI * 0.5, Math.PI * 0.5);
@@ -312,6 +397,12 @@
 
     window.toggleDqnAI = function () {
         setAIMode(aiMode === 'dqn' ? 'off' : 'dqn');
+    };
+
+    var DIFFICULTY_NAMES = ['Normal', 'Hard', 'Brutal'];
+    window.setDifficulty = function (level) {
+        game.difficultyLevel = level;
+        document.getElementById('difficulty-val').textContent = DIFFICULTY_NAMES[level - 1];
     };
 
     // Hook into the game's update cycle via aiAgent interface
