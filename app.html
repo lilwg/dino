@@ -14,6 +14,7 @@
     <script src="q-learning.js?v=5"></script>
     <script src="decision-tree.js?v=7"></script>
     <script src="logistic-agent.js?v=5"></script>
+    <script src="nn-agent.js?v=1"></script>
     <script src="presaved-gameplay.js?v=1"></script>
     <script src="precomputed-data.js?v=2"></script>
 </head>
@@ -197,9 +198,47 @@
         </div>
     </section>
 
+    <!-- ===== Section 5.5: Neural Network (MLP with Backprop) ===== -->
+    <section class="narrative-section" id="section-nn">
+        <h2 data-content="nn-heading">Approach 5: Neural Network (Backpropagation)</h2>
+        <div class="prose" data-content="nn-intro">
+            <p>Logistic regression draws straight-line boundaries, but the game isn't that simple. A neural network with a hidden layer can learn <em>nonlinear</em> patterns &mdash; curved decision boundaries that capture subtle timing relationships.</p>
+            <p>Our MLP has 12 inputs, 16 hidden neurons with ReLU activation, and 3 outputs &mdash; 259 parameters total. Unlike logistic regression's 39, these extra parameters let the network compose features: "obstacle is close AND it's a pterodactyl AND I'm not already jumping" becomes a single hidden neuron firing.</p>
+            <p>We train it with <b>backpropagation</b> &mdash; the gradient flows backward through the network, nudging every weight to reduce prediction error. Same sim AI data, same SGD optimizer, but now with the capacity to learn complex strategies.</p>
+        </div>
+        <div class="demo-box">
+            <div class="game-slot" id="game-slot-nn">
+                <div class="game-wrapper">
+                    <div class="interstitial-wrapper"></div>
+                    <div class="game-bar">
+                        <button class="btn btn-small" id="nn-slow-mo-toggle" onclick="toggleNNSlowMo()">SLOW-MO</button>
+                        <span class="game-bar-speed">Max Speed: <input type="range" id="nn-max-speed-slider" min="6" max="50" value="13" step="1" autocomplete="off" style="vertical-align:middle;width:100px;"> <b id="nn-speed-val">13</b></span>
+                    </div>
+                </div>
+            </div>
+            <div class="demo-controls">
+                <button class="btn" id="nn-train-btn" onclick="trainNNModel()">Train from Sim AI</button>
+                <button class="btn" id="nn-play-btn" onclick="playNNModel()" style="display:none;">Play Trained Network</button>
+                <span id="nn-stats" class="stats-inline"></span>
+            </div>
+        </div>
+        <div id="nn-viz-box" style="display:none;">
+            <div class="demo-box">
+                <h3 data-content="nn-network-heading">Network Architecture</h3>
+                <div id="nn-network-display"></div>
+                <p class="demo-caption" data-content="nn-network-caption">Live view: 12 inputs &rarr; 16 hidden (ReLU) &rarr; 3 outputs. Node brightness = activation strength. Edge color: <span style="color:#4a9eff">blue</span> = positive, <span style="color:#e86464">red</span> = negative weight.</p>
+                <h3 data-content="nn-loss-heading" style="margin-top:16px;">Training Loss</h3>
+                <canvas id="nn-loss-canvas" width="700" height="100"></canvas>
+            </div>
+        </div>
+        <div class="prose" data-content="nn-transition">
+            <p>The hidden layer makes a big difference &mdash; the network learns timing patterns that logistic regression can't express. But we're still learning from a teacher (the sim AI). What if we had no teacher at all &mdash; just the game and a score? That's where evolution comes in.</p>
+        </div>
+    </section>
+
     <!-- ===== Section 6: Neuroevolution ===== -->
     <section class="narrative-section" id="section-evolution">
-        <h2 data-content="evo-heading">Approach 5: Neuroevolution</h2>
+        <h2 data-content="evo-heading">Approach 6: Neuroevolution</h2>
         <div class="prose" data-content="evo-intro">
             <p>What if we add a hidden layer to our logistic regression? That gives the network the ability to learn nonlinear patterns &mdash; subtle timing relationships that a straight line can't capture. But with no teacher to learn from, we need a different training method.</p>
             <p>Neuroevolution creates a population of 50 small neural networks. Each generation, all 50 play the game. The best performers survive, breed, and mutate. No gradient descent, no teacher &mdash; just natural selection.</p>
@@ -482,6 +521,9 @@
     wireSpeedSlider('log-max-speed-slider', 'log-speed-val', function () {
         return window.logRunner;
     });
+    wireSpeedSlider('nn-max-speed-slider', 'nn-speed-val', function () {
+        return window.nnRunner;
+    });
 
     // Push non-default slider values into runner configs.
     // Called after runners are created (they don't exist when wireSpeedSlider runs).
@@ -491,7 +533,8 @@
             ['evo-max-speed-slider', function () { return window.evoRunner; }],
             ['q-max-speed-slider', function () { return window.qRunner; }],
             ['dtree-max-speed-slider', function () { return window.dtreeRunner; }],
-            ['log-max-speed-slider', function () { return window.logRunner; }]
+            ['log-max-speed-slider', function () { return window.logRunner; }],
+            ['nn-max-speed-slider', function () { return window.nnRunner; }]
         ];
         for (var i = 0; i < pairs.length; i++) {
             var slider = document.getElementById(pairs[i][0]);
@@ -557,6 +600,14 @@
         document.getElementById('log-slow-mo-toggle').classList.toggle('active', r.slowMo);
     };
 
+    // ------ Slow-mo toggle (Neural Network) ------
+    window.toggleNNSlowMo = function () {
+        var r = window.nnRunner;
+        if (!r) return;
+        r.slowMo = !r.slowMo;
+        document.getElementById('nn-slow-mo-toggle').classList.toggle('active', r.slowMo);
+    };
+
     // ------ "Watch at Max Speed" — sync slider then play ------
     window.playTeacherFast = function () {
         var slider = document.getElementById('evo-max-speed-slider');
@@ -597,6 +648,7 @@
         updateSpeedDisplay('q-speed-val', 'q-max-speed-slider', window.qRunner);
         updateSpeedDisplay('dtree-speed-val', 'dtree-max-speed-slider', window.dtreeRunner);
         updateSpeedDisplay('log-speed-val', 'log-max-speed-slider', window.logRunner);
+        updateSpeedDisplay('nn-speed-val', 'nn-max-speed-slider', window.nnRunner);
         updateSpeedDisplay('evo-speed-val', 'evo-max-speed-slider', window.evoRunner);
     }, 500);
 
@@ -1097,6 +1149,10 @@
                 document.querySelector('#game-slot-logistic .interstitial-wrapper'),
                 {}, { primary: false });
 
+            window.nnRunner = new Runner(
+                document.querySelector('#game-slot-nn .interstitial-wrapper'),
+                {}, { primary: false });
+
             window.evoRunner = new Runner(
                 document.querySelector('#game-slot-evolution .interstitial-wrapper'),
                 {}, { primary: false });
@@ -1132,7 +1188,7 @@
             // Set arcade mode on secondary runners and reset to idle.
             var secondaries = [window.simRunner, window.qRunner,
                                window.dtreeRunner, window.logRunner,
-                               window.evoRunner];
+                               window.nnRunner, window.evoRunner];
             for (var i = 0; i < secondaries.length; i++) {
                 var r = secondaries[i];
                 if (r) {
