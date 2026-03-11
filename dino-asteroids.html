@@ -17,6 +17,7 @@
             <div class="si-controls" style="margin-top:12px;">
                 <button class="si-btn active" id="human-btn" onclick="setMode('off')">Human</button>
                 <button class="si-btn" id="rules-btn" onclick="setMode('ai')">AI</button>
+                <button class="si-btn" id="ml-btn" onclick="setMode('ml')">ML</button>
                 <button class="si-btn" id="viz-btn" onclick="toggleViz()">Viz</button>
                 <button class="si-btn" onclick="restartGame()">Restart</button>
                 <button class="si-btn" id="pause-btn" onclick="togglePause()">Pause</button>
@@ -37,9 +38,32 @@
                 </div>
             </div>
         </div>
+        <!-- ═══ IMITATION LEARNING ═══ -->
+        <div id="ml-section">
+            <h2 style="margin-top:16px;">Imitation Learning</h2>
+            <p class="si-prose">
+                Learns to play by watching the rule-based AI. Click <strong>Collect</strong> to gather
+                training data (state&rarr;action pairs), then <strong>Train</strong> to fit a neural network.
+                Switch to <strong>ML</strong> mode above to watch it play.
+            </p>
+            <div class="si-controls" style="margin-top:8px; margin-bottom:8px;">
+                <button class="si-btn" id="ml-collect-btn" onclick="mlCollect()">Collect</button>
+                <button class="si-btn" id="ml-train-btn" onclick="mlTrain()" style="display:none;">Train</button>
+                <button class="si-btn" id="ml-stop-btn" onclick="mlStopCollect()" style="display:none;">Stop</button>
+                <span id="ml-stats" style="font-size:11px; color:#6e6e73; margin-left:8px;"></span>
+            </div>
+            <div id="ml-viz" style="display:none;">
+                <div style="background:#fff; border-radius:12px; padding:16px; margin-top:8px; box-shadow:0 1px 3px rgba(0,0,0,0.08);">
+                    <h3 style="font-size:14px; margin:0 0 8px;">Training Loss</h3>
+                    <canvas id="ml-loss-canvas" width="600" height="100" style="width:100%; max-width:600px;"></canvas>
+                </div>
+            </div>
+        </div>
+
         <h2 style="margin-top:16px;">How it works</h2>
         <p class="si-prose">DinoAsteroids recreates the 1979 Atari classic: smash large boulders into medium then small fragments, and survive the pterodactyl UFO. Big rocks split into two medium, medium into two small. The small UFO pterodactyl aims precisely; the large one fires randomly. Use hyperspace as a last resort — there&rsquo;s a small chance of rematerialising inside a rock.</p>
         <p class="si-prose">The AI simulates 12 possible actions (rotation &times; thrust &times; fire) 35 frames ahead, scoring each for survival, kills, and aim alignment. It picks targets by priority: UFO first, then collision-course rocks, then small &rarr; medium &rarr; large (skipping large when the field is crowded). If every action leads to death, it hyperdrives to safety. Enable <strong>Viz</strong> to see the target ring (colour-coded by priority), aim arrow, and predicted intercept point.</p>
+        <p class="si-prose">The <strong>imitation learning</strong> agent watches the rule-based AI play and records every (state, action) pair. A 2-layer neural network is then trained via supervised learning (behavioral cloning) to predict the AI&rsquo;s actions from game state features: ship velocity, nearest rocks (relative position, velocity, size), UFO, and incoming bullets. After training, the network drives the ship autonomously.</p>
         <p style="margin-top:20px;"><a href="/" style="color:#0071e3;font-size:14px;text-decoration:none;">&larr; Back</a></p>
     </div>
 <script src="dino-sounds.js"></script>
@@ -156,7 +180,7 @@ function diffSmallUfo() { var d=gameDiff/100; return 0.15 + 0.6*d; }
 // ─── State ───────────────────────────────────────────────────────────────────
 var gs, player, bullets, rocks, sparks, ufo;
 var sc, hi, lv, lives, ufoT, tick;
-var aiMode = 'off', aiIn = { rot:0, thrust:false };
+var aiMode = 'off', aiIn = { rot:0, thrust:false, fire:false };
 var aiViz = false, aiVizData = null;
 var gameDiff = 50; // 0-100 game difficulty slider
 var isTouchDevice = ('ontouchstart' in window || navigator.maxTouchPoints > 0);
@@ -235,6 +259,7 @@ function update() {
     if (nightA > 0) { moonX -= .3; if (moonX < -40) moonX = CW+40; }
 
     if (aiMode==='ai' && player && !player.dead) computeAI();
+    if (aiMode==='ml' && player && !player.dead && window._mlComputeAI) window._mlComputeAI();
     if (player && !player.dead) stepPlayer();
     stepRocks();
     stepBullets();
@@ -252,11 +277,11 @@ function update() {
 }
 
 function stepPlayer() {
-    var p = player, ai = aiMode === 'ai';
+    var p = player, ai = (aiMode === 'ai' || aiMode === 'ml');
     var left  = ai ? (aiIn.rot < 0) : !!keys[37];
     var right = ai ? (aiIn.rot > 0) : !!keys[39];
     var thr   = ai ? aiIn.thrust     : !!(keys[38]||keys[87]);
-    var fireDown = !ai && (keys[32]||keys[90]);
+    var fireDown = !ai ? (keys[32]||keys[90]) : (aiMode === 'ml' && aiIn.fire);
     var fireTap  = fireDown && !keys._fh;  // edge trigger: tap only
     keys._fh = fireDown;
 
@@ -1014,13 +1039,14 @@ window.setMode = function(m) {
     aiMode = m;
     document.getElementById('human-btn').classList.toggle('active', m==='off');
     document.getElementById('rules-btn').classList.toggle('active', m==='ai');
+    var mlBtn = document.getElementById('ml-btn');
+    if (mlBtn) mlBtn.classList.toggle('active', m==='ml');
     // Viz on by default when entering AI mode
-    if (m === 'ai') {
+    if (m === 'ai' || m === 'ml') {
         aiViz = true;
         document.getElementById('viz-btn').classList.add('active');
     }
-    // If AI is selected while on the start/gameover screen, kick off the game
-    if (m === 'ai' && (gs === 'start' || gs === 'gameover')) initGame();
+    if ((m === 'ai' || m === 'ml') && (gs === 'start' || gs === 'gameover')) initGame();
 };
 window.setDifficulty = function(v) {
     gameDiff = parseInt(v, 10);
@@ -1089,6 +1115,354 @@ placeStars();
 
 function loop() { update(); draw(); requestAnimationFrame(loop); }
 loop();
+
+// Expose state for ML
+window._astState = function() { return { player:player, rocks:rocks, bullets:bullets, ufo:ufo, gs:gs, sc:sc, lv:lv, lives:lives, aiIn:aiIn }; };
+window._astAiIn = aiIn;
+window._astConst = { CW:CW, CH:CH, SHIP_R:SHIP_R, TURN:TURN, ACCEL:ACCEL, FRIC:FRIC, VMAX:VMAX, B_SPD:B_SPD, B_LIFE:B_LIFE };
+window._astWdx = wdx; window._astWdy = wdy; window._astWdst = wdst; window._astNormA = normA;
+
+})();
+</script>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<!--  IMITATION LEARNING AGENT                                             -->
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<script>
+(function() {
+'use strict';
+
+var C = window._astConst;
+var wdx = window._astWdx, wdy = window._astWdy, normA = window._astNormA;
+
+// ── Feature extraction ──────────────────────────────────────────────────
+// 5 nearest rocks × 5 features + ship(4) + ufo(4) + nearest enemy bullet(3) = 36
+var N_ROCKS = 5;
+var N_FEAT = N_ROCKS * 5 + 4 + 4 + 3; // 36
+
+function extractState() {
+    var st = window._astState();
+    var p = st.player;
+    if (!p) return null;
+
+    var feat = new Float32Array(N_FEAT);
+    var fi = 0;
+
+    // Ship state (4): speed, angle sin/cos, cooldown
+    var spd = Math.sqrt(p.vx*p.vx + p.vy*p.vy);
+    feat[fi++] = spd / C.VMAX;
+    feat[fi++] = Math.cos(p.angle);
+    feat[fi++] = Math.sin(p.angle);
+    feat[fi++] = p.cooldown / 6;
+
+    // Sort rocks by distance
+    var rks = [];
+    for (var i = 0; i < st.rocks.length; i++) {
+        var r = st.rocks[i];
+        rks.push({ dx: wdx(r.x, p.x), dy: wdy(r.y, p.y), vx: r.vx, vy: r.vy, sz: r.sz,
+                    d: Math.sqrt(wdx(r.x,p.x)*wdx(r.x,p.x) + wdy(r.y,p.y)*wdy(r.y,p.y)) });
+    }
+    rks.sort(function(a,b) { return a.d - b.d; });
+
+    // Nearest N_ROCKS rocks: relative dx, dy, dvx, dvy, size (all normalised)
+    for (var i = 0; i < N_ROCKS; i++) {
+        if (i < rks.length) {
+            var rk = rks[i];
+            feat[fi++] = rk.dx / C.CW;
+            feat[fi++] = rk.dy / C.CH;
+            feat[fi++] = (rk.vx - p.vx) / (C.VMAX * 2);
+            feat[fi++] = (rk.vy - p.vy) / (C.VMAX * 2);
+            feat[fi++] = rk.sz / 3;
+        } else {
+            fi += 5; // zeros (no rock)
+        }
+    }
+
+    // UFO (4): present, dx, dy, angular error to UFO
+    if (st.ufo) {
+        feat[fi++] = 1;
+        feat[fi++] = wdx(st.ufo.x, p.x) / C.CW;
+        feat[fi++] = wdy(st.ufo.y, p.y) / C.CH;
+        var ufoA = Math.atan2(wdy(st.ufo.y, p.y), wdx(st.ufo.x, p.x));
+        feat[fi++] = normA(ufoA - p.angle) / Math.PI;
+    } else {
+        fi += 4;
+    }
+
+    // Nearest enemy bullet (3): dx, dy, closing speed
+    var bestBD = Infinity, bestBul = null;
+    for (var i = 0; i < st.bullets.length; i++) {
+        var b = st.bullets[i];
+        if (b.own) continue;
+        var bd = Math.sqrt(wdx(b.x,p.x)*wdx(b.x,p.x) + wdy(b.y,p.y)*wdy(b.y,p.y));
+        if (bd < bestBD) { bestBD = bd; bestBul = b; }
+    }
+    if (bestBul) {
+        feat[fi++] = wdx(bestBul.x, p.x) / C.CW;
+        feat[fi++] = wdy(bestBul.y, p.y) / C.CH;
+        var bdx = wdx(bestBul.x, p.x), bdy = wdy(bestBul.y, p.y);
+        var bd = Math.sqrt(bdx*bdx+bdy*bdy) || 1;
+        feat[fi++] = ((bdx*(bestBul.vx-p.vx)+bdy*(bestBul.vy-p.vy))/bd) / C.B_SPD;
+    }
+    // else zeros
+
+    return feat;
+}
+
+// Action encoding: 3 independent binary outputs
+// [0] rotate: -1→0, 0→0.5, 1→1 (but we'll use 3-class for rotate)
+// Actually let's use: rot_left, rot_right, thrust, fire = 4 binary outputs
+function extractAction() {
+    var ai = window._astAiIn;
+    return [ai.rot < 0 ? 1 : 0, ai.rot > 0 ? 1 : 0, ai.thrust ? 1 : 0, ai.fire ? 1 : 0];
+}
+
+// ── Data collection ─────────────────────────────────────────────────────
+var dataX = [], dataY = [];
+var collecting = false;
+
+function collectTick() {
+    var st = window._astState();
+    if (st.gs !== 'playing' || !st.player || st.player.dead) return;
+    // The rule AI has already been called this frame, so aiIn has its output
+    var feat = extractState();
+    if (!feat) return;
+    var act = extractAction();
+    dataX.push(feat);
+    dataY.push(act);
+}
+
+var _collectHook = null;
+
+window.mlCollect = function() {
+    // Switch to rule-based AI and start collecting
+    window.setMode('ai');
+    collecting = true;
+    dataX = []; dataY = [];
+
+    document.getElementById('ml-collect-btn').style.display = 'none';
+    document.getElementById('ml-stop-btn').style.display = '';
+
+    // Hook into the game loop by polling each frame
+    _collectHook = setInterval(function() {
+        if (!collecting) return;
+        collectTick();
+        document.getElementById('ml-stats').textContent =
+            'Collecting... ' + dataX.length + ' samples';
+    }, 17); // ~60fps
+};
+
+window.mlStopCollect = function() {
+    collecting = false;
+    if (_collectHook) { clearInterval(_collectHook); _collectHook = null; }
+    document.getElementById('ml-stop-btn').style.display = 'none';
+    document.getElementById('ml-collect-btn').style.display = '';
+    if (dataX.length > 100) {
+        document.getElementById('ml-train-btn').style.display = '';
+    }
+    document.getElementById('ml-stats').textContent =
+        dataX.length + ' samples collected. Ready to train.';
+};
+
+// ── Neural network (MLP: N_FEAT → 64 → 32 → 4) ────────────────────────
+var N_H1 = 64, N_H2 = 32, N_OUT = 4;
+var W1, b1, W2, b2, W3, b3;
+
+function initWeights() {
+    var s1 = Math.sqrt(2/N_FEAT), s2 = Math.sqrt(2/N_H1), s3 = Math.sqrt(2/N_H2);
+    W1 = new Float32Array(N_H1 * N_FEAT); b1 = new Float32Array(N_H1);
+    W2 = new Float32Array(N_H2 * N_H1);   b2 = new Float32Array(N_H2);
+    W3 = new Float32Array(N_OUT * N_H2);   b3 = new Float32Array(N_OUT);
+    for (var i = 0; i < W1.length; i++) W1[i] = randn() * s1;
+    for (var i = 0; i < W2.length; i++) W2[i] = randn() * s2;
+    for (var i = 0; i < W3.length; i++) W3[i] = randn() * s3;
+}
+
+function randn() {
+    return Math.sqrt(-2*Math.log(1-Math.random()))*Math.cos(2*Math.PI*Math.random());
+}
+
+// Forward pass — returns {h1, h2, out} for backprop
+function forward(x) {
+    var h1 = new Float32Array(N_H1);
+    for (var j = 0; j < N_H1; j++) {
+        var s = b1[j];
+        for (var i = 0; i < N_FEAT; i++) s += W1[j*N_FEAT+i] * x[i];
+        h1[j] = s > 0 ? s : 0; // ReLU
+    }
+    var h2 = new Float32Array(N_H2);
+    for (var j = 0; j < N_H2; j++) {
+        var s = b2[j];
+        for (var i = 0; i < N_H1; i++) s += W2[j*N_H1+i] * h1[i];
+        h2[j] = s > 0 ? s : 0; // ReLU
+    }
+    var out = new Float32Array(N_OUT);
+    for (var j = 0; j < N_OUT; j++) {
+        var s = b3[j];
+        for (var i = 0; i < N_H2; i++) s += W3[j*N_H2+i] * h2[i];
+        out[j] = 1 / (1 + Math.exp(-s)); // sigmoid
+    }
+    return { h1:h1, h2:h2, out:out };
+}
+
+// Binary cross-entropy loss + backprop for one sample
+function trainStep(x, y, lr) {
+    var fwd = forward(x);
+    var out = fwd.out, h2 = fwd.h2, h1 = fwd.h1;
+
+    // dL/dout for binary cross-entropy: out - y
+    var dOut = new Float32Array(N_OUT);
+    var loss = 0;
+    for (var j = 0; j < N_OUT; j++) {
+        var o = Math.max(1e-7, Math.min(1-1e-7, out[j]));
+        loss += -(y[j] * Math.log(o) + (1-y[j]) * Math.log(1-o));
+        dOut[j] = o - y[j];
+    }
+
+    // W3, b3 gradients
+    var dH2 = new Float32Array(N_H2);
+    for (var j = 0; j < N_OUT; j++) {
+        var d = dOut[j];
+        b3[j] -= lr * d;
+        for (var i = 0; i < N_H2; i++) {
+            W3[j*N_H2+i] -= lr * d * h2[i];
+            dH2[i] += d * W3[j*N_H2+i];
+        }
+    }
+    // ReLU mask
+    for (var i = 0; i < N_H2; i++) if (h2[i] <= 0) dH2[i] = 0;
+
+    // W2, b2 gradients
+    var dH1 = new Float32Array(N_H1);
+    for (var j = 0; j < N_H2; j++) {
+        var d = dH2[j];
+        b2[j] -= lr * d;
+        for (var i = 0; i < N_H1; i++) {
+            W2[j*N_H1+i] -= lr * d * h1[i];
+            dH1[i] += d * W2[j*N_H1+i];
+        }
+    }
+    for (var i = 0; i < N_H1; i++) if (h1[i] <= 0) dH1[i] = 0;
+
+    // W1, b1 gradients
+    for (var j = 0; j < N_H1; j++) {
+        var d = dH1[j];
+        b1[j] -= lr * d;
+        for (var i = 0; i < N_FEAT; i++) {
+            W1[j*N_FEAT+i] -= lr * d * x[i];
+        }
+    }
+
+    return loss / N_OUT;
+}
+
+// ── Training loop ───────────────────────────────────────────────────────
+var lossHistory = [];
+var trained = false;
+
+window.mlTrain = function() {
+    if (dataX.length < 100) return;
+    initWeights();
+    lossHistory = [];
+    trained = false;
+
+    var statsEl = document.getElementById('ml-stats');
+    var vizEl = document.getElementById('ml-viz');
+    vizEl.style.display = '';
+    document.getElementById('ml-train-btn').style.display = 'none';
+
+    var EPOCHS = 20;
+    var BATCH = 32;
+    var lr = 0.003;
+    var epoch = 0;
+    var n = dataX.length;
+
+    // Shuffle indices
+    var idx = [];
+    for (var i = 0; i < n; i++) idx.push(i);
+
+    function shuffle() {
+        for (var i = n-1; i > 0; i--) {
+            var j = Math.floor(Math.random()*(i+1));
+            var t = idx[i]; idx[i] = idx[j]; idx[j] = t;
+        }
+    }
+
+    function runEpoch() {
+        shuffle();
+        var totalLoss = 0;
+        for (var i = 0; i < n; i++) {
+            totalLoss += trainStep(dataX[idx[i]], dataY[idx[i]], lr);
+        }
+        var avgLoss = totalLoss / n;
+        lossHistory.push(avgLoss);
+        epoch++;
+        statsEl.textContent = 'Training epoch ' + epoch + '/' + EPOCHS +
+            ' | Loss: ' + avgLoss.toFixed(4) + ' | ' + n + ' samples';
+        drawLossChart();
+
+        if (epoch < EPOCHS) {
+            setTimeout(runEpoch, 0);
+        } else {
+            trained = true;
+            statsEl.textContent = 'Training complete! Loss: ' + avgLoss.toFixed(4) +
+                ' | ' + n + ' samples. Switch to ML mode to play.';
+            document.getElementById('ml-train-btn').style.display = '';
+            document.getElementById('ml-train-btn').textContent = 'Retrain';
+        }
+    }
+
+    setTimeout(runEpoch, 0);
+};
+
+// ── Loss chart ──────────────────────────────────────────────────────────
+function drawLossChart() {
+    var canvas = document.getElementById('ml-loss-canvas');
+    if (!canvas) return;
+    var ctx = canvas.getContext('2d');
+    var W = canvas.width, H = canvas.height;
+    ctx.clearRect(0, 0, W, H);
+
+    if (lossHistory.length < 2) return;
+    var maxL = 0;
+    for (var i = 0; i < lossHistory.length; i++) if (lossHistory[i] > maxL) maxL = lossHistory[i];
+    maxL = Math.max(maxL, 0.1);
+
+    ctx.strokeStyle = '#0071e3'; ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (var i = 0; i < lossHistory.length; i++) {
+        var x = (i / (lossHistory.length - 1)) * W;
+        var y = H - (lossHistory[i] / maxL) * (H - 10) - 5;
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+
+    // Axis labels
+    ctx.fillStyle = '#86868b'; ctx.font = '9px system-ui';
+    ctx.textAlign = 'left';
+    ctx.fillText(maxL.toFixed(2), 2, 12);
+    ctx.fillText('0', 2, H - 2);
+    ctx.textAlign = 'right';
+    ctx.fillText('Epoch ' + lossHistory.length, W - 2, H - 2);
+}
+
+// ── ML play mode ────────────────────────────────────────────────────────
+window._mlComputeAI = function() {
+    if (!trained) return;
+    var feat = extractState();
+    if (!feat) return;
+    var fwd = forward(feat);
+    var out = fwd.out;
+    var ai = window._astAiIn;
+
+    // out[0]=rot_left, out[1]=rot_right, out[2]=thrust, out[3]=fire
+    ai.rot = 0;
+    if (out[0] > 0.5 && out[1] <= 0.5) ai.rot = -1;
+    else if (out[1] > 0.5 && out[0] <= 0.5) ai.rot = 1;
+    else if (out[0] > 0.5 && out[1] > 0.5) ai.rot = out[1] > out[0] ? 1 : -1;
+    ai.thrust = out[2] > 0.5;
+    ai.fire = out[3] > 0.5;
+};
 
 })();
 </script>
