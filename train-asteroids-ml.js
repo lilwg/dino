@@ -181,122 +181,109 @@ function stepUFO() {
     if (ufo && (ufo.x < -60 || ufo.x > CW+60)) ufo = null;
 }
 
-// ─── Rule-based AI (copied from game) ──────────────────────────────────────
+// ─── Safety-first Rule AI (designed for easy imitation learning) ────────────
+// Design principles:
+//   1. No hyperspace (random teleport = unpredictable)
+//   2. No opportunistic shots (only primary target = unimodal)
+//   3. Clear priority: DODGE > AIM+SHOOT > CRUISE
+//   4. Simple linear lead (target.vel * dist/bulletSpeed)
+//   5. Always thrust when dodging; shoot even while dodging if aligned
+//
 function computeAI() {
     aiIn.rot = 0; aiIn.thrust = false; aiIn.fire = false;
     var p = player;
 
-    var fleeX=0, fleeY=0, hardThreat=false, minTTC=Infinity;
+    // ── Phase 1: Compute threat vector (flee direction) ──
+    var fleeX = 0, fleeY = 0;
+    var THREAT_HORIZON = 150;
 
-    function addThreat(tx,ty,tvx,tvy,tr,mul) {
-        var dx=wdx(p.x,tx), dy=wdy(p.y,ty);
-        var d=Math.sqrt(dx*dx+dy*dy)||1;
-        var eff=d-tr-SHIP_R;
-        var rvx=tvx-p.vx, rvy=tvy-p.vy;
-        var closing=(dx*rvx+dy*rvy)/d;
-        var w=0;
-        if (closing>0.1) {
-            var ttc=Math.max(0,eff)/closing;
-            if (ttc<minTTC) minTTC=ttc;
-            if (ttc<150) { w=Math.pow((150-ttc)/150,2)*mul; if(ttc<30)hardThreat=true; }
-        } else if (eff<70) {
-            w=((70-eff)/70)*0.5*mul;
-            if (eff<15) hardThreat=true;
-        }
-        if (w>0.001) { fleeX+=(dx/d)*w; fleeY+=(dy/d)*w; }
-    }
-
-    for (var i=0; i<rocks.length; i++) { var r=rocks[i]; addThreat(r.x,r.y,r.vx,r.vy,r.r,1.0); }
-    if (ufo) addThreat(ufo.x,ufo.y,ufo.vx,ufo.vy,ufo.r,1.5);
-    for (var i=0; i<bullets.length; i++) { var b=bullets[i]; if(!b.own) addThreat(b.x,b.y,b.vx,b.vy,3,2.5); }
-
-    var dodging=(fleeX*fleeX+fleeY*fleeY)>0.04;
-    var fleeA=dodging?Math.atan2(fleeY,fleeX):0;
-
-    function interceptA(t) {
-        var rx=wdx(t.x,p.x), ry=wdy(t.y,p.y);
-        var rvx=(t.vx||0)-p.vx, rvy=(t.vy||0)-p.vy;
-        var qa=rvx*rvx+rvy*rvy-B_SPD*B_SPD;
-        var qb=2*(rx*rvx+ry*rvy), qc=rx*rx+ry*ry;
-        var tt=null;
-        if (Math.abs(qa)<0.001) { if(qb<-0.001) tt=-qc/qb; }
-        else {
-            var disc=qb*qb-4*qa*qc;
-            if (disc>=0) {
-                var sq=Math.sqrt(disc);
-                var t1=(-qb-sq)/(2*qa), t2=(-qb+sq)/(2*qa);
-                if(t1>0&&t2>0)tt=Math.min(t1,t2); else if(t1>0)tt=t1; else if(t2>0)tt=t2;
+    function addThreat(tx, ty, tvx, tvy, tr, mul) {
+        var dx = wdx(p.x, tx), dy = wdy(p.y, ty);
+        var d = Math.sqrt(dx * dx + dy * dy) || 1;
+        var eff = d - tr - SHIP_R;
+        var rvx = tvx - p.vx, rvy = tvy - p.vy;
+        var closing = (dx * rvx + dy * rvy) / d;
+        var w = 0;
+        if (closing > 0.1) {
+            var ttc = Math.max(0, eff) / closing;
+            if (ttc < THREAT_HORIZON) {
+                w = Math.pow((THREAT_HORIZON - ttc) / THREAT_HORIZON, 2) * mul;
             }
+        } else if (eff < 70) {
+            w = ((70 - eff) / 70) * 0.5 * mul;
         }
-        if (tt===null||tt>=B_LIFE) return null;
-        return { a:Math.atan2(ry+rvy*tt, rx+rvx*tt), tt:tt, rx:rx, ry:ry };
+        if (w > 0.001) { fleeX += (dx / d) * w; fleeY += (dy / d) * w; }
     }
 
-    var tgt=null;
-    if (ufo && wdst(p.x,p.y,ufo.x,ufo.y)<350) {
-        tgt=ufo;
-    } else if (rocks.length>0) {
-        var bestRot=Infinity, bestRotAll=Infinity, tgtAll=null;
-        for (var i=0; i<rocks.length; i++) {
-            var r=rocks[i];
-            var ric=interceptA(r);
-            var rot=(ric ? Math.abs(normA(ric.a-p.angle)) : Math.PI) + (r.sz-1)*Math.PI/2;
-            if (rot<bestRotAll) { bestRotAll=rot; tgtAll=r; }
-            if (wdst(p.x,p.y,r.x,r.y) < DODGE_SOFT && rot<bestRot) { bestRot=rot; tgt=r; }
-        }
-        if (!tgt) tgt=tgtAll;
+    for (var i = 0; i < rocks.length; i++) {
+        var r = rocks[i];
+        addThreat(r.x, r.y, r.vx, r.vy, r.r, 1.0);
+    }
+    if (ufo) addThreat(ufo.x, ufo.y, ufo.vx, ufo.vy, ufo.r, 1.5);
+    for (var i = 0; i < bullets.length; i++) {
+        var b = bullets[i];
+        if (!b.own) addThreat(b.x, b.y, b.vx, b.vy, 3, 2.5);
     }
 
-    var leadX=null, leadY=null, aimA=null, aimDiff=null;
-    var ic = null;
+    var dodging = (fleeX * fleeX + fleeY * fleeY) > 0.04;
+
+    // ── Phase 2: Find closest target + simple linear lead ──
+    var tgt = null, tgtDist = Infinity;
+
+    if (ufo) {
+        var ud = wdst(p.x, p.y, ufo.x, ufo.y);
+        if (ud < 350) { tgt = ufo; tgtDist = ud; }
+    }
+    if (!tgt) {
+        for (var i = 0; i < rocks.length; i++) {
+            var r = rocks[i];
+            var rd = wdst(p.x, p.y, r.x, r.y);
+            if (rd < tgtDist) { tgtDist = rd; tgt = r; }
+        }
+    }
+
+    // Aim with simple linear lead: offset by target velocity * travel time
+    var aimA = null, aimDiff = null;
     if (tgt) {
-        ic=interceptA(tgt);
-        if (ic) {
-            aimA=ic.a;
-            leadX=p.x+ic.rx+(tgt.vx||0)*ic.tt;
-            leadY=p.y+ic.ry+(tgt.vy||0)*ic.tt;
-        } else {
-            aimA=Math.atan2(wdy(tgt.y,p.y), wdx(tgt.x,p.x));
-        }
-        aimDiff=normA(aimA-p.angle);
+        var tdx = wdx(tgt.x, p.x), tdy = wdy(tgt.y, p.y);
+        var travelT = tgtDist / B_SPD; // approximate time for bullet to reach
+        // Lead position = target pos + target vel * travelT - player vel * travelT
+        var leadX = tdx + ((tgt.vx || 0) - p.vx) * travelT;
+        var leadY = tdy + ((tgt.vy || 0) - p.vy) * travelT;
+        aimA = Math.atan2(leadY, leadX);
+        aimDiff = normA(aimA - p.angle);
     }
 
-    if (p.cooldown===0) {
-        var fired=false;
-        if (ic && aimDiff!==null) {
-            var primTol = Math.atan2((tgt.r||15) * 1.5, B_SPD * ic.tt);
-            if (Math.abs(aimDiff) < primTol) { fireBullet(); p.cooldown=6; fired=true; aiIn.fire=true; }
-        }
-        if (!fired) {
-            var opps = ufo ? rocks.concat([ufo]) : rocks;
-            for (var i=0; i<opps.length&&!fired; i++) {
-                if (opps[i]===tgt) continue;
-                var oic=interceptA(opps[i]);
-                if (oic) {
-                    var oppTol = Math.atan2((opps[i].r||15), B_SPD * oic.tt);
-                    if (Math.abs(normA(oic.a-p.angle)) < oppTol) {
-                        fireBullet(); p.cooldown=6; fired=true; aiIn.fire=true;
-                    }
-                }
-            }
-        }
-    }
-
+    // ── Phase 3: If dodging, turn toward flee direction and thrust ──
     if (dodging) {
-        var diff=normA(fleeA-p.angle);
-        if(diff>0.1)aiIn.rot=1; else if(diff<-0.1)aiIn.rot=-1;
-        aiIn.thrust=hardThreat||Math.abs(diff)<0.5;
-        if (minTTC<10) {
-            // Hyperspace — just teleport in headless
-            p.x = 20+Math.random()*(CW-40);
-            p.y = 20+Math.random()*(CH-40);
+        var fleeA = Math.atan2(fleeY, fleeX);
+        var diff = normA(fleeA - p.angle);
+        if (diff > 0.1) aiIn.rot = 1;
+        else if (diff < -0.1) aiIn.rot = -1;
+        aiIn.thrust = Math.abs(diff) < 0.5;
+
+        // Still shoot if target happens to be well-aligned while fleeing
+        if (aimDiff !== null && Math.abs(aimDiff) < 0.15 && p.cooldown === 0) {
+            fireBullet(); p.cooldown = 6; aiIn.fire = true;
         }
-    } else if (aimA!==null) {
-        if(aimDiff>0.1)aiIn.rot=1; else if(aimDiff<-0.1)aiIn.rot=-1;
-        var td=wdst(p.x,p.y,tgt.x,tgt.y);
-        var spd=Math.sqrt(p.vx*p.vx+p.vy*p.vy);
-        if(td>190&&Math.abs(aimDiff)<0.5)aiIn.thrust=true;
-        else if(td>90&&spd<2.5&&Math.abs(aimDiff)<0.3)aiIn.thrust=true;
+        return;
+    }
+
+    // ── Phase 4: Aim and shoot ──
+    if (tgt) {
+        if (aimDiff > 0.08) aiIn.rot = 1;
+        else if (aimDiff < -0.08) aiIn.rot = -1;
+
+        // Fire with generous tolerance (simple lead makes this accurate enough)
+        var fireTol = Math.atan2((tgt.r || 15) * 1.5, Math.max(tgtDist, 30));
+        if (Math.abs(aimDiff) < fireTol && p.cooldown === 0) {
+            fireBullet(); p.cooldown = 6; aiIn.fire = true;
+        }
+
+        // Thrust toward distant targets when roughly aligned
+        var spd = Math.sqrt(p.vx * p.vx + p.vy * p.vy);
+        if (tgtDist > 180 && Math.abs(aimDiff) < 0.5) aiIn.thrust = true;
+        else if (tgtDist > 100 && spd < 2.5 && Math.abs(aimDiff) < 0.3) aiIn.thrust = true;
     }
 }
 
