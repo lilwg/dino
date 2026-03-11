@@ -2134,10 +2134,10 @@
         slider.value = val;
         document.getElementById('play-diff-val').textContent = val;
 
-        // Viz off by default when entering AI mode
+        // Viz on by default when entering AI mode
         if (mode === 'rules' && window.pongSimAI) {
-            window.pongSimAI._vizEnabled = false;
-            document.getElementById('viz-btn').classList.remove('active');
+            window.pongSimAI._vizEnabled = true;
+            document.getElementById('viz-btn').classList.add('active');
         }
 
         // Clear pause state
