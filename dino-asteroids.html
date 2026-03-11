@@ -1628,6 +1628,22 @@ window._mlComputeAI = function() {
     ai.fire = _out[4] > 0.5;
 };
 
+// ── Load pre-trained weights ────────────────────────────────────────────
+function loadWeights(w) {
+    W1 = new Float32Array(w.W1); b1 = new Float32Array(w.b1);
+    W2 = new Float32Array(w.W2); b2 = new Float32Array(w.b2);
+    W3 = new Float32Array(w.W3); b3 = new Float32Array(w.b3);
+    trained = true;
+    document.getElementById('ml-stats').textContent = 'Pre-trained weights loaded. Switch to ML mode to play.';
+}
+
+// Auto-load pre-trained weights if available
+fetch('asteroids-ml-weights.json').then(function(r) {
+    if (r.ok) return r.json();
+}).then(function(w) {
+    if (w) loadWeights(w);
+}).catch(function() {});
+
 })();
 </script>
 </body>
