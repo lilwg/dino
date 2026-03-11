@@ -41,10 +41,10 @@
         <!-- ═══ HOW IT WORKS ═══ -->
         <h2 style="margin-top: 16px;">How it works</h2>
         <p class="si-prose">
-            The AI follows a simple priority system: (1) dodge enemy bullets that will hit you, (2) shoot the UFO if it&rsquo;s on screen, (3) move toward and shoot the lowest alien, (4) fire opportunistically at any alien you pass while moving. No simulation or lookahead &mdash; just reactive rules that scan the board each frame.
+            The AI picks a target &mdash; the UFO if it&rsquo;s on screen, otherwise the lowest alien &mdash; then simulates all 6 possible actions (left, right, fire, left+fire, right+fire, stay) for 80 frames each. It scores each outcome: dying is catastrophic (&minus;10000), killing the target is highly rewarded (+500), any other kill earns points, wasted shots are penalized, and proximity to the target breaks ties. The highest-scoring action wins.
         </p>
         <p class="si-prose">
-            Tap <strong>Viz</strong> to watch the AI think. A dashed line shows what the AI is pursuing &mdash; blue for the lowest alien, orange for the UFO. A crosshair marks the target position. Red &ldquo;DODGE&rdquo; text appears when evading an incoming bullet. The badge below the player shows the chosen action.
+            Tap <strong>Viz</strong> to watch the AI think. A green dotted circle highlights the current target, and a dashed line shows the AI moving toward it. Gray circles mark any bonus kills the chosen action would score along the way. The badge below the player shows the winning action.
         </p>
 
         <p style="margin-top: 20px;">
