@@ -155,12 +155,13 @@
 
     <!-- ═══ Q-LEARNING ═══ -->
     <div id="ql-section" style="display:none;">
-        <h2 style="margin-top: 16px;">Q-Learning (Linear Function Approximation)</h2>
+        <h2 style="margin-top: 16px;">Neuroevolution (Evolutionary RL)</h2>
         <p class="si-prose">
-            No teacher &mdash; learns from scratch by playing the game headlessly at maximum speed.
-            Uses linear function approximation with 25 engineered features (including interaction terms like
-            distance&times;speed) instead of a discrete Q-table, so it can generalize across continuous states.
-            Click <strong>Start</strong> to train, then <strong>Play</strong> to watch the learned policy.
+            No teacher, no gradients &mdash; evolves a small neural network (10&rarr;16&rarr;3) by
+            natural selection. A population of 50 agents play the game; the top 10 survive and
+            produce mutated offspring. Each generation evaluates every genome across 3 episodes at
+            random speeds. Mutation rate (σ) decays over time to refine the best solutions.
+            Click <strong>Start</strong> to evolve, then <strong>Play</strong> to watch the fittest genome.
         </p>
         <div class="si-controls" style="margin-top: 8px; margin-bottom: 8px;">
             <button class="si-btn" id="ql-start-btn" onclick="qlStart()">Start</button>
@@ -3966,139 +3967,90 @@
 (function () {
     'use strict';
 
-    // --- Hyperparameters ---
-    var ALPHA         = 0.001;   // smaller LR for function approx (gradient-based)
-    var GAMMA         = 0.95;
-    var EPSILON_START = 1.0;
-    var EPSILON_MIN   = 0.03;
-    var EPSILON_DECAY = 0.9985;
-    var DEATH_PENALTY = -20;
-    var ALIVE_REWARD  = 0.1;
-    var NUM_ACTIONS   = 3;
+    // --- Neuroevolution ---
+    // Evolve a small neural network (10→16→3) by playing episodes
+    // and selecting the fittest genomes. No gradients needed.
+    var N_IN = 10, N_HID = 16, N_OUT = 3;
+    var POP_SIZE    = 50;
+    var ELITE_SIZE  = 10;
+    var SIGMA_START = 0.3;
+    var SIGMA_MIN   = 0.02;
+    var SIGMA_DECAY = 0.995;
+    var EVALS_PER   = 3;      // episodes per genome for fitness averaging
+    var GENOME_LEN  = (N_IN + 1) * N_HID + (N_HID + 1) * N_OUT; // 227
 
-    // --- Linear function approximation ---
-    // Instead of a Q-table, we use Q(s,a) = w_a · φ(s)
-    // φ(s) = engineered feature vector from the raw 10-dim state
-    var NUM_FEATURES = 0; // set by buildFeatures
-
-    // Feature vector: raw features + key interactions + nonlinear terms
-    // This lets the agent generalize across continuous states
-    function buildFeatures(state) {
-        // state = [obs1Dist, obs1Y, obs1Type, obs1H, obs1W, obs2Dist, speed, jumpHeight, jumpVel, ducking]
-        var dist = state[0], obsY = state[1], type = state[2], obsH = state[3], obsW = state[4];
-        var dist2 = state[5], speed = state[6], jumpH = state[7], jumpV = state[8], duck = state[9];
-        return [
-            1,                      // bias
-            dist,                   // distance to obstacle
-            dist * dist,            // quadratic distance (nonlinear timing)
-            obsY,                   // obstacle Y
-            type,                   // pterodactyl flag
-            obsH,                   // obstacle height
-            obsW,                   // obstacle width
-            dist2,                  // distance to 2nd obstacle
-            speed,                  // current speed
-            speed * speed,          // quadratic speed
-            jumpH,                  // jump height
-            jumpV,                  // jump velocity
-            duck,                   // ducking flag
-            dist * speed,           // key interaction: distance × speed (timing)
-            dist * type,            // distance × pterodactyl
-            dist * obsY,            // distance × obstacle height
-            jumpH * dist,           // in air + distance (landing timing)
-            jumpV * dist,           // jump velocity × distance
-            speed * type,           // speed × pterodactyl
-            speed * jumpH,          // speed × jump height
-            duck * type,            // ducking under pterodactyl
-            duck * obsY,            // ducking × obstacle Y
-            1 - dist,              // closeness (inverse distance)
-            (1 - dist) * speed,    // closeness × speed (urgency)
-            (1 - dist) * (1 - dist) // quadratic closeness
-        ];
+    function randn() {
+        return Math.sqrt(-2 * Math.log(1 - Math.random())) * Math.cos(2 * Math.PI * Math.random());
     }
-    NUM_FEATURES = buildFeatures([0,0,0,0,0,0,0,0,0,0]).length; // 25
 
-    // Weight vectors: one per action
-    var W = [];
-    function initWeights() {
-        W = [];
-        for (var a = 0; a < NUM_ACTIONS; a++) {
-            W[a] = new Float64Array(NUM_FEATURES);
+    function createGenome() {
+        var g = new Float64Array(GENOME_LEN);
+        var s1 = Math.sqrt(2 / N_IN), s2 = Math.sqrt(2 / N_HID);
+        var k = 0;
+        for (var i = 0; i < N_IN * N_HID; i++) g[k++] = randn() * s1;
+        for (var i = 0; i < N_HID; i++) g[k++] = 0;
+        for (var i = 0; i < N_HID * N_OUT; i++) g[k++] = randn() * s2;
+        for (var i = 0; i < N_OUT; i++) g[k++] = 0;
+        return g;
+    }
+
+    function mutate(parent, sigma) {
+        var child = new Float64Array(parent.length);
+        for (var i = 0; i < parent.length; i++) child[i] = parent[i] + randn() * sigma;
+        return child;
+    }
+
+    function nnForward(g, input) {
+        // Hidden: h = ReLU(input * W1 + b1)
+        var h = new Float64Array(N_HID);
+        var k = 0;
+        for (var j = 0; j < N_HID; j++) {
+            var sum = 0;
+            for (var i = 0; i < N_IN; i++) sum += input[i] * g[i * N_HID + j];
+            sum += g[N_IN * N_HID + j]; // bias
+            h[j] = sum > 0 ? sum : 0;
         }
-    }
-    initWeights();
-
-    function qValue(features, action) {
-        var w = W[action], sum = 0;
-        for (var i = 0; i < NUM_FEATURES; i++) sum += w[i] * features[i];
-        return sum;
-    }
-
-    function bestAction(features) {
-        var bestA = 0, bestQ = qValue(features, 0);
-        for (var a = 1; a < NUM_ACTIONS; a++) {
-            var q = qValue(features, a);
-            if (q > bestQ) { bestQ = q; bestA = a; }
+        // Output: o = h * W2 + b2
+        var oOff = N_IN * N_HID + N_HID;
+        var o = new Float64Array(N_OUT);
+        for (var j = 0; j < N_OUT; j++) {
+            var sum = 0;
+            for (var i = 0; i < N_HID; i++) sum += h[i] * g[oOff + i * N_OUT + j];
+            sum += g[oOff + N_HID * N_OUT + j];
+            o[j] = sum;
         }
-        return bestA;
+        return o;
     }
 
-    function bestQValue(features) {
-        var bestQ = qValue(features, 0);
-        for (var a = 1; a < NUM_ACTIONS; a++) {
-            var q = qValue(features, a);
-            if (q > bestQ) bestQ = q;
-        }
-        return bestQ;
+    function nnAction(g, input) {
+        var o = nnForward(g, input);
+        var best = 0;
+        if (o[1] > o[best]) best = 1;
+        if (o[2] > o[best]) best = 2;
+        return best;
     }
 
-    // Semi-gradient TD update: w_a += α * δ * φ(s)
-    function updateWeights(features, action, tdError) {
-        var w = W[action];
-        for (var i = 0; i < NUM_FEATURES; i++) {
-            w[i] += ALPHA * tdError * features[i];
-            // Weight clipping to prevent divergence
-            if (w[i] > 50) w[i] = 50;
-            if (w[i] < -50) w[i] = -50;
-        }
-    }
-
-    // --- Experience replay (stores features, not discrete states) ---
-    var REPLAY_SIZE    = 10000;
-    var REPLAY_BATCH   = 64;
-    var REPLAY_BATCHES = 4;
-
-    var epsilon = EPSILON_START;
-    var prevFeatures = null, prevAction = null;
-    var replay = new Array(REPLAY_SIZE);
-    var replayIdx = 0, replayCount = 0;
-
-    // Stats
-    var deaths = 0, bestScore = 0, lastScore = 0;
+    // --- State ---
+    var population = null;
+    var bestGenome = null;
+    var sigma = SIGMA_START;
+    var generation = 0;
+    var deaths = 0, bestScore = 0, lastGenBest = 0;
     var scoreHistory = [];
-    var _playing = false, _statsInterval = null;
+    var _training = false, _playing = false, _statsInterval = null;
 
-    function storeTransition(feat, a, r, featNext, terminal) {
-        replay[replayIdx] = { f: feat, a: a, r: r, fn: featNext, t: terminal };
-        replayIdx = (replayIdx + 1) % REPLAY_SIZE;
-        if (replayCount < REPLAY_SIZE) replayCount++;
-    }
-
-    function replayBatch() {
-        if (replayCount < REPLAY_BATCH) return;
-        for (var b = 0; b < REPLAY_BATCHES; b++) {
-            for (var i = 0; i < REPLAY_BATCH; i++) {
-                var idx = Math.floor(Math.random() * replayCount);
-                var tr = replay[idx];
-                var predicted = qValue(tr.f, tr.a);
-                var target = tr.t ? tr.r : tr.r + GAMMA * bestQValue(tr.fn);
-                updateWeights(tr.f, tr.a, target - predicted);
-            }
+    function initPopulation() {
+        population = [];
+        for (var i = 0; i < POP_SIZE; i++) {
+            population.push({ genome: createGenome(), fitness: 0 });
         }
-    }
-
-    function chooseAction(features) {
-        if (Math.random() < epsilon) return Math.floor(Math.random() * NUM_ACTIONS);
-        return bestAction(features);
+        bestGenome = null;
+        sigma = SIGMA_START;
+        generation = 0;
+        deaths = 0;
+        bestScore = 0;
+        lastGenBest = 0;
+        scoreHistory = [];
     }
 
     // --- Score chart ---
@@ -4144,58 +4096,67 @@
         }
     }
 
-    // --- Headless training loop ---
-    var STEPS_PER_TICK = 800;
-    var _training = false;
-    var _trained = false;
+    // --- Headless evolution loop ---
+    var STEPS_PER_TICK = 2000;
 
-    function qlTrainHeadless(onProgress, onDone) {
+    function evoTrainHeadless(onProgress, onDone) {
         var r = window._mlCreateTrainRunner();
         r.config.MAX_SPEED = 55;
-        window._mlTrainRestart(r, 6);
+
+        if (!population) initPopulation();
 
         _training = true;
-        var _channel = new MessageChannel();
+        var curIndiv = 0, curEval = 0, curScoreSum = 0;
+        var speeds = [6, 10, 20, 30, 40, 50];
+        window._mlTrainRestart(r, speeds[Math.floor(Math.random() * speeds.length)]);
 
+        var _channel = new MessageChannel();
         _channel.port1.onmessage = function () {
             if (!_training) { onDone(); return; }
+
             for (var step = 0; step < STEPS_PER_TICK; step++) {
                 var rawState = window.mlExtractState(r);
-                var features = buildFeatures(rawState);
-                var a = chooseAction(features);
-
-                // TD update for previous step
-                if (prevFeatures !== null) {
-                    var predicted = qValue(prevFeatures, prevAction);
-                    var target = ALIVE_REWARD + GAMMA * bestQValue(features);
-                    updateWeights(prevFeatures, prevAction, target - predicted);
-                    storeTransition(prevFeatures, prevAction, ALIVE_REWARD, features, false);
-                }
-                prevFeatures = features;
-                prevAction = a;
-
+                var a = nnAction(population[curIndiv].genome, rawState);
                 var collision = window._mlTrainStep(r, a);
+
                 if (collision) {
-                    // Terminal TD update
-                    if (prevFeatures !== null) {
-                        var predicted = qValue(prevFeatures, prevAction);
-                        updateWeights(prevFeatures, prevAction, DEATH_PENALTY - predicted);
-                        storeTransition(prevFeatures, prevAction, DEATH_PENALTY, null, true);
-                    }
-                    prevFeatures = null;
-                    prevAction = null;
-
-                    replayBatch();
-                    epsilon = Math.max(EPSILON_MIN, epsilon * EPSILON_DECAY);
-
-                    deaths++;
                     var score = Math.round(r.distanceRan * 0.025);
-                    lastScore = score;
-                    if (score > bestScore) bestScore = score;
-                    scoreHistory.push(score);
+                    curScoreSum += score;
+                    curEval++;
+                    deaths++;
 
-                    // Restart at random speed
-                    var speeds = [6, 15, 25, 35, 42, 50, 50];
+                    if (curEval >= EVALS_PER) {
+                        population[curIndiv].fitness = curScoreSum / EVALS_PER;
+                        curIndiv++;
+                        curEval = 0;
+                        curScoreSum = 0;
+
+                        if (curIndiv >= POP_SIZE) {
+                            // --- Generation complete ---
+                            population.sort(function (a, b) { return b.fitness - a.fitness; });
+                            var genBest = population[0].fitness;
+                            lastGenBest = Math.round(genBest);
+                            if (genBest > bestScore) {
+                                bestScore = Math.round(genBest);
+                                bestGenome = new Float64Array(population[0].genome);
+                            }
+                            scoreHistory.push(lastGenBest);
+                            generation++;
+                            sigma = Math.max(SIGMA_MIN, sigma * SIGMA_DECAY);
+
+                            // Elitism + mutation
+                            var newPop = [];
+                            for (var e = 0; e < ELITE_SIZE; e++) {
+                                newPop.push({ genome: population[e].genome, fitness: 0 });
+                            }
+                            while (newPop.length < POP_SIZE) {
+                                var parentIdx = Math.floor(Math.random() * ELITE_SIZE);
+                                newPop.push({ genome: mutate(population[parentIdx].genome, sigma), fitness: 0 });
+                            }
+                            population = newPop;
+                            curIndiv = 0;
+                        }
+                    }
                     window._mlTrainRestart(r, speeds[Math.floor(Math.random() * speeds.length)]);
                 }
             }
@@ -4211,7 +4172,7 @@
         var stopBtn  = document.getElementById('ql-stop-btn');
         var playBtn  = document.getElementById('ql-play-btn');
         var resetBtn = document.getElementById('ql-reset-btn');
-        var hasTrained = deaths > 0;
+        var hasTrained = bestGenome !== null;
         if (mode === 'training') {
             if (startBtn) { startBtn.style.display = 'none'; }
             if (stopBtn) stopBtn.style.display = '';
@@ -4223,7 +4184,7 @@
             if (playBtn) playBtn.style.display = 'none';
             if (resetBtn) resetBtn.style.display = 'none';
         } else { // stopped
-            if (startBtn) { startBtn.textContent = hasTrained ? 'Continue' : 'Start'; startBtn.style.display = ''; }
+            if (startBtn) { startBtn.textContent = generation > 0 ? 'Continue' : 'Start'; startBtn.style.display = ''; }
             if (stopBtn) stopBtn.style.display = 'none';
             if (playBtn) playBtn.style.display = hasTrained ? '' : 'none';
             if (resetBtn) resetBtn.style.display = hasTrained ? '' : 'none';
@@ -4237,23 +4198,20 @@
 
         if (_training) { window.qlStop(); return; }
 
-        // Don't reset weights — just resume training
-        prevFeatures = null; prevAction = null;
-
         qlUpdateButtons('training');
         if (vizEl) vizEl.style.display = '';
 
-        qlTrainHeadless(
+        evoTrainHeadless(
             function onProgress() {
                 if (statsEl) statsEl.textContent =
-                    'Training (headless) | Deaths: ' + deaths + ' | Best: ' + bestScore + ' | Last: ' + lastScore +
-                    ' | ε: ' + epsilon.toFixed(3) + ' | ' + NUM_FEATURES + ' features × ' + NUM_ACTIONS + ' actions';
+                    'Evolving | Gen: ' + generation + ' | Best: ' + bestScore + ' | Gen Best: ' + lastGenBest +
+                    ' | σ: ' + sigma.toFixed(3) + ' | Deaths: ' + deaths;
                 renderScoreChart('ql-score-canvas', scoreHistory);
             },
             function onDone() {
                 if (statsEl) statsEl.textContent =
-                    'Paused | Deaths: ' + deaths + ' | Best: ' + bestScore +
-                    ' | ε: ' + epsilon.toFixed(3);
+                    'Paused | Gen: ' + generation + ' | Best: ' + bestScore +
+                    ' | σ: ' + sigma.toFixed(3);
                 renderScoreChart('ql-score-canvas', scoreHistory);
                 qlUpdateButtons('stopped');
             }
@@ -4262,7 +4220,7 @@
 
     window.qlPlay = function () {
         var runner = window.runner;
-        if (!runner || deaths === 0) return;
+        if (!runner || !bestGenome) return;
         var statsEl = document.getElementById('ql-stats');
 
         if (_playing) { window.qlStop(); return; }
@@ -4276,8 +4234,7 @@
             update: function (r) {
                 if (!r.playing) return;
                 var rawState = window.mlExtractState(r);
-                var features = buildFeatures(rawState);
-                var a = bestAction(features);
+                var a = nnAction(bestGenome, rawState);
                 window.mlExecuteAction(a, r);
             },
             onCrash: function (r) {
@@ -4307,7 +4264,7 @@
             if (!_playing) { clearInterval(_statsInterval); return; }
             var score = Math.round(runner.distanceRan * 0.025);
             if (statsEl) statsEl.textContent =
-                'Playing (greedy) | Deaths: ' + playDeaths + ' | Best: ' + playBest + ' | Score: ' + score;
+                'Playing (best genome) | Deaths: ' + playDeaths + ' | Best: ' + playBest + ' | Score: ' + score;
         }, 200);
     };
 
@@ -4322,12 +4279,11 @@
 
     window.qlReset = function () {
         window.qlStop();
-        initWeights();
-        epsilon = EPSILON_START;
-        prevFeatures = null; prevAction = null;
-        replay = new Array(REPLAY_SIZE);
-        replayIdx = 0; replayCount = 0;
-        deaths = 0; bestScore = 0; lastScore = 0;
+        population = null;
+        bestGenome = null;
+        sigma = SIGMA_START;
+        generation = 0;
+        deaths = 0; bestScore = 0; lastGenBest = 0;
         scoreHistory = [];
         var statsEl = document.getElementById('ql-stats');
         if (statsEl) statsEl.textContent = '';
