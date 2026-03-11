@@ -206,6 +206,7 @@ var aiTour       = [];
 var aiTourIdx    = 0;
 var aiBoardSig   = '';
 var inputQueue  = [];
+var discRide    = null;  // { side, t, sx, sy, tx, ty } — player riding disc to top
 
 // Direction deltas: UL=up-left, UR=up-right, DL=down-left, DR=down-right
 var DIRS = {
@@ -304,6 +305,7 @@ function initRound() {
     frameCount = 0;
     roundMsg   = { text: 'ROUND ' + round, timer: 90 };
     swearBubble = null;
+    discRide    = null;
     aiDetailPath = [];
     aiTourDots   = [];
     aiMoveTimer  = 0;
@@ -442,13 +444,19 @@ function useDisc(side) {
     }
     enemies = survived;
 
-    // Teleport player to top
-    var sp = cubeXY(0, 0);
-    player.row = 0; player.col = 0;
-    player.px = sp.cx; player.py = sp.cy;
-    player.tx = sp.cx; player.ty = sp.cy;
-    player.jumping = false;
-    stompCube(0, 0);
+    // Start disc ride animation: player flies from disc position to pyramid top
+    var dp = discScreenPos(side);
+    var top = cubeXY(0, 0);
+    discRide = {
+        side: side,
+        t: 0,
+        sx: dp.x, sy: dp.y,
+        tx: top.cx, ty: top.cy
+    };
+    // Move player to disc position immediately (visual only)
+    player.px = dp.x; player.py = dp.y;
+    player.jumping = true; // block input during ride
+    player.jumpT = 0;
 
     // Schedule new Coily after delay
     scheduleSpawn(180);
@@ -597,6 +605,32 @@ function onEnemyLand(e, idx) {
 
 // ─── Player update ────────────────────────────────────────────────────────────
 function updatePlayer() {
+    // Disc ride animation: player flies from disc to pyramid top
+    if (discRide) {
+        discRide.t += 0.025;  // ~40 frames to complete
+        if (discRide.t >= 1) {
+            discRide.t = 1;
+            // Land at top
+            var top = cubeXY(0, 0);
+            player.row = 0; player.col = 0;
+            player.px = top.cx; player.py = top.cy;
+            player.tx = top.cx; player.ty = top.cy;
+            player.jumping = false;
+            stompCube(0, 0);
+            discRide = null;
+        } else {
+            // Smooth ease-out arc from disc position to top
+            var t = discRide.t;
+            var ease = 1 - (1 - t) * (1 - t); // ease-out quadratic
+            player.px = discRide.sx + (discRide.tx - discRide.sx) * ease;
+            player.py = discRide.sy + (discRide.ty - discRide.sy) * ease;
+            // Animate sprite
+            player.frameTimer++;
+            if (player.frameTimer > 6) { player.frameTimer = 0; player.spriteFrame ^= 1; }
+        }
+        return;
+    }
+
     if (player.dead) {
         player.deathTimer--;
         player.deathAnimTimer++;
@@ -1059,6 +1093,27 @@ function draw() {
     for (var i = 0; i < enemies.length; i++) drawEnemy(enemies[i]);
     drawPlayer();
 
+    // Draw disc under player during disc ride
+    if (discRide) {
+        ctx.save();
+        ctx.translate(Math.round(player.px), Math.round(player.py + TILE_H / 2 + 2));
+        // Outer disc
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 20, 10, 0, 0, Math.PI * 2);
+        ctx.fillStyle = '#d4d4d4'; ctx.fill();
+        ctx.strokeStyle = '#535353'; ctx.lineWidth = 1.5; ctx.stroke();
+        // Middle ring
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 13, 6, 0, 0, Math.PI * 2);
+        ctx.fillStyle = '#535353'; ctx.fill();
+        ctx.strokeStyle = '#1e1e1e'; ctx.lineWidth = 0.8; ctx.stroke();
+        // Inner dot
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 5, 2.5, 0, 0, Math.PI * 2);
+        ctx.fillStyle = '#1e1e1e'; ctx.fill();
+        ctx.restore();
+    }
+
     // Night inversion
     applyNight(ctx);
 
@@ -1182,6 +1237,36 @@ function _drawTrex(px, py, sp, sc) {
     ctx.drawImage(src, sp.x, sp.y, sp.w, sp.h, dx, dy, dw, dh);
 }
 
+// Draw a sprite with white outline (same technique as _drawTrex)
+function _drawSpriteOutlined(px, py, sp, sc) {
+    var src = spriteClean || spriteImg;
+    if (!src) return;
+    var dw = Math.round(sp.w * sc), dh = Math.round(sp.h * sc);
+    var dx = Math.round(px - dw / 2);
+    var dy = Math.round(py - dh - TILE_H / 2);
+
+    if (spriteClean) {
+        var key = sp.x + ',' + sp.y + ',' + sc;
+        if (!outlineCache[key]) {
+            var tmp = document.createElement('canvas');
+            tmp.width = dw; tmp.height = dh;
+            var tc = tmp.getContext('2d');
+            tc.drawImage(spriteClean, sp.x, sp.y, sp.w, sp.h, 0, 0, dw, dh);
+            tc.globalCompositeOperation = 'source-in';
+            tc.fillStyle = '#ffffff';
+            tc.fillRect(0, 0, dw, dh);
+            outlineCache[key] = tmp;
+        }
+        var sil = outlineCache[key];
+        ctx.drawImage(sil, dx - 1, dy);
+        ctx.drawImage(sil, dx + 1, dy);
+        ctx.drawImage(sil, dx, dy - 1);
+        ctx.drawImage(sil, dx, dy + 1);
+    }
+
+    ctx.drawImage(src, sp.x, sp.y, sp.w, sp.h, dx, dy, dw, dh);
+}
+
 function drawEnemy(e) {
     if (e.type === 'spawn-timer') return;
 
@@ -1189,6 +1274,10 @@ function drawEnemy(e) {
         ctx.save();
         ctx.translate(Math.round(e.px), Math.round(e.py - TILE_H / 2 - 6));
         ctx.scale(1.25, 1.25);
+        // White outline for egg
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 9.5, 14.5, 0, 0, Math.PI * 2);
+        ctx.fillStyle = '#ffffff'; ctx.fill();
         // Egg body
         ctx.beginPath();
         ctx.ellipse(0, 0, 8, 13, 0, 0, Math.PI * 2);
@@ -1205,25 +1294,10 @@ function drawEnemy(e) {
 
     } else if (e.type === 'coily') {
         var sp = e.frame ? SPRITES.PTERO2 : SPRITES.PTERO1;
-        var sc = 0.80;
-        var src = spriteClean || spriteImg;
-        if (src) {
-            ctx.drawImage(src, sp.x, sp.y, sp.w, sp.h,
-                Math.round(e.px - sp.w * sc / 2),
-                Math.round(e.py - sp.h * sc - TILE_H / 2),
-                sp.w * sc, sp.h * sc);
-        }
+        _drawSpriteOutlined(e.px, e.py, sp, 0.80);
 
     } else if (e.type === 'slick') {
-        var sp2 = SPRITES.CACTUS_SM;
-        var sc2 = 0.80;
-        var src2 = spriteClean || spriteImg;
-        if (src2) {
-            ctx.drawImage(src2, sp2.x, sp2.y, sp2.w, sp2.h,
-                Math.round(e.px - sp2.w * sc2 / 2),
-                Math.round(e.py - sp2.h * sc2 - TILE_H / 2),
-                sp2.w * sc2, sp2.h * sc2);
-        }
+        _drawSpriteOutlined(e.px, e.py, SPRITES.CACTUS_SM, 0.80);
     }
 }
 
