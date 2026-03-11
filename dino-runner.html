@@ -166,6 +166,7 @@
             <button class="si-btn" id="ql-start-btn" onclick="qlStart()">Start</button>
             <button class="si-btn" id="ql-play-btn" onclick="qlPlay()" style="display:none;">Play</button>
             <button class="si-btn" id="ql-stop-btn" onclick="qlStop()" style="display:none;">Stop</button>
+            <button class="si-btn" id="ql-reset-btn" onclick="qlReset()" style="display:none;">Reset</button>
             <span id="ql-stats" style="font-size: 11px; color: #6e6e73; margin-left: 8px;"></span>
         </div>
         <div id="ql-viz" style="display:none;">
@@ -4186,27 +4187,42 @@
         _channel.port2.postMessage(0);
     }
 
+    // --- UI helpers ---
+    function qlUpdateButtons(mode) {
+        var startBtn = document.getElementById('ql-start-btn');
+        var stopBtn  = document.getElementById('ql-stop-btn');
+        var playBtn  = document.getElementById('ql-play-btn');
+        var resetBtn = document.getElementById('ql-reset-btn');
+        var hasQ = Object.keys(Q).length > 0;
+        if (mode === 'training') {
+            if (startBtn) { startBtn.style.display = 'none'; }
+            if (stopBtn) stopBtn.style.display = '';
+            if (playBtn) playBtn.style.display = 'none';
+            if (resetBtn) resetBtn.style.display = 'none';
+        } else if (mode === 'playing') {
+            if (startBtn) startBtn.style.display = 'none';
+            if (stopBtn) stopBtn.style.display = '';
+            if (playBtn) playBtn.style.display = 'none';
+            if (resetBtn) resetBtn.style.display = 'none';
+        } else { // stopped
+            if (startBtn) { startBtn.textContent = hasQ ? 'Continue' : 'Start'; startBtn.style.display = ''; }
+            if (stopBtn) stopBtn.style.display = 'none';
+            if (playBtn) playBtn.style.display = hasQ ? '' : 'none';
+            if (resetBtn) resetBtn.style.display = hasQ ? '' : 'none';
+        }
+    }
+
     // --- Public API ---
     window.qlStart = function () {
-        var startBtn = document.getElementById('ql-start-btn');
-        var stopBtn = document.getElementById('ql-stop-btn');
-        var playBtn = document.getElementById('ql-play-btn');
         var statsEl = document.getElementById('ql-stats');
         var vizEl = document.getElementById('ql-viz');
 
         if (_training) { window.qlStop(); return; }
 
-        // Reset
-        Q = {}; epsilon = EPSILON_START;
+        // Don't reset Q-table — just resume training
         prevState = null; prevAction = null;
-        replay = new Array(REPLAY_SIZE);
-        replayIdx = 0; replayCount = 0;
-        deaths = 0; bestScore = 0; lastScore = 0;
-        scoreHistory = [];
-        _trained = false;
 
-        if (startBtn) { startBtn.textContent = 'Stop'; startBtn.onclick = function () { window.qlStop(); }; }
-        if (playBtn) playBtn.style.display = 'none';
+        qlUpdateButtons('training');
         if (vizEl) vizEl.style.display = '';
 
         qlTrainHeadless(
@@ -4218,32 +4234,26 @@
                 renderScoreChart('ql-score-canvas', scoreHistory);
             },
             function onDone() {
-                _trained = true;
                 var statesVisited = Object.keys(Q).length;
                 if (statsEl) statsEl.textContent =
-                    'Done! Deaths: ' + deaths + ' | Best: ' + bestScore +
+                    'Paused | Deaths: ' + deaths + ' | Best: ' + bestScore +
                     ' | ε: ' + epsilon.toFixed(3) + ' | States: ' + statesVisited + '/' + NUM_STATES;
                 renderScoreChart('ql-score-canvas', scoreHistory);
-                if (startBtn) { startBtn.textContent = 'Start'; startBtn.onclick = window.qlStart; startBtn.style.display = ''; }
-                if (stopBtn) stopBtn.style.display = 'none';
-                if (playBtn) playBtn.style.display = '';
+                qlUpdateButtons('stopped');
             }
         );
     };
 
     window.qlPlay = function () {
         var runner = window.runner;
-        if (!runner || !_trained) return;
-        var playBtn = document.getElementById('ql-play-btn');
-        var stopBtn = document.getElementById('ql-stop-btn');
+        if (!runner || Object.keys(Q).length === 0) return;
         var statsEl = document.getElementById('ql-stats');
 
         if (_playing) { window.qlStop(); return; }
 
         _playing = true;
         var playDeaths = 0, playBest = 0;
-        if (playBtn) playBtn.style.display = 'none';
-        if (stopBtn) stopBtn.style.display = '';
+        qlUpdateButtons('playing');
 
         var agent = {
             enabled: true,
@@ -4251,7 +4261,6 @@
                 if (!r.playing) return;
                 var rawState = window.mlExtractState(r);
                 var s = discretize(rawState);
-                // Greedy — no exploration during play
                 var a = argmax(getQ(s));
                 window.mlExecuteAction(a, r);
             },
@@ -4292,12 +4301,20 @@
         var runner = window.runner;
         if (runner) { runner.aiAgent = null; runner.postRenderHook = null; }
         if (_statsInterval) { clearInterval(_statsInterval); _statsInterval = null; }
-        var startBtn = document.getElementById('ql-start-btn');
-        var stopBtn = document.getElementById('ql-stop-btn');
-        var playBtn = document.getElementById('ql-play-btn');
-        if (startBtn) { startBtn.textContent = 'Start'; startBtn.onclick = window.qlStart; startBtn.style.display = ''; }
-        if (stopBtn) stopBtn.style.display = 'none';
-        if (playBtn && _trained) playBtn.style.display = '';
+        qlUpdateButtons('stopped');
+    };
+
+    window.qlReset = function () {
+        window.qlStop();
+        Q = {}; epsilon = EPSILON_START;
+        prevState = null; prevAction = null;
+        replay = new Array(REPLAY_SIZE);
+        replayIdx = 0; replayCount = 0;
+        deaths = 0; bestScore = 0; lastScore = 0;
+        scoreHistory = [];
+        var statsEl = document.getElementById('ql-stats');
+        if (statsEl) statsEl.textContent = '';
+        qlUpdateButtons('stopped');
     };
 })();
 </script>
