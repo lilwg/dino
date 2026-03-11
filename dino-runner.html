@@ -113,9 +113,10 @@
     <div id="ml-section" style="display:none;">
         <h2 style="margin-top: 16px;">Neural Network (MLP with Backpropagation)</h2>
         <p class="si-prose">
-            A 2-layer neural network (10 &rarr; 16 &rarr; 3) trained via backpropagation.
-            Click <strong>Train</strong> to collect gameplay data from the simulation AI, then train the network with mini-batch SGD.
-            Once trained, click <strong>Play</strong> to watch the network play the game.
+            A 2-layer neural network (10 &rarr; 64 &rarr; 3) trained via backpropagation.
+            Click <strong>Train</strong> to collect 30k frames of gameplay from the sim AI (headless, takes a few seconds),
+            then train the network with class-balanced mini-batch SGD for 200 epochs.
+            Once trained, click <strong>Play</strong> to watch the network play.
         </p>
         <div class="si-controls" style="margin-top: 8px; margin-bottom: 8px;">
             <button class="si-btn" id="ml-train-btn" onclick="mlTrain()">Train</button>
@@ -3058,9 +3059,9 @@
     'use strict';
 
     var NUM_FEATURES = 10; // matches extractState in dqn section
-    var NUM_HIDDEN   = 16;
+    var NUM_HIDDEN   = 64;
     var NUM_ACTIONS  = 3;
-    var TARGET_FRAMES = 4000;
+    var TARGET_FRAMES = 30000;
 
     var FEATURE_NAMES = [
         'dist₁', 'yPos₁', 'ptero₁', 'height₁', 'width₁', 'dist₂',
@@ -3256,7 +3257,7 @@
     var Trex = window.Trex;
 
     // --- Data collection (headless, tight loop) ---
-    var STEPS_PER_TICK = 200;
+    var STEPS_PER_TICK = 500;
 
     function collectData(onProgress, onDone) {
         if (!_mlTrainRunner) _mlTrainRunner = createMLTrainRunner();
@@ -3314,8 +3315,24 @@
         }
     }
 
-    function trainSGD(dataset, nEpochs, onProgress, onDone) {
-        var lr = 0.05, batchSize = 32;
+    // Balance classes by oversampling minority actions
+    function balanceDataset(dataset) {
+        var buckets = [[], [], []];
+        for (var i = 0; i < dataset.length; i++) buckets[dataset[i].label].push(dataset[i]);
+        var maxLen = 0;
+        for (var a = 0; a < 3; a++) if (buckets[a].length > maxLen) maxLen = buckets[a].length;
+        var balanced = [];
+        for (var a = 0; a < 3; a++) {
+            if (buckets[a].length === 0) continue;
+            for (var i = 0; i < maxLen; i++)
+                balanced.push(buckets[a][i % buckets[a].length]);
+        }
+        return balanced;
+    }
+
+    function trainSGD(rawDataset, nEpochs, onProgress, onDone) {
+        var dataset = balanceDataset(rawDataset);
+        var lr = 0.01, batchSize = 64;
         var lossHistory = [];
         var epoch = 0, CHUNK = 5;
 
@@ -3370,10 +3387,10 @@
             }
 
             var correct = 0;
-            for (var i = 0; i < dataset.length; i++) {
-                if (argmax(forwardPass(dataset[i].input)) === dataset[i].label) correct++;
+            for (var i = 0; i < rawDataset.length; i++) {
+                if (argmax(forwardPass(rawDataset[i].input)) === rawDataset[i].label) correct++;
             }
-            var acc = correct / dataset.length;
+            var acc = correct / rawDataset.length;
             if (onProgress) onProgress(epoch, lossHistory, acc);
             if (epoch < nEpochs) setTimeout(runChunk, 0);
             else if (onDone) onDone(lossHistory, acc);
@@ -3414,7 +3431,8 @@
     function renderNetwork(containerId, activeState) {
         var el = document.getElementById(containerId);
         if (!el || !W1 || !W2) return;
-        var svgW = 500, svgH = 220;
+        var svgH = Math.max(220, NUM_HIDDEN * 5 + 40);
+        var svgW = 500;
         var layerX = [70, 250, 430];
         var inputAct = activeState || null;
         var hiddenAct = null, outputAct = null, winner = -1;
@@ -3427,7 +3445,7 @@
         var iS = Math.min(20, (svgH - 20) / NUM_FEATURES);
         var iStart = (svgH - (NUM_FEATURES - 1) * iS) / 2;
         for (var i = 0; i < NUM_FEATURES; i++) inputY.push(iStart + i * iS);
-        var hS = Math.min(13, (svgH - 20) / NUM_HIDDEN);
+        var hS = Math.min(5, (svgH - 20) / NUM_HIDDEN);
         var hStart = (svgH - (NUM_HIDDEN - 1) * hS) / 2;
         for (var i = 0; i < NUM_HIDDEN; i++) hiddenY.push(hStart + i * hS);
         var oS = 40, oStart = (svgH - (NUM_ACTIONS - 1) * oS) / 2;
@@ -3472,9 +3490,10 @@
                 '" text-anchor="end" font-size="8" fill="#86868b">' + FEATURE_NAMES[i] + '</text>';
         }
         // Hidden nodes
+        var hRadius = NUM_HIDDEN > 32 ? 2.5 : 4;
         for (var i = 0; i < NUM_HIDDEN; i++) {
             var act = hiddenAct ? Math.min(1, hiddenAct[i] / 2) : 0;
-            svg += '<circle cx="' + layerX[1] + '" cy="' + hiddenY[i] + '" r="4" fill="rgba(48,209,88,' +
+            svg += '<circle cx="' + layerX[1] + '" cy="' + hiddenY[i] + '" r="' + hRadius + '" fill="rgba(48,209,88,' +
                 (0.15+act*0.7).toFixed(2) + ')" stroke="#999" stroke-width="0.5"/>';
         }
         // Output nodes
@@ -3524,18 +3543,19 @@
                 if (vizEl) vizEl.style.display = 'block';
                 renderNetwork('ml-network-svg', null);
 
-                trainSGD(dataset, 100,
+                trainSGD(dataset, 200,
                     function onProgress(epoch, loss, acc) {
                         if (statsEl) statsEl.textContent =
-                            'Training: epoch ' + epoch + '/100 | Loss: ' +
+                            'Training: epoch ' + epoch + '/200 | Loss: ' +
                             loss[loss.length-1].toFixed(4) + ' | Acc: ' + (acc*100).toFixed(1) + '%';
                         renderLossCurve('ml-loss-canvas', loss);
                         renderNetwork('ml-network-svg', null);
                     },
                     function onDone(loss, acc) {
                         _trained = true;
+                        var nParams = NUM_HIDDEN*NUM_FEATURES + NUM_HIDDEN + NUM_ACTIONS*NUM_HIDDEN + NUM_ACTIONS;
                         if (statsEl) statsEl.textContent =
-                            'Trained! Acc: ' + (acc*100).toFixed(1) + '% | 211 params | Loss: ' +
+                            'Trained! Acc: ' + (acc*100).toFixed(1) + '% | ' + nParams + ' params | Loss: ' +
                             loss[loss.length-1].toFixed(4);
                         renderLossCurve('ml-loss-canvas', loss);
                         renderNetwork('ml-network-svg', null);
