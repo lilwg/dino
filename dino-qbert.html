@@ -29,7 +29,7 @@
         </div>
 
         <h2 style="margin-top:16px;">How it works</h2>
-        <p class="si-prose">DinoQbert recreates the 1982 Gottlieb arcade original: hop-based movement, one jump per keypress with a 150ms arc animation, and the classic @!#?@! swear bubble on death. Coily spawns as an egg, bounces randomly down the pyramid, then hatches and chases the player. Slick hops down uncoloring cubes. Two teleport discs on each side let Q*bert escape and kill Coily for a bonus.</p>
+        <p class="si-prose">DinoQbert recreates the 1982 Gottlieb arcade original: hop-based movement, one jump per keypress with a 150ms arc animation, and the classic @!#?@! swear bubble on death. Coily spawns as an egg, bounces randomly down the pyramid, then hatches and chases the player. Dark balls bounce down and kill on contact; light balls are safe to catch for 100 pts. Slick (round 4+) hops down uncoloring cubes. Two transport discs at variable positions let Q*bert escape and lure Coily to his death.</p>
         <p class="si-prose">Tap <strong>Viz</strong> to reveal the AI&rsquo;s plan: a dashed line traces the BFS path to its next target, with faint dots marking the rest of its queued tour. The AI forward-simulates Coily&rsquo;s greedy chase 3 steps ahead to build both immediate and predicted danger maps, then plans a danger-weighted nearest-neighbour tour over all uncolored cubes. BFS pathfinding routes around dangerous tiles. Every move is scored by a multi-criteria evaluator: path progress, cube productivity, safety margin, escape-route count, and 2-step lookahead. It intercepts nearby Slicks for bonus points, and triggers disc escapes earlier&mdash;when cornered or when Coily closes to 3 hops&mdash;even maneuvering toward a disc edge when not already on one.</p>
 
         <p style="margin-top:20px;"><a href="/" style="color:#0071e3;font-size:14px;text-decoration:none;">&larr; Back</a></p>
@@ -262,12 +262,29 @@ function allColored() {
 }
 
 // ─── Disc helpers ─────────────────────────────────────────────────────────────
-// Left disc: beside row 3, col -1 equivalent
-// Right disc: beside row 3, col 4 equivalent
+// Disc row positions vary by round (matching arcade level layouts)
+function discRows() {
+    // Returns [leftRow, rightRow] — which pyramid row each disc sits beside
+    var r = ((round - 1) % 5) + 1;
+    if (r === 1) return [2, 3];
+    if (r === 2) return [3, 2];
+    if (r === 3) return [4, 3];
+    if (r === 4) return [2, 4];
+    return [3, 3]; // r === 5
+}
+
 function discScreenPos(side) {
-    var ref = cubeXY(3, side === 0 ? 0 : 3);
+    var rows = discRows();
+    var row = rows[side];
+    var ref = cubeXY(row, side === 0 ? 0 : row);
     if (side === 0) return { x: ref.cx - TILE_W - 20, y: ref.cy + TILE_H * 0.5 };
     else            return { x: ref.cx + TILE_W + 20, y: ref.cy + TILE_H * 0.5 };
+}
+
+// Which row the player must be on to catch a disc
+function discCatchRow(side) {
+    var rows = discRows();
+    return rows[side];
 }
 
 // ─── Init level ───────────────────────────────────────────────────────────────
@@ -315,8 +332,12 @@ function initRound() {
 
     // Schedule first Coily spawn after brief delay
     scheduleSpawn(180);
-    // Rounds 3+ also have Slick
-    if (round >= 3) scheduleSpawn(300, 'slick');
+    // Red balls start from round 1 — first one drops early
+    scheduleSpawn(90, 'redball');
+    // Rounds 4+ add Slick (matching arcade: Slick/Sam appear round 4)
+    if (round >= 4) scheduleSpawn(360, 'slick');
+    // Rounds 3+ add green balls (safe, catch for points)
+    if (round >= 3) scheduleSpawn(240, 'greenball');
 }
 
 function scheduleSpawn(delay, forcedType) {
@@ -332,34 +353,61 @@ function spawnEnemy(forcedType) {
         for (var i = 0; i < enemies.length; i++) {
             if (enemies[i].type === 'coily' || enemies[i].type === 'egg') { hasCoily = true; break; }
         }
-        type = hasCoily ? 'slick' : 'egg';
+        type = hasCoily ? 'redball' : 'egg';
     }
 
-    var sp = cubeXY(0, 0);
+    // Red balls and green balls spawn at row 1 (second row), matching arcade
+    // Coily egg also spawns at row 1 in arcade (bounces down from second row)
+    var spawnRow = (type === 'redball' || type === 'greenball') ? 1 : 0;
+    var spawnCol = (type === 'redball' || type === 'greenball')
+        ? Math.floor(Math.random() * 2) : 0; // row 1 has cols 0 and 1
+    var sp = cubeXY(spawnRow, spawnCol);
     var baseSpeed = Math.max(20, 50 - round * 3);
 
     if (type === 'egg') {
         enemies.push({
             type: 'egg',
             row: 0, col: 0,
-            px: sp.cx, py: sp.cy,
+            px: cubeXY(0,0).cx, py: cubeXY(0,0).cy,
             jumping: false, jumpT: 0, jumpDur: 0.14,
-            jumpSX: sp.cx, jumpSY: sp.cy,
-            tx: sp.cx, ty: sp.cy,
+            jumpSX: cubeXY(0,0).cx, jumpSY: cubeXY(0,0).cy,
+            tx: cubeXY(0,0).cx, ty: cubeXY(0,0).cy,
             hops: 0,
             frame: 0, frameTimer: 0,
-            moveTimer: 0, moveDelay: baseSpeed + 10   // egg hops every ~500ms ~= 30 frames
+            moveTimer: 0, moveDelay: baseSpeed + 10
         });
-    } else if (type === 'slick') {
+    } else if (type === 'redball') {
         enemies.push({
-            type: 'slick',
-            row: 0, col: 0,
+            type: 'redball',
+            row: spawnRow, col: spawnCol,
             px: sp.cx, py: sp.cy,
             jumping: false, jumpT: 0, jumpDur: 0.12,
             jumpSX: sp.cx, jumpSY: sp.cy,
             tx: sp.cx, ty: sp.cy,
             frame: 0, frameTimer: 0,
-            moveTimer: 0, moveDelay: baseSpeed + 18   // slick hops every ~700ms ~= 42 frames
+            moveTimer: 0, moveDelay: baseSpeed + 6  // red balls hop quickly
+        });
+    } else if (type === 'greenball') {
+        enemies.push({
+            type: 'greenball',
+            row: spawnRow, col: spawnCol,
+            px: sp.cx, py: sp.cy,
+            jumping: false, jumpT: 0, jumpDur: 0.12,
+            jumpSX: sp.cx, jumpSY: sp.cy,
+            tx: sp.cx, ty: sp.cy,
+            frame: 0, frameTimer: 0,
+            moveTimer: 0, moveDelay: baseSpeed + 8
+        });
+    } else if (type === 'slick') {
+        enemies.push({
+            type: 'slick',
+            row: spawnRow, col: spawnCol,
+            px: sp.cx, py: sp.cy,
+            jumping: false, jumpT: 0, jumpDur: 0.12,
+            jumpSX: sp.cx, jumpSY: sp.cy,
+            tx: sp.cx, ty: sp.cy,
+            frame: 0, frameTimer: 0,
+            moveTimer: 0, moveDelay: baseSpeed + 18
         });
     }
 }
@@ -381,12 +429,14 @@ function tryMove(dirKey) {
 
     // Check disc catch on edge-jump
     if (!isValidPos(nr, nc)) {
-        // Left disc: jumping UL from col 0, or DL off left edge
-        if (dirKey === 'UL' && player.col === 0 && discs[0].active) {
+        // Left disc: jumping UL from col 0, must be on the disc's row
+        var lRow = discCatchRow(0);
+        if (dirKey === 'UL' && player.col === 0 && player.row === lRow && discs[0].active) {
             useDisc(0); return;
         }
-        // Right disc: jumping UR from col === row (right edge), or DR off right edge
-        if (dirKey === 'UR' && player.col === player.row && discs[1].active) {
+        // Right disc: jumping UR from col === row (right edge), must be on the disc's row
+        var rRow = discCatchRow(1);
+        if (dirKey === 'UR' && player.col === player.row && player.row === rRow && discs[1].active) {
             useDisc(1); return;
         }
         // Fell off — death with swear bubble
@@ -475,8 +525,13 @@ function checkPlayerEnemyCollision() {
                 score += 300; checkExtraLife();
                 enemies.splice(i, 1);
                 i--;
+            } else if (e.type === 'greenball') {
+                // Green ball is safe — catch for 100 points
+                score += 100; checkExtraLife();
+                enemies.splice(i, 1);
+                i--;
             } else {
-                // Coily/egg kills player
+                // Coily/egg/redball kills player
                 killPlayer();
                 return;
             }
@@ -563,6 +618,31 @@ function updateEnemies() {
                 scheduleSpawn(180);
             }
 
+        } else if (e.type === 'redball') {
+            // Red ball: bounces randomly DL or DR, falls off and respawns
+            var rbdir = Math.random() < 0.5 ? 'DL' : 'DR';
+            var rbdelta = DIRS[rbdir];
+            var rbnr = e.row + rbdelta.dr, rbnc = e.col + rbdelta.dc;
+            if (isValidPos(rbnr, rbnc)) {
+                enemyJumpTo(e, rbnr, rbnc);
+            } else {
+                enemies.splice(i, 1);
+                // Respawn red ball after delay
+                scheduleSpawn(Math.max(120, 200 - round * 10), 'redball');
+            }
+
+        } else if (e.type === 'greenball') {
+            // Green ball: bounces randomly DL or DR, safe to touch
+            var gbdir = Math.random() < 0.5 ? 'DL' : 'DR';
+            var gbdelta = DIRS[gbdir];
+            var gbnr = e.row + gbdelta.dr, gbnc = e.col + gbdelta.dc;
+            if (isValidPos(gbnr, gbnc)) {
+                enemyJumpTo(e, gbnr, gbnc);
+            } else {
+                enemies.splice(i, 1);
+                if (round >= 3) scheduleSpawn(300, 'greenball');
+            }
+
         } else if (e.type === 'slick') {
             // Random DL or DR
             var sdir = Math.random() < 0.5 ? 'DL' : 'DR';
@@ -573,8 +653,8 @@ function updateEnemies() {
             } else {
                 // Fell off pyramid — disappear
                 enemies.splice(i, 1);
-                // Reschedule slick for round 3+
-                if (round >= 3) scheduleSpawn(240, 'slick');
+                // Reschedule slick for round 4+
+                if (round >= 4) scheduleSpawn(360, 'slick');
             }
         }
     }
@@ -590,10 +670,21 @@ function onEnemyLand(e, idx) {
             score += 300; checkExtraLife();
             enemies.splice(idx, 1);
         }
-        // Check if slick reached row 6 — remove it
+        // Check if slick reached bottom — remove it
         if (e.row >= ROWS - 1) {
             enemies.splice(idx, 1);
-            if (round >= 3) scheduleSpawn(240, 'slick');
+            if (round >= 4) scheduleSpawn(360, 'slick');
+        }
+    } else if (e.type === 'greenball') {
+        // Green ball is safe — player catches it for 100 points
+        if (!player.dead && !player.jumping && e.row === player.row && e.col === player.col) {
+            score += 100; checkExtraLife();
+            enemies.splice(idx, 1);
+        }
+    } else if (e.type === 'redball') {
+        // Red ball kills player on contact
+        if (!player.dead && !player.jumping && e.row === player.row && e.col === player.col) {
+            killPlayer();
         }
     } else if (e.type === 'coily' || e.type === 'egg') {
         // Check player collision
@@ -605,9 +696,9 @@ function onEnemyLand(e, idx) {
 
 // ─── Player update ────────────────────────────────────────────────────────────
 function updatePlayer() {
-    // Disc ride animation: player flies from disc to pyramid top
+    // Disc ride animation: disc swoops upward in an arc to the pyramid top
     if (discRide) {
-        discRide.t += 0.025;  // ~40 frames to complete
+        discRide.t += 0.018;  // ~56 frames (~0.9s) to complete
         if (discRide.t >= 1) {
             discRide.t = 1;
             // Land at top
@@ -619,11 +710,23 @@ function updatePlayer() {
             stompCube(0, 0);
             discRide = null;
         } else {
-            // Smooth ease-out arc from disc position to top
             var t = discRide.t;
-            var ease = 1 - (1 - t) * (1 - t); // ease-out quadratic
-            player.px = discRide.sx + (discRide.tx - discRide.sx) * ease;
-            player.py = discRide.sy + (discRide.ty - discRide.sy) * ease;
+            // Two-phase animation like the arcade:
+            // Phase 1 (t<0.15): hover/pause on the disc briefly
+            // Phase 2 (t>=0.15): swoop upward in an arc to the top
+            if (t < 0.15) {
+                // Stay at disc position, slight bob
+                player.px = discRide.sx;
+                player.py = discRide.sy + Math.sin(t * 40) * 2;
+            } else {
+                var st = (t - 0.15) / 0.85; // 0..1 for the flight phase
+                var ease = 1 - (1 - st) * (1 - st); // ease-out
+                // Swing outward then curve to the top — arc sideways first
+                var side = discRide.side === 0 ? -1 : 1;
+                var arcOut = Math.sin(st * Math.PI) * 40 * side; // swing out then back
+                player.px = discRide.sx + (discRide.tx - discRide.sx) * ease + arcOut;
+                player.py = discRide.sy + (discRide.ty - discRide.sy) * ease;
+            }
             // Animate sprite
             player.frameTimer++;
             if (player.frameTimer > 6) { player.frameTimer = 0; player.spriteFrame ^= 1; }
@@ -651,7 +754,9 @@ function updatePlayer() {
             }
             enemies = kept;
             scheduleSpawn(150);
-            if (round >= 3) scheduleSpawn(280, 'slick');
+            scheduleSpawn(120, 'redball');
+            if (round >= 4) scheduleSpawn(320, 'slick');
+            if (round >= 3) scheduleSpawn(250, 'greenball');
         }
         return;
     }
@@ -747,6 +852,8 @@ function buildDangerMaps() {
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
         if (e.type === 'spawn-timer') continue;
+        // Green balls and slicks are safe to touch — skip danger marking
+        if (e.type === 'greenball' || e.type === 'slick') continue;
 
         // Mark enemy tile and all adjacent as immediately dangerous
         immediate[e.row + ',' + e.col] = true;
@@ -878,31 +985,31 @@ function computeAIMove() {
     if (safeMoveCount <= 1 && coilyDist <= 4) shouldEscape = true;
 
     if (shouldEscape) {
-        // Left disc: reachable if we're on the left edge (col === 0)
-        if (discs[0].active && player.col === 0) return 'UL';
-        // Right disc: reachable if we're on the right edge (col === row)
-        if (discs[1].active && player.col === player.row) return 'UR';
+        // Left disc: reachable if we're on the left edge (col === 0) AND on the disc's row
+        var lDiscRow = discCatchRow(0), rDiscRow = discCatchRow(1);
+        if (discs[0].active && player.col === 0 && player.row === lDiscRow) return 'UL';
+        // Right disc: reachable if we're on the right edge (col === row) AND on the disc's row
+        if (discs[1].active && player.col === player.row && player.row === rDiscRow) return 'UR';
 
-        // Not on disc edge — can we reach a disc edge in 1 move?
+        // Not on disc edge — can we reach a disc edge in 1-2 moves?
         if (coilyDist <= 2) {
-            // Try to reach left disc edge
+            // Try to reach left disc catch position
             if (discs[0].active) {
-                // UL decreases col: if col-1 === 0 and row-1 valid...
                 var ulD = DIRS['UL'];
                 var ulR = player.row + ulD.dr, ulC = player.col + ulD.dc;
-                if (isValidPos(ulR, ulC) && ulC === 0 && !danger.immediate[ulR + ',' + ulC]) return 'UL';
+                if (isValidPos(ulR, ulC) && ulC === 0 && ulR === lDiscRow && !danger.immediate[ulR + ',' + ulC]) return 'UL';
                 var dlD = DIRS['DL'];
                 var dlR = player.row + dlD.dr, dlC = player.col + dlD.dc;
-                if (isValidPos(dlR, dlC) && dlC === 0 && !danger.immediate[dlR + ',' + dlC]) return 'DL';
+                if (isValidPos(dlR, dlC) && dlC === 0 && dlR === lDiscRow && !danger.immediate[dlR + ',' + dlC]) return 'DL';
             }
-            // Try to reach right disc edge
+            // Try to reach right disc catch position
             if (discs[1].active) {
                 var urD = DIRS['UR'];
                 var urR = player.row + urD.dr, urC = player.col + urD.dc;
-                if (isValidPos(urR, urC) && urC === urR && !danger.immediate[urR + ',' + urC]) return 'UR';
+                if (isValidPos(urR, urC) && urC === urR && urR === rDiscRow && !danger.immediate[urR + ',' + urC]) return 'UR';
                 var drD = DIRS['DR'];
                 var drR = player.row + drD.dr, drC = player.col + drD.dc;
-                if (isValidPos(drR, drC) && drC === drR && !danger.immediate[drR + ',' + drC]) return 'DR';
+                if (isValidPos(drR, drC) && drC === drR && drR === rDiscRow && !danger.immediate[drR + ',' + drC]) return 'DR';
             }
         }
     }
@@ -1298,6 +1405,34 @@ function drawEnemy(e) {
 
     } else if (e.type === 'slick') {
         _drawSpriteOutlined(e.px, e.py, SPRITES.CACTUS_SM, 0.80);
+
+    } else if (e.type === 'redball') {
+        // Red ball: dark grey filled circle with white outline
+        ctx.save();
+        var rbx = Math.round(e.px), rby = Math.round(e.py - TILE_H / 2 - 4);
+        ctx.beginPath(); ctx.arc(rbx, rby, 10.5, 0, Math.PI * 2);
+        ctx.fillStyle = '#ffffff'; ctx.fill();
+        ctx.beginPath(); ctx.arc(rbx, rby, 9, 0, Math.PI * 2);
+        ctx.fillStyle = '#686868'; ctx.fill();
+        ctx.strokeStyle = '#383838'; ctx.lineWidth = 1.2; ctx.stroke();
+        // Highlight
+        ctx.beginPath(); ctx.arc(rbx - 3, rby - 3, 3, 0, Math.PI * 2);
+        ctx.fillStyle = '#909090'; ctx.fill();
+        ctx.restore();
+
+    } else if (e.type === 'greenball') {
+        // Green ball: lighter grey with white outline (safe — distinct from red ball)
+        ctx.save();
+        var gbx = Math.round(e.px), gby = Math.round(e.py - TILE_H / 2 - 4);
+        ctx.beginPath(); ctx.arc(gbx, gby, 10.5, 0, Math.PI * 2);
+        ctx.fillStyle = '#ffffff'; ctx.fill();
+        ctx.beginPath(); ctx.arc(gbx, gby, 9, 0, Math.PI * 2);
+        ctx.fillStyle = '#b8b8b8'; ctx.fill();
+        ctx.strokeStyle = '#888888'; ctx.lineWidth = 1.2; ctx.stroke();
+        // Highlight
+        ctx.beginPath(); ctx.arc(gbx - 3, gby - 3, 3, 0, Math.PI * 2);
+        ctx.fillStyle = '#d8d8d8'; ctx.fill();
+        ctx.restore();
     }
 }
 
