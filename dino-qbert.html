@@ -913,10 +913,23 @@ function scoreMoveForSafety(nr, nc, danger) {
     // Predicted danger is moderately bad
     if (danger.predicted[nr + ',' + nc]) s -= 30;
     // Prefer tiles with more escape routes (avoid corners/traps)
-    s += countEscapes(nr, nc, danger.immediate) * 10;
-    // Slightly prefer staying away from edges (more options)
-    if (nc > 0 && nc < nr) s += 3; // not on left or right edge
-    if (nr > 0 && nr < ROWS - 1) s += 2; // not on top or bottom row
+    var escapes = countEscapes(nr, nc, danger.immediate);
+    s += escapes * 12;
+    // Strong penalty for dead-end corners (0-1 escape routes)
+    if (escapes <= 1) s -= 40;
+    // Prefer staying away from edges (more mobility)
+    if (nc > 0 && nc < nr) s += 5;
+    if (nr > 0 && nr < ROWS - 1) s += 4;
+    // Strong penalty for bottom corners (true dead ends)
+    if (nr >= ROWS - 1 && (nc === 0 || nc === nr)) s -= 25;
+    // Bonus for moving away from closest Coily
+    for (var ci = 0; ci < danger.coilies.length; ci++) {
+        var c = danger.coilies[ci];
+        var distNow = Math.abs(c.row - player.row) + Math.abs(c.col - player.col);
+        var distNew = Math.abs(c.row - nr) + Math.abs(c.col - nc);
+        if (distNew > distNow) s += 8;       // moving away is good
+        else if (distNew < distNow) s -= 10;  // moving toward Coily is bad
+    }
     return s;
 }
 
@@ -958,11 +971,14 @@ function buildTour() {
         for (var i = 0; i < remaining.length; i++) {
             var res = bfsTo(cr, cc, remaining[i].row, remaining[i].col);
             if (!res) continue;
-            // Cost = distance + danger penalty
+            // Cost = distance + danger penalty + corner avoidance
             var cost = res.dist;
             if (danger.immediate[remaining[i].row + ',' + remaining[i].col]) cost += 8;
             if (danger.predicted[remaining[i].row + ',' + remaining[i].col]) cost += 3;
-            // Slight bonus for tiles that color multiple adjacent uncolored cubes on the way
+            // Penalize bottom corners — easy to get trapped there
+            var tr = remaining[i].row, tc2 = remaining[i].col;
+            if (tr >= ROWS - 1 && (tc2 === 0 || tc2 === tr)) cost += 4;
+            if (danger.coilies.length > 0 && countEscapes(tr, tc2, danger.immediate) <= 1) cost += 6;
             if (cost < bestCost) {
                 bestCost = cost; best = remaining[i]; bestIdx = i;
             }
