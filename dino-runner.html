@@ -3976,7 +3976,7 @@
     var SIGMA_START = 0.3;
     var SIGMA_MIN   = 0.02;
     var SIGMA_DECAY = 0.995;
-    var EVALS_PER   = 3;      // episodes per genome for fitness averaging
+    var EVALS_PER   = 1;      // single run with natural acceleration
     var GENOME_LEN  = (N_IN + 1) * N_HID + (N_HID + 1) * N_OUT; // 227
 
     function randn() {
@@ -4157,11 +4157,9 @@
 
         _training = true;
         var mySession = ++_trainSession;
-        var curIndiv = 0, curEval = 0, curScoreMin = Infinity;
-        // Each genome is tested at a spread of speeds so the best genome
-        // must handle both slow and fast gameplay (not just one speed).
-        var evalSpeeds = [6, 20, 40]; // low, mid, high — one per EVALS_PER
-        window._mlTrainRestart(r, evalSpeeds[0]);
+        var curIndiv = 0, curEval = 0, curScore = 0;
+        // Train on the actual game: start slow, accelerate naturally.
+        window._mlTrainRestart(r);
 
         var _channel = new MessageChannel();
         _channel.port1.onmessage = function () {
@@ -4174,16 +4172,13 @@
 
                 if (collision) {
                     var score = Math.round(r.distanceRan * 0.025);
-                    curScoreMin = Math.min(curScoreMin, score);
                     curEval++;
                     deaths++;
 
                     if (curEval >= EVALS_PER) {
-                        // Use minimum score across speeds so genome must handle ALL speeds
-                        population[curIndiv].fitness = curScoreMin;
+                        population[curIndiv].fitness = score;
                         curIndiv++;
                         curEval = 0;
-                        curScoreMin = Infinity;
 
                         if (curIndiv >= POP_SIZE) {
                             // --- Generation complete ---
@@ -4211,7 +4206,7 @@
                             curIndiv = 0;
                         }
                     }
-                    window._mlTrainRestart(r, evalSpeeds[curEval % evalSpeeds.length]);
+                    window._mlTrainRestart(r);
                 }
             }
             onProgress();
