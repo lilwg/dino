@@ -3966,38 +3966,60 @@
     'use strict';
 
     // --- Hyperparameters ---
-    var ALPHA         = 0.15;
+    var ALPHA         = 0.10;
     var GAMMA         = 0.95;
     var EPSILON_START = 1.0;
-    var EPSILON_MIN   = 0.05;
-    var EPSILON_DECAY = 0.997;   // per-death decay
-    var DEATH_PENALTY = -100;
+    var EPSILON_MIN   = 0.03;
+    var EPSILON_DECAY = 0.9985;  // per-death decay — slower to explore more
+    var DEATH_PENALTY = -50;
     var ALIVE_REWARD  = 1;
     var NUM_ACTIONS   = 3;
 
     // --- State discretization ---
-    // Uses the same 10-feature vector from mlExtractState.
-    // Discretize into: dist1(8) × type(2) × speed(4) × jumping(2) × ducking(2) = 256 states
-    var DIST_BINS  = 8;
+    // state = [obs1Dist, obs1Y, obs1Type, obs1H, obs1W, obs2Dist, speed, jumpHeight, jumpVel, ducking]
+    // Key insight: distance and obstacle height/type matter most for timing jumps/ducks.
+    // Use more distance bins (16) and add obstacle height to distinguish cactus vs pterodactyl altitude.
+    // dist(16) × obsY(3) × type(2) × speed(4) × jumping(3) × ducking(2) = 2304 states
+    var DIST_BINS  = 16;
+    var OBSY_BINS  = 3;   // ground-level, mid, high
     var TYPE_BINS  = 2;
     var SPEED_BINS = 4;
-    var JUMP_BINS  = 2;
+    var JUMP_BINS  = 3;   // grounded, ascending, descending
     var DUCK_BINS  = 2;
-    var NUM_STATES = DIST_BINS * TYPE_BINS * SPEED_BINS * JUMP_BINS * DUCK_BINS; // 256
+    var NUM_STATES = DIST_BINS * OBSY_BINS * TYPE_BINS * SPEED_BINS * JUMP_BINS * DUCK_BINS; // 2304
 
     function discretize(state) {
-        var dist  = Math.min(DIST_BINS - 1, Math.floor(state[0] * DIST_BINS));
-        var type  = state[2] > 0.5 ? 1 : 0;  // pterodactyl?
+        // Non-linear distance bins — more resolution when close (where decisions matter)
+        var rawDist = state[0]; // 0..1
+        var dist;
+        if (rawDist < 0.3) {
+            // 10 bins for close range (0..0.3)
+            dist = Math.min(9, Math.floor(rawDist / 0.3 * 10));
+        } else {
+            // 6 bins for far range (0.3..1.0)
+            dist = Math.min(DIST_BINS - 1, 10 + Math.floor((rawDist - 0.3) / 0.7 * 6));
+        }
+        // Obstacle Y position: ground (cactus), mid-ptera, high-ptera
+        var obsY = state[1]; // yPos/150
+        var obsYBin;
+        if (obsY > 0.6) obsYBin = 0;      // ground level
+        else if (obsY > 0.3) obsYBin = 1;  // mid
+        else obsYBin = 2;                   // high
+        var type  = state[2] > 0.5 ? 1 : 0;
         var speed = Math.min(SPEED_BINS - 1, Math.floor(state[6] * SPEED_BINS));
-        var jump  = state[7] > 0 ? 1 : 0;     // jumpHeight > 0
+        // Jump phase: grounded(0), ascending(1), descending(2)
+        var jumpPhase;
+        if (state[7] <= 0) jumpPhase = 0;          // not jumping
+        else if (state[8] < 0) jumpPhase = 1;       // ascending (negative velocity = going up)
+        else jumpPhase = 2;                          // descending
         var duck  = state[9] > 0.5 ? 1 : 0;
-        return dist + DIST_BINS * (type + TYPE_BINS * (speed + SPEED_BINS * (jump + JUMP_BINS * duck)));
+        return dist + DIST_BINS * (obsYBin + OBSY_BINS * (type + TYPE_BINS * (speed + SPEED_BINS * (jumpPhase + JUMP_BINS * duck))));
     }
 
     // --- Experience replay ---
-    var REPLAY_SIZE    = 1000;
-    var REPLAY_BATCH   = 32;
-    var REPLAY_BATCHES = 3;
+    var REPLAY_SIZE    = 5000;
+    var REPLAY_BATCH   = 64;
+    var REPLAY_BATCHES = 4;
 
     // --- Q-table ---
     var Q = {};
@@ -4089,8 +4111,23 @@
         }
     }
 
+    // --- Reward shaping ---
+    // Sparse +1/-100 doesn't teach timing. Shape rewards based on proximity:
+    // - Bonus when obstacle distance decreases (approaching but alive = good)
+    // - Extra bonus when obstacle passes behind tRex (survived!)
+    var PASS_BONUS = 10;
+
+    function shapeReward(prevRaw, curRaw) {
+        var r = ALIVE_REWARD;
+        // Obstacle just passed (prev dist was small positive, now it's much bigger = new obstacle)
+        if (prevRaw && prevRaw[0] < 0.1 && curRaw[0] > 0.3) {
+            r += PASS_BONUS;
+        }
+        return r;
+    }
+
     // --- Headless training loop ---
-    var STEPS_PER_TICK = 500;
+    var STEPS_PER_TICK = 800;
     var _training = false;
     var _trained = false;
 
@@ -4101,6 +4138,7 @@
 
         _training = true;
         var _channel = new MessageChannel();
+        var prevRawState = null;
 
         _channel.port1.onmessage = function () {
             if (!_training) { onDone(); return; }
@@ -4109,12 +4147,14 @@
                 var s = discretize(rawState);
                 var a = chooseAction(s);
 
-                // Update previous transition
+                // Update previous transition with shaped reward
                 if (prevState !== null) {
-                    storeTransition(prevState, prevAction, ALIVE_REWARD, s, false);
+                    var reward = shapeReward(prevRawState, rawState);
+                    storeTransition(prevState, prevAction, reward, s, false);
                 }
                 prevState = s;
                 prevAction = a;
+                prevRawState = rawState;
 
                 var collision = window._mlTrainStep(r, a);
                 if (collision) {
@@ -4124,6 +4164,7 @@
                     qS[prevAction] += ALPHA * (DEATH_PENALTY - qS[prevAction]);
                     prevState = null;
                     prevAction = null;
+                    prevRawState = null;
 
                     replayBatch();
                     epsilon = Math.max(EPSILON_MIN, epsilon * EPSILON_DECAY);
@@ -4134,8 +4175,8 @@
                     if (score > bestScore) bestScore = score;
                     scoreHistory.push(score);
 
-                    // Restart at random speed for diversity
-                    var speeds = [6, 12, 20, 28, 35, 42, 50];
+                    // Restart at random speed — bias toward harder speeds
+                    var speeds = [6, 15, 25, 35, 42, 50, 50];
                     window._mlTrainRestart(r, speeds[Math.floor(Math.random() * speeds.length)]);
                 }
             }
