@@ -3085,25 +3085,36 @@
         for (var i = 0; i < W2.length; i++) W2[i] = (Math.random() - 0.5) * 2 * s2;
     }
 
+    // Preallocated buffers for forward pass (avoids GC pressure in training)
+    var _fHiddenRaw = new Float64Array(NUM_HIDDEN);
+    var _fHidden = new Float64Array(NUM_HIDDEN);
+    var _fLogits = new Float64Array(NUM_ACTIONS);
+    var _fOutput = new Float64Array(NUM_ACTIONS);
+    var _fResult = { hidden: _fHidden, hiddenRaw: _fHiddenRaw, output: _fOutput, logits: _fLogits };
+
     function forwardFull(x) {
-        var hiddenRaw = new Float64Array(NUM_HIDDEN);
-        var hidden = new Float64Array(NUM_HIDDEN);
         for (var h = 0; h < NUM_HIDDEN; h++) {
-            hiddenRaw[h] = b1[h];
+            var sum = b1[h];
             for (var f = 0; f < NUM_FEATURES; f++)
-                hiddenRaw[h] += W1[h * NUM_FEATURES + f] * x[f];
-            hidden[h] = hiddenRaw[h] > 0 ? hiddenRaw[h] : 0;
+                sum += W1[h * NUM_FEATURES + f] * x[f];
+            _fHiddenRaw[h] = sum;
+            _fHidden[h] = sum > 0 ? sum : 0;
         }
-        var logits = new Float64Array(NUM_ACTIONS);
         for (var a = 0; a < NUM_ACTIONS; a++) {
-            logits[a] = b2[a];
+            var s = b2[a];
             for (var h = 0; h < NUM_HIDDEN; h++)
-                logits[a] += W2[a * NUM_HIDDEN + h] * hidden[h];
+                s += W2[a * NUM_HIDDEN + h] * _fHidden[h];
+            _fLogits[a] = s;
         }
-        return { hidden: hidden, hiddenRaw: hiddenRaw, output: softmax(logits), logits: logits };
+        // Inline softmax
+        var mx = _fLogits[0], sm = 0;
+        for (var i = 1; i < NUM_ACTIONS; i++) if (_fLogits[i] > mx) mx = _fLogits[i];
+        for (var i = 0; i < NUM_ACTIONS; i++) { _fOutput[i] = Math.exp(_fLogits[i] - mx); sm += _fOutput[i]; }
+        for (var i = 0; i < NUM_ACTIONS; i++) _fOutput[i] /= sm;
+        return _fResult;
     }
 
-    function forwardPass(x) { return forwardFull(x).output; }
+    function forwardPass(x) { forwardFull(x); return _fOutput; }
 
     function softmax(logits) {
         var mx = -Infinity;
@@ -3350,7 +3361,19 @@
         var dataset = balanceDataset(rawDataset);
         var lr = 0.01, batchSize = 64;
         var lossHistory = [];
-        var epoch = 0, CHUNK = 5;
+        var epoch = 0, CHUNK = 20;
+
+        // Preallocate all gradient buffers once
+        var gW1 = new Float64Array(NUM_HIDDEN * NUM_FEATURES);
+        var gb1 = new Float64Array(NUM_HIDDEN);
+        var gW2 = new Float64Array(NUM_ACTIONS * NUM_HIDDEN);
+        var gb2 = new Float64Array(NUM_ACTIONS);
+        var dLogits = new Float64Array(NUM_ACTIONS);
+        var dHidden = new Float64Array(NUM_HIDDEN);
+
+        // Cache hidden snapshot per sample (forwardFull reuses _fHidden)
+        var snapHidden = new Float64Array(NUM_HIDDEN);
+        var snapHiddenRaw = new Float64Array(NUM_HIDDEN);
 
         function runChunk() {
             var end = Math.min(epoch + CHUNK, nEpochs);
@@ -3359,37 +3382,45 @@
                 var epochLoss = 0;
                 for (var bStart = 0; bStart < dataset.length; bStart += batchSize) {
                     var bEnd = Math.min(bStart + batchSize, dataset.length);
-                    var gW1 = new Float64Array(NUM_HIDDEN * NUM_FEATURES);
-                    var gb1 = new Float64Array(NUM_HIDDEN);
-                    var gW2 = new Float64Array(NUM_ACTIONS * NUM_HIDDEN);
-                    var gb2 = new Float64Array(NUM_ACTIONS);
+                    // Zero gradient buffers
+                    gW1.fill(0); gb1.fill(0); gW2.fill(0); gb2.fill(0);
 
                     for (var s = bStart; s < bEnd; s++) {
                         var x = dataset[s].input, label = dataset[s].label;
-                        var fwd = forwardFull(x);
-                        epochLoss -= Math.log(fwd.output[label] + 1e-10);
+                        forwardFull(x);
+                        epochLoss -= Math.log(_fOutput[label] + 1e-10);
 
-                        var dLogits = new Float64Array(NUM_ACTIONS);
+                        // Snapshot hidden activations before next forwardFull overwrites them
+                        snapHidden.set(_fHidden);
+                        snapHiddenRaw.set(_fHiddenRaw);
+
+                        // dLogits = softmax - one_hot
                         for (var a = 0; a < NUM_ACTIONS; a++)
-                            dLogits[a] = fwd.output[a] - (a === label ? 1 : 0);
+                            dLogits[a] = _fOutput[a] - (a === label ? 1 : 0);
 
+                        // Layer 2 gradients
                         for (var a = 0; a < NUM_ACTIONS; a++) {
-                            gb2[a] += dLogits[a];
+                            var dL = dLogits[a];
+                            gb2[a] += dL;
                             for (var h = 0; h < NUM_HIDDEN; h++)
-                                gW2[a * NUM_HIDDEN + h] += dLogits[a] * fwd.hidden[h];
+                                gW2[a * NUM_HIDDEN + h] += dL * snapHidden[h];
                         }
 
-                        var dHidden = new Float64Array(NUM_HIDDEN);
+                        // Backprop to hidden
                         for (var h = 0; h < NUM_HIDDEN; h++) {
+                            var d = 0;
                             for (var a = 0; a < NUM_ACTIONS; a++)
-                                dHidden[h] += W2[a * NUM_HIDDEN + h] * dLogits[a];
-                            if (fwd.hiddenRaw[h] <= 0) dHidden[h] = 0;
+                                d += W2[a * NUM_HIDDEN + h] * dLogits[a];
+                            dHidden[h] = snapHiddenRaw[h] > 0 ? d : 0;
                         }
 
+                        // Layer 1 gradients
                         for (var h = 0; h < NUM_HIDDEN; h++) {
-                            gb1[h] += dHidden[h];
+                            var dh = dHidden[h];
+                            if (dh === 0) continue; // ReLU killed — skip entire row
+                            gb1[h] += dh;
                             for (var f = 0; f < NUM_FEATURES; f++)
-                                gW1[h * NUM_FEATURES + f] += dHidden[h] * x[f];
+                                gW1[h * NUM_FEATURES + f] += dh * x[f];
                         }
                     }
 
@@ -3402,9 +3433,11 @@
                 lossHistory.push(epochLoss / dataset.length);
             }
 
+            // Accuracy on raw (unbalanced) data
             var correct = 0;
             for (var i = 0; i < rawDataset.length; i++) {
-                if (argmax(forwardPass(rawDataset[i].input)) === rawDataset[i].label) correct++;
+                forwardFull(rawDataset[i].input);
+                if (argmax(_fOutput) === rawDataset[i].label) correct++;
             }
             var acc = correct / rawDataset.length;
             if (onProgress) onProgress(epoch, lossHistory, acc);
