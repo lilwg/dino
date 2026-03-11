@@ -20,6 +20,7 @@
                 <button class="si-btn" id="viz-btn" onclick="toggleViz()">Viz</button>
                 <button class="si-btn" onclick="restartGame()">Restart</button>
                 <button class="si-btn" id="pause-btn" onclick="togglePause()">Pause</button>
+                <button class="si-btn" id="fs-btn" onclick="toggleFullscreen()">Fullscreen</button>
                 <span class="si-speed" id="diff-wrap">
                     <label for="diff-slider">Difficulty</label>
                     <input type="range" id="diff-slider" min="0" max="100" value="50" oninput="setDifficulty(this.value)">
@@ -42,6 +43,7 @@
         <p class="si-prose">The AI simulates 12 possible actions (rotation &times; thrust &times; fire) 35 frames ahead, scoring each for survival, kills, and aim alignment. It picks targets by priority: UFO first, then collision-course rocks, then small &rarr; medium &rarr; large (skipping large when the field is crowded). If every action leads to death, it hyperdrives to safety. Enable <strong>Viz</strong> to see the target ring (colour-coded by priority), aim arrow, and predicted intercept point.</p>
         <p style="margin-top:20px;"><a href="/" style="color:#0071e3;font-size:14px;text-decoration:none;">&larr; Back</a></p>
     </div>
+<script src="fs-toggle.js"></script>
 <script src="dino-sounds.js"></script>
 <script>
 (function(){
