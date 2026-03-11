@@ -4158,15 +4158,10 @@
         _training = true;
         var mySession = ++_trainSession;
         var curIndiv = 0, curEval = 0, curScoreSum = 0;
-        // Curriculum: start with slow speeds so early genomes can discover jumping,
-        // then gradually introduce faster speeds as generations progress.
-        var allSpeeds = [6, 10, 20, 30, 40, 50];
-        function pickSpeed() {
-            // Unlock one more speed tier every 3 generations (full set by gen 15)
-            var tier = Math.min(allSpeeds.length, Math.floor(generation / 3) + 2);
-            return allSpeeds[Math.floor(Math.random() * tier)];
-        }
-        window._mlTrainRestart(r, pickSpeed());
+        // Each genome is tested at a spread of speeds so the best genome
+        // must handle both slow and fast gameplay (not just one speed).
+        var evalSpeeds = [6, 20, 40]; // low, mid, high — one per EVALS_PER
+        window._mlTrainRestart(r, evalSpeeds[0]);
 
         var _channel = new MessageChannel();
         _channel.port1.onmessage = function () {
@@ -4215,7 +4210,7 @@
                             curIndiv = 0;
                         }
                     }
-                    window._mlTrainRestart(r, pickSpeed());
+                    window._mlTrainRestart(r, evalSpeeds[curEval % evalSpeeds.length]);
                 }
             }
             onProgress();
