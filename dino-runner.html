@@ -91,22 +91,23 @@
             </div>
         </div>
 
-        <div class="si-controls" style="margin-top: 12px;">
-            <button class="si-btn active" id="human-btn" onclick="setMode('off')">Human</button>
-            <button class="si-btn" id="rules-btn" onclick="setMode('rules')">AI</button>
-            <button class="si-btn" id="viz-btn" onclick="toggleViz()">Viz</button>
-            <button class="si-btn" onclick="restartGame()">Restart</button>
-            <button class="si-btn" id="pause-btn" onclick="togglePause()">Pause</button>
-            <div class="si-speed" style="font-size: 11px;">
-                Max Speed: <input type="range" id="max-speed-slider" min="6" max="50" value="13" step="1"> <span id="max-speed-val">13</span>
+            <div class="si-controls" style="margin-top: 12px;">
+                <button class="si-btn active" id="human-btn" onclick="setMode('off')">Human</button>
+                <button class="si-btn" id="rules-btn" onclick="setMode('rules')">AI</button>
+                <button class="si-btn" id="viz-btn" onclick="toggleViz()">Viz</button>
+                <button class="si-btn" onclick="restartGame()">Restart</button>
+                <button class="si-btn" id="pause-btn" onclick="togglePause()">Pause</button>
+                <button class="si-btn" id="fs-btn" onclick="toggleFullscreen()">Fullscreen</button>
+                <div class="si-speed" style="font-size: 11px;">
+                    Max Speed: <input type="range" id="max-speed-slider" min="6" max="50" value="13" step="1"> <span id="max-speed-val">13</span>
+                </div>
+                <span style="margin-left: auto; font-size: 11px; color: #6e6e73;">
+                    Current Speed: <span id="speed-val">6</span>
+                </span>
             </div>
-            <span style="margin-left: auto; font-size: 11px; color: #6e6e73;">
-                Current Speed: <span id="speed-val">6</span>
-            </span>
-        </div>
 
-        <p class="si-help" style="text-align: center;">↑ / Space jump &nbsp;|&nbsp; ↓ duck &nbsp;|&nbsp; R restart</p>
-    </div>
+            <p class="si-help" style="text-align: center;">↑ / Space jump &nbsp;|&nbsp; ↓ duck &nbsp;|&nbsp; R restart</p>
+        </div>
 
     <!-- ═══ HOW IT WORKS ═══ -->
     <h2 style="margin-top: 16px;">How it works</h2>
@@ -135,6 +136,7 @@
 <span id="status-badge" style="display:none"></span>
 <span id="chart-hint" style="display:none"></span>
 
+<script src="fs-toggle.js"></script>
 <script src="runner-weights.js"></script>
 <script src="cached-weights.js"></script>
 <!-- ═══ AI Agent (inlined from ai-agent.js) ═══ -->
