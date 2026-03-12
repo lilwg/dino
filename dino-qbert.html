@@ -523,12 +523,34 @@ function useDisc(idx) {
     score += 300;
     checkExtraLife();
 
-    // Kill any Coily on board
+    // Coily only dies if his greedy chase toward Q*bert's disc position
+    // would take him off the pyramid edge (he follows you off)
+    var discRow = disc.row;
+    var discSide = disc.side;
+    // Q*bert jumped off at this edge position:
+    var exitRow = discRow;
+    var exitCol = (discSide === 0) ? -1 : exitRow + 1; // off left or right edge
     var survived = [];
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
-        if (e.type === 'coily' || e.type === 'egg') {
-            score += 300; checkExtraLife();
+        if (e.type === 'coily') {
+            // Simulate Coily's greedy chase toward where Q*bert was
+            var bestDir = null, bestDist = Infinity;
+            for (var k = 0; k < DIR_KEYS.length; k++) {
+                var dk = DIRS[DIR_KEYS[k]];
+                var nr = e.row + dk.dr, nc = e.col + dk.dc;
+                // Coily considers moves including off-edge (chasing Q*bert off)
+                var dist = Math.abs(exitRow - 1 - nr) + Math.abs((discSide === 0 ? 0 : exitRow) - nc);
+                if (dist < bestDist) { bestDist = dist; bestDir = { nr: nr, nc: nc }; }
+            }
+            // If Coily's best move is off the pyramid, he falls to his death
+            if (bestDir && !isValidPos(bestDir.nr, bestDir.nc)) {
+                score += 500; checkExtraLife();
+            } else {
+                survived.push(e); // Coily survives — too far away to be lured
+            }
+        } else if (e.type === 'egg') {
+            survived.push(e); // eggs don't chase, they just bounce
         } else {
             survived.push(e);
         }

@@ -470,24 +470,34 @@ function exPlayerMove(st, dirKey, stochOutcome) {
         for (var di = 0; di < st.discs.length; di++) {
             var disc = st.discs[di];
             if (!disc.active) continue;
-            if (disc.side === 0 && dirKey === 'UL' && st.pc === 0 && st.pr === disc.row) {
+            if ((disc.side === 0 && dirKey === 'UL' && st.pc === 0 && st.pr === disc.row) ||
+                (disc.side === 1 && dirKey === 'UR' && st.pc === st.pr && st.pr === disc.row)) {
                 disc.active = false;
-                // 500pts per Coily/egg lured off; clear ALL enemies
+                // Coily only dies if his greedy chase would take him off-edge
+                var survived = [];
                 for (var i = 0; i < st.enemies.length; i++) {
-                    if (st.enemies[i].type === 'coily' || st.enemies[i].type === 'egg')
-                        st.score += 500;
+                    var e = st.enemies[i];
+                    if (e.type === 'coily') {
+                        var lured = false;
+                        // Check if Coily's best move toward disc edge is off the pyramid
+                        var targetR = disc.row - 1;
+                        var targetC = disc.side === 0 ? 0 : disc.row;
+                        var bestDir2 = null, bestDist2 = Infinity;
+                        for (var k = 0; k < 4; k++) {
+                            var dk2 = DIRS[DIR_KEYS[k]];
+                            var er = e.row + dk2.dr, ec = e.col + dk2.dc;
+                            var dd = Math.abs(targetR - er) + Math.abs(targetC - ec);
+                            if (dd < bestDist2) { bestDist2 = dd; bestDir2 = { nr: er, nc: ec }; }
+                        }
+                        if (bestDir2 && !isValidPos(bestDir2.nr, bestDir2.nc)) {
+                            st.score += 500; lured = true;
+                        }
+                        if (!lured) survived.push(e);
+                    } else {
+                        survived.push(e);
+                    }
                 }
-                st.enemies = [];
-                st.pr = 0; st.pc = 0;
-                return true;
-            }
-            if (disc.side === 1 && dirKey === 'UR' && st.pc === st.pr && st.pr === disc.row) {
-                disc.active = false;
-                for (var i = 0; i < st.enemies.length; i++) {
-                    if (st.enemies[i].type === 'coily' || st.enemies[i].type === 'egg')
-                        st.score += 500;
-                }
-                st.enemies = [];
+                st.enemies = survived;
                 st.pr = 0; st.pc = 0;
                 return true;
             }
