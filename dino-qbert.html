@@ -31,7 +31,7 @@
 
         <h2 style="margin-top:16px;">How it works</h2>
         <p class="si-prose">DinoQbert recreates the 1982 Gottlieb arcade original: hop-based movement, one jump per keypress with a 150ms arc animation, and the classic @!#?@! swear bubble on death. Coily spawns as an egg, bounces randomly down the pyramid, then hatches and chases the player. Dark balls bounce down and kill on contact; light balls are safe to catch for 100 pts. Slick (round 4+) hops down uncoloring cubes. Two transport discs at variable positions let Q*bert escape and lure Coily to his death.</p>
-        <p class="si-prose">Tap <strong>Viz</strong> to reveal the AI&rsquo;s plan: a dashed line traces the BFS path to its next target, with faint dots marking the rest of its queued tour. The AI forward-simulates Coily&rsquo;s greedy chase 3 steps ahead to build both immediate and predicted danger maps, then plans a danger-weighted nearest-neighbour tour over all uncolored cubes. BFS pathfinding routes around dangerous tiles. Every move is scored by a multi-criteria evaluator: path progress, cube productivity, safety margin, escape-route count, and 2-step lookahead. When the top candidates score within 15 points, an expectimax tiebreaker computes exact expected values by enumerating every possible enemy outcome (Coily is deterministic; all other enemies branch DL/DR at p=0.5). Survival probability is the top priority, then cube progress. Depth adapts to enemy count (4 deep with 0&ndash;1 random enemies, 2 deep with 3+). It intercepts nearby Slicks for bonus points, and triggers disc escapes when cornered or when Coily closes to 3 hops.</p>
+        <p class="si-prose">Tap <strong>Viz</strong> to reveal the AI&rsquo;s plan: a dashed line traces the expected path, with faint dots marking uncolored cubes. Every move is chosen by <strong>expectimax search</strong>&mdash;it enumerates every possible enemy outcome exactly. Coily is deterministic (greedy chase), so no branching needed; all other enemies fork DL/DR at p=0.5 each, giving 2<sup>N</sup> outcomes per step. The search computes exact P(survive) and E[cubes&nbsp;colored] at each leaf, then picks the move that maximises survival first (weighted 10,000&times;), then progress. Depth adapts to enemy count: 4 deep with 0&ndash;1 random enemies, 3 with 2, 2 with 3+. A hard-coded disc escape overrides when Coily is within 3 hops of a catch position.</p>
 
         <p style="margin-top:20px;"><a href="/" style="color:#0071e3;font-size:14px;text-decoration:none;">&larr; Back</a></p>
     </div>
@@ -904,54 +904,7 @@ function countEscapes(row, col, dangerSet) {
     return count;
 }
 
-// Score a candidate move for safety (higher = safer)
-function scoreMoveForSafety(nr, nc, danger) {
-    var s = 0;
-    // Immediate danger is very bad
-    if (danger.immediate[nr + ',' + nc]) s -= 100;
-    // Predicted danger is moderately bad
-    if (danger.predicted[nr + ',' + nc]) s -= 30;
-    // Prefer tiles with more escape routes (avoid corners/traps)
-    var escapes = countEscapes(nr, nc, danger.immediate);
-    s += escapes * 12;
-    // Strong penalty for dead-end corners (0-1 escape routes)
-    if (escapes <= 1) s -= 40;
-    // Prefer staying away from edges (more mobility)
-    if (nc > 0 && nc < nr) s += 5;
-    if (nr > 0 && nr < ROWS - 1) s += 4;
-    // Strong penalty for bottom corners (true dead ends)
-    if (nr >= ROWS - 1 && (nc === 0 || nc === nr)) s -= 25;
-    // Bonus for moving away from closest Coily
-    for (var ci = 0; ci < danger.coilies.length; ci++) {
-        var c = danger.coilies[ci];
-        var distNow = Math.abs(c.row - player.row) + Math.abs(c.col - player.col);
-        var distNew = Math.abs(c.row - nr) + Math.abs(c.col - nc);
-        if (distNew > distNow) s += 8;       // moving away is good
-        else if (distNew < distNow) s -= 10;  // moving toward Coily is bad
-    }
-    return s;
-}
-
-// Find nearby Slicks worth intercepting
-function findSlickTarget(danger) {
-    var tgt = targetState();
-    var bestSlick = null, bestDist = Infinity;
-    for (var i = 0; i < enemies.length; i++) {
-        var e = enemies[i];
-        if (e.type !== 'slick') continue;
-        var dist = Math.abs(e.row - player.row) + Math.abs(e.col - player.col);
-        if (dist <= 3) {
-            var res = bfsTo(player.row, player.col, e.row, e.col, danger.immediate);
-            if (res && res.dist <= 2 && res.dist < bestDist) {
-                bestDist = res.dist;
-                bestSlick = { row: e.row, col: e.col, path: res.path };
-            }
-        }
-    }
-    return bestSlick;
-}
-
-// Build optimized tour: nearest-neighbor with danger weighting
+// Build optimized tour: nearest-neighbor with danger weighting (used for viz)
 function buildTour() {
     var tgt = targetState();
     var danger = buildDangerMaps();
@@ -1202,12 +1155,12 @@ function computeAIMove() {
     var tgt = targetState();
     var danger = buildDangerMaps();
 
-    // ── 1. Disc escape: strategic use when Coily threatens ──
-    var closestCoily = null, coilyDist = 999;
+    // ── 1. Disc escape override (hard-coded, don't leave to search) ──
+    var coilyDist = 999;
     for (var i = 0; i < danger.coilies.length; i++) {
         var c = danger.coilies[i];
         var d = Math.abs(c.row - player.row) + Math.abs(c.col - player.col);
-        if (d < coilyDist) { coilyDist = d; closestCoily = c; }
+        if (d < coilyDist) coilyDist = d;
     }
 
     var shouldEscape = coilyDist <= 3;
@@ -1239,26 +1192,25 @@ function computeAIMove() {
         }
     }
 
-    // ── 2. Slick interception: catch nearby Slicks for 300 pts ──
-    var slickTarget = findSlickTarget(danger);
-    if (slickTarget && slickTarget.path.length > 0) {
-        var sd = DIRS[slickTarget.path[0]];
-        var snr = player.row + sd.dr, snc = player.col + sd.dc;
-        if (!danger.immediate[snr + ',' + snc]) {
-            aiDetailPath = [];
-            var sr = player.row, sc = player.col;
-            for (var i = 0; i < slickTarget.path.length; i++) {
-                var sdd = DIRS[slickTarget.path[i]];
-                sr += sdd.dr; sc += sdd.dc;
-                aiDetailPath.push({ row: sr, col: sc });
-            }
-            return slickTarget.path[0];
+    // ── 2. Expectimax: evaluate all valid moves ──
+    var bestDir = null, bestComposite = -Infinity;
+    var bestSurv = 0, bestVal = -Infinity;
+    for (var k = 0; k < 4; k++) {
+        var dk = DIRS[DIR_KEYS[k]];
+        if (!isValidPos(player.row + dk.dr, player.col + dk.dc)) continue;
+
+        var ev = expectimaxEval(DIR_KEYS[k]);
+        var composite = ev.survivalProb * 10000 + ev.value;
+        if (composite > bestComposite) {
+            bestComposite = composite;
+            bestSurv = ev.survivalProb;
+            bestVal = ev.value;
+            bestDir = DIR_KEYS[k];
         }
     }
 
-    // ── 3. Replan tour whenever board state changes ──
+    // ── 3. Build viz: tour to show remaining targets, BFS path for detail ──
     if (boardSig() !== aiBoardSig || aiTour.length === 0) buildTour();
-
     while (aiTourIdx < aiTour.length) {
         var t = aiTour[aiTourIdx];
         var tc = cubeAt(t.row, t.col);
@@ -1266,95 +1218,34 @@ function computeAIMove() {
         aiTourIdx++;
     }
 
-    // ── 4. Evaluate the best move using multi-criteria scoring ──
-    function fallbackMove() {
-        var bestDir = null, bestScore = -Infinity;
-        for (var fk = 0; fk < DIR_KEYS.length; fk++) {
-            var fd0 = DIRS[DIR_KEYS[fk]];
-            var fbr = player.row + fd0.dr, fbc = player.col + fd0.dc;
-            if (!isValidPos(fbr, fbc)) continue;
-            var ms = scoreMoveForSafety(fbr, fbc, danger);
-            var cube = cubeAt(fbr, fbc);
-            if (cube && cube.state < tgt) ms += 15;
-            if (ms > bestScore) { bestScore = ms; bestDir = DIR_KEYS[fk]; }
-        }
-        return bestDir;
-    }
-
-    if (aiTourIdx >= aiTour.length) {
-        aiDetailPath = []; aiTourDots = [];
-        return fallbackMove();
-    }
-
-    // BFS to the current tour target, avoiding dangerous tiles
-    var target = aiTour[aiTourIdx];
-    var res = bfsTo(player.row, player.col, target.row, target.col, danger.immediate);
-    if (!res || res.path.length === 0) {
-        res = bfsTo(player.row, player.col, target.row, target.col);
-    }
-    if (!res || res.path.length === 0) {
-        aiDetailPath = []; aiTourDots = [];
-        return fallbackMove();
-    }
-
-    // Build viz
     aiDetailPath = [];
-    var pr = player.row, pc = player.col;
-    for (var i = 0; i < res.path.length; i++) {
-        var dd = DIRS[res.path[i]];
-        pr += dd.dr; pc += dd.dc;
-        aiDetailPath.push({ row: pr, col: pc });
-    }
     aiTourDots = [];
-    for (var i = aiTourIdx + 1; i < aiTour.length; i++)
-        aiTourDots.push({ row: aiTour[i].row, col: aiTour[i].col });
-
-    // ── 5. Smart first-step selection with expectimax tiebreaker ──
-    var firstDir = res.path[0];
-
-    // Score all candidate moves with rules engine
-    var candidates = [];
-    for (var k = 0; k < DIR_KEYS.length; k++) {
-        var ad = DIRS[DIR_KEYS[k]];
-        var anr = player.row + ad.dr, anc = player.col + ad.dc;
-        if (!isValidPos(anr, anc)) continue;
-
-        var ms = scoreMoveForSafety(anr, anc, danger);
-        if (DIR_KEYS[k] === firstDir) ms += 25;
-        var cube = cubeAt(anr, anc);
-        if (cube && cube.state < tgt) ms += 20;
-        var futureEscapes = countEscapes(anr, anc, danger.predicted);
-        ms += futureEscapes * 5;
-
-        candidates.push({ dir: DIR_KEYS[k], score: ms });
-    }
-
-    candidates.sort(function(a, b) { return b.score - a.score; });
-
-    if (candidates.length === 0) return fallbackMove();
-    if (candidates.length === 1) return candidates[0].dir;
-
-    // If top candidates are within 15 points, use expectimax to tiebreak
-    // Expectimax computes exact survival probability over all enemy outcomes
-    var margin = candidates[0].score - candidates[1].score;
-    if (margin < 15 && candidates[0].score > -50) {
-        var tiedMoves = [candidates[0]];
-        for (var i = 1; i < candidates.length && i < 3; i++) {
-            if (candidates[0].score - candidates[i].score < 15) tiedMoves.push(candidates[i]);
-        }
-        if (tiedMoves.length > 1) {
-            var bestEX = null, bestEXscore = -Infinity;
-            for (var i = 0; i < tiedMoves.length; i++) {
-                var ev = expectimaxEval(tiedMoves[i].dir);
-                // Survival probability is paramount, then value
-                var composite = ev.survivalProb * 10000 + ev.value;
-                if (composite > bestEXscore) { bestEXscore = composite; bestEX = tiedMoves[i].dir; }
+    if (bestDir) {
+        // Show BFS path to nearest uncolored cube from the chosen direction
+        var dd = DIRS[bestDir];
+        var nr = player.row + dd.dr, nc = player.col + dd.dc;
+        if (isValidPos(nr, nc)) {
+            aiDetailPath.push({ row: nr, col: nc });
+            // Try to show path to current tour target for context
+            if (aiTourIdx < aiTour.length) {
+                var target = aiTour[aiTourIdx];
+                var res = bfsTo(nr, nc, target.row, target.col);
+                if (res) {
+                    var pr = nr, pc = nc;
+                    for (var i = 0; i < res.path.length; i++) {
+                        var pd = DIRS[res.path[i]];
+                        pr += pd.dr; pc += pd.dc;
+                        aiDetailPath.push({ row: pr, col: pc });
+                    }
+                }
             }
-            return bestEX;
         }
+        // Show remaining tour as dots
+        for (var i = aiTourIdx; i < aiTour.length; i++)
+            aiTourDots.push({ row: aiTour[i].row, col: aiTour[i].col });
     }
 
-    return candidates[0].dir;
+    return bestDir || 'DL';
 }
 
 // ─── Update ───────────────────────────────────────────────────────────────────
