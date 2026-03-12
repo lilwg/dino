@@ -163,110 +163,8 @@ function buildTour() {
 }
 
 // ─── Expectimax ────────────────────────────────────────────────────────────────
-var EXPECTIMAX_DEPTH = 4;
 
-function exCubeAt(st, row, col) {
-    for (var i = 0; i < st.cubes.length; i++)
-        if (st.cubes[i].row === row && st.cubes[i].col === col) return st.cubes[i];
-    return null;
-}
-
-function exCloneState() {
-    var tgt = targetState();
-    var cs = new Array(cubeStates.length);
-    for (var i = 0; i < cubeStates.length; i++)
-        cs[i] = { row: cubeStates[i].row, col: cubeStates[i].col, state: cubeStates[i].state };
-    var det = [], stoch = [];
-    for (var i = 0; i < enemies.length; i++) {
-        var e = enemies[i];
-        if (e.type === 'spawn-timer') continue;
-        if (e.type === 'greenball' || e.type === 'slick') continue;
-        var clone = { type: e.type, row: e.row, col: e.col, hops: e.hops || 0 };
-        if (e.type === 'coily') det.push(clone);
-        else stoch.push(clone);
-    }
-    var colored = 0;
-    for (var i = 0; i < cs.length; i++) if (cs[i].state >= tgt) colored++;
-    return { pr: player.row, pc: player.col, cubes: cs, det: det, stoch: stoch,
-             alive: true, score: 0, cubesColored: colored, tgt: tgt };
-}
-
-function exClone(st) {
-    var cs = new Array(st.cubes.length);
-    for (var i = 0; i < st.cubes.length; i++)
-        cs[i] = { row: st.cubes[i].row, col: st.cubes[i].col, state: st.cubes[i].state };
-    var det = [];
-    for (var i = 0; i < st.det.length; i++)
-        det.push({ type: st.det[i].type, row: st.det[i].row, col: st.det[i].col, hops: st.det[i].hops });
-    var stoch = [];
-    for (var i = 0; i < st.stoch.length; i++)
-        stoch.push({ type: st.stoch[i].type, row: st.stoch[i].row, col: st.stoch[i].col, hops: st.stoch[i].hops });
-    return { pr: st.pr, pc: st.pc, cubes: cs, det: det, stoch: stoch,
-             alive: st.alive, score: st.score, cubesColored: st.cubesColored, tgt: st.tgt };
-}
-
-function exPlayerMove(st, dirKey) {
-    if (!st.alive) return false;
-    var d = DIRS[dirKey];
-    var nr = st.pr + d.dr, nc = st.pc + d.dc;
-    if (!isValidPos(nr, nc)) { st.alive = false; return false; }
-    st.pr = nr; st.pc = nc;
-    var cube = exCubeAt(st, nr, nc);
-    if (cube && cube.state < st.tgt) { cube.state++; st.score += 25; st.cubesColored++; }
-    if (st.cubesColored >= st.cubes.length) {
-        st.score += 1000; st.det = []; st.stoch = []; return true;
-    }
-    var allEnemies = st.det.concat(st.stoch);
-    for (var i = 0; i < allEnemies.length; i++) {
-        var e = allEnemies[i];
-        if (e.row === nr && e.col === nc) {
-            if (e.type === 'slick') { st.score += 300; }
-            else if (e.type === 'greenball') { st.score += 100; }
-            else { st.alive = false; return false; }
-        }
-    }
-    for (var i = 0; i < st.det.length; i++) {
-        var e = st.det[i];
-        var bd = null, bv = Infinity;
-        for (var k = 0; k < 4; k++) {
-            var dk = DIRS[DIR_KEYS[k]];
-            var er = e.row + dk.dr, ec = e.col + dk.dc;
-            if (!isValidPos(er, ec)) continue;
-            var dv = Math.abs(st.pr - er) + Math.abs(st.pc - ec);
-            if (dv < bv) { bv = dv; bd = k; }
-        }
-        if (bd !== null) {
-            var dd = DIRS[DIR_KEYS[bd]];
-            e.row += dd.dr; e.col += dd.dc;
-        }
-        if (e.row === st.pr && e.col === st.pc) { st.alive = false; return false; }
-    }
-    return true;
-}
-
-function exApplyStochastic(st, outcomes) {
-    for (var i = st.stoch.length - 1; i >= 0; i--) {
-        var e = st.stoch[i];
-        var dir = (outcomes >> i) & 1 ? 'DR' : 'DL';
-        var d = DIRS[dir];
-        var nr = e.row + d.dr, nc = e.col + d.dc;
-        if (!isValidPos(nr, nc)) {
-            st.stoch.splice(i, 1);
-            continue;
-        }
-        e.row = nr; e.col = nc;
-        if (e.type === 'slick') {
-            var sc = exCubeAt(st, nr, nc);
-            if (sc && sc.state > 0) { sc.state--; st.cubesColored--; }
-        }
-        if (e.row === st.pr && e.col === st.pc) {
-            if (e.type === 'slick') { st.score += 300; st.stoch.splice(i, 1); }
-            else if (e.type === 'greenball') { st.score += 100; st.stoch.splice(i, 1); }
-            else { st.alive = false; return; }
-        }
-    }
-}
-
+// Precompute all pairwise BFS distances
 var bfsDistTable = {};
 (function buildDistTable() {
     var positions = [];
@@ -300,6 +198,196 @@ function exBfsDist(r1, c1, r2, c2) {
     return d ? (d[r2 + ',' + c2] || 99) : 99;
 }
 
+function exCubeAt(st, row, col) {
+    for (var i = 0; i < st.cubes.length; i++)
+        if (st.cubes[i].row === row && st.cubes[i].col === col) return st.cubes[i];
+    return null;
+}
+
+// Frame-accurate expectimax state. Each enemy has exact moveTimer/moveDelay
+// matching the real game. A "turn" = one AI decision cycle:
+//   1. Player jumps to new position (takes jumpFrames frames)
+//   2. During those frames + aiDelay wait, enemy timers advance
+//   3. Enemies that hit their moveDelay during this window move
+
+function exCloneState() {
+    var tgt = targetState();
+    var cs = new Array(cubeStates.length);
+    for (var i = 0; i < cubeStates.length; i++)
+        cs[i] = { row: cubeStates[i].row, col: cubeStates[i].col, state: cubeStates[i].state };
+    var ens = [];
+    for (var i = 0; i < enemies.length; i++) {
+        var e = enemies[i];
+        if (e.type === 'spawn-timer') continue;
+        if (e.type === 'greenball' || e.type === 'slick') continue;
+        ens.push({ type: e.type, row: e.row, col: e.col, hops: e.hops || 0,
+                   moveTimer: e.moveTimer || 0, moveDelay: e.moveDelay || 30,
+                   jumping: e.jumping || false, jumpFramesLeft: e.jumping ? Math.ceil((1 - e.jumpT) / e.jumpDur) : 0 });
+    }
+    var colored = 0;
+    for (var i = 0; i < cs.length; i++) if (cs[i].state >= tgt) colored++;
+    var lDiscRow = discCatchRow(0), rDiscRow = discCatchRow(1);
+    var aiDelay = Math.max(8, 22 - round * 2);
+    var jumpFrames = Math.ceil(1 / 0.13); // player jump duration in frames
+    return { pr: player.row, pc: player.col, cubes: cs, enemies: ens,
+             alive: true, score: 0, cubesColored: colored, tgt: tgt,
+             discs: [discs[0].active, discs[1].active],
+             discRows: [lDiscRow, rDiscRow],
+             framesPerTurn: aiDelay + jumpFrames - 1 };
+}
+
+function exClone(st) {
+    var cs = new Array(st.cubes.length);
+    for (var i = 0; i < st.cubes.length; i++)
+        cs[i] = { row: st.cubes[i].row, col: st.cubes[i].col, state: st.cubes[i].state };
+    var ens = [];
+    for (var i = 0; i < st.enemies.length; i++) {
+        var e = st.enemies[i];
+        ens.push({ type: e.type, row: e.row, col: e.col, hops: e.hops,
+                   moveTimer: e.moveTimer, moveDelay: e.moveDelay,
+                   jumping: e.jumping, jumpFramesLeft: e.jumpFramesLeft });
+    }
+    return { pr: st.pr, pc: st.pc, cubes: cs, enemies: ens,
+             alive: st.alive, score: st.score, cubesColored: st.cubesColored, tgt: st.tgt,
+             discs: [st.discs[0], st.discs[1]], discRows: st.discRows,
+             framesPerTurn: st.framesPerTurn };
+}
+
+// Advance enemy timers by N frames, moving enemies when their timer fires.
+// Player position needed for Coily chase and collision checks.
+// stochOutcome: bit field for random enemy directions (DL=0, DR=1)
+function exAdvanceEnemies(st, frames, stochOutcome) {
+    var stochBit = 0;
+    for (var f = 0; f < frames; f++) {
+        for (var i = st.enemies.length - 1; i >= 0; i--) {
+            var e = st.enemies[i];
+            // Handle jumping enemies
+            if (e.jumping) {
+                e.jumpFramesLeft--;
+                if (e.jumpFramesLeft <= 0) {
+                    e.jumping = false;
+                    // Enemy landed — check collision with non-jumping player
+                    if (e.row === st.pr && e.col === st.pc) {
+                        if (e.type === 'coily' || e.type === 'redball' || e.type === 'egg') {
+                            st.alive = false; return;
+                        }
+                    }
+                }
+                continue;
+            }
+            // Advance move timer
+            e.moveTimer++;
+            if (e.moveTimer < e.moveDelay) continue;
+            e.moveTimer = 0;
+
+            // Enemy decides to move
+            if (e.type === 'coily') {
+                var bestDir = null, bestDist = Infinity;
+                for (var k = 0; k < 4; k++) {
+                    var dk = DIRS[DIR_KEYS[k]];
+                    var er = e.row + dk.dr, ec = e.col + dk.dc;
+                    if (!isValidPos(er, ec)) continue;
+                    var dist = Math.abs(st.pr - er) + Math.abs(st.pc - ec);
+                    if (dist < bestDist) { bestDist = dist; bestDir = k; }
+                }
+                if (bestDir !== null) {
+                    var dd = DIRS[DIR_KEYS[bestDir]];
+                    e.row += dd.dr; e.col += dd.dc;
+                    e.jumping = true;
+                    e.jumpFramesLeft = 8; // ceil(1/0.14) = 8
+                }
+            } else if (e.type === 'egg') {
+                var dir = ((stochOutcome >> stochBit) & 1) ? 'DR' : 'DL';
+                stochBit++;
+                var dd = DIRS[dir];
+                var nr = e.row + dd.dr, nc = e.col + dd.dc;
+                if (isValidPos(nr, nc)) {
+                    e.row = nr; e.col = nc;
+                    e.hops++;
+                    e.jumping = true;
+                    e.jumpFramesLeft = 8; // ceil(1/0.14) = 8
+                    if (e.hops >= 6 || nr >= ROWS - 1) {
+                        e.type = 'coily';
+                        e.moveDelay = Math.max(12, 35 - round * 2);
+                    }
+                } else {
+                    e.type = 'coily';
+                    e.moveDelay = Math.max(12, 35 - round * 2);
+                }
+            } else if (e.type === 'redball') {
+                var dir = ((stochOutcome >> stochBit) & 1) ? 'DR' : 'DL';
+                stochBit++;
+                var dd = DIRS[dir];
+                var nr = e.row + dd.dr, nc = e.col + dd.dc;
+                if (isValidPos(nr, nc)) {
+                    e.row = nr; e.col = nc;
+                    e.jumping = true;
+                    e.jumpFramesLeft = 9; // ceil(1/0.12) = 9
+                } else {
+                    st.enemies.splice(i, 1);
+                }
+            }
+        }
+        if (!st.alive) return;
+    }
+}
+
+// Execute one AI turn: player moves, then simulate frames for enemies
+function exPlayerMove(st, dirKey, stochOutcome) {
+    if (!st.alive) return false;
+    var d = DIRS[dirKey];
+    var nr = st.pr + d.dr, nc = st.pc + d.dc;
+    if (!isValidPos(nr, nc)) {
+        // Check disc catch
+        if (dirKey === 'UL' && st.discs[0] && st.pc === 0 && st.pr === st.discRows[0]) {
+            st.discs[0] = false;
+            st.score += 600;
+            // Kill all coilies/eggs
+            for (var i = st.enemies.length - 1; i >= 0; i--) {
+                if (st.enemies[i].type === 'coily' || st.enemies[i].type === 'egg') {
+                    st.score += 300;
+                    st.enemies.splice(i, 1);
+                }
+            }
+            st.pr = 0; st.pc = 0;
+            return true;
+        }
+        if (dirKey === 'UR' && st.discs[1] && st.pc === st.pr && st.pr === st.discRows[1]) {
+            st.discs[1] = false;
+            st.score += 600;
+            for (var i = st.enemies.length - 1; i >= 0; i--) {
+                if (st.enemies[i].type === 'coily' || st.enemies[i].type === 'egg') {
+                    st.score += 300;
+                    st.enemies.splice(i, 1);
+                }
+            }
+            st.pr = 0; st.pc = 0;
+            return true;
+        }
+        st.alive = false; return false;
+    }
+    // Player moves to new position
+    st.pr = nr; st.pc = nc;
+    var cube = exCubeAt(st, nr, nc);
+    if (cube && cube.state < st.tgt) { cube.state++; st.score += 25; st.cubesColored++; }
+    if (st.cubesColored >= st.cubes.length) {
+        st.score += 1000; st.enemies = []; return true;
+    }
+    // Check collision with non-jumping enemies at landing position
+    for (var i = 0; i < st.enemies.length; i++) {
+        var e = st.enemies[i];
+        if (e.jumping) continue;
+        if (e.row === nr && e.col === nc) {
+            if (e.type === 'coily' || e.type === 'redball' || e.type === 'egg') {
+                st.alive = false; return false;
+            }
+        }
+    }
+    // Advance enemy timers by framesPerTurn
+    exAdvanceEnemies(st, st.framesPerTurn, stochOutcome);
+    return st.alive;
+}
+
 function exTourCost(st) {
     var remaining = [];
     for (var i = 0; i < st.cubes.length; i++)
@@ -324,13 +412,30 @@ function exTourCost(st) {
     return totalDist;
 }
 
+// State hash for memoization
+function exStateKey(st, depth) {
+    var k = st.pr + ',' + st.pc + '|';
+    for (var i = 0; i < st.cubes.length; i++) k += st.cubes[i].state;
+    k += '|';
+    for (var i = 0; i < st.enemies.length; i++) {
+        var e = st.enemies[i];
+        k += e.type[0] + e.row + ',' + e.col + ',' + e.moveTimer + ',' + (e.jumping?1:0) + ';';
+    }
+    k += '|' + depth + '|' + (st.discs[0] ? 1 : 0) + (st.discs[1] ? 1 : 0);
+    return k;
+}
+
+var exMemoTable = {};
+
 function exLeafValue(st) {
     if (!st.alive) return -50000;
     if (st.cubesColored >= st.cubes.length) return 50000;
     var tourCost = exTourCost(st);
-    var val = st.cubesColored * 100 + st.score * 0.3 + 200 - tourCost * 10;
-    for (var i = 0; i < st.det.length; i++) {
-        var e = st.det[i];
+    var val = st.cubesColored * 100 - tourCost * 10;
+    // Coily proximity — compensates for finite search depth
+    for (var i = 0; i < st.enemies.length; i++) {
+        var e = st.enemies[i];
+        if (e.type !== 'coily') continue;
         var d = exBfsDist(st.pr, st.pc, e.row, e.col);
         if (d <= 1) val -= 300;
         else if (d <= 2) val -= 80;
@@ -338,44 +443,76 @@ function exLeafValue(st) {
     return val;
 }
 
+function exCanMove(st, dirKey) {
+    var d = DIRS[dirKey];
+    var nr = st.pr + d.dr, nc = st.pc + d.dc;
+    if (isValidPos(nr, nc)) return true;
+    if (dirKey === 'UL' && st.discs[0] && st.pc === 0 && st.pr === st.discRows[0]) return true;
+    if (dirKey === 'UR' && st.discs[1] && st.pc === st.pr && st.pr === st.discRows[1]) return true;
+    return false;
+}
+
+// Count stochastic enemies (redball, egg) that will move during this turn
+function exCountStoch(st) {
+    var count = 0;
+    for (var i = 0; i < st.enemies.length; i++) {
+        var e = st.enemies[i];
+        if (e.type === 'coily') continue;
+        if (e.jumping) continue;
+        // Will this enemy's timer fire during framesPerTurn?
+        if (e.moveTimer + st.framesPerTurn >= e.moveDelay) count++;
+    }
+    return Math.min(count, 5);
+}
+
 function expectimax(st, depth) {
     if (!st.alive) return -50000;
     if (depth === 0) return exLeafValue(st);
+
+    var key = exStateKey(st, depth);
+    if (exMemoTable[key] !== undefined) return exMemoTable[key];
+
+    // Count stochastic enemies to determine branching
+    var numStoch = exCountStoch(st);
+    var numOutcomes = 1 << numStoch;
+    var prob = 1.0 / numOutcomes;
+
     var bestVal = -Infinity;
     for (var k = 0; k < 4; k++) {
-        var dk = DIRS[DIR_KEYS[k]];
-        if (!isValidPos(st.pr + dk.dr, st.pc + dk.dc)) continue;
-        var child = exClone(st);
-        if (!exPlayerMove(child, DIR_KEYS[k])) {
-            if (-50000 > bestVal) bestVal = -50000;
-            continue;
-        }
-        var numStoch = Math.min(child.stoch.length, 5);
-        var numOutcomes = 1 << numStoch;
-        var prob = 1.0 / numOutcomes;
+        if (!exCanMove(st, DIR_KEYS[k])) continue;
         var total = 0;
         for (var out = 0; out < numOutcomes; out++) {
-            var branch = exClone(child);
-            exApplyStochastic(branch, out);
-            total += expectimax(branch, depth - 1) * prob;
+            var child = exClone(st);
+            if (!exPlayerMove(child, DIR_KEYS[k], out)) {
+                total += -50000 * prob;
+            } else {
+                total += expectimax(child, depth - 1) * prob;
+            }
         }
         if (total > bestVal) bestVal = total;
     }
+
+    exMemoTable[key] = bestVal;
     return bestVal;
 }
 
 function expectimaxEval(dirKey) {
     var st = exCloneState();
-    if (!exPlayerMove(st, dirKey)) return -50000;
-    var numStoch = Math.min(st.stoch.length, 5);
+    var numStoch = exCountStoch(st);
+    var hasCoily = false;
+    for (var i = 0; i < st.enemies.length; i++)
+        if (st.enemies[i].type === 'coily') { hasCoily = true; break; }
     var depth = numStoch <= 1 ? 4 : numStoch <= 2 ? 3 : 2;
     var numOutcomes = 1 << numStoch;
     var prob = 1.0 / numOutcomes;
     var total = 0;
     for (var out = 0; out < numOutcomes; out++) {
         var branch = exClone(st);
-        exApplyStochastic(branch, out);
-        total += expectimax(branch, depth - 1) * prob;
+        if (!exPlayerMove(branch, dirKey, out)) {
+            total += -50000 * prob;
+        } else {
+            total += expectimax(branch, depth - 1) * prob;
+        }
     }
     return total + exLeafValue(st) * 0.0001;
 }
@@ -384,45 +521,12 @@ function computeAIMove() {
     var tgt = targetState();
     var danger = buildDangerMaps();
 
-    // Disc escape override
-    var coilyDist = 999;
-    for (var i = 0; i < danger.coilies.length; i++) {
-        var c = danger.coilies[i];
-        var d = Math.abs(c.row - player.row) + Math.abs(c.col - player.col);
-        if (d < coilyDist) coilyDist = d;
-    }
-    var shouldEscape = coilyDist <= 3;
-    var safeMoveCount = countEscapes(player.row, player.col, danger.immediate);
-    if (safeMoveCount <= 1 && coilyDist <= 4) shouldEscape = true;
-    if (shouldEscape) {
-        var lDiscRow = discCatchRow(0), rDiscRow = discCatchRow(1);
-        if (discs[0].active && player.col === 0 && player.row === lDiscRow) return 'UL';
-        if (discs[1].active && player.col === player.row && player.row === rDiscRow) return 'UR';
-        if (coilyDist <= 2) {
-            if (discs[0].active) {
-                var ulD = DIRS['UL'];
-                var ulR = player.row + ulD.dr, ulC = player.col + ulD.dc;
-                if (isValidPos(ulR, ulC) && ulC === 0 && ulR === lDiscRow && !danger.immediate[ulR + ',' + ulC]) return 'UL';
-                var dlD = DIRS['DL'];
-                var dlR = player.row + dlD.dr, dlC = player.col + dlD.dc;
-                if (isValidPos(dlR, dlC) && dlC === 0 && dlR === lDiscRow && !danger.immediate[dlR + ',' + dlC]) return 'DL';
-            }
-            if (discs[1].active) {
-                var urD = DIRS['UR'];
-                var urR = player.row + urD.dr, urC = player.col + urD.dc;
-                if (isValidPos(urR, urC) && urC === urR && urR === rDiscRow && !danger.immediate[urR + ',' + urC]) return 'UR';
-                var drD = DIRS['DR'];
-                var drR = player.row + drD.dr, drC = player.col + drD.dc;
-                if (isValidPos(drR, drC) && drC === drR && drR === rDiscRow && !danger.immediate[drR + ',' + drC]) return 'DR';
-            }
-        }
-    }
-
-    // Expectimax
+    // Expectimax handles disc escapes natively
+    exMemoTable = {}; // Fresh memo per AI decision
+    var tmpSt = exCloneState(); // for exCanMove check
     var bestDir = null, bestVal = -Infinity;
     for (var k = 0; k < 4; k++) {
-        var dk = DIRS[DIR_KEYS[k]];
-        if (!isValidPos(player.row + dk.dr, player.col + dk.dc)) continue;
+        if (!exCanMove(tmpSt, DIR_KEYS[k])) continue;
         var val = expectimaxEval(DIR_KEYS[k]);
         if (val > bestVal) {
             bestVal = val;
@@ -511,7 +615,7 @@ function spawnEnemy(forcedType) {
     } else if (type === 'slick') {
         enemies.push({ type: 'slick', row: spawnRow, col: spawnCol, hops: 0,
             jumping: false, jumpT: 0, jumpDur: 0.12,
-            moveTimer: 0, moveDelay: baseSpeed + 15 });
+            moveTimer: 0, moveDelay: baseSpeed + 18 });
     }
 }
 
