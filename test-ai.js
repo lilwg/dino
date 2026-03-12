@@ -409,9 +409,12 @@ function exStateKey(st, depth) {
 
 var exMemoTable = {};
 
+var EX_DEATH = -50000;
+var EX_WIN   =  50000;
+
 function exLeafValue(st) {
-    if (!st.alive) return -50000;
-    if (st.cubesColored >= st.cubes.length) return 50000;
+    if (!st.alive) return EX_DEATH;
+    if (st.cubesColored >= st.cubes.length) return EX_WIN;
     var tourCost = exTourCost(st);
     return st.cubesColored * 100 - tourCost * 10;
 }
@@ -426,7 +429,8 @@ function exCanMove(st, dirKey) {
 }
 
 function expectimax(st, depth) {
-    if (!st.alive) return -50000;
+    if (!st.alive) return EX_DEATH;
+    if (st.cubesColored >= st.cubes.length) return EX_WIN + depth * 100;
     if (depth === 0) return exLeafValue(st);
 
     var key = exStateKey(st, depth);
@@ -443,7 +447,7 @@ function expectimax(st, depth) {
         for (var out = 0; out < numOutcomes; out++) {
             var child = exClone(st);
             if (!exPlayerMove(child, DIR_KEYS[k], out)) {
-                total += -50000 * prob;
+                total += EX_DEATH * prob;
             } else {
                 total += expectimax(child, depth - 1) * prob;
             }
@@ -465,7 +469,7 @@ function expectimaxEval(dirKey) {
     for (var out = 0; out < numOutcomes; out++) {
         var branch = exClone(st);
         if (!exPlayerMove(branch, dirKey, out)) {
-            total += -50000 * prob;
+            total += EX_DEATH * prob;
         } else {
             total += expectimax(branch, depth - 1) * prob;
         }
