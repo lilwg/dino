@@ -69,7 +69,8 @@ function allColored() {
 
 function speedMultiplier() {
     var lv = arcadeLevel();
-    return Math.min(2.0, 1.0 + (lv - 1) * 0.2);
+    var gs = (typeof gameSpeed !== 'undefined') ? gameSpeed : 1.0;
+    return Math.min(2.0, 1.0 + (lv - 1) * 0.2) * gs;
 }
 
 // Disc counts per level/round from original arcade manual

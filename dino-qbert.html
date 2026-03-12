@@ -25,6 +25,10 @@
                 <button class="si-btn" onclick="restartGame()">Restart</button>
                 <button class="si-btn" id="pause-btn" onclick="togglePause()">Pause</button>
                 <button class="si-btn" id="fs-btn" onclick="toggleFullscreen()">Fullscreen</button>
+                <label style="display:inline-flex;align-items:center;gap:4px;margin-left:8px;font-size:12px;color:#535353;">
+                    Speed <input type="range" id="speed-slider" min="0.25" max="2" step="0.25" value="0.5" style="width:80px;" oninput="setGameSpeed(parseFloat(this.value))">
+                    <span id="speed-label">0.5x</span>
+                </label>
             </div>
             <p class="si-help" style="text-align:center;">&uarr;/Q up-left &nbsp;|&nbsp; &rarr;/E up-right &nbsp;|&nbsp; &larr;/A down-left &nbsp;|&nbsp; &darr;/D down-right &nbsp;|&nbsp; R restart</p>
         </div>
@@ -192,6 +196,7 @@ function drawCube(c, cx, cy, state) {
 
 // ─── Game state ───────────────────────────────────────────────────────────────
 var gameMode = 'off';   // 'off' | 'rules'
+var gameSpeed = 0.5;    // global speed scale (0.25–2x), default half arcade speed
 var vizOn    = false;
 var paused   = false;
 var gameOver = false;
@@ -447,6 +452,7 @@ function spawnEnemy(forcedType) {
 function enemyJumpTo(e, nr, nc) {
     var dst = cubeXY(nr, nc);
     e.jumping = true; e.jumpT = 0;
+    e.jumpDur = 0.143 * speedMultiplier();  // refresh speed each hop
     e.jumpSX = e.px; e.jumpSY = e.py;
     e.tx = dst.cx; e.ty = dst.cy;
     e.row = nr; e.col = nc;
@@ -484,6 +490,7 @@ function startPlayerJump(nr, nc) {
     var dst = cubeXY(nr, nc);
     player.jumping  = true;
     player.jumpT    = 0;
+    player.jumpDur  = 0.111 * speedMultiplier();  // refresh speed each hop
     player.jumpSX   = player.px;
     player.jumpSY   = player.py;
     player.tx       = dst.cx;
@@ -1478,6 +1485,20 @@ window.toggleViz = function () {
 window.togglePause = function () {
     paused = !paused;
     document.getElementById('pause-btn').classList.toggle('active', paused);
+};
+
+window.setGameSpeed = function (v) {
+    gameSpeed = v;
+    document.getElementById('speed-label').textContent = v + 'x';
+    // Update move intervals for existing enemies
+    for (var i = 0; i < enemies.length; i++) {
+        var e = enemies[i];
+        if (e.type !== 'spawn-timer' && e.moveInterval !== undefined) {
+            e.moveInterval = enemyMoveInterval(e.type);
+        }
+    }
+    // Update player jump speed
+    player.jumpDur = 0.111 * speedMultiplier();
 };
 
 // ─── Input ────────────────────────────────────────────────────────────────────
