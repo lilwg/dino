@@ -1438,7 +1438,10 @@ window.restartGame = function () {
     if (hiScore > 0) localStorage.setItem('dino-qbert-hi', hiScore);
     score   = 0;
     lives   = 3;
-    round   = 1;
+    // Check URL for ?l=N level skip (round = (level-1)*4 + 1)
+    var params = new URLSearchParams(window.location.search);
+    var startLevel = parseInt(params.get('l'));
+    round = (startLevel > 1 && startLevel <= 9) ? (startLevel - 1) * 4 + 1 : 1;
     extraLifeGiven = false;
     gameOver  = false;
     paused    = false;
