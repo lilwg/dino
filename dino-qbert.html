@@ -960,8 +960,10 @@ function exCloneState() {
         if (e.type === 'coily') det.push(clone);
         else stoch.push(clone);
     }
+    var colored = 0;
+    for (var i = 0; i < cs.length; i++) if (cs[i].state >= tgt) colored++;
     return { pr: player.row, pc: player.col, cubes: cs, det: det, stoch: stoch,
-             alive: true, score: 0, cubesColored: 0, tgt: tgt };
+             alive: true, score: 0, cubesColored: colored, tgt: tgt };
 }
 
 function exCubeAt(st, row, col) {
@@ -996,6 +998,13 @@ function exPlayerMove(st, dirKey) {
     // Stomp cube
     var cube = exCubeAt(st, nr, nc);
     if (cube && cube.state < st.tgt) { cube.state++; st.score += 25; st.cubesColored++; }
+
+    // Level complete — all cubes colored! Enemies are cleared, huge reward.
+    if (st.cubesColored >= st.cubes.length) {
+        st.score += 1000;
+        st.det = []; st.stoch = [];
+        return true;
+    }
 
     // Check collision with all enemies at landing position
     var allEnemies = st.det.concat(st.stoch);
@@ -1061,6 +1070,8 @@ function exApplyStochastic(st, outcomes) {
 // Evaluate a leaf state
 function exLeafValue(st) {
     if (!st.alive) return -5000;
+    // Level complete — maximum value
+    if (st.cubesColored >= st.cubes.length) return 50000;
     // Proximity to nearest uncolored cube
     var nearDist = 99;
     var visited = {}; visited[st.pr+','+st.pc] = true;
