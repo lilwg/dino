@@ -228,7 +228,7 @@ function exCloneState() {
         ens.push({ type: e.type, row: e.row, col: e.col, hops: e.hops || 0, countdown: cd });
     }
     var colored = 0;
-    for (var i = 0; i < cs.length; i++) if (cs[i].state >= tgt) colored++;
+    for (var i = 0; i < cs.length; i++) colored += Math.min(cs[i].state, tgt);
     return { pr: player.row, pc: player.col, cubes: cs, enemies: ens,
              alive: true, score: 0, cubesColored: colored, tgt: tgt,
              discs: [discs[0].active, discs[1].active],
@@ -343,7 +343,7 @@ function exPlayerMove(st, dirKey, stochOutcome) {
     st.pr = nr; st.pc = nc;
     var cube = exCubeAt(st, nr, nc);
     if (cube && cube.state < st.tgt) { cube.state++; st.score += 25; st.cubesColored++; }
-    if (st.cubesColored >= st.cubes.length) {
+    if (st.cubesColored >= st.cubes.length * st.tgt) {
         st.score += 1000; st.enemies = []; return true;
     }
     // Check collision with enemies at landing position
@@ -376,6 +376,13 @@ function exTourCost(st) {
         if (st.cubes[i].state < st.tgt)
             remaining.push(st.cubes[i]);
     if (remaining.length === 0) return 0;
+    // For multi-hit levels, each cube needing N more hits requires N visits.
+    // Extra visits beyond the first cost 2 hops each (leave + return).
+    var extraVisits = 0;
+    for (var i = 0; i < remaining.length; i++) {
+        var hitsNeeded = st.tgt - remaining[i].state;
+        if (hitsNeeded > 1) extraVisits += hitsNeeded - 1;
+    }
     var totalDist = 0;
     var cr = st.pr, cc = st.pc;
     var used = new Array(remaining.length);
@@ -391,7 +398,7 @@ function exTourCost(st) {
         totalDist += bestDist;
         cr = remaining[bestIdx].row; cc = remaining[bestIdx].col;
     }
-    return totalDist;
+    return totalDist + extraVisits * 2;
 }
 
 // State hash for memoization — includes countdown for timing-aware search
@@ -414,7 +421,7 @@ var EX_WIN   =  50000;
 
 function exLeafValue(st) {
     if (!st.alive) return EX_DEATH;
-    if (st.cubesColored >= st.cubes.length) return EX_WIN;
+    if (st.cubesColored >= st.cubes.length * st.tgt) return EX_WIN;
     var tourCost = exTourCost(st);
     return st.cubesColored * 100 - tourCost * 10;
 }
@@ -430,7 +437,7 @@ function exCanMove(st, dirKey) {
 
 function expectimax(st, depth) {
     if (!st.alive) return EX_DEATH;
-    if (st.cubesColored >= st.cubes.length) return EX_WIN + depth * 100;
+    if (st.cubesColored >= st.cubes.length * st.tgt) return EX_WIN + depth * 100;
     if (depth === 0) return exLeafValue(st);
 
     var key = exStateKey(st, depth);
