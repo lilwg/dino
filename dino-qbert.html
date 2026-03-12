@@ -1069,18 +1069,13 @@ function exApplyStochastic(st, outcomes) {
     }
 }
 
-// Evaluate a leaf state — single expected-value number, no separate survival
-function exLeafValue(st) {
-    if (!st.alive) return -5000;
-    if (st.cubesColored >= st.cubes.length) return 50000;
-    // BFS distance to nearest uncolored cube
-    var nearDist = 99;
-    var visited = {}; visited[st.pr+','+st.pc] = true;
-    var queue = [{r:st.pr, c:st.pc, d:0}];
+// BFS distance between two positions on the pyramid
+function exBfsDist(r1, c1, r2, c2) {
+    if (r1 === r2 && c1 === c2) return 0;
+    var visited = {}; visited[r1+','+c1] = true;
+    var queue = [{r:r1, c:c1, d:0}];
     while (queue.length > 0) {
         var cur = queue.shift();
-        var cb = exCubeAt(st, cur.r, cur.c);
-        if (cb && cb.state < st.tgt) { nearDist = cur.d; break; }
         for (var k = 0; k < 4; k++) {
             var dk = DIRS[DIR_KEYS[k]];
             var nr = cur.r+dk.dr, nc = cur.c+dk.dc;
@@ -1088,10 +1083,48 @@ function exLeafValue(st) {
             var key = nr+','+nc;
             if (visited[key]) continue;
             visited[key] = true;
+            if (nr === r2 && nc === c2) return cur.d+1;
             queue.push({r:nr, c:nc, d:cur.d+1});
         }
     }
-    return st.cubesColored * 100 + st.score * 0.3 + 200 - nearDist * 15;
+    return 99;
+}
+
+// Nearest-neighbor tour cost: total moves to visit all uncolored cubes.
+// Gives the AI a sense of how much work remains from a given position,
+// so it prefers moves that shorten the overall path to completion.
+function exTourCost(st) {
+    var remaining = [];
+    for (var i = 0; i < st.cubes.length; i++)
+        if (st.cubes[i].state < st.tgt)
+            remaining.push(st.cubes[i]);
+    if (remaining.length === 0) return 0;
+    var totalDist = 0;
+    var cr = st.pr, cc = st.pc;
+    var used = new Array(remaining.length);
+    for (var step = 0; step < remaining.length; step++) {
+        var bestIdx = -1, bestDist = 99;
+        for (var j = 0; j < remaining.length; j++) {
+            if (used[j]) continue;
+            var d = exBfsDist(cr, cc, remaining[j].row, remaining[j].col);
+            if (d < bestDist) { bestDist = d; bestIdx = j; }
+        }
+        if (bestIdx < 0) break;
+        used[bestIdx] = true;
+        totalDist += bestDist;
+        cr = remaining[bestIdx].row; cc = remaining[bestIdx].col;
+    }
+    return totalDist;
+}
+
+// Evaluate a leaf state — uses nearest-neighbor tour cost to estimate
+// total remaining moves, so the AI prefers moves that shorten the
+// overall path to completing the board (not just nearest cube distance).
+function exLeafValue(st) {
+    if (!st.alive) return -5000;
+    if (st.cubesColored >= st.cubes.length) return 50000;
+    var tourCost = exTourCost(st);
+    return st.cubesColored * 100 + st.score * 0.3 + 200 - tourCost * 10;
 }
 
 // Expectimax: max over player moves, average over stochastic enemy outcomes.
