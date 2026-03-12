@@ -46,16 +46,24 @@ function allColored() {
     return true;
 }
 
-function discRows() {
-    var r = ((round - 1) % 5) + 1;
-    if (r === 1) return [2, 3];
-    if (r === 2) return [3, 2];
-    if (r === 3) return [4, 3];
-    if (r === 4) return [2, 4];
-    return [3, 3];
+function speedMultiplier() {
+    var lv = arcadeLevel();
+    return Math.min(2.0, 1.0 + (lv - 1) * 0.2);
 }
 
-function discCatchRow(side) { return discRows()[side]; }
+function discConfig() {
+    var lv = arcadeLevel();
+    var r = ((round - 1) % 4);
+    if (lv === 1) {
+        return [{side: 0, row: [2,3,4,2][r]}, {side: 1, row: [3,2,3,4][r]}];
+    } else if (lv === 2) {
+        return [{side: 0, row: [2,3,2,3][r]}, {side: 1, row: [3,2,4,3][r]}, {side: [0,1,0,1][r], row: [4,4,3,2][r]}];
+    } else if (lv <= 4) {
+        return [{side: 0, row: 2}, {side: 1, row: 2}, {side: 0, row: [4,3,5,4][r]}, {side: 1, row: [3,4,4,5][r]}];
+    } else {
+        return [{side: 0, row: 2}, {side: 1, row: 2}, {side: 0, row: 4}, {side: 1, row: 4}, {side: [0,1,0,1][r], row: [3,3,5,5][r]}];
+    }
+}
 
 // ─── BFS pathfinding ───────────────────────────────────────────────────────────
 function bfsTo(r1, c1, r2, c2, avoidSet) {
@@ -243,10 +251,12 @@ function exCloneState() {
     }
     var colored = 0;
     for (var i = 0; i < cs.length; i++) colored += Math.min(cs[i].state, tgt);
+    var ds = [];
+    for (var i = 0; i < discs.length; i++)
+        ds.push({ side: discs[i].side, row: discs[i].row, active: discs[i].active });
     return { pr: player.row, pc: player.col, cubes: cs, enemies: ens,
              alive: true, score: 0, cubesColored: colored, tgt: tgt,
-             discs: [discs[0].active, discs[1].active],
-             discRows: [discCatchRow(0), discCatchRow(1)] };
+             discs: ds, lv: arcadeLevel() };
 }
 
 function exClone(st) {
@@ -258,9 +268,12 @@ function exClone(st) {
         var e = st.enemies[i];
         ens.push({ type: e.type, row: e.row, col: e.col, hops: e.hops, countdown: e.countdown });
     }
+    var ds = [];
+    for (var i = 0; i < st.discs.length; i++)
+        ds.push({ side: st.discs[i].side, row: st.discs[i].row, active: st.discs[i].active });
     return { pr: st.pr, pc: st.pc, cubes: cs, enemies: ens,
              alive: st.alive, score: st.score, cubesColored: st.cubesColored, tgt: st.tgt,
-             discs: [st.discs[0], st.discs[1]], discRows: st.discRows };
+             discs: ds, lv: st.lv };
 }
 
 // Move enemies whose countdown reaches 0. stochOutcome: bit field for random directions
@@ -328,29 +341,24 @@ function exPlayerMove(st, dirKey, stochOutcome) {
     var d = DIRS[dirKey];
     var nr = st.pr + d.dr, nc = st.pc + d.dc;
     if (!isValidPos(nr, nc)) {
-        if (dirKey === 'UL' && st.discs[0] && st.pc === 0 && st.pr === st.discRows[0]) {
-            st.discs[0] = false;
-            st.score += 600;
-            for (var i = st.enemies.length - 1; i >= 0; i--) {
-                if (st.enemies[i].type === 'coily' || st.enemies[i].type === 'egg') {
-                    st.score += 300;
-                    st.enemies.splice(i, 1);
+        // Check disc catch — iterate all discs
+        for (var di = 0; di < st.discs.length; di++) {
+            var disc = st.discs[di];
+            if (!disc.active) continue;
+            var isLeft = (disc.side === 0 && dirKey === 'UL' && st.pc === 0 && st.pr === disc.row);
+            var isRight = (disc.side === 1 && dirKey === 'UR' && st.pc === st.pr && st.pr === disc.row);
+            if (isLeft || isRight) {
+                disc.active = false;
+                st.score += 600;
+                for (var i = st.enemies.length - 1; i >= 0; i--) {
+                    if (st.enemies[i].type === 'coily' || st.enemies[i].type === 'egg') {
+                        st.score += 300;
+                        st.enemies.splice(i, 1);
+                    }
                 }
+                st.pr = 0; st.pc = 0;
+                return true;
             }
-            st.pr = 0; st.pc = 0;
-            return true;
-        }
-        if (dirKey === 'UR' && st.discs[1] && st.pc === st.pr && st.pr === st.discRows[1]) {
-            st.discs[1] = false;
-            st.score += 600;
-            for (var i = st.enemies.length - 1; i >= 0; i--) {
-                if (st.enemies[i].type === 'coily' || st.enemies[i].type === 'egg') {
-                    st.score += 300;
-                    st.enemies.splice(i, 1);
-                }
-            }
-            st.pr = 0; st.pc = 0;
-            return true;
         }
         st.alive = false; return false;
     }
@@ -391,9 +399,12 @@ function exCountStoch(st) {
 }
 
 function exTourCost(st) {
+    var lv = st.lv !== undefined ? st.lv : arcadeLevel();
+    var isRevert = lv >= 3;
     var remaining = [];
     for (var i = 0; i < st.cubes.length; i++) {
         var hitsNeeded = st.tgt - st.cubes[i].state;
+        if (hitsNeeded <= 0) continue;
         for (var h = 0; h < hitsNeeded; h++)
             remaining.push(st.cubes[i]);
     }
@@ -406,13 +417,31 @@ function exTourCost(st) {
         for (var j = 0; j < remaining.length; j++) {
             if (used[j]) continue;
             var d = exBfsDist(cr, cc, remaining[j].row, remaining[j].col);
-            if (d === 0) d = 2; // must leave and return to re-hit same cube
+            if (d === 0) d = 2;
             if (d < bestDist) { bestDist = d; bestIdx = j; }
         }
         if (bestIdx < 0) break;
         used[bestIdx] = true;
         totalDist += bestDist;
         cr = remaining[bestIdx].row; cc = remaining[bestIdx].col;
+    }
+    if (isRevert) {
+        var completedSet = {};
+        for (var i = 0; i < st.cubes.length; i++)
+            if (st.cubes[i].state >= st.tgt)
+                completedSet[st.cubes[i].row + ',' + st.cubes[i].col] = true;
+        var penalty = 0;
+        for (var i = 0; i < remaining.length; i++) {
+            var blockedSides = 0;
+            for (var k = 0; k < 4; k++) {
+                var dk = DIRS[DIR_KEYS[k]];
+                var nr = remaining[i].row + dk.dr, nc = remaining[i].col + dk.dc;
+                if (!isValidPos(nr, nc) || completedSet[nr + ',' + nc]) blockedSides++;
+            }
+            if (blockedSides >= 3) penalty += 4;
+            else if (blockedSides >= 2) penalty += 2;
+        }
+        totalDist += penalty;
     }
     return totalDist;
 }
@@ -426,7 +455,8 @@ function exStateKey(st, depth) {
         var e = st.enemies[i];
         k += e.type[0] + e.row + ',' + e.col + 'c' + e.countdown + ';';
     }
-    k += '|' + depth + '|' + (st.discs[0] ? 1 : 0) + (st.discs[1] ? 1 : 0);
+    k += '|' + depth + '|';
+    for (var i = 0; i < st.discs.length; i++) k += st.discs[i].active ? 1 : 0;
     return k;
 }
 
@@ -446,8 +476,12 @@ function exCanMove(st, dirKey) {
     var d = DIRS[dirKey];
     var nr = st.pr + d.dr, nc = st.pc + d.dc;
     if (isValidPos(nr, nc)) return true;
-    if (dirKey === 'UL' && st.discs[0] && st.pc === 0 && st.pr === st.discRows[0]) return true;
-    if (dirKey === 'UR' && st.discs[1] && st.pc === st.pr && st.pr === st.discRows[1]) return true;
+    for (var di = 0; di < st.discs.length; di++) {
+        var disc = st.discs[di];
+        if (!disc.active) continue;
+        if (disc.side === 0 && dirKey === 'UL' && st.pc === 0 && st.pr === disc.row) return true;
+        if (disc.side === 1 && dirKey === 'UR' && st.pc === st.pr && st.pr === disc.row) return true;
+    }
     return false;
 }
 
@@ -559,7 +593,10 @@ function initRound() {
     player = { row: 0, col: 0, dead: false, deathTimer: 0 };
     stompCube(0, 0);
 
-    discs = [{ side: 0, active: true }, { side: 1, active: true }];
+    var dc = discConfig();
+    discs = [];
+    for (var i = 0; i < dc.length; i++)
+        discs.push({ side: dc[i].side, row: dc[i].row, active: true });
     enemies = [];
     turnCount = 0;
     aiDetailPath = []; aiTourDots = [];
@@ -606,8 +643,8 @@ function killPlayer() {
     lives--;
 }
 
-function useDisc(side) {
-    discs[side].active = false;
+function useDisc(idx) {
+    discs[idx].active = false;
     score += 300; checkExtraLife();
     var survived = [];
     for (var i = 0; i < enemies.length; i++) {
@@ -627,13 +664,14 @@ function tryMove(dirKey) {
     var nr = player.row + d.dr, nc = player.col + d.dc;
 
     if (!isValidPos(nr, nc)) {
-        var lRow = discCatchRow(0);
-        if (dirKey === 'UL' && player.col === 0 && player.row === lRow && discs[0].active) {
-            useDisc(0); return true;
-        }
-        var rRow = discCatchRow(1);
-        if (dirKey === 'UR' && player.col === player.row && player.row === rRow && discs[1].active) {
-            useDisc(1); return true;
+        for (var di = 0; di < discs.length; di++) {
+            var disc = discs[di];
+            if (!disc.active) continue;
+            var isLeft = (disc.side === 0 && dirKey === 'UL' && player.col === 0 && player.row === disc.row);
+            var isRight = (disc.side === 1 && dirKey === 'UR' && player.col === player.row && player.row === disc.row);
+            if (isLeft || isRight) {
+                useDisc(di); return true;
+            }
         }
         killPlayer();
         return false;
