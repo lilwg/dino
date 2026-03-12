@@ -1596,6 +1596,23 @@ function _drawEvilDino(px, py, sp, sc) {
     ctx.drawImage(darkSil, dx, dy + 1);
     // Draw inverted (white) body on top
     ctx.drawImage(inverted, dx, dy);
+
+    // Draw face features (eye + mouth) — the inversion erases these since
+    // they're dark pixels that become white, so we re-draw them as dark
+    var eyeX = dx + Math.round(dw * 0.78);
+    var eyeY = dy + Math.round(dh * 0.12);
+    ctx.fillStyle = '#535353';
+    ctx.fillRect(eyeX, eyeY, Math.max(2, Math.round(sc * 3)), Math.max(2, Math.round(sc * 3)));
+    // Mouth line
+    var mouthX = dx + Math.round(dw * 0.60);
+    var mouthY = dy + Math.round(dh * 0.38);
+    var mouthW = Math.round(dw * 0.40);
+    ctx.beginPath();
+    ctx.moveTo(mouthX, mouthY);
+    ctx.lineTo(mouthX + mouthW, mouthY);
+    ctx.strokeStyle = '#535353';
+    ctx.lineWidth = Math.max(1, Math.round(sc * 1.5));
+    ctx.stroke();
 }
 
 function drawEnemy(e) {
