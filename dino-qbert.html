@@ -862,10 +862,11 @@ exCloneState = function() {
         var e = enemies[i];
         if (e.type === 'spawn-timer') continue;
         if (e.type === 'greenball' || e.type === 'slick') continue;
-        var interval = EX_HOPS_PER_MOVE[e.type] || 1;
-        // With 1:1 ratio, enemy always moves next turn; countdown is always 1
-        var cd = interval;
-        ens.push({ type: e.type, row: e.row, col: e.col, hops: e.hops || 0, countdown: cd });
+        // Convert real-time move timer to fractional accumulator for AI search
+        var rate = EX_MOVE_RATE[e.type] || 0.75;
+        var acc = (e.moveTimer !== undefined && e.moveInterval !== undefined)
+            ? (e.moveTimer / e.moveInterval) * rate : 0;
+        ens.push({ type: e.type, row: e.row, col: e.col, hops: e.hops || 0, accum: acc });
     }
     var colored = 0;
     for (var i = 0; i < cs.length; i++) colored += Math.min(cs[i].state, tgt);
