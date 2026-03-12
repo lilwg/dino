@@ -193,14 +193,25 @@ var gameOver = false;
 var levelWon = false;
 var roundStarted = false; // true after first player move — enemies frozen until then
 
-// Real-time enemy move intervals (frames at 60fps) — each enemy hops independently
-var ENEMY_MOVE_INTERVALS = {
+// Base enemy move intervals (frames at 60fps, level 1 speed)
+var BASE_ENEMY_INTERVALS = {
     egg:       35,   // ~0.58s
     coily:     28,   // ~0.47s — faster, chases player
     redball:   30,   // ~0.50s
     greenball: 38,   // ~0.63s — leisurely
     slick:     40    // ~0.67s — slow
 };
+
+// Speed multiplier: arcade reaches ~2x by level 6, stays there
+function speedMultiplier() {
+    var lv = arcadeLevel();
+    return Math.min(2.0, 1.0 + (lv - 1) * 0.2);
+}
+
+// Effective enemy intervals for current level
+function enemyMoveInterval(type) {
+    return Math.round((BASE_ENEMY_INTERVALS[type] || 30) / speedMultiplier());
+}
 
 var score, hiScore, lives, round;
 var extraLifeGiven;
@@ -303,24 +314,41 @@ function allColored() {
 }
 
 // ─── Disc helpers ─────────────────────────────────────────────────────────────
-// Disc row positions vary by round (matching arcade level layouts)
-function discRows() {
-    // Returns [leftRow, rightRow] — which pyramid row each disc sits beside
-    var r = ((round - 1) % 5) + 1;
-    if (r === 1) return [2, 3];
-    if (r === 2) return [3, 2];
-    if (r === 3) return [4, 3];
-    if (r === 4) return [2, 4];
-    return [3, 3]; // r === 5
+// Disc configurations per arcade level (side 0=left, 1=right, row=pyramid row)
+function discConfig() {
+    var lv = arcadeLevel();
+    var r = ((round - 1) % 4);  // 0-3 within each level
+    if (lv === 1) {
+        // 2 discs
+        return [{side: 0, row: [2,3,4,2][r]}, {side: 1, row: [3,2,3,4][r]}];
+    } else if (lv === 2) {
+        // 3 discs
+        return [{side: 0, row: [2,3,2,3][r]}, {side: 1, row: [3,2,4,3][r]}, {side: [0,1,0,1][r], row: [4,4,3,2][r]}];
+    } else if (lv <= 4) {
+        // 4 discs
+        return [{side: 0, row: 2}, {side: 1, row: 2}, {side: 0, row: [4,3,5,4][r]}, {side: 1, row: [3,4,4,5][r]}];
+    } else {
+        // 5 discs (level 5+)
+        return [{side: 0, row: 2}, {side: 1, row: 2}, {side: 0, row: 4}, {side: 1, row: 4}, {side: [0,1,0,1][r], row: [3,3,5,5][r]}];
+    }
 }
 
-function discScreenPos(side) {
-    var rows = discRows();
-    var row = rows[side];
-    // Position the disc one diagonal hop off the pyramid edge
-    // Left disc: one UL hop from (row, 0) → would be (row-1, -1)
-    // Right disc: one UR hop from (row, row) → would be (row-1, row)
-    // Use cubeXY math to compute where that off-pyramid position would be
+// Legacy helper: returns [leftRow, rightRow] for the first two discs
+function discRows() {
+    var cfg = discConfig();
+    var left = 3, right = 3;
+    for (var i = 0; i < cfg.length; i++) {
+        if (cfg[i].side === 0) { left = cfg[i].row; break; }
+    }
+    for (var i = 0; i < cfg.length; i++) {
+        if (cfg[i].side === 1) { right = cfg[i].row; break; }
+    }
+    return [left, right];
+}
+
+function discScreenPos(disc) {
+    var row = disc.row;
+    var side = disc.side;
     if (side === 0) {
         var offRow = row - 1, offCol = -1;
         return { cx: PYR_CX + (offCol - offRow / 2) * TILE_W, cy: PYR_TOP_Y + offRow * ROW_STEP,
@@ -352,7 +380,7 @@ function initRound() {
         row: 0, col: 0,
         px: sp.cx, py: sp.cy,
         // jump state
-        jumping: false, jumpT: 0, jumpDur: 0.13,
+        jumping: false, jumpT: 0, jumpDur: 0.13 * speedMultiplier(),
         jumpSX: sp.cx, jumpSY: sp.cy,
         tx: sp.cx, ty: sp.cy,
         // sprite
@@ -365,10 +393,10 @@ function initRound() {
     // Immediately color starting cube
     stompCube(0, 0);
 
-    discs = [
-        { side: 0, active: true },
-        { side: 1, active: true }
-    ];
+    var cfg = discConfig();
+    discs = [];
+    for (var i = 0; i < cfg.length; i++)
+        discs.push({ side: cfg[i].side, row: cfg[i].row, active: true });
 
     enemies    = [];
     frameCount = 0;
@@ -417,45 +445,45 @@ function spawnEnemy(forcedType) {
             type: 'egg',
             row: 0, col: 0,
             px: eggPos.cx, py: eggPos.cy,
-            jumping: false, jumpT: 0, jumpDur: 0.14,
+            jumping: false, jumpT: 0, jumpDur: 0.14 * speedMultiplier(),
             jumpSX: eggPos.cx, jumpSY: eggPos.cy,
             tx: eggPos.cx, ty: eggPos.cy,
             hops: 0,
             frame: 0, frameTimer: 0,
-            moveTimer: 0, moveInterval: ENEMY_MOVE_INTERVALS.egg
+            moveTimer: 0, moveInterval: enemyMoveInterval('egg')
         });
     } else if (type === 'redball') {
         enemies.push({
             type: 'redball',
             row: spawnRow, col: spawnCol,
             px: sp.cx, py: sp.cy,
-            jumping: false, jumpT: 0, jumpDur: 0.12,
+            jumping: false, jumpT: 0, jumpDur: 0.12 * speedMultiplier(),
             jumpSX: sp.cx, jumpSY: sp.cy,
             tx: sp.cx, ty: sp.cy,
             frame: 0, frameTimer: 0,
-            moveTimer: 0, moveInterval: ENEMY_MOVE_INTERVALS.redball
+            moveTimer: 0, moveInterval: enemyMoveInterval('redball')
         });
     } else if (type === 'greenball') {
         enemies.push({
             type: 'greenball',
             row: spawnRow, col: spawnCol,
             px: sp.cx, py: sp.cy,
-            jumping: false, jumpT: 0, jumpDur: 0.12,
+            jumping: false, jumpT: 0, jumpDur: 0.12 * speedMultiplier(),
             jumpSX: sp.cx, jumpSY: sp.cy,
             tx: sp.cx, ty: sp.cy,
             frame: 0, frameTimer: 0,
-            moveTimer: 0, moveInterval: ENEMY_MOVE_INTERVALS.greenball
+            moveTimer: 0, moveInterval: enemyMoveInterval('greenball')
         });
     } else if (type === 'slick') {
         enemies.push({
             type: 'slick',
             row: spawnRow, col: spawnCol,
             px: sp.cx, py: sp.cy,
-            jumping: false, jumpT: 0, jumpDur: 0.12,
+            jumping: false, jumpT: 0, jumpDur: 0.12 * speedMultiplier(),
             jumpSX: sp.cx, jumpSY: sp.cy,
             tx: sp.cx, ty: sp.cy,
             frame: 0, frameTimer: 0,
-            moveTimer: 0, moveInterval: ENEMY_MOVE_INTERVALS.slick
+            moveTimer: 0, moveInterval: enemyMoveInterval('slick')
         });
     }
 }
@@ -478,15 +506,14 @@ function tryMove(dirKey) {
 
     // Check disc catch on edge-jump
     if (!isValidPos(nr, nc)) {
-        // Left disc: jumping UL from col 0, must be on the disc's row
-        var lRow = discCatchRow(0);
-        if (dirKey === 'UL' && player.col === 0 && player.row === lRow && discs[0].active) {
-            useDisc(0); return;
-        }
-        // Right disc: jumping UR from col === row (right edge), must be on the disc's row
-        var rRow = discCatchRow(1);
-        if (dirKey === 'UR' && player.col === player.row && player.row === rRow && discs[1].active) {
-            useDisc(1); return;
+        for (var di = 0; di < discs.length; di++) {
+            if (!discs[di].active) continue;
+            if (discs[di].side === 0 && dirKey === 'UL' && player.col === 0 && player.row === discs[di].row) {
+                useDisc(di); return;
+            }
+            if (discs[di].side === 1 && dirKey === 'UR' && player.col === player.row && player.row === discs[di].row) {
+                useDisc(di); return;
+            }
         }
         // Fell off — death with swear bubble
         killPlayer();
@@ -526,8 +553,9 @@ function killPlayer() {
     }
 }
 
-function useDisc(side) {
-    discs[side].active = false;
+function useDisc(idx) {
+    var disc = discs[idx];
+    disc.active = false;
     score += 300;
     checkExtraLife();
 
@@ -544,10 +572,10 @@ function useDisc(side) {
     enemies = survived;
 
     // Start disc ride animation: player flies from disc position to pyramid top
-    var dp = discScreenPos(side);
+    var dp = discScreenPos(disc);
     var top = cubeXY(0, 0);
     discRide = {
-        side: side,
+        side: disc.side,
         t: 0,
         sx: dp.x, sy: dp.y,
         tx: top.cx, ty: top.cy
@@ -641,11 +669,11 @@ function updateEnemies() {
                 enemyJumpTo(e, nr, nc);
                 if (e.hops >= 6 || nr >= ROWS - 1) {
                     e.type = 'coily';
-                    e.moveInterval = ENEMY_MOVE_INTERVALS.coily;
+                    e.moveInterval = enemyMoveInterval('coily');
                 }
             } else {
                 e.type = 'coily';
-                e.moveInterval = ENEMY_MOVE_INTERVALS.coily;
+                e.moveInterval = enemyMoveInterval('coily');
             }
         } else if (e.type === 'coily') {
             var bestDir = null, bestDist = Infinity;
@@ -994,10 +1022,12 @@ function exCloneState() {
     }
     var colored = 0;
     for (var i = 0; i < cs.length; i++) colored += Math.min(cs[i].state, tgt);
+    var ds = [];
+    for (var i = 0; i < discs.length; i++)
+        ds.push({ side: discs[i].side, row: discs[i].row, active: discs[i].active });
     return { pr: player.row, pc: player.col, cubes: cs, enemies: ens,
              alive: true, score: 0, cubesColored: colored, tgt: tgt,
-             discs: [discs[0].active, discs[1].active],
-             discRows: [discCatchRow(0), discCatchRow(1)] };
+             discs: ds, lv: arcadeLevel() };
 }
 
 function exCubeAt(st, row, col) {
@@ -1015,9 +1045,12 @@ function exClone(st) {
         var e = st.enemies[i];
         ens.push({ type: e.type, row: e.row, col: e.col, hops: e.hops, countdown: e.countdown });
     }
+    var ds = [];
+    for (var i = 0; i < st.discs.length; i++)
+        ds.push({ side: st.discs[i].side, row: st.discs[i].row, active: st.discs[i].active });
     return { pr: st.pr, pc: st.pc, cubes: cs, enemies: ens,
              alive: st.alive, score: st.score, cubesColored: st.cubesColored, tgt: st.tgt,
-             discs: [st.discs[0], st.discs[1]], discRows: st.discRows };
+             discs: ds, lv: st.lv };
 }
 
 // Move enemies whose countdown reaches 0. stochOutcome: bit field for random directions
@@ -1084,29 +1117,33 @@ function exPlayerMove(st, dirKey, stochOutcome) {
     var d = DIRS[dirKey];
     var nr = st.pr + d.dr, nc = st.pc + d.dc;
     if (!isValidPos(nr, nc)) {
-        if (dirKey === 'UL' && st.discs[0] && st.pc === 0 && st.pr === st.discRows[0]) {
-            st.discs[0] = false;
-            st.score += 600;
-            for (var i = st.enemies.length - 1; i >= 0; i--) {
-                if (st.enemies[i].type === 'coily' || st.enemies[i].type === 'egg') {
-                    st.score += 300;
-                    st.enemies.splice(i, 1);
+        for (var di = 0; di < st.discs.length; di++) {
+            var disc = st.discs[di];
+            if (!disc.active) continue;
+            if (disc.side === 0 && dirKey === 'UL' && st.pc === 0 && st.pr === disc.row) {
+                disc.active = false;
+                st.score += 600;
+                for (var i = st.enemies.length - 1; i >= 0; i--) {
+                    if (st.enemies[i].type === 'coily' || st.enemies[i].type === 'egg') {
+                        st.score += 300;
+                        st.enemies.splice(i, 1);
+                    }
                 }
+                st.pr = 0; st.pc = 0;
+                return true;
             }
-            st.pr = 0; st.pc = 0;
-            return true;
-        }
-        if (dirKey === 'UR' && st.discs[1] && st.pc === st.pr && st.pr === st.discRows[1]) {
-            st.discs[1] = false;
-            st.score += 600;
-            for (var i = st.enemies.length - 1; i >= 0; i--) {
-                if (st.enemies[i].type === 'coily' || st.enemies[i].type === 'egg') {
-                    st.score += 300;
-                    st.enemies.splice(i, 1);
+            if (disc.side === 1 && dirKey === 'UR' && st.pc === st.pr && st.pr === disc.row) {
+                disc.active = false;
+                st.score += 600;
+                for (var i = st.enemies.length - 1; i >= 0; i--) {
+                    if (st.enemies[i].type === 'coily' || st.enemies[i].type === 'egg') {
+                        st.score += 300;
+                        st.enemies.splice(i, 1);
+                    }
                 }
+                st.pr = 0; st.pc = 0;
+                return true;
             }
-            st.pr = 0; st.pc = 0;
-            return true;
         }
         st.alive = false; return false;
     }
@@ -1171,13 +1208,17 @@ function exBfsDist(r1, c1, r2, c2) {
 }
 
 function exTourCost(st) {
+    var lv = st.lv !== undefined ? st.lv : arcadeLevel();
+    var isRevert = lv >= 3;
     var remaining = [];
     for (var i = 0; i < st.cubes.length; i++) {
         var hitsNeeded = st.tgt - st.cubes[i].state;
+        if (hitsNeeded <= 0) continue;
         for (var h = 0; h < hitsNeeded; h++)
             remaining.push(st.cubes[i]);
     }
     if (remaining.length === 0) return 0;
+    // Greedy nearest-neighbor using precomputed BFS distances
     var totalDist = 0;
     var cr = st.pr, cc = st.pc;
     var used = new Array(remaining.length);
@@ -1186,13 +1227,34 @@ function exTourCost(st) {
         for (var j = 0; j < remaining.length; j++) {
             if (used[j]) continue;
             var d = exBfsDist(cr, cc, remaining[j].row, remaining[j].col);
-            if (d === 0) d = 2; // must leave and return to re-hit same cube
+            if (d === 0) d = 2;
             if (d < bestDist) { bestDist = d; bestIdx = j; }
         }
         if (bestIdx < 0) break;
         used[bestIdx] = true;
         totalDist += bestDist;
         cr = remaining[bestIdx].row; cc = remaining[bestIdx].col;
+    }
+    // On revert levels, penalize isolated remaining cubes (surrounded by completed cubes).
+    // Each completed neighbor means the path likely crosses a completed cube, costing extra.
+    if (isRevert) {
+        var completedSet = {};
+        for (var i = 0; i < st.cubes.length; i++)
+            if (st.cubes[i].state >= st.tgt)
+                completedSet[st.cubes[i].row + ',' + st.cubes[i].col] = true;
+        var penalty = 0;
+        for (var i = 0; i < remaining.length; i++) {
+            var blockedSides = 0;
+            for (var k = 0; k < 4; k++) {
+                var dk = DIRS[DIR_KEYS[k]];
+                var nr = remaining[i].row + dk.dr, nc = remaining[i].col + dk.dc;
+                if (!isValidPos(nr, nc) || completedSet[nr + ',' + nc]) blockedSides++;
+            }
+            // Fully blocked = isolated, needs detour through completed cubes
+            if (blockedSides >= 3) penalty += 4;
+            else if (blockedSides >= 2) penalty += 2;
+        }
+        totalDist += penalty;
     }
     return totalDist;
 }
@@ -1208,8 +1270,12 @@ function exCanMove(st, dirKey) {
     var d = DIRS[dirKey];
     var nr = st.pr + d.dr, nc = st.pc + d.dc;
     if (isValidPos(nr, nc)) return true;
-    if (dirKey === 'UL' && st.discs[0] && st.pc === 0 && st.pr === st.discRows[0]) return true;
-    if (dirKey === 'UR' && st.discs[1] && st.pc === st.pr && st.pr === st.discRows[1]) return true;
+    for (var di = 0; di < st.discs.length; di++) {
+        var disc = st.discs[di];
+        if (!disc.active) continue;
+        if (disc.side === 0 && dirKey === 'UL' && st.pc === 0 && st.pr === disc.row) return true;
+        if (disc.side === 1 && dirKey === 'UR' && st.pc === st.pr && st.pr === disc.row) return true;
+    }
     return false;
 }
 
@@ -1232,7 +1298,8 @@ function exStateKey(st, depth) {
         var e = st.enemies[i];
         k += e.type[0] + e.row + ',' + e.col + 'c' + e.countdown + ';';
     }
-    k += '|' + depth + '|' + (st.discs[0] ? 1 : 0) + (st.discs[1] ? 1 : 0);
+    k += '|' + depth + '|';
+    for (var i = 0; i < st.discs.length; i++) k += st.discs[i].active ? 1 : 0;
     return k;
 }
 
@@ -1366,7 +1433,7 @@ function update() {
     if (!player.jumping && !player.dead && !discRide) {
         if (gameMode === 'rules') {
             aiMoveTimer++;
-            if (aiMoveTimer >= 4) {
+            if (aiMoveTimer >= Math.max(2, Math.round(4 / speedMultiplier()))) {
                 aiMoveTimer = 0;
                 var dir = computeAIMove();
                 if (dir) tryMove(dir);
@@ -1458,7 +1525,7 @@ function draw() {
 function drawDiscs() {
     for (var i = 0; i < discs.length; i++) {
         if (!discs[i].active) continue;
-        var p = discScreenPos(discs[i].side);
+        var p = discScreenPos(discs[i]);
         ctx.save();
         // Pulsing scale for visibility
         var pulse = 1 + Math.sin(frameCount * 0.12) * 0.06;
