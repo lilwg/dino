@@ -32,7 +32,6 @@ function exCloneState() {
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
         if (e.type === 'spawn-timer') continue;
-        if (e.type === 'greenball' || e.type === 'slick') continue;
         var acc = e.accum !== undefined ? e.accum : 0;
         var entry = { type: e.type, row: e.row, col: e.col, hops: e.hops || 0, accum: acc };
         // Random enemies get a point cloud at their current position

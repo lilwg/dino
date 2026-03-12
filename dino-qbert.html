@@ -883,7 +883,6 @@ exCloneState = function() {
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
         if (e.type === 'spawn-timer') continue;
-        if (e.type === 'greenball' || e.type === 'slick') continue;
         // Convert real-time move timer to fractional accumulator for AI search
         var rate = EX_MOVE_RATE[e.type] || 0.75;
         var acc = (e.moveTimer !== undefined && e.moveInterval !== undefined)
