@@ -405,7 +405,7 @@ function expandCloud(cloud, type) {
     for (var i = 0; i < cloud.length; i++) {
         var c = cloud[i];
         var moves;
-        if (type === 'egg' || type === 'redball') {
+        if (type === 'egg' || type === 'redball' || type === 'slick' || type === 'greenball') {
             moves = [DIRS['DL'], DIRS['DR']];
         } else if (type === 'ugg') {
             moves = [{dr:-1, dc:-1}, {dr:-1, dc:0}]; // UL, UR
