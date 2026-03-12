@@ -1179,15 +1179,7 @@ function exLeafValue(st) {
     if (!st.alive) return -50000;
     if (st.cubesColored >= st.cubes.length) return 50000;
     var tourCost = exTourCost(st);
-    var val = st.cubesColored * 100 - tourCost * 10;
-    for (var i = 0; i < st.enemies.length; i++) {
-        var e = st.enemies[i];
-        if (e.type !== 'coily') continue;
-        var d = exBfsDist(st.pr, st.pc, e.row, e.col);
-        if (d <= 1) val -= 300;
-        else if (d <= 2) val -= 80;
-    }
-    return val;
+    return st.cubesColored * 100 - tourCost * 10;
 }
 
 function exCanMove(st, dirKey) {
