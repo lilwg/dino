@@ -951,19 +951,16 @@ function exCloneState() {
     var cs = new Array(cubeStates.length);
     for (var i = 0; i < cubeStates.length; i++)
         cs[i] = { row: cubeStates[i].row, col: cubeStates[i].col, state: cubeStates[i].state };
-    // Separate deterministic (coily) from stochastic enemies
-    // Skip safe enemies (greenball, slick) and enemies too far to reach player
+    // Separate deterministic (coily) from stochastic (redball, egg) enemies
+    // Skip safe enemies (greenball, slick) — they don't kill on contact
     var det = [], stoch = [];
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
         if (e.type === 'spawn-timer') continue;
-        if (e.type === 'greenball' || e.type === 'slick') continue; // safe, no threat
+        if (e.type === 'greenball' || e.type === 'slick') continue;
         var clone = { type: e.type, row: e.row, col: e.col, hops: e.hops || 0 };
-        if (e.type === 'coily') { det.push(clone); continue; }
-        // Only include dangerous stochastic enemies that could reach player
-        // within max search depth (they move 1 tile/turn, player also moves)
-        var dist = Math.abs(e.row - player.row) + Math.abs(e.col - player.col);
-        if (dist <= EXPECTIMAX_DEPTH + 1) stoch.push(clone);
+        if (e.type === 'coily') det.push(clone);
+        else stoch.push(clone);
     }
     var colored = 0;
     for (var i = 0; i < cs.length; i++) if (cs[i].state >= tgt) colored++;
