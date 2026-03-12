@@ -31,7 +31,7 @@
 
         <h2 style="margin-top:16px;">How it works</h2>
         <p class="si-prose">DinoQbert recreates the 1982 Gottlieb arcade original: hop-based movement, one jump per keypress with a 150ms arc animation, and the classic @!#?@! swear bubble on death. Coily spawns as an egg, bounces randomly down the pyramid, then hatches and chases the player. Dark balls bounce down and kill on contact; light balls are safe to catch for 100 pts. Slick (round 4+) hops down uncoloring cubes. Two transport discs at variable positions let Q*bert escape and lure Coily to his death.</p>
-        <p class="si-prose">Tap <strong>Viz</strong> to reveal the AI&rsquo;s plan: a dashed line traces the BFS path to its next target, with faint dots marking the rest of its queued tour. The AI forward-simulates Coily&rsquo;s greedy chase 3 steps ahead to build both immediate and predicted danger maps, then plans a danger-weighted nearest-neighbour tour over all uncolored cubes. BFS pathfinding routes around dangerous tiles. Every move is scored by a multi-criteria evaluator: path progress, cube productivity, safety margin, escape-route count, and 2-step lookahead. When the top candidates score within 15 points of each other, a Monte Carlo tiebreaker (40 rollouts, depth 6) simulates each option to pick the best. It intercepts nearby Slicks for bonus points, and triggers disc escapes when cornered or when Coily closes to 3 hops.</p>
+        <p class="si-prose">Tap <strong>Viz</strong> to reveal the AI&rsquo;s plan: a dashed line traces the BFS path to its next target, with faint dots marking the rest of its queued tour. The AI forward-simulates Coily&rsquo;s greedy chase 3 steps ahead to build both immediate and predicted danger maps, then plans a danger-weighted nearest-neighbour tour over all uncolored cubes. BFS pathfinding routes around dangerous tiles. Every move is scored by a multi-criteria evaluator: path progress, cube productivity, safety margin, escape-route count, and 2-step lookahead. When the top candidates score within 15 points, an expectimax tiebreaker computes exact expected values by enumerating every possible enemy outcome (Coily is deterministic; all other enemies branch DL/DR at p=0.5). Survival probability is the top priority, then cube progress. Depth adapts to enemy count (4 deep with 0&ndash;1 random enemies, 2 deep with 3+). It intercepts nearby Slicks for bonus points, and triggers disc escapes when cornered or when Coily closes to 3 hops.</p>
 
         <p style="margin-top:20px;"><a href="/" style="color:#0071e3;font-size:14px;text-decoration:none;">&larr; Back</a></p>
     </div>
@@ -987,101 +987,215 @@ function buildTour() {
     aiBoardSig = boardSig();
 }
 
-// ── MCTS tiebreaker: used when rules engine has close-scoring candidates ──
+// ── Expectimax: exact expected-value search over enemy probability trees ──
+// Coily is deterministic (greedy chase). All other enemies move DL/DR with
+// p=0.5 each. We enumerate every combination exactly — no sampling noise.
 
-function cloneState() {
+var EXPECTIMAX_DEPTH = 4;
+
+function exCloneState() {
     var tgt = targetState();
     var cs = new Array(cubeStates.length);
     for (var i = 0; i < cubeStates.length; i++)
         cs[i] = { row: cubeStates[i].row, col: cubeStates[i].col, state: cubeStates[i].state };
-    var en = [];
+    // Separate deterministic (coily) from stochastic enemies
+    var det = [], stoch = [];
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
         if (e.type === 'spawn-timer') continue;
-        en.push({ type: e.type, row: e.row, col: e.col, hops: e.hops || 0 });
+        var clone = { type: e.type, row: e.row, col: e.col, hops: e.hops || 0 };
+        if (e.type === 'coily') det.push(clone);
+        else stoch.push(clone);
     }
-    return { pr: player.row, pc: player.col, cubes: cs, enemies: en, alive: true, score: 0, tgt: tgt };
+    return { pr: player.row, pc: player.col, cubes: cs, det: det, stoch: stoch,
+             alive: true, score: 0, cubesColored: 0, tgt: tgt };
 }
 
-function simCubeAt(st, row, col) {
+function exCubeAt(st, row, col) {
     for (var i = 0; i < st.cubes.length; i++)
         if (st.cubes[i].row === row && st.cubes[i].col === col) return st.cubes[i];
     return null;
 }
 
-function simStep(st, dirKey) {
-    if (!st.alive) return;
+// Deep-clone a state (for branching over stochastic outcomes)
+function exClone(st) {
+    var cs = new Array(st.cubes.length);
+    for (var i = 0; i < st.cubes.length; i++)
+        cs[i] = { row: st.cubes[i].row, col: st.cubes[i].col, state: st.cubes[i].state };
+    var det = [];
+    for (var i = 0; i < st.det.length; i++)
+        det.push({ type: st.det[i].type, row: st.det[i].row, col: st.det[i].col, hops: st.det[i].hops });
+    var stoch = [];
+    for (var i = 0; i < st.stoch.length; i++)
+        stoch.push({ type: st.stoch[i].type, row: st.stoch[i].row, col: st.stoch[i].col, hops: st.stoch[i].hops });
+    return { pr: st.pr, pc: st.pc, cubes: cs, det: det, stoch: stoch,
+             alive: st.alive, score: st.score, cubesColored: st.cubesColored, tgt: st.tgt };
+}
+
+// Apply player move + deterministic enemy moves (Coily). Returns false if dead.
+function exPlayerMove(st, dirKey) {
+    if (!st.alive) return false;
     var d = DIRS[dirKey];
     var nr = st.pr + d.dr, nc = st.pc + d.dc;
-    if (!isValidPos(nr, nc)) { st.alive = false; return; }
+    if (!isValidPos(nr, nc)) { st.alive = false; return false; }
     st.pr = nr; st.pc = nc;
+
     // Stomp cube
-    var cube = simCubeAt(st, nr, nc);
-    if (cube && cube.state < st.tgt) { cube.state++; st.score += 25; }
-    // Check collision
-    for (var i = 0; i < st.enemies.length; i++) {
-        var e = st.enemies[i];
+    var cube = exCubeAt(st, nr, nc);
+    if (cube && cube.state < st.tgt) { cube.state++; st.score += 25; st.cubesColored++; }
+
+    // Check collision with all enemies at landing position
+    var allEnemies = st.det.concat(st.stoch);
+    for (var i = 0; i < allEnemies.length; i++) {
+        var e = allEnemies[i];
         if (e.row === nr && e.col === nc) {
-            if (e.type === 'slick') { st.score += 300; st.enemies.splice(i, 1); i--; }
-            else if (e.type === 'greenball') { st.score += 100; st.enemies.splice(i, 1); i--; }
-            else { st.alive = false; return; }
+            if (e.type === 'slick') { st.score += 300; }
+            else if (e.type === 'greenball') { st.score += 100; }
+            else { st.alive = false; return false; }
         }
     }
-    // Enemy tick
-    for (var i = st.enemies.length - 1; i >= 0; i--) {
-        var e = st.enemies[i];
-        if (e.type === 'coily') {
-            var bd = null, bv = Infinity;
-            for (var k = 0; k < 4; k++) {
-                var dk = DIRS[DIR_KEYS[k]]; var er = e.row+dk.dr, ec = e.col+dk.dc;
-                if (!isValidPos(er, ec)) continue;
-                var dv = Math.abs(st.pr-er)+Math.abs(st.pc-ec);
-                if (dv < bv) { bv = dv; bd = k; }
-            }
-            if (bd !== null) { var dd=DIRS[DIR_KEYS[bd]]; e.row+=dd.dr; e.col+=dd.dc; }
-        } else {
-            var rdir = Math.random() < 0.5 ? 'DL' : 'DR';
-            var rd = DIRS[rdir]; var er=e.row+rd.dr, ec=e.col+rd.dc;
-            if (isValidPos(er, ec)) { e.row=er; e.col=ec; }
-            else { st.enemies.splice(i, 1); continue; }
+
+    // Move Coily (deterministic: greedy chase)
+    for (var i = 0; i < st.det.length; i++) {
+        var e = st.det[i];
+        var bd = null, bv = Infinity;
+        for (var k = 0; k < 4; k++) {
+            var dk = DIRS[DIR_KEYS[k]];
+            var er = e.row + dk.dr, ec = e.col + dk.dc;
+            if (!isValidPos(er, ec)) continue;
+            var dv = Math.abs(st.pr - er) + Math.abs(st.pc - ec);
+            if (dv < bv) { bv = dv; bd = k; }
         }
-        if (e.row===st.pr && e.col===st.pc) {
-            if (e.type==='slick'||e.type==='greenball') { st.enemies.splice(i,1); }
-            else { st.alive=false; return; }
+        if (bd !== null) {
+            var dd = DIRS[DIR_KEYS[bd]];
+            e.row += dd.dr; e.col += dd.dc;
+        }
+        // Coily lands on player?
+        if (e.row === st.pr && e.col === st.pc) { st.alive = false; return false; }
+    }
+    return true;
+}
+
+// Apply one specific outcome for stochastic enemies.
+// outcomes is a bitmask: bit i = 0 means DL, 1 means DR for stoch enemy i.
+function exApplyStochastic(st, outcomes) {
+    for (var i = st.stoch.length - 1; i >= 0; i--) {
+        var e = st.stoch[i];
+        var dir = (outcomes >> i) & 1 ? 'DR' : 'DL';
+        var d = DIRS[dir];
+        var nr = e.row + d.dr, nc = e.col + d.dc;
+        if (!isValidPos(nr, nc)) {
+            st.stoch.splice(i, 1);
+            continue;
+        }
+        e.row = nr; e.col = nc;
+
+        // Slick uncolors cubes it lands on
+        if (e.type === 'slick') {
+            var sc = exCubeAt(st, nr, nc);
+            if (sc && sc.state > 0) { sc.state--; st.cubesColored--; }
+        }
+
+        // Collision with player
+        if (e.row === st.pr && e.col === st.pc) {
+            if (e.type === 'slick') { st.score += 300; st.stoch.splice(i, 1); }
+            else if (e.type === 'greenball') { st.score += 100; st.stoch.splice(i, 1); }
+            else { st.alive = false; return; }
         }
     }
 }
 
-// Run N random rollouts for a given first move, return average value
-function mctsEval(dirKey, numRollouts, depth) {
-    var total = 0;
-    for (var r = 0; r < numRollouts; r++) {
-        var st = cloneState();
-        simStep(st, dirKey);
-        for (var d = 1; d < depth && st.alive; d++) {
-            var valid = [];
-            for (var k = 0; k < 4; k++) {
-                var dk = DIRS[DIR_KEYS[k]];
-                if (isValidPos(st.pr+dk.dr, st.pc+dk.dc)) valid.push(DIR_KEYS[k]);
-            }
-            if (valid.length === 0) { st.alive = false; break; }
-            // Bias: prefer uncolored cubes
-            var ch = valid[Math.floor(Math.random()*valid.length)];
-            for (var v = 0; v < valid.length; v++) {
-                var vd=DIRS[valid[v]]; var vr=st.pr+vd.dr, vc=st.pc+vd.dc;
-                var vcube = simCubeAt(st, vr, vc);
-                if (vcube && vcube.state < st.tgt) { ch = valid[v]; break; }
-            }
-            simStep(st, ch);
-        }
-        if (!st.alive) { total -= 1000; }
-        else {
-            var unc = 0;
-            for (var i = 0; i < st.cubes.length; i++) if (st.cubes[i].state < st.tgt) unc++;
-            total += st.score + (cubeStates.length - unc) * 50;
+// Evaluate a leaf state
+function exLeafValue(st) {
+    if (!st.alive) return -5000;
+    // Proximity to nearest uncolored cube
+    var nearDist = 99;
+    var visited = {}; visited[st.pr+','+st.pc] = true;
+    var queue = [{r:st.pr, c:st.pc, d:0}];
+    while (queue.length > 0) {
+        var cur = queue.shift();
+        var cb = exCubeAt(st, cur.r, cur.c);
+        if (cb && cb.state < st.tgt) { nearDist = cur.d; break; }
+        for (var k = 0; k < 4; k++) {
+            var dk = DIRS[DIR_KEYS[k]];
+            var nr = cur.r+dk.dr, nc = cur.c+dk.dc;
+            if (!isValidPos(nr,nc)) continue;
+            var key = nr+','+nc;
+            if (visited[key]) continue;
+            visited[key] = true;
+            queue.push({r:nr, c:nc, d:cur.d+1});
         }
     }
-    return total / numRollouts;
+    return st.cubesColored * 80 + st.score * 0.3 + 200 - nearDist * 10;
+}
+
+// Expectimax: at each depth, player picks best move (max), then we average
+// over all 2^N stochastic enemy outcomes (chance nodes).
+// Returns { value, survivalProb }
+function expectimax(st, depth) {
+    if (!st.alive) return { value: -5000, survivalProb: 0 };
+    if (depth === 0) return { value: exLeafValue(st), survivalProb: 1 };
+
+    var bestVal = -Infinity, bestSurv = 0, bestDir = null;
+    for (var k = 0; k < 4; k++) {
+        var dk = DIRS[DIR_KEYS[k]];
+        if (!isValidPos(st.pr + dk.dr, st.pc + dk.dc)) continue;
+
+        // Clone state, apply player + deterministic moves
+        var child = exClone(st);
+        if (!exPlayerMove(child, DIR_KEYS[k])) {
+            // Dead from player move or Coily
+            if (-5000 > bestVal) { bestVal = -5000; bestSurv = 0; bestDir = DIR_KEYS[k]; }
+            continue;
+        }
+
+        // Enumerate all 2^N stochastic outcomes
+        var numStoch = child.stoch.length;
+        // Cap at 5 stochastic enemies to keep branching tractable (2^5 = 32)
+        if (numStoch > 5) numStoch = 5;
+        var numOutcomes = 1 << numStoch;
+        var prob = 1.0 / numOutcomes;
+        var totalVal = 0, totalSurv = 0;
+
+        for (var out = 0; out < numOutcomes; out++) {
+            var branch = exClone(child);
+            exApplyStochastic(branch, out);
+            var result = expectimax(branch, depth - 1);
+            totalVal += result.value * prob;
+            totalSurv += result.survivalProb * prob;
+        }
+
+        // Composite score: survival is paramount, then value
+        var composite = totalSurv * 10000 + totalVal;
+        if (composite > bestSurv * 10000 + bestVal) {
+            bestVal = totalVal; bestSurv = totalSurv; bestDir = DIR_KEYS[k];
+        }
+    }
+    return { value: bestVal, survivalProb: bestSurv, dir: bestDir };
+}
+
+// Run expectimax for a single first move, return { value, survivalProb }
+// Adaptive depth: fewer stochastic enemies = deeper search
+function expectimaxEval(dirKey) {
+    var st = exCloneState();
+    if (!exPlayerMove(st, dirKey)) return { value: -5000, survivalProb: 0 };
+
+    // Adapt depth to keep node count under ~50K
+    var numStoch = Math.min(st.stoch.length, 5);
+    var depth = numStoch <= 1 ? 4 : numStoch <= 2 ? 3 : 2;
+
+    var numOutcomes = 1 << numStoch;
+    var prob = 1.0 / numOutcomes;
+    var totalVal = 0, totalSurv = 0;
+
+    for (var out = 0; out < numOutcomes; out++) {
+        var branch = exClone(st);
+        exApplyStochastic(branch, out);
+        var result = expectimax(branch, depth - 1);
+        totalVal += result.value * prob;
+        totalSurv += result.survivalProb * prob;
+    }
+    return { value: totalVal, survivalProb: totalSurv };
 }
 
 function computeAIMove() {
@@ -1195,10 +1309,10 @@ function computeAIMove() {
     for (var i = aiTourIdx + 1; i < aiTour.length; i++)
         aiTourDots.push({ row: aiTour[i].row, col: aiTour[i].col });
 
-    // ── 5. Smart first-step selection with MCTS tiebreaker ──
+    // ── 5. Smart first-step selection with expectimax tiebreaker ──
     var firstDir = res.path[0];
 
-    // Score all candidate moves
+    // Score all candidate moves with rules engine
     var candidates = [];
     for (var k = 0; k < DIR_KEYS.length; k++) {
         var ad = DIRS[DIR_KEYS[k]];
@@ -1220,7 +1334,8 @@ function computeAIMove() {
     if (candidates.length === 0) return fallbackMove();
     if (candidates.length === 1) return candidates[0].dir;
 
-    // If top candidates are within 15 points, use MCTS to tiebreak
+    // If top candidates are within 15 points, use expectimax to tiebreak
+    // Expectimax computes exact survival probability over all enemy outcomes
     var margin = candidates[0].score - candidates[1].score;
     if (margin < 15 && candidates[0].score > -50) {
         var tiedMoves = [candidates[0]];
@@ -1228,12 +1343,14 @@ function computeAIMove() {
             if (candidates[0].score - candidates[i].score < 15) tiedMoves.push(candidates[i]);
         }
         if (tiedMoves.length > 1) {
-            var bestMCTS = null, bestMCTSval = -Infinity;
+            var bestEX = null, bestEXscore = -Infinity;
             for (var i = 0; i < tiedMoves.length; i++) {
-                var val = mctsEval(tiedMoves[i].dir, 40, 6);
-                if (val > bestMCTSval) { bestMCTSval = val; bestMCTS = tiedMoves[i].dir; }
+                var ev = expectimaxEval(tiedMoves[i].dir);
+                // Survival probability is paramount, then value
+                var composite = ev.survivalProb * 10000 + ev.value;
+                if (composite > bestEXscore) { bestEXscore = composite; bestEX = tiedMoves[i].dir; }
             }
-            return bestMCTS;
+            return bestEX;
         }
     }
 
