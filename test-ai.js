@@ -493,7 +493,7 @@ function expectimaxEval(dirKey) {
     var hasCoily = false;
     for (var i = 0; i < st.enemies.length; i++)
         if (st.enemies[i].type === 'coily') { hasCoily = true; break; }
-    var depth = numStoch <= 1 ? 4 : numStoch <= 2 ? 3 : 2;
+    var depth = numStoch <= 1 ? 5 : numStoch <= 2 ? 4 : 3;
     var numOutcomes = 1 << numStoch;
     var prob = 1.0 / numOutcomes;
     var total = 0;
@@ -961,9 +961,17 @@ function runGame(maxRounds, verbose) {
                 moveNum++;
                 if (verbose) {
                     var remaining = countRemaining();
+                    var extra = '';
+                    if (remaining <= 3) {
+                        var tgt = targetState();
+                        var uncolored = [];
+                        for (var ci = 0; ci < cubeStates.length; ci++)
+                            if (cubeStates[ci].state < tgt) uncolored.push('(' + cubeStates[ci].row + ',' + cubeStates[ci].col + ')');
+                        extra = '  need=' + uncolored.join(',');
+                    }
                     console.log('  Move ' + moveNum + ' (f' + frame + '): ' + aiMove +
                         ' -> (' + player.row + ',' + player.col + ')  remaining=' + remaining +
-                        '  enemies: ' + enemySummary());
+                        '  enemies: ' + enemySummary() + extra);
                     if (moveNum % 10 === 0) console.log(drawBoard());
                 }
             }
