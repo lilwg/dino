@@ -862,6 +862,24 @@ function exLeafValue(st) {
     if (st.cubesColored >= st.cubes.length * st.tgt) return EX_WIN;
     var tourCost = exTourCost(st);
     var val = st.cubesColored * 100 - tourCost * 10;
+    // Penalize proximity to dangerous enemies (survival bonus)
+    for (var i = 0; i < st.enemies.length; i++) {
+        var e = st.enemies[i];
+        if (e.type === 'coily' || e.type === 'redball' || e.type === 'egg' ||
+            e.type === 'ugg' || e.type === 'wrongway') {
+            var dist = exBfsDist(st.pr, st.pc, e.row, e.col);
+            if (dist <= 1) val -= 200;
+            else if (dist <= 2) val -= 80;
+        }
+    }
+    // Count escape routes — penalize being cornered
+    var escapes = 0;
+    for (var k = 0; k < 4; k++) {
+        var dk = DIRS[DIR_KEYS[k]];
+        if (isValidPos(st.pr + dk.dr, st.pc + dk.dc)) escapes++;
+    }
+    if (escapes <= 1) val -= 150;
+    else if (escapes <= 2) val -= 40;
     // On revert levels, penalize being surrounded by completed cubes (trap avoidance)
     var lv = st.lv !== undefined ? st.lv : arcadeLevel();
     if (lv >= 3) {
@@ -925,7 +943,7 @@ function expectimax(st, depth) {
 function expectimaxEval(dirKey) {
     var st = exCloneState();
     var numStoch = exCountStoch(st);
-    var depth = numStoch <= 1 ? 5 : numStoch <= 2 ? 4 : 3;
+    var depth = numStoch <= 1 ? 6 : numStoch <= 2 ? 5 : 4;
     var numOutcomes = 1 << numStoch;
     var prob = 1.0 / numOutcomes;
     var total = 0;
