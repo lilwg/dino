@@ -2187,6 +2187,7 @@
             { name: 'Mid-jump, nothing ahead', state: [1.0, 0, 0.5, 0, 1, 0, 0.5, 0.5, 0.5, 1, 0, 0] },
             { name: 'Two cacti — both close', state: [0.1, 0, 0.5, 0.3, 0.25, 0, 0.5, 0.3, 0, 0, 0, 0.3] },
             { name: 'High speed, cactus medium distance', state: [0.12, 0, 0.5, 0.3, 1, 0, 0.5, 0.9, 0, 0, 0, 0.3] },
+            { name: 'Low ptero close — mid-jump (can\'t duck)', state: [0.15, 1, 0.67, 0.3, 1, 0, 0.5, 0.5, 0.5, 1, 0, 0.4] },
         ];
 
         // --- Build HTML ---
