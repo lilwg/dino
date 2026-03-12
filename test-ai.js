@@ -163,9 +163,14 @@ function buildTour() {
     aiBoardSig = boardSig();
 }
 
-// ─── Turn-based Expectimax ─────────────────────────────────────────────────────
-// No frame counters, no moveTimer/moveDelay. Each turn: player hops once,
-// then every enemy hops once. Enemies are independent per turn.
+// ─── Expectimax with per-enemy move countdowns ────────────────────────────────
+// Each turn = one player hop. Enemies move only when their countdown reaches 0.
+// Countdown values derived from real-time intervals / player hop frames (~8).
+var EX_HOPS_PER_MOVE = {
+    egg:   4,   // 35 frames / 8 ≈ 4 player hops
+    coily: 4,   // 28 frames / 8 ≈ 4 player hops
+    redball: 4  // 30 frames / 8 ≈ 4 player hops
+};
 
 // Precompute all pairwise BFS distances
 var bfsDistTable = {};
@@ -207,7 +212,7 @@ function exCubeAt(st, row, col) {
     return null;
 }
 
-// Clone real game state into expectimax state — no frame tracking needed
+// Clone real game state into expectimax state — with per-enemy countdowns
 function exCloneState() {
     var tgt = targetState();
     var cs = new Array(cubeStates.length);
@@ -218,7 +223,9 @@ function exCloneState() {
         var e = enemies[i];
         if (e.type === 'spawn-timer') continue;
         if (e.type === 'greenball' || e.type === 'slick') continue;
-        ens.push({ type: e.type, row: e.row, col: e.col, hops: e.hops || 0 });
+        var interval = EX_HOPS_PER_MOVE[e.type] || 4;
+        var cd = e.moveCountdown !== undefined ? e.moveCountdown : interval;
+        ens.push({ type: e.type, row: e.row, col: e.col, hops: e.hops || 0, countdown: cd });
     }
     var colored = 0;
     for (var i = 0; i < cs.length; i++) if (cs[i].state >= tgt) colored++;
@@ -235,18 +242,22 @@ function exClone(st) {
     var ens = [];
     for (var i = 0; i < st.enemies.length; i++) {
         var e = st.enemies[i];
-        ens.push({ type: e.type, row: e.row, col: e.col, hops: e.hops });
+        ens.push({ type: e.type, row: e.row, col: e.col, hops: e.hops, countdown: e.countdown });
     }
     return { pr: st.pr, pc: st.pc, cubes: cs, enemies: ens,
              alive: st.alive, score: st.score, cubesColored: st.cubesColored, tgt: st.tgt,
              discs: [st.discs[0], st.discs[1]], discRows: st.discRows };
 }
 
-// Move all enemies once. stochOutcome: bit field for random directions (DL=0, DR=1)
+// Move enemies whose countdown reaches 0. stochOutcome: bit field for random directions
 function exMoveEnemies(st, stochOutcome) {
     var stochBit = 0;
     for (var i = st.enemies.length - 1; i >= 0; i--) {
         var e = st.enemies[i];
+        // Tick countdown — only move when it reaches 0
+        e.countdown--;
+        if (e.countdown > 0) continue;
+        e.countdown = EX_HOPS_PER_MOVE[e.type] || 4;
         if (e.type === 'coily') {
             var bestDir = null, bestDist = Infinity;
             for (var k = 0; k < 4; k++) {
@@ -297,7 +308,7 @@ function exMoveEnemies(st, stochOutcome) {
     }
 }
 
-// Execute one turn: player moves, then all enemies move once
+// Execute one turn: player moves, then enemies with expired countdowns move
 function exPlayerMove(st, dirKey, stochOutcome) {
     if (!st.alive) return false;
     var d = DIRS[dirKey];
@@ -344,17 +355,17 @@ function exPlayerMove(st, dirKey, stochOutcome) {
             }
         }
     }
-    // All enemies move once
+    // Enemies with expired countdowns move
     exMoveEnemies(st, stochOutcome);
     return st.alive;
 }
 
-// Count stochastic enemies — no timer check needed, every enemy moves every turn
+// Count stochastic enemies that will move this turn (countdown == 1, about to tick to 0)
 function exCountStoch(st) {
     var count = 0;
     for (var i = 0; i < st.enemies.length; i++) {
         var e = st.enemies[i];
-        if (e.type === 'egg' || e.type === 'redball') count++;
+        if ((e.type === 'egg' || e.type === 'redball') && e.countdown <= 1) count++;
     }
     return Math.min(count, 5);
 }
@@ -383,14 +394,14 @@ function exTourCost(st) {
     return totalDist;
 }
 
-// State hash for memoization — no moveTimer/jumping state needed
+// State hash for memoization — includes countdown for timing-aware search
 function exStateKey(st, depth) {
     var k = st.pr + ',' + st.pc + '|';
     for (var i = 0; i < st.cubes.length; i++) k += st.cubes[i].state;
     k += '|';
     for (var i = 0; i < st.enemies.length; i++) {
         var e = st.enemies[i];
-        k += e.type[0] + e.row + ',' + e.col + ';';
+        k += e.type[0] + e.row + ',' + e.col + 'c' + e.countdown + ';';
     }
     k += '|' + depth + '|' + (st.discs[0] ? 1 : 0) + (st.discs[1] ? 1 : 0);
     return k;
@@ -484,7 +495,15 @@ function computeAIMove() {
     return bestDir || 'DL';
 }
 
-// ─── Turn-based game simulation ────────────────────────────────────────────────
+// ─── Game simulation with per-enemy move countdowns ────────────────────────────
+// Each turn = one player hop. Enemies move only when their countdown expires.
+var SIM_HOPS_PER_MOVE = {
+    egg:       4,   // 35 frames / 8
+    coily:     4,   // 28 frames / 8
+    redball:   4,   // 30 frames / 8
+    greenball: 5,   // 38 frames / 8
+    slick:     5    // 40 frames / 8
+};
 
 var lives, extraLifeGiven, levelWon, turnCount;
 
@@ -537,14 +556,15 @@ function spawnEnemy(forcedType) {
     var spawnRow = (type === 'redball' || type === 'greenball') ? 1 : 0;
     var spawnCol = (type === 'redball' || type === 'greenball') ? Math.floor(Math.random() * 2) : 0;
 
+    var cd = SIM_HOPS_PER_MOVE[type] || 4;
     if (type === 'egg') {
-        enemies.push({ type: 'egg', row: 0, col: 0, hops: 0 });
+        enemies.push({ type: 'egg', row: 0, col: 0, hops: 0, moveCountdown: cd });
     } else if (type === 'redball') {
-        enemies.push({ type: 'redball', row: spawnRow, col: spawnCol });
+        enemies.push({ type: 'redball', row: spawnRow, col: spawnCol, moveCountdown: cd });
     } else if (type === 'greenball') {
-        enemies.push({ type: 'greenball', row: spawnRow, col: spawnCol });
+        enemies.push({ type: 'greenball', row: spawnRow, col: spawnCol, moveCountdown: cd });
     } else if (type === 'slick') {
-        enemies.push({ type: 'slick', row: spawnRow, col: spawnCol });
+        enemies.push({ type: 'slick', row: spawnRow, col: spawnCol, moveCountdown: cd });
     }
 }
 
@@ -613,7 +633,7 @@ function checkPlayerEnemyCollision() {
     }
 }
 
-// Move all enemies once per turn
+// Move enemies whose countdown expires this turn
 function moveEnemies() {
     // Tick spawn timers
     for (var i = enemies.length - 1; i >= 0; i--) {
@@ -627,10 +647,14 @@ function moveEnemies() {
         }
     }
 
-    // Move each enemy once
+    // Tick countdown and move only enemies whose countdown reaches 0
     for (var i = enemies.length - 1; i >= 0; i--) {
         var e = enemies[i];
         if (e.type === 'spawn-timer') continue;
+
+        e.moveCountdown--;
+        if (e.moveCountdown > 0) continue;
+        e.moveCountdown = SIM_HOPS_PER_MOVE[e.type] || 4;
 
         if (e.type === 'egg') {
             var dir = Math.random() < 0.5 ? 'DL' : 'DR';
