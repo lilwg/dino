@@ -1072,12 +1072,11 @@ function exApplyStochastic(st, outcomes) {
     }
 }
 
-// Evaluate a leaf state
+// Evaluate a leaf state — single expected-value number, no separate survival
 function exLeafValue(st) {
     if (!st.alive) return -5000;
-    // Level complete — maximum value
     if (st.cubesColored >= st.cubes.length) return 50000;
-    // Proximity to nearest uncolored cube
+    // BFS distance to nearest uncolored cube
     var nearDist = 99;
     var visited = {}; visited[st.pr+','+st.pc] = true;
     var queue = [{r:st.pr, c:st.pc, d:0}];
@@ -1095,83 +1094,61 @@ function exLeafValue(st) {
             queue.push({r:nr, c:nc, d:cur.d+1});
         }
     }
-    // Progress: heavily reward coloring cubes, especially when close to finishing
-    var remaining = st.cubes.length - st.cubesColored;
-    var completionRatio = st.cubesColored / st.cubes.length;
-    // Urgency bonus: finishing soon is worth a lot (sigmoid-like ramp)
-    var urgency = completionRatio > 0.8 ? 500 * completionRatio : 0;
-    return st.cubesColored * 150 + urgency + st.score * 0.3 + 200 - nearDist * 15;
+    return st.cubesColored * 100 + st.score * 0.3 + 200 - nearDist * 15;
 }
 
-// Expectimax: at each depth, player picks best move (max), then we average
-// over all 2^N stochastic enemy outcomes (chance nodes).
-// Returns { value, survivalProb }
+// Expectimax: max over player moves, average over stochastic enemy outcomes.
+// Returns a single expected value — death is just a large negative folded
+// into the average, so the AI naturally weighs risk vs progress.
 function expectimax(st, depth) {
-    if (!st.alive) return { value: -5000, survivalProb: 0 };
-    if (depth === 0) return { value: exLeafValue(st), survivalProb: 1 };
+    if (!st.alive) return -5000;
+    if (depth === 0) return exLeafValue(st);
 
-    var bestVal = -Infinity, bestSurv = 0, bestDir = null;
+    var bestVal = -Infinity;
     for (var k = 0; k < 4; k++) {
         var dk = DIRS[DIR_KEYS[k]];
         if (!isValidPos(st.pr + dk.dr, st.pc + dk.dc)) continue;
 
-        // Clone state, apply player + deterministic moves
         var child = exClone(st);
         if (!exPlayerMove(child, DIR_KEYS[k])) {
-            // Dead from player move or Coily
-            if (-5000 > bestVal) { bestVal = -5000; bestSurv = 0; bestDir = DIR_KEYS[k]; }
+            if (-5000 > bestVal) bestVal = -5000;
             continue;
         }
 
-        // Enumerate all 2^N stochastic outcomes
-        var numStoch = child.stoch.length;
-        // Cap at 5 stochastic enemies to keep branching tractable (2^5 = 32)
-        if (numStoch > 5) numStoch = 5;
+        var numStoch = Math.min(child.stoch.length, 5);
         var numOutcomes = 1 << numStoch;
         var prob = 1.0 / numOutcomes;
-        var totalVal = 0, totalSurv = 0;
+        var total = 0;
 
         for (var out = 0; out < numOutcomes; out++) {
             var branch = exClone(child);
             exApplyStochastic(branch, out);
-            var result = expectimax(branch, depth - 1);
-            totalVal += result.value * prob;
-            totalSurv += result.survivalProb * prob;
+            total += expectimax(branch, depth - 1) * prob;
         }
 
-        // Composite: tier survival so small differences don't override progress
-        var survTier = totalSurv >= 0.8 ? 2 : totalSurv >= 0.5 ? 1 : 0;
-        var composite = survTier * 100000 + totalVal;
-        var bestTier = bestSurv >= 0.8 ? 2 : bestSurv >= 0.5 ? 1 : 0;
-        if (composite > bestTier * 100000 + bestVal) {
-            bestVal = totalVal; bestSurv = totalSurv; bestDir = DIR_KEYS[k];
-        }
+        if (total > bestVal) bestVal = total;
     }
-    return { value: bestVal, survivalProb: bestSurv, dir: bestDir };
+    return bestVal;
 }
 
-// Run expectimax for a single first move, return { value, survivalProb }
-// Adaptive depth: fewer stochastic enemies = deeper search
+// Run expectimax for a single first move
 function expectimaxEval(dirKey) {
     var st = exCloneState();
-    if (!exPlayerMove(st, dirKey)) return { value: -5000, survivalProb: 0 };
+    if (!exPlayerMove(st, dirKey)) return -5000;
 
-    // Adapt depth to keep node count under ~50K
     var numStoch = Math.min(st.stoch.length, 5);
     var depth = numStoch <= 1 ? 4 : numStoch <= 2 ? 3 : 2;
 
     var numOutcomes = 1 << numStoch;
     var prob = 1.0 / numOutcomes;
-    var totalVal = 0, totalSurv = 0;
+    var total = 0;
 
     for (var out = 0; out < numOutcomes; out++) {
         var branch = exClone(st);
         exApplyStochastic(branch, out);
-        var result = expectimax(branch, depth - 1);
-        totalVal += result.value * prob;
-        totalSurv += result.survivalProb * prob;
+        total += expectimax(branch, depth - 1) * prob;
     }
-    return { value: totalVal, survivalProb: totalSurv };
+    return total;
 }
 
 function computeAIMove() {
@@ -1216,22 +1193,14 @@ function computeAIMove() {
     }
 
     // ── 2. Expectimax: evaluate all valid moves ──
-    var bestDir = null, bestComposite = -Infinity;
-    var bestSurv = 0, bestVal = -Infinity;
+    var bestDir = null, bestVal = -Infinity;
     for (var k = 0; k < 4; k++) {
         var dk = DIRS[DIR_KEYS[k]];
         if (!isValidPos(player.row + dk.dr, player.col + dk.dc)) continue;
 
-        var ev = expectimaxEval(DIR_KEYS[k]);
-        // Survival is critical but shouldn't paralyze progress:
-        // - Bucket survival into tiers so small differences don't override value
-        // - Tier 0: >= 0.8 (safe enough), Tier 1: >= 0.5 (risky), Tier 2: < 0.5 (desperate)
-        var survTier = ev.survivalProb >= 0.8 ? 2 : ev.survivalProb >= 0.5 ? 1 : 0;
-        var composite = survTier * 100000 + ev.value;
-        if (composite > bestComposite) {
-            bestComposite = composite;
-            bestSurv = ev.survivalProb;
-            bestVal = ev.value;
+        var val = expectimaxEval(DIR_KEYS[k]);
+        if (val > bestVal) {
+            bestVal = val;
             bestDir = DIR_KEYS[k];
         }
     }
