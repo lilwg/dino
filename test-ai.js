@@ -254,19 +254,16 @@ function exClone(st) {
 }
 
 // Advance enemy timers by N frames, moving enemies when their timer fires.
-// Player position needed for Coily chase and collision checks.
 // stochOutcome: bit field for random enemy directions (DL=0, DR=1)
 function exAdvanceEnemies(st, frames, stochOutcome) {
     var stochBit = 0;
     for (var f = 0; f < frames; f++) {
         for (var i = st.enemies.length - 1; i >= 0; i--) {
             var e = st.enemies[i];
-            // Handle jumping enemies
             if (e.jumping) {
                 e.jumpFramesLeft--;
                 if (e.jumpFramesLeft <= 0) {
                     e.jumping = false;
-                    // Enemy landed — check collision with non-jumping player
                     if (e.row === st.pr && e.col === st.pc) {
                         if (e.type === 'coily' || e.type === 'redball' || e.type === 'egg') {
                             st.alive = false; return;
@@ -275,12 +272,10 @@ function exAdvanceEnemies(st, frames, stochOutcome) {
                 }
                 continue;
             }
-            // Advance move timer
             e.moveTimer++;
             if (e.moveTimer < e.moveDelay) continue;
             e.moveTimer = 0;
 
-            // Enemy decides to move
             if (e.type === 'coily') {
                 var bestDir = null, bestDist = Infinity;
                 for (var k = 0; k < 4; k++) {
@@ -294,7 +289,7 @@ function exAdvanceEnemies(st, frames, stochOutcome) {
                     var dd = DIRS[DIR_KEYS[bestDir]];
                     e.row += dd.dr; e.col += dd.dc;
                     e.jumping = true;
-                    e.jumpFramesLeft = 8; // ceil(1/0.14) = 8
+                    e.jumpFramesLeft = 8;
                 }
             } else if (e.type === 'egg') {
                 var dir = ((stochOutcome >> stochBit) & 1) ? 'DR' : 'DL';
@@ -305,7 +300,7 @@ function exAdvanceEnemies(st, frames, stochOutcome) {
                     e.row = nr; e.col = nc;
                     e.hops++;
                     e.jumping = true;
-                    e.jumpFramesLeft = 8; // ceil(1/0.14) = 8
+                    e.jumpFramesLeft = 8;
                     if (e.hops >= 6 || nr >= ROWS - 1) {
                         e.type = 'coily';
                         e.moveDelay = Math.max(12, 35 - round * 2);
@@ -322,7 +317,7 @@ function exAdvanceEnemies(st, frames, stochOutcome) {
                 if (isValidPos(nr, nc)) {
                     e.row = nr; e.col = nc;
                     e.jumping = true;
-                    e.jumpFramesLeft = 9; // ceil(1/0.12) = 9
+                    e.jumpFramesLeft = 9;
                 } else {
                     st.enemies.splice(i, 1);
                 }
@@ -338,11 +333,9 @@ function exPlayerMove(st, dirKey, stochOutcome) {
     var d = DIRS[dirKey];
     var nr = st.pr + d.dr, nc = st.pc + d.dc;
     if (!isValidPos(nr, nc)) {
-        // Check disc catch
         if (dirKey === 'UL' && st.discs[0] && st.pc === 0 && st.pr === st.discRows[0]) {
             st.discs[0] = false;
             st.score += 600;
-            // Kill all coilies/eggs
             for (var i = st.enemies.length - 1; i >= 0; i--) {
                 if (st.enemies[i].type === 'coily' || st.enemies[i].type === 'egg') {
                     st.score += 300;
@@ -366,14 +359,12 @@ function exPlayerMove(st, dirKey, stochOutcome) {
         }
         st.alive = false; return false;
     }
-    // Player moves to new position
     st.pr = nr; st.pc = nc;
     var cube = exCubeAt(st, nr, nc);
     if (cube && cube.state < st.tgt) { cube.state++; st.score += 25; st.cubesColored++; }
     if (st.cubesColored >= st.cubes.length) {
         st.score += 1000; st.enemies = []; return true;
     }
-    // Check collision with non-jumping enemies at landing position
     for (var i = 0; i < st.enemies.length; i++) {
         var e = st.enemies[i];
         if (e.jumping) continue;
@@ -383,9 +374,20 @@ function exPlayerMove(st, dirKey, stochOutcome) {
             }
         }
     }
-    // Advance enemy timers by framesPerTurn
     exAdvanceEnemies(st, st.framesPerTurn, stochOutcome);
     return st.alive;
+}
+
+// Count stochastic enemies that will move during this turn
+function exCountStoch(st) {
+    var count = 0;
+    for (var i = 0; i < st.enemies.length; i++) {
+        var e = st.enemies[i];
+        if (e.type === 'coily') continue;
+        if (e.jumping) continue;
+        if (e.moveTimer + st.framesPerTurn >= e.moveDelay) count++;
+    }
+    return Math.min(count, 5);
 }
 
 function exTourCost(st) {
@@ -443,19 +445,6 @@ function exCanMove(st, dirKey) {
     return false;
 }
 
-// Count stochastic enemies (redball, egg) that will move during this turn
-function exCountStoch(st) {
-    var count = 0;
-    for (var i = 0; i < st.enemies.length; i++) {
-        var e = st.enemies[i];
-        if (e.type === 'coily') continue;
-        if (e.jumping) continue;
-        // Will this enemy's timer fire during framesPerTurn?
-        if (e.moveTimer + st.framesPerTurn >= e.moveDelay) count++;
-    }
-    return Math.min(count, 5);
-}
-
 function expectimax(st, depth) {
     if (!st.alive) return -50000;
     if (depth === 0) return exLeafValue(st);
@@ -463,7 +452,6 @@ function expectimax(st, depth) {
     var key = exStateKey(st, depth);
     if (exMemoTable[key] !== undefined) return exMemoTable[key];
 
-    // Count stochastic enemies to determine branching
     var numStoch = exCountStoch(st);
     var numOutcomes = 1 << numStoch;
     var prob = 1.0 / numOutcomes;
@@ -490,9 +478,6 @@ function expectimax(st, depth) {
 function expectimaxEval(dirKey) {
     var st = exCloneState();
     var numStoch = exCountStoch(st);
-    var hasCoily = false;
-    for (var i = 0; i < st.enemies.length; i++)
-        if (st.enemies[i].type === 'coily') { hasCoily = true; break; }
     var depth = numStoch <= 1 ? 5 : numStoch <= 2 ? 4 : 3;
     var numOutcomes = 1 << numStoch;
     var prob = 1.0 / numOutcomes;

@@ -207,6 +207,8 @@ var aiMoveTimer  = 0;
 var aiTour       = [];
 var aiTourIdx    = 0;
 var aiBoardSig   = '';
+var aiMoveScores = {};  // { UL: val, UR: val, DL: val, DR: val } — expectimax values per direction
+var aiBestDir    = null;
 var inputQueue  = [];
 var discRide    = null;  // { side, t, sx, sy, tx, ty } — player riding disc to top
 
@@ -1272,14 +1274,17 @@ function computeAIMove() {
     exMemoTable = {};
     var tmpSt = exCloneState();
     var bestDir = null, bestVal = -Infinity;
+    aiMoveScores = {};
     for (var k = 0; k < 4; k++) {
         if (!exCanMove(tmpSt, DIR_KEYS[k])) continue;
         var val = expectimaxEval(DIR_KEYS[k]);
+        aiMoveScores[DIR_KEYS[k]] = val;
         if (val > bestVal) {
             bestVal = val;
             bestDir = DIR_KEYS[k];
         }
     }
+    aiBestDir = bestDir;
 
     // Build viz: tour to show remaining targets, BFS path for detail
     if (boardSig() !== aiBoardSig || aiTour.length === 0) buildTour();
@@ -1390,7 +1395,7 @@ function draw() {
     drawDiscs();
 
     // AI viz path (before inversion — color elements excluded from inversion)
-    if (vizOn && (aiDetailPath.length > 0 || aiTourDots.length > 0)) drawVizPath();
+    if (vizOn) drawVizPath();
 
     // Enemies and player (before inversion so they invert with scene, like dino-runner)
     // White outline becomes black outline at night automatically
@@ -1459,32 +1464,88 @@ function drawDiscs() {
 }
 
 function drawVizPath() {
-    if (aiDetailPath.length === 0 && aiTourDots.length === 0) return;
     ctx.save();
 
-    // Dashed line + large dots for the BFS path to the next target
-    if (aiDetailPath.length > 0) {
-        ctx.setLineDash([4, 4]);
-        ctx.strokeStyle = 'rgba(255,200,0,0.80)';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        var sp = cubeXY(player.row, player.col);
-        ctx.moveTo(sp.cx, sp.cy);
-        for (var i = 0; i < aiDetailPath.length; i++) {
-            var pt = cubeXY(aiDetailPath[i].row, aiDetailPath[i].col);
-            ctx.lineTo(pt.cx, pt.cy);
+    // Draw expectimax scores on adjacent cubes
+    var dirKeys = ['UL', 'UR', 'DL', 'DR'];
+    var hasScores = false;
+    var maxVal = -Infinity, minVal = Infinity;
+    for (var i = 0; i < 4; i++) {
+        var v = aiMoveScores[dirKeys[i]];
+        if (v !== undefined) {
+            hasScores = true;
+            if (v > maxVal) maxVal = v;
+            if (v < minVal) minVal = v;
         }
-        ctx.stroke();
-        ctx.setLineDash([]);
-        for (var i = 0; i < aiDetailPath.length; i++) {
-            var pt2 = cubeXY(aiDetailPath[i].row, aiDetailPath[i].col);
+    }
+    if (hasScores) {
+        var range = maxVal - minVal;
+        if (range < 1) range = 1;
+        for (var i = 0; i < 4; i++) {
+            var dk = dirKeys[i];
+            var v = aiMoveScores[dk];
+            if (v === undefined) continue;
+            var dd = DIRS[dk];
+            var nr = player.row + dd.dr, nc = player.col + dd.dc;
+            var isBest = (dk === aiBestDir);
+            var pt;
+            if (isValidPos(nr, nc)) {
+                pt = cubeXY(nr, nc);
+            } else {
+                // Disc position — draw off-pyramid
+                var pp = cubeXY(player.row, player.col);
+                pt = { cx: pp.cx + dd.dc * 50 - dd.dr * 30, cy: pp.cy + dd.dr * -30 };
+            }
+
+            // Color: green=best, red=worst, yellow=middle
+            var t = (v - minVal) / range; // 0=worst, 1=best
+            var r = Math.round(255 * (1 - t));
+            var g = Math.round(255 * t);
+            var alpha = isBest ? 0.85 : 0.50;
+
+            // Draw circle indicator
+            var radius = isBest ? 8 : 6;
             ctx.beginPath();
-            ctx.arc(pt2.cx, pt2.cy, 4, 0, Math.PI * 2);
-            ctx.fillStyle = 'rgba(255,200,0,0.90)'; ctx.fill();
+            ctx.arc(pt.cx, pt.cy, radius, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(' + r + ',' + g + ',0,' + alpha + ')';
+            ctx.fill();
+            if (isBest) {
+                ctx.lineWidth = 2;
+                ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+                ctx.stroke();
+            }
+
+            // Draw value text
+            var label = v >= 10000 ? 'WIN' : v <= -10000 ? 'DIE' : Math.round(v).toString();
+            ctx.font = '9px monospace';
+            ctx.textAlign = 'center';
+            ctx.fillStyle = isBest ? '#fff' : 'rgba(255,255,255,0.7)';
+            ctx.fillText(label, pt.cx, pt.cy - radius - 3);
+        }
+
+        // Draw arrow from player to best move
+        if (aiBestDir) {
+            var dd2 = DIRS[aiBestDir];
+            var nr2 = player.row + dd2.dr, nc2 = player.col + dd2.dc;
+            var from = cubeXY(player.row, player.col);
+            var to;
+            if (isValidPos(nr2, nc2)) {
+                to = cubeXY(nr2, nc2);
+            } else {
+                to = { cx: from.cx + dd2.dc * 50 - dd2.dr * 30, cy: from.cy + dd2.dr * -30 };
+            }
+            ctx.beginPath();
+            ctx.moveTo(from.cx, from.cy);
+            ctx.lineTo(to.cx, to.cy);
+            ctx.strokeStyle = 'rgba(0,255,0,0.7)';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([3, 3]);
+            ctx.stroke();
+            ctx.setLineDash([]);
         }
     }
 
-    // Small dots for the rest of the tour
+    // Small dots for uncolored cubes in tour
     for (var j = 0; j < aiTourDots.length; j++) {
         var dp = cubeXY(aiTourDots[j].row, aiTourDots[j].col);
         ctx.beginPath();
