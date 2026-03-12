@@ -959,8 +959,9 @@ function exCloneState() {
         if (e.type === 'spawn-timer') continue;
         if (e.type === 'greenball' || e.type === 'slick') continue;
         var interval = EX_HOPS_PER_MOVE[e.type] || 4;
+        // Convert remaining frames to remaining player hops
         var cd = (e.moveTimer !== undefined && e.moveInterval !== undefined)
-            ? Math.max(1, Math.round(e.moveTimer / (e.moveInterval / interval)))
+            ? Math.max(1, Math.round((e.moveInterval - e.moveTimer) / (e.moveInterval / interval)))
             : interval;
         ens.push({ type: e.type, row: e.row, col: e.col, hops: e.hops || 0, countdown: cd });
     }
