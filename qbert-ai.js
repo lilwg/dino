@@ -17,12 +17,14 @@ var ROWS = 7;
 var DIRS = { UL: {dr:-1, dc:-1}, UR: {dr:-1, dc:0}, DL: {dr:1, dc:0}, DR: {dr:1, dc:1} };
 var DIR_KEYS = ['UL', 'UR', 'DL', 'DR'];
 
+// Arcade: Q*bert=9f, enemies=12f land-to-land → ratio 3:4
+// Enemy moves once per 1.33 Q*bert hops (round to 1)
 var EX_HOPS_PER_MOVE = {
-    egg:      3,   // 35 frames / 12 ≈ 3 player hops
-    coily:    2,   // 28 frames / 12 ≈ 2 player hops
-    redball:  3,   // 30 frames / 12 ≈ 3 player hops
-    ugg:      3,   // ~30 frames / 12 ≈ 3 player hops
-    wrongway: 3    // ~30 frames / 12 ≈ 3 player hops
+    egg:      1,   // 12f / 9f ≈ 1.33 player hops
+    coily:    1,   // 12f / 9f ≈ 1.33 player hops
+    redball:  1,   // 12f / 9f ≈ 1.33 player hops
+    ugg:      1,   // 12f / 9f ≈ 1.33 player hops
+    wrongway: 1    // 12f / 9f ≈ 1.33 player hops
 };
 
 var EX_DEATH = -50000;

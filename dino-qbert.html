@@ -30,7 +30,7 @@
         </div>
 
         <h2 style="margin-top:16px;">How it works</h2>
-        <p class="si-prose">DinoQbert recreates the 1982 Gottlieb arcade original: hop-based movement, one jump per keypress with a 150ms arc animation, and the classic @!#?@! swear bubble on death. Coily spawns as an egg, bounces randomly down the pyramid, then hatches and chases the player. Dark balls bounce down and kill on contact; light balls are safe to catch for 100 pts. Slick (round 4+) hops down uncoloring cubes. Ugg and Wrongway (round 3+) crawl upward from the bottom corners. Two transport discs at variable positions let Q*bert escape and lure Coily to his death.</p>
+        <p class="si-prose">DinoQbert recreates the 1982 Gottlieb arcade original: hop-based movement, one jump per keypress with a 9-frame arc animation matching the original arcade, and the classic @!#?@! swear bubble on death. Coily spawns as an egg, bounces randomly down the pyramid, then hatches and chases the player. Dark balls bounce down and kill on contact; light balls are safe to catch for 100 pts. Slick (round 4+) hops down uncoloring cubes. Ugg and Wrongway (round 3+) crawl upward from the bottom corners. Two transport discs at variable positions let Q*bert escape and lure Coily to his death.</p>
         <p class="si-prose">Tap <strong>Viz</strong> to reveal the AI&rsquo;s plan: a dashed line traces the expected path, with faint dots marking uncolored cubes. The game uses <strong>turn-based logic</strong> matching the original arcade: player hops, then every enemy hops once, then collisions are checked. Every move is chosen by <strong>expectimax search</strong>&mdash;it enumerates every possible enemy outcome exactly. Coily is deterministic (greedy chase), so no branching needed; all other enemies fork DL/DR at p=0.5 each, giving 2<sup>N</sup> outcomes per step. Depth adapts to enemy count: 5 deep with 0&ndash;1 random enemies, 4 with 2, 3 with 3+.</p>
 
         <p style="margin-top:20px;"><a href="/" style="color:#0071e3;font-size:14px;text-decoration:none;">&larr; Back</a></p>
@@ -198,15 +198,18 @@ var gameOver = false;
 var levelWon = false;
 var roundStarted = false; // true after first player move — enemies frozen until then
 
-// Base enemy move intervals (frames at 60fps, level 1 speed)
+// Base enemy move intervals: idle frames BETWEEN hops (level 1 speed).
+// Total land-to-land = moveInterval + ceil(1/jumpDur).
+// Arcade measurements at 60fps: Q*bert=9f, Coily=12f, red ball=12f land-to-land.
+// With jumpDur giving ~7f animation, idle gap = total - 7.
 var BASE_ENEMY_INTERVALS = {
-    egg:       35,   // ~0.58s
-    coily:     28,   // ~0.47s — faster, chases player
-    redball:   30,   // ~0.50s
-    greenball: 38,   // ~0.63s — leisurely
-    slick:     40,   // ~0.67s — slow
-    ugg:       30,   // ~0.50s — side-crawlers
-    wrongway:  30    // ~0.50s — side-crawlers
+    egg:        5,   // 5 idle + 7 anim = 12f (~0.20s) — same as coily
+    coily:      5,   // 5 idle + 7 anim = 12f (~0.20s)
+    redball:    5,   // 5 idle + 7 anim = 12f (~0.20s)
+    greenball:  8,   // 8 idle + 7 anim = 15f (~0.25s) — leisurely
+    slick:     10,   // 10 idle + 7 anim = 17f (~0.28s) — slow
+    ugg:        5,   // 5 idle + 7 anim = 12f (~0.20s) — side-crawlers
+    wrongway:   5    // 5 idle + 7 anim = 12f (~0.20s) — side-crawlers
 };
 
 // Effective enemy intervals for current level
@@ -302,7 +305,7 @@ function initRound() {
         row: 0, col: 0,
         px: sp.cx, py: sp.cy,
         // jump state
-        jumping: false, jumpT: 0, jumpDur: 0.13 * speedMultiplier(),
+        jumping: false, jumpT: 0, jumpDur: 0.111 * speedMultiplier(),
         jumpSX: sp.cx, jumpSY: sp.cy,
         tx: sp.cx, ty: sp.cy,
         // sprite
@@ -369,7 +372,7 @@ function spawnEnemy(forcedType) {
             type: 'egg',
             row: 0, col: 0,
             px: eggPos.cx, py: eggPos.cy,
-            jumping: false, jumpT: 0, jumpDur: 0.14 * speedMultiplier(),
+            jumping: false, jumpT: 0, jumpDur: 0.143 * speedMultiplier(),
             jumpSX: eggPos.cx, jumpSY: eggPos.cy,
             tx: eggPos.cx, ty: eggPos.cy,
             hops: 0,
@@ -381,7 +384,7 @@ function spawnEnemy(forcedType) {
             type: 'redball',
             row: spawnRow, col: spawnCol,
             px: sp.cx, py: sp.cy,
-            jumping: false, jumpT: 0, jumpDur: 0.12 * speedMultiplier(),
+            jumping: false, jumpT: 0, jumpDur: 0.143 * speedMultiplier(),
             jumpSX: sp.cx, jumpSY: sp.cy,
             tx: sp.cx, ty: sp.cy,
             frame: 0, frameTimer: 0,
@@ -392,7 +395,7 @@ function spawnEnemy(forcedType) {
             type: 'greenball',
             row: spawnRow, col: spawnCol,
             px: sp.cx, py: sp.cy,
-            jumping: false, jumpT: 0, jumpDur: 0.12 * speedMultiplier(),
+            jumping: false, jumpT: 0, jumpDur: 0.143 * speedMultiplier(),
             jumpSX: sp.cx, jumpSY: sp.cy,
             tx: sp.cx, ty: sp.cy,
             frame: 0, frameTimer: 0,
@@ -403,7 +406,7 @@ function spawnEnemy(forcedType) {
             type: 'slick',
             row: spawnRow, col: spawnCol,
             px: sp.cx, py: sp.cy,
-            jumping: false, jumpT: 0, jumpDur: 0.12 * speedMultiplier(),
+            jumping: false, jumpT: 0, jumpDur: 0.143 * speedMultiplier(),
             jumpSX: sp.cx, jumpSY: sp.cy,
             tx: sp.cx, ty: sp.cy,
             frame: 0, frameTimer: 0,
@@ -417,7 +420,7 @@ function spawnEnemy(forcedType) {
             type: 'ugg',
             row: uggRow, col: uggCol,
             px: usp.cx, py: usp.cy,
-            jumping: false, jumpT: 0, jumpDur: 0.12 * speedMultiplier(),
+            jumping: false, jumpT: 0, jumpDur: 0.143 * speedMultiplier(),
             jumpSX: usp.cx, jumpSY: usp.cy,
             tx: usp.cx, ty: usp.cy,
             frame: 0, frameTimer: 0,
@@ -431,7 +434,7 @@ function spawnEnemy(forcedType) {
             type: 'wrongway',
             row: wwRow, col: wwCol,
             px: wsp.cx, py: wsp.cy,
-            jumping: false, jumpT: 0, jumpDur: 0.12 * speedMultiplier(),
+            jumping: false, jumpT: 0, jumpDur: 0.143 * speedMultiplier(),
             jumpSX: wsp.cx, jumpSY: wsp.cy,
             tx: wsp.cx, ty: wsp.cy,
             frame: 0, frameTimer: 0,
@@ -850,11 +853,9 @@ exCloneState = function() {
         var e = enemies[i];
         if (e.type === 'spawn-timer') continue;
         if (e.type === 'greenball' || e.type === 'slick') continue;
-        var interval = EX_HOPS_PER_MOVE[e.type] || 4;
-        // Convert remaining frames to remaining player hops
-        var cd = (e.moveTimer !== undefined && e.moveInterval !== undefined)
-            ? Math.max(1, Math.round((e.moveInterval - e.moveTimer) / (e.moveInterval / interval)))
-            : interval;
+        var interval = EX_HOPS_PER_MOVE[e.type] || 1;
+        // With 1:1 ratio, enemy always moves next turn; countdown is always 1
+        var cd = interval;
         ens.push({ type: e.type, row: e.row, col: e.col, hops: e.hops || 0, countdown: cd });
     }
     var colored = 0;
@@ -950,7 +951,7 @@ function update() {
     if (!player.jumping && !player.dead && !discRide) {
         if (gameMode === 'rules') {
             aiMoveTimer++;
-            if (aiMoveTimer >= Math.max(2, Math.round(4 / speedMultiplier()))) {
+            if (aiMoveTimer >= Math.max(1, Math.round(2 / speedMultiplier()))) {
                 aiMoveTimer = 0;
                 var dir = computeAIMove();
                 if (dir) tryMove(dir);
