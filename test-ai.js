@@ -5,6 +5,7 @@
 // ─── Load shared AI module ───────────────────────────────────────────────────
 var player, enemies, cubeStates, discs, round, score;
 var aiTour, aiTourIdx, aiBoardSig, aiDetailPath, aiTourDots;
+var astarStats = { solved: 0, fallbacks: 0, totalNodes: 0, cacheHits: 0 };
 eval(require('fs').readFileSync(__dirname + '/qbert-ai.js', 'utf8'));
 
 // ─── Simulation constants ────────────────────────────────────────────────────
@@ -522,3 +523,8 @@ for (var i = 2; i < process.argv.length; i++) {
 console.log('Running ' + numRounds + ' rounds' + (verbose ? ' (verbose)' : '') + '...\n');
 var result = runGame(numRounds, verbose);
 console.log('\nFinal: rounds=' + result.rounds + ' score=' + result.score + ' deaths=' + result.deaths);
+if (astarStats.solved + astarStats.fallbacks > 0) {
+    console.log('A* stats: solved=' + astarStats.solved + ' fallbacks=' + astarStats.fallbacks +
+        ' avgNodes=' + Math.round(astarStats.totalNodes / (astarStats.solved + astarStats.fallbacks)) +
+        ' cacheHits=' + astarTourCacheHits + ' cacheMisses=' + astarTourCacheMisses);
+}
