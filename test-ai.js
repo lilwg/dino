@@ -267,24 +267,37 @@ function exApplyStochastic(st, outcomes) {
     }
 }
 
-function exBfsDist(r1, c1, r2, c2) {
-    if (r1 === r2 && c1 === c2) return 0;
-    var visited = {}; visited[r1+','+c1] = true;
-    var queue = [{r:r1, c:c1, d:0}];
-    while (queue.length > 0) {
-        var cur = queue.shift();
-        for (var k = 0; k < 4; k++) {
-            var dk = DIRS[DIR_KEYS[k]];
-            var nr = cur.r+dk.dr, nc = cur.c+dk.dc;
-            if (!isValidPos(nr,nc)) continue;
-            var key = nr+','+nc;
-            if (visited[key]) continue;
-            visited[key] = true;
-            if (nr === r2 && nc === c2) return cur.d+1;
-            queue.push({r:nr, c:nc, d:cur.d+1});
+var bfsDistTable = {};
+(function buildDistTable() {
+    var positions = [];
+    for (var r = 0; r < ROWS; r++)
+        for (var c = 0; c <= r; c++)
+            positions.push({ r: r, c: c });
+    for (var i = 0; i < positions.length; i++) {
+        var src = positions[i];
+        var key0 = src.r + ',' + src.c;
+        var dist = {}; dist[key0] = 0;
+        var queue = [src];
+        while (queue.length > 0) {
+            var cur = queue.shift();
+            var cd = dist[cur.r + ',' + cur.c];
+            for (var k = 0; k < 4; k++) {
+                var dk = DIRS[DIR_KEYS[k]];
+                var nr = cur.r + dk.dr, nc = cur.c + dk.dc;
+                if (!isValidPos(nr, nc)) continue;
+                var nk = nr + ',' + nc;
+                if (dist[nk] !== undefined) continue;
+                dist[nk] = cd + 1;
+                queue.push({ r: nr, c: nc });
+            }
         }
+        bfsDistTable[key0] = dist;
     }
-    return 99;
+})();
+
+function exBfsDist(r1, c1, r2, c2) {
+    var d = bfsDistTable[r1 + ',' + c1];
+    return d ? (d[r2 + ',' + c2] || 99) : 99;
 }
 
 function exTourCost(st) {
