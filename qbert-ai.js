@@ -239,6 +239,104 @@ function exBfsDist(r1, c1, r2, c2) {
     return d ? (d[r2 + ',' + c2] || 99) : 99;
 }
 
+// ─── Position indexing for bitmask operations ────────────────────────────────
+var POS_COUNT = ROWS * (ROWS + 1) / 2; // 28
+var posToIdx = [];  // flat: posToIdx[row * ROWS + col] = index (0..27)
+var idxToPos = [];  // index → [row, col]
+(function() {
+    for (var i = 0; i < ROWS * ROWS; i++) posToIdx.push(-1);
+    var idx = 0;
+    for (var r = 0; r < ROWS; r++)
+        for (var c = 0; c <= r; c++) {
+            posToIdx[r * ROWS + c] = idx;
+            idxToPos.push([r, c]);
+            idx++;
+        }
+})();
+
+// Precomputed flat distance matrix (28×28)
+var distMatrix = new Int8Array(POS_COUNT * POS_COUNT);
+(function() {
+    for (var i = 0; i < POS_COUNT; i++)
+        for (var j = 0; j < POS_COUNT; j++)
+            distMatrix[i * POS_COUNT + j] = exBfsDist(idxToPos[i][0], idxToPos[i][1],
+                                                       idxToPos[j][0], idxToPos[j][1]);
+})();
+
+// Adjacency list for each position (for Dijkstra)
+var posAdj = [];  // posAdj[i] = array of neighbor indices
+(function() {
+    for (var i = 0; i < POS_COUNT; i++) {
+        var adj = [];
+        var r = idxToPos[i][0], c = idxToPos[i][1];
+        for (var k = 0; k < 4; k++) {
+            var dk = DIRS[DIR_KEYS[k]];
+            var nr = r + dk.dr, nc = c + dk.dc;
+            if (isValidPos(nr, nc)) adj.push(posToIdx[nr * ROWS + nc]);
+        }
+        posAdj.push(adj);
+    }
+})();
+
+// Dijkstra from one source with weighted edges (completed cubes cost 3)
+// Returns distances to all 28 positions
+function dijkstraWeighted(srcIdx, completedBits) {
+    var dist = new Float32Array(POS_COUNT);
+    var visited = new Uint8Array(POS_COUNT);
+    for (var i = 0; i < POS_COUNT; i++) dist[i] = 999;
+    dist[srcIdx] = 0;
+    for (var iter = 0; iter < POS_COUNT; iter++) {
+        var u = -1, minD = 999;
+        for (var i = 0; i < POS_COUNT; i++) {
+            if (!visited[i] && dist[i] < minD) { minD = dist[i]; u = i; }
+        }
+        if (u < 0) break;
+        visited[u] = 1;
+        var adj = posAdj[u];
+        for (var a = 0; a < adj.length; a++) {
+            var v = adj[a];
+            if (visited[v]) continue;
+            var w = (completedBits[v >> 5] & (1 << (v & 31))) ? 3 : 1;
+            var nd = minD + w;
+            if (nd < dist[v]) dist[v] = nd;
+        }
+    }
+    return dist;
+}
+
+// Held-Karp optimal tour cost for small target sets
+// allDists: flat (N+1)×(N+1) distance matrix where index 0=start, 1..N=targets
+// N: number of targets (must be ≤ 10)
+function heldKarp(allDists, N) {
+    if (N === 0) return 0;
+    var M = N + 1; // total positions (start + targets)
+    if (N === 1) return allDists[0 * M + 1];
+    var FULL = (1 << N) - 1;
+    var dp = new Float32Array((FULL + 1) * N);
+    for (var i = 0; i < dp.length; i++) dp[i] = 999;
+    // Base: start → each single target
+    for (var i = 0; i < N; i++)
+        dp[(1 << i) * N + i] = allDists[0 * M + (i + 1)];
+    // Fill DP
+    for (var mask = 1; mask <= FULL; mask++) {
+        for (var last = 0; last < N; last++) {
+            if (!(mask & (1 << last))) continue;
+            var cost = dp[mask * N + last];
+            if (cost >= 998) continue;
+            for (var next = 0; next < N; next++) {
+                if (mask & (1 << next)) continue;
+                var nc = cost + allDists[(last + 1) * M + (next + 1)];
+                var idx = (mask | (1 << next)) * N + next;
+                if (nc < dp[idx]) dp[idx] = nc;
+            }
+        }
+    }
+    var best = 999;
+    for (var i = 0; i < N; i++)
+        if (dp[FULL * N + i] < best) best = dp[FULL * N + i];
+    return best;
+}
+
 // ─── Expectimax search ───────────────────────────────────────────────────────
 function exCubeAt(st, row, col) {
     for (var i = 0; i < st.cubes.length; i++)
@@ -411,16 +509,61 @@ function exCountStoch(st) {
 function exTourCost(st) {
     var lv = st.lv !== undefined ? st.lv : arcadeLevel();
     var isRevert = lv >= 3;
-    var remaining = [];
+
+    // Collect unique remaining target positions and count multi-hits
+    var targetIdxs = [];
+    var targetSeen = {};
+    var totalHits = 0;
     for (var i = 0; i < st.cubes.length; i++) {
         var hitsNeeded = st.tgt - st.cubes[i].state;
         if (hitsNeeded <= 0) continue;
-        for (var h = 0; h < hitsNeeded; h++)
-            remaining.push(st.cubes[i]);
+        totalHits += hitsNeeded;
+        var idx = posToIdx[st.cubes[i].row * ROWS + st.cubes[i].col];
+        if (!targetSeen[idx]) {
+            targetSeen[idx] = true;
+            targetIdxs.push(idx);
+        }
     }
-    if (remaining.length === 0) return 0;
+    if (targetIdxs.length === 0) return 0;
 
-    // On revert levels, estimate crossing penalty per hop
+    var startIdx = posToIdx[st.pr * ROWS + st.pc];
+    var N = targetIdxs.length;
+
+    // Use Held-Karp for small N (≤ 10 unique targets)
+    if (N <= 10) {
+        var allPos = [startIdx].concat(targetIdxs);
+        var M = allPos.length;
+        var dists = new Float32Array(M * M);
+
+        if (isRevert) {
+            // Build completed bitmask (using array for >32 positions)
+            var completedBits = new Int32Array(1);
+            for (var i = 0; i < st.cubes.length; i++) {
+                if (st.cubes[i].state >= st.tgt) {
+                    var ci = posToIdx[st.cubes[i].row * ROWS + st.cubes[i].col];
+                    completedBits[ci >> 5] |= (1 << (ci & 31));
+                }
+            }
+            // Dijkstra from each position with weighted edges
+            for (var s = 0; s < M; s++) {
+                var dd = dijkstraWeighted(allPos[s], completedBits);
+                for (var d = 0; d < M; d++)
+                    dists[s * M + d] = dd[allPos[d]];
+            }
+        } else {
+            for (var s = 0; s < M; s++)
+                for (var d = 0; d < M; d++)
+                    dists[s * M + d] = distMatrix[allPos[s] * POS_COUNT + allPos[d]];
+        }
+
+        var cost = heldKarp(dists, N);
+        // Extra cost for multi-hit cubes (need to leave and revisit)
+        var extraHits = totalHits - N;
+        cost += extraHits * 2;
+        return cost;
+    }
+
+    // Fall back to greedy nearest-neighbor for large N
     var completedFrac = 0;
     if (isRevert) {
         var numCompleted = 0;
@@ -428,18 +571,22 @@ function exTourCost(st) {
             if (st.cubes[i].state >= st.tgt) numCompleted++;
         completedFrac = numCompleted / st.cubes.length;
     }
-
     var totalDist = 0;
     var cr = st.pr, cc = st.pc;
-    var used = new Array(remaining.length);
+    var used = new Array(totalHits);
+    var remaining = [];
+    for (var i = 0; i < st.cubes.length; i++) {
+        var hitsNeeded2 = st.tgt - st.cubes[i].state;
+        if (hitsNeeded2 <= 0) continue;
+        for (var h = 0; h < hitsNeeded2; h++)
+            remaining.push(st.cubes[i]);
+    }
     for (var step = 0; step < remaining.length; step++) {
         var bestIdx = -1, bestDist = 99;
         for (var j = 0; j < remaining.length; j++) {
             if (used[j]) continue;
             var d = exBfsDist(cr, cc, remaining[j].row, remaining[j].col);
             if (d === 0) d = 2;
-            // On revert levels, each hop has probability completedFrac of crossing
-            // a completed cube, costing 2 extra (uncomplete + re-complete later)
             if (isRevert && d > 1) d += Math.round((d - 1) * completedFrac * 2);
             if (d < bestDist) { bestDist = d; bestIdx = j; }
         }
@@ -482,8 +629,7 @@ function exLeafValue(st) {
             var cube = exCubeAt(st, nr, nc);
             if (cube && cube.state >= st.tgt) completedNeighbors++;
         }
-        // Each completed neighbor is a potential trap — penalize heavily
-        val -= completedNeighbors * 30;
+        val -= completedNeighbors * 20;
     }
     return val;
 }
