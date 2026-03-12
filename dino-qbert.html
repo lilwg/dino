@@ -244,19 +244,46 @@ function cubeAt(row, col) {
     return null;
 }
 
-// Target state depends on round
-function targetState() { return round >= 5 ? 2 : 1; }
+// Arcade level progression: 9 levels × 4 rounds each. Our flat `round` maps:
+//   Round 1-4  → Level 1: 1 hit, stays      (S→D, D→D)
+//   Round 5-8  → Level 2: 2 hits, stays      (S→I→D, D→D)
+//   Round 9-12 → Level 3: 1 hit, toggles     (S→D, D→S)
+//   Round 13-16→ Level 4: 2 hits, D→I toggle (S→I→D, D→I)
+//   Round 17+  → Level 5+: 2 hits, D→S reset (S→I→D, D→S)
+function arcadeLevel() { return Math.min(9, Math.ceil(round / 4)); }
+
+function targetState() {
+    var lv = arcadeLevel();
+    return (lv === 1 || lv === 3) ? 1 : 2;
+}
+
+// Returns next cube state after stomping, per arcade level rules
+function nextCubeState(state) {
+    var lv = arcadeLevel();
+    var tgt = targetState();
+    if (lv <= 2) {
+        // Levels 1-2: increment toward target, then stay
+        return Math.min(state + 1, tgt);
+    } else if (lv === 3) {
+        // Level 3: toggle between 0 and 1
+        return state === 0 ? 1 : 0;
+    } else if (lv === 4) {
+        // Level 4: 0→1→2, but 2→1 (reverts to intermediate)
+        return state === 2 ? 1 : state + 1;
+    } else {
+        // Level 5+: 0→1→2→0 (full cycle)
+        return (state + 1) % 3;
+    }
+}
 
 function stompCube(row, col) {
     var cube = cubeAt(row, col);
     if (!cube) return;
     var tgt = targetState();
-    if (cube.state < tgt) {
-        cube.state++;
-        score += 25;
-        // Rounds 3-4: stepping on state=1 in one-stomp mode resets it (flip-flop — not implemented as flip here; round 3-4 are still 1-stomp but with different visuals)
-        // Only round 5+ uses 2-stomp; that's handled by targetState()
-        checkExtraLife();
+    var next = nextCubeState(cube.state);
+    if (next !== cube.state) {
+        cube.state = next;
+        if (cube.state <= tgt && cube.state > 0) { score += 25; checkExtraLife(); }
     }
 }
 
@@ -345,7 +372,7 @@ function initRound() {
 
     enemies    = [];
     frameCount = 0;
-    roundMsg   = { text: 'ROUND ' + round, timer: 90 };
+    roundMsg   = { text: 'LV ' + arcadeLevel() + ' ROUND ' + ((round - 1) % 4 + 1), timer: 90 };
     swearBubble = null;
     discRide    = null;
     aiDetailPath = [];
@@ -786,7 +813,7 @@ function updatePlayer() {
                 round++;
                 levelWon = true;
                 DinoSounds.reached();
-                roundMsg = { text: 'ROUND ' + round, timer: 110 };
+                roundMsg = { text: 'LV ' + arcadeLevel() + ' ROUND ' + ((round - 1) % 4 + 1), timer: 110 };
                 var savedRound = round;
                 setTimeout(function () {
                     if (round === savedRound) initRound();
@@ -941,11 +968,11 @@ function buildTour() {
 
 // ── Expectimax with per-enemy move countdowns ──
 // Each turn = one player hop. Enemies move only when their countdown reaches 0.
-// Countdown values derived from real-time intervals / player hop frames (~8).
+// Player hop = ~12 frames (8 jump + 4 aiMoveTimer wait).
 var EX_HOPS_PER_MOVE = {
-    egg:   4,   // 35 frames / 8 ≈ 4 player hops
-    coily: 4,   // 28 frames / 8 ≈ 4 player hops
-    redball: 4  // 30 frames / 8 ≈ 4 player hops
+    egg:   3,   // 35 frames / 12 ≈ 3 player hops
+    coily: 2,   // 28 frames / 12 ≈ 2 player hops
+    redball: 3  // 30 frames / 12 ≈ 3 player hops
 };
 
 function exCloneState() {
@@ -1085,7 +1112,13 @@ function exPlayerMove(st, dirKey, stochOutcome) {
     }
     st.pr = nr; st.pc = nc;
     var cube = exCubeAt(st, nr, nc);
-    if (cube && cube.state < st.tgt) { cube.state++; st.score += 25; st.cubesColored++; }
+    if (cube) {
+        var oldC = Math.min(cube.state, st.tgt);
+        cube.state = nextCubeState(cube.state);
+        var newC = Math.min(cube.state, st.tgt);
+        st.cubesColored += newC - oldC;
+        if (newC > oldC) st.score += 25;
+    }
     if (st.cubesColored >= st.cubes.length * st.tgt) {
         st.score += 1000; st.enemies = []; return true;
     }
@@ -1756,7 +1789,7 @@ function drawHUD() {
 
     // Round indicator center-top
     ctx.textAlign = 'center';
-    ctx.fillText('ROUND ' + round, CW / 2, 18);
+    ctx.fillText('LV ' + arcadeLevel() + '-' + ((round - 1) % 4 + 1), CW / 2, 18);
     ctx.textAlign = 'left';
 }
 
