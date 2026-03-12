@@ -1095,7 +1095,12 @@ function exLeafValue(st) {
             queue.push({r:nr, c:nc, d:cur.d+1});
         }
     }
-    return st.cubesColored * 80 + st.score * 0.3 + 200 - nearDist * 10;
+    // Progress: heavily reward coloring cubes, especially when close to finishing
+    var remaining = st.cubes.length - st.cubesColored;
+    var completionRatio = st.cubesColored / st.cubes.length;
+    // Urgency bonus: finishing soon is worth a lot (sigmoid-like ramp)
+    var urgency = completionRatio > 0.8 ? 500 * completionRatio : 0;
+    return st.cubesColored * 150 + urgency + st.score * 0.3 + 200 - nearDist * 15;
 }
 
 // Expectimax: at each depth, player picks best move (max), then we average
@@ -1134,9 +1139,11 @@ function expectimax(st, depth) {
             totalSurv += result.survivalProb * prob;
         }
 
-        // Composite score: survival is paramount, then value
-        var composite = totalSurv * 10000 + totalVal;
-        if (composite > bestSurv * 10000 + bestVal) {
+        // Composite: tier survival so small differences don't override progress
+        var survTier = totalSurv >= 0.8 ? 2 : totalSurv >= 0.5 ? 1 : 0;
+        var composite = survTier * 100000 + totalVal;
+        var bestTier = bestSurv >= 0.8 ? 2 : bestSurv >= 0.5 ? 1 : 0;
+        if (composite > bestTier * 100000 + bestVal) {
             bestVal = totalVal; bestSurv = totalSurv; bestDir = DIR_KEYS[k];
         }
     }
@@ -1216,7 +1223,11 @@ function computeAIMove() {
         if (!isValidPos(player.row + dk.dr, player.col + dk.dc)) continue;
 
         var ev = expectimaxEval(DIR_KEYS[k]);
-        var composite = ev.survivalProb * 10000 + ev.value;
+        // Survival is critical but shouldn't paralyze progress:
+        // - Bucket survival into tiers so small differences don't override value
+        // - Tier 0: >= 0.8 (safe enough), Tier 1: >= 0.5 (risky), Tier 2: < 0.5 (desperate)
+        var survTier = ev.survivalProb >= 0.8 ? 2 : ev.survivalProb >= 0.5 ? 1 : 0;
+        var composite = survTier * 100000 + ev.value;
         if (composite > bestComposite) {
             bestComposite = composite;
             bestSurv = ev.survivalProb;
