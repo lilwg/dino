@@ -70,18 +70,43 @@ function speedMultiplier() {
     return Math.min(2.0, 1.0 + (lv - 1) * 0.2);
 }
 
-function discConfig() {
+// Disc counts per level/round from original arcade manual
+function discCount() {
     var lv = arcadeLevel();
     var r = ((round - 1) % 4);
-    if (lv === 1) {
-        return [{side: 0, row: [2,3,4,2][r]}, {side: 1, row: [3,2,3,4][r]}];
-    } else if (lv === 2) {
-        return [{side: 0, row: [2,3,2,3][r]}, {side: 1, row: [3,2,4,3][r]}, {side: [0,1,0,1][r], row: [4,4,3,2][r]}];
-    } else if (lv <= 4) {
-        return [{side: 0, row: 2}, {side: 1, row: 2}, {side: 0, row: [4,3,5,4][r]}, {side: 1, row: [3,4,4,5][r]}];
-    } else {
-        return [{side: 0, row: 2}, {side: 1, row: 2}, {side: 0, row: 4}, {side: 1, row: 4}, {side: [0,1,0,1][r], row: [3,3,5,5][r]}];
-    }
+    if (lv === 1) return 2;
+    if (lv === 2) return [3, 3, 3, 2][r];
+    if (lv === 3) return [4, 4, 3, 3][r];
+    if (lv === 4) return [6, 6, 5, 4][r];
+    return [7, 6, 6, 5][r]; // Level 5+
+}
+
+function discConfig() {
+    var count = discCount();
+    var r = ((round - 1) % 4);
+    // Build disc placements, varying positions per round
+    var result = [];
+    result.push({side: 0, row: [2,3,2,3][r]});
+    result.push({side: 1, row: [3,2,3,2][r]});
+    if (count >= 3) result.push({side: [0,1,0,1][r], row: [4,4,5,4][r]});
+    if (count >= 4) result.push({side: [1,0,1,0][r], row: [5,5,4,5][r]});
+    if (count >= 5) result.push({side: 0, row: [5,4,3,5][r]});
+    if (count >= 6) result.push({side: 1, row: [4,5,5,3][r]});
+    if (count >= 7) result.push({side: [0,1,0,1][r], row: [3,3,4,4][r]});
+    return result;
+}
+
+// Round completion bonus: 750 + 250*round, max 5000
+function roundCompletionBonus() {
+    return Math.min(5000, 750 + 250 * round);
+}
+
+// Unused disc bonus: 50 pts per remaining disc
+function unusedDiscBonus() {
+    var count = 0;
+    for (var i = 0; i < discs.length; i++)
+        if (discs[i].active) count++;
+    return count * 50;
 }
 
 // ─── BFS pathfinding ─────────────────────────────────────────────────────────
@@ -655,25 +680,22 @@ function exPlayerMove(st, dirKey, stochOutcome) {
             if (!disc.active) continue;
             if (disc.side === 0 && dirKey === 'UL' && st.pc === 0 && st.pr === disc.row) {
                 disc.active = false;
-                st.score += 600;
-                for (var i = st.enemies.length - 1; i >= 0; i--) {
-                    if (st.enemies[i].type === 'coily' || st.enemies[i].type === 'egg') {
-                        st.score += 300;
-                        st.enemies.splice(i, 1);
-                    }
+                // 500pts per Coily/egg lured off; clear ALL enemies
+                for (var i = 0; i < st.enemies.length; i++) {
+                    if (st.enemies[i].type === 'coily' || st.enemies[i].type === 'egg')
+                        st.score += 500;
                 }
+                st.enemies = [];
                 st.pr = 0; st.pc = 0;
                 return true;
             }
             if (disc.side === 1 && dirKey === 'UR' && st.pc === st.pr && st.pr === disc.row) {
                 disc.active = false;
-                st.score += 600;
-                for (var i = st.enemies.length - 1; i >= 0; i--) {
-                    if (st.enemies[i].type === 'coily' || st.enemies[i].type === 'egg') {
-                        st.score += 300;
-                        st.enemies.splice(i, 1);
-                    }
+                for (var i = 0; i < st.enemies.length; i++) {
+                    if (st.enemies[i].type === 'coily' || st.enemies[i].type === 'egg')
+                        st.score += 500;
                 }
+                st.enemies = [];
                 st.pr = 0; st.pc = 0;
                 return true;
             }
@@ -697,10 +719,12 @@ function exPlayerMove(st, dirKey, stochOutcome) {
         cube.state = nextCubeState(cube.state);
         var newC = Math.min(cube.state, st.tgt);
         st.cubesColored += newC - oldC;
-        if (newC > oldC) st.score += 25;
+        if (newC > oldC) {
+            st.score += (cube.state === st.tgt) ? 25 : 15;
+        }
     }
     if (st.cubesColored >= st.cubes.length * st.tgt) {
-        st.score += 1000; st.enemies = []; return true;
+        st.score += EX_WIN; st.enemies = []; return true;
     }
     exMoveEnemies(st, stochOutcome);
     return st.alive;
