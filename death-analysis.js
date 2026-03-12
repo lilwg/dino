@@ -26,25 +26,24 @@ for (var g = 0; g < NUM_GAMES; g++) {
         var moveNum = 0;
         var recentMoves = [];
 
-        for (var frame = 0; frame < 20000; frame++) {
+        for (var turn = 0; turn < 500; turn++) {
             var prevAlive = !player.dead;
             var prevRow = player.row, prevCol = player.col;
-            var prevJumping = player.jumping;
-            
-            // Snapshot enemies before frame
+
+            // Snapshot enemies before turn
             var enemySnap = [];
             for (var ei = 0; ei < enemies.length; ei++) {
                 var e = enemies[ei];
                 if (e.type === 'spawn-timer') continue;
-                enemySnap.push({ type: e.type, row: e.row, col: e.col, jumping: e.jumping });
+                enemySnap.push({ type: e.type, row: e.row, col: e.col });
             }
 
-            var aiMove = simFrame();
+            var aiMove = simTurn();
 
             if (aiMove) {
                 moveNum++;
                 recentMoves.push({
-                    move: moveNum, frame: frame, dir: aiMove,
+                    move: moveNum, turn: turn, dir: aiMove,
                     pRow: player.row, pCol: player.col,
                     remaining: countRemaining(),
                     enemies: enemySummary()
@@ -55,9 +54,8 @@ for (var g = 0; g < NUM_GAMES; g++) {
             if (prevAlive && player.dead) {
                 // Death happened this frame!
                 var deathInfo = {
-                    game: g + 1, round: round, frame: frame, moveNum: moveNum,
+                    game: g + 1, round: round, turn: turn, moveNum: moveNum,
                     playerPos: prevRow + ',' + prevCol,
-                    playerJumping: prevJumping,
                     playerNewPos: player.row + ',' + player.col,
                     enemiesAtDeath: enemySnap,
                     recentMoves: recentMoves.slice(),
@@ -98,7 +96,7 @@ for (var g = 0; g < NUM_GAMES; g++) {
             }
 
             if (lives <= 0) break;
-            if (levelWon) { break; }
+            if (levelWon) break;
         }
         if (lives <= 0) break;
         if (levelWon) round--; // for-loop will increment
@@ -131,17 +129,16 @@ for (var r in byRound) console.log('  Round ' + r + ': ' + byRound[r]);
 console.log('\n=== DEATH DETAILS ===');
 for (var i = 0; i < allDeaths.length; i++) {
     var d = allDeaths[i];
-    console.log('\nDeath #' + (i+1) + ': Game ' + d.game + ', Round ' + d.round + 
-        ', Frame ' + d.frame + ', Cause: ' + d.cause);
-    console.log('  Player at (' + d.playerPos + '), jumping=' + d.playerJumping + 
-        ', lives left=' + d.livesLeft);
-    console.log('  Enemies: ' + d.enemiesAtDeath.map(function(e) { 
-        return e.type + '@(' + e.row + ',' + e.col + ')' + (e.jumping ? '[jumping]' : '');
+    console.log('\nDeath #' + (i+1) + ': Game ' + d.game + ', Round ' + d.round +
+        ', Turn ' + d.turn + ', Cause: ' + d.cause);
+    console.log('  Player at (' + d.playerPos + '), lives left=' + d.livesLeft);
+    console.log('  Enemies: ' + d.enemiesAtDeath.map(function(e) {
+        return e.type + '@(' + e.row + ',' + e.col + ')';
     }).join(', '));
     console.log('  Recent moves:');
     for (var j = 0; j < d.recentMoves.length; j++) {
         var m = d.recentMoves[j];
-        console.log('    Move ' + m.move + ': ' + m.dir + ' -> (' + m.pRow + ',' + m.pCol + 
+        console.log('    Move ' + m.move + ': ' + m.dir + ' -> (' + m.pRow + ',' + m.pCol +
             ')  remaining=' + m.remaining + '  enemies: ' + m.enemies);
     }
 }

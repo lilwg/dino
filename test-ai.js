@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// Q*bert AI test harness — simulates full games and prints each move
+// Q*bert AI test harness — turn-based simulation (matches original arcade logic)
+// Each turn: player hops, then all enemies hop once, collisions checked.
 
 // ─── Core constants ────────────────────────────────────────────────────────────
 var ROWS = 7;
@@ -8,7 +9,7 @@ var DIR_KEYS = ['UL', 'UR', 'DL', 'DR'];
 
 // ─── Global game state ─────────────────────────────────────────────────────────
 var player, enemies, cubeStates, discs, round, score;
-var aiTour, aiTourIdx, aiBoardSig, aiDetailPath, aiTourDots, aiMoveTimer;
+var aiTour, aiTourIdx, aiBoardSig, aiDetailPath, aiTourDots;
 
 // ─── Board functions ───────────────────────────────────────────────────────────
 function isValidPos(row, col) {
@@ -162,7 +163,9 @@ function buildTour() {
     aiBoardSig = boardSig();
 }
 
-// ─── Expectimax ────────────────────────────────────────────────────────────────
+// ─── Turn-based Expectimax ─────────────────────────────────────────────────────
+// No frame counters, no moveTimer/moveDelay. Each turn: player hops once,
+// then every enemy hops once. Enemies are independent per turn.
 
 // Precompute all pairwise BFS distances
 var bfsDistTable = {};
@@ -204,12 +207,7 @@ function exCubeAt(st, row, col) {
     return null;
 }
 
-// Frame-accurate expectimax state. Each enemy has exact moveTimer/moveDelay
-// matching the real game. A "turn" = one AI decision cycle:
-//   1. Player jumps to new position (takes jumpFrames frames)
-//   2. During those frames + aiDelay wait, enemy timers advance
-//   3. Enemies that hit their moveDelay during this window move
-
+// Clone real game state into expectimax state — no frame tracking needed
 function exCloneState() {
     var tgt = targetState();
     var cs = new Array(cubeStates.length);
@@ -220,20 +218,14 @@ function exCloneState() {
         var e = enemies[i];
         if (e.type === 'spawn-timer') continue;
         if (e.type === 'greenball' || e.type === 'slick') continue;
-        ens.push({ type: e.type, row: e.row, col: e.col, hops: e.hops || 0,
-                   moveTimer: e.moveTimer || 0, moveDelay: e.moveDelay || 30,
-                   jumping: e.jumping || false, jumpFramesLeft: e.jumping ? Math.ceil((1 - e.jumpT) / e.jumpDur) : 0 });
+        ens.push({ type: e.type, row: e.row, col: e.col, hops: e.hops || 0 });
     }
     var colored = 0;
     for (var i = 0; i < cs.length; i++) if (cs[i].state >= tgt) colored++;
-    var lDiscRow = discCatchRow(0), rDiscRow = discCatchRow(1);
-    var aiDelay = Math.max(8, 22 - round * 2);
-    var jumpFrames = Math.ceil(1 / 0.13); // player jump duration in frames
     return { pr: player.row, pc: player.col, cubes: cs, enemies: ens,
              alive: true, score: 0, cubesColored: colored, tgt: tgt,
              discs: [discs[0].active, discs[1].active],
-             discRows: [lDiscRow, rDiscRow],
-             framesPerTurn: aiDelay + jumpFrames - 1 };
+             discRows: [discCatchRow(0), discCatchRow(1)] };
 }
 
 function exClone(st) {
@@ -243,91 +235,69 @@ function exClone(st) {
     var ens = [];
     for (var i = 0; i < st.enemies.length; i++) {
         var e = st.enemies[i];
-        ens.push({ type: e.type, row: e.row, col: e.col, hops: e.hops,
-                   moveTimer: e.moveTimer, moveDelay: e.moveDelay,
-                   jumping: e.jumping, jumpFramesLeft: e.jumpFramesLeft });
+        ens.push({ type: e.type, row: e.row, col: e.col, hops: e.hops });
     }
     return { pr: st.pr, pc: st.pc, cubes: cs, enemies: ens,
              alive: st.alive, score: st.score, cubesColored: st.cubesColored, tgt: st.tgt,
-             discs: [st.discs[0], st.discs[1]], discRows: st.discRows,
-             framesPerTurn: st.framesPerTurn };
+             discs: [st.discs[0], st.discs[1]], discRows: st.discRows };
 }
 
-// Advance enemy timers by N frames, moving enemies when their timer fires.
-// stochOutcome: bit field for random enemy directions (DL=0, DR=1)
-function exAdvanceEnemies(st, frames, stochOutcome) {
+// Move all enemies once. stochOutcome: bit field for random directions (DL=0, DR=1)
+function exMoveEnemies(st, stochOutcome) {
     var stochBit = 0;
-    for (var f = 0; f < frames; f++) {
-        for (var i = st.enemies.length - 1; i >= 0; i--) {
-            var e = st.enemies[i];
-            if (e.jumping) {
-                e.jumpFramesLeft--;
-                if (e.jumpFramesLeft <= 0) {
-                    e.jumping = false;
-                    if (e.row === st.pr && e.col === st.pc) {
-                        if (e.type === 'coily' || e.type === 'redball' || e.type === 'egg') {
-                            st.alive = false; return;
-                        }
-                    }
-                }
-                continue;
+    for (var i = st.enemies.length - 1; i >= 0; i--) {
+        var e = st.enemies[i];
+        if (e.type === 'coily') {
+            var bestDir = null, bestDist = Infinity;
+            for (var k = 0; k < 4; k++) {
+                var dk = DIRS[DIR_KEYS[k]];
+                var er = e.row + dk.dr, ec = e.col + dk.dc;
+                if (!isValidPos(er, ec)) continue;
+                var dist = Math.abs(st.pr - er) + Math.abs(st.pc - ec);
+                if (dist < bestDist) { bestDist = dist; bestDir = k; }
             }
-            e.moveTimer++;
-            if (e.moveTimer < e.moveDelay) continue;
-            e.moveTimer = 0;
-
-            if (e.type === 'coily') {
-                var bestDir = null, bestDist = Infinity;
-                for (var k = 0; k < 4; k++) {
-                    var dk = DIRS[DIR_KEYS[k]];
-                    var er = e.row + dk.dr, ec = e.col + dk.dc;
-                    if (!isValidPos(er, ec)) continue;
-                    var dist = Math.abs(st.pr - er) + Math.abs(st.pc - ec);
-                    if (dist < bestDist) { bestDist = dist; bestDir = k; }
-                }
-                if (bestDir !== null) {
-                    var dd = DIRS[DIR_KEYS[bestDir]];
-                    e.row += dd.dr; e.col += dd.dc;
-                    e.jumping = true;
-                    e.jumpFramesLeft = 8;
-                }
-            } else if (e.type === 'egg') {
-                var dir = ((stochOutcome >> stochBit) & 1) ? 'DR' : 'DL';
-                stochBit++;
-                var dd = DIRS[dir];
-                var nr = e.row + dd.dr, nc = e.col + dd.dc;
-                if (isValidPos(nr, nc)) {
-                    e.row = nr; e.col = nc;
-                    e.hops++;
-                    e.jumping = true;
-                    e.jumpFramesLeft = 8;
-                    if (e.hops >= 6 || nr >= ROWS - 1) {
-                        e.type = 'coily';
-                        e.moveDelay = Math.max(12, 35 - round * 2);
-                    }
-                } else {
+            if (bestDir !== null) {
+                var dd = DIRS[DIR_KEYS[bestDir]];
+                e.row += dd.dr; e.col += dd.dc;
+            }
+        } else if (e.type === 'egg') {
+            var dir = ((stochOutcome >> stochBit) & 1) ? 'DR' : 'DL';
+            stochBit++;
+            var dd = DIRS[dir];
+            var nr = e.row + dd.dr, nc = e.col + dd.dc;
+            if (isValidPos(nr, nc)) {
+                e.row = nr; e.col = nc;
+                e.hops++;
+                if (e.hops >= 6 || nr >= ROWS - 1) {
                     e.type = 'coily';
-                    e.moveDelay = Math.max(12, 35 - round * 2);
                 }
-            } else if (e.type === 'redball') {
-                var dir = ((stochOutcome >> stochBit) & 1) ? 'DR' : 'DL';
-                stochBit++;
-                var dd = DIRS[dir];
-                var nr = e.row + dd.dr, nc = e.col + dd.dc;
-                if (isValidPos(nr, nc)) {
-                    e.row = nr; e.col = nc;
-                    e.jumping = true;
-                    e.jumpFramesLeft = 9;
-                } else {
-                    st.enemies.splice(i, 1);
-                }
+            } else {
+                e.type = 'coily';
+            }
+        } else if (e.type === 'redball') {
+            var dir = ((stochOutcome >> stochBit) & 1) ? 'DR' : 'DL';
+            stochBit++;
+            var dd = DIRS[dir];
+            var nr = e.row + dd.dr, nc = e.col + dd.dc;
+            if (isValidPos(nr, nc)) {
+                e.row = nr; e.col = nc;
+            } else {
+                st.enemies.splice(i, 1);
             }
         }
-        if (!st.alive) return;
+    }
+    // Check collisions after all enemies move
+    for (var i = 0; i < st.enemies.length; i++) {
+        var e = st.enemies[i];
+        if (e.row === st.pr && e.col === st.pc) {
+            if (e.type === 'coily' || e.type === 'redball' || e.type === 'egg') {
+                st.alive = false; return;
+            }
+        }
     }
 }
 
-// Execute one AI turn: player moves, then simulate frames for enemies
+// Execute one turn: player moves, then all enemies move once
 function exPlayerMove(st, dirKey, stochOutcome) {
     if (!st.alive) return false;
     var d = DIRS[dirKey];
@@ -365,27 +335,26 @@ function exPlayerMove(st, dirKey, stochOutcome) {
     if (st.cubesColored >= st.cubes.length) {
         st.score += 1000; st.enemies = []; return true;
     }
+    // Check collision with enemies at landing position
     for (var i = 0; i < st.enemies.length; i++) {
         var e = st.enemies[i];
-        if (e.jumping) continue;
         if (e.row === nr && e.col === nc) {
             if (e.type === 'coily' || e.type === 'redball' || e.type === 'egg') {
                 st.alive = false; return false;
             }
         }
     }
-    exAdvanceEnemies(st, st.framesPerTurn, stochOutcome);
+    // All enemies move once
+    exMoveEnemies(st, stochOutcome);
     return st.alive;
 }
 
-// Count stochastic enemies that will move during this turn
+// Count stochastic enemies — no timer check needed, every enemy moves every turn
 function exCountStoch(st) {
     var count = 0;
     for (var i = 0; i < st.enemies.length; i++) {
         var e = st.enemies[i];
-        if (e.type === 'coily') continue;
-        if (e.jumping) continue;
-        if (e.moveTimer + st.framesPerTurn >= e.moveDelay) count++;
+        if (e.type === 'egg' || e.type === 'redball') count++;
     }
     return Math.min(count, 5);
 }
@@ -414,14 +383,14 @@ function exTourCost(st) {
     return totalDist;
 }
 
-// State hash for memoization
+// State hash for memoization — no moveTimer/jumping state needed
 function exStateKey(st, depth) {
     var k = st.pr + ',' + st.pc + '|';
     for (var i = 0; i < st.cubes.length; i++) k += st.cubes[i].state;
     k += '|';
     for (var i = 0; i < st.enemies.length; i++) {
         var e = st.enemies[i];
-        k += e.type[0] + e.row + ',' + e.col + ',' + e.moveTimer + ',' + (e.jumping?1:0) + ';';
+        k += e.type[0] + e.row + ',' + e.col + ';';
     }
     k += '|' + depth + '|' + (st.discs[0] ? 1 : 0) + (st.discs[1] ? 1 : 0);
     return k;
@@ -495,7 +464,6 @@ function expectimaxEval(dirKey) {
 
 function computeAIMove() {
     var tgt = targetState();
-    var danger = buildDangerMaps();
 
     // Expectimax handles disc escapes natively
     exMemoTable = {}; // Fresh memo per AI decision
@@ -516,9 +484,9 @@ function computeAIMove() {
     return bestDir || 'DL';
 }
 
-// ─── Game simulation (frame-based, matches real game exactly) ─────────────────
+// ─── Turn-based game simulation ────────────────────────────────────────────────
 
-var lives, extraLifeGiven, levelWon, frameCount, discRide;
+var lives, extraLifeGiven, levelWon, turnCount;
 
 function checkExtraLife() {
     if (!extraLifeGiven && score >= 8000) { extraLifeGiven = true; lives++; }
@@ -538,26 +506,20 @@ function initRound() {
         for (var c = 0; c <= r; c++)
             cubeStates.push({ row: r, col: c, state: 0 });
 
-    player = {
-        row: 0, col: 0, px: 0, py: 0,
-        jumping: false, jumpT: 0, jumpDur: 0.13,
-        jumpSX: 0, jumpSY: 0, tx: 0, ty: 0,
-        dead: false, deathTimer: 0
-    };
+    player = { row: 0, col: 0, dead: false, deathTimer: 0 };
     stompCube(0, 0);
 
     discs = [{ side: 0, active: true }, { side: 1, active: true }];
     enemies = [];
-    frameCount = 0;
-    discRide = null;
-    aiDetailPath = []; aiTourDots = []; aiMoveTimer = 0;
+    turnCount = 0;
+    aiDetailPath = []; aiTourDots = [];
     aiTour = []; aiTourIdx = 0; aiBoardSig = '';
 
-    // Same spawn schedule as real game
-    scheduleSpawn(180);
-    scheduleSpawn(90, 'redball');
-    if (round >= 3) scheduleSpawn(240, 'greenball');
-    if (round >= 4) scheduleSpawn(360, 'slick');
+    // Spawn timers in turns (not frames)
+    scheduleSpawn(8);              // Coily egg
+    scheduleSpawn(4, 'redball');
+    if (round >= 3) scheduleSpawn(10, 'greenball');
+    if (round >= 4) scheduleSpawn(15, 'slick');
 }
 
 function scheduleSpawn(delay, forcedType) {
@@ -574,38 +536,28 @@ function spawnEnemy(forcedType) {
     }
     var spawnRow = (type === 'redball' || type === 'greenball') ? 1 : 0;
     var spawnCol = (type === 'redball' || type === 'greenball') ? Math.floor(Math.random() * 2) : 0;
-    var baseSpeed = Math.max(20, 50 - round * 3);
 
     if (type === 'egg') {
-        enemies.push({ type: 'egg', row: 0, col: 0, hops: 0,
-            jumping: false, jumpT: 0, jumpDur: 0.14,
-            moveTimer: 0, moveDelay: baseSpeed + 10 });
+        enemies.push({ type: 'egg', row: 0, col: 0, hops: 0 });
     } else if (type === 'redball') {
-        enemies.push({ type: 'redball', row: spawnRow, col: spawnCol, hops: 0,
-            jumping: false, jumpT: 0, jumpDur: 0.12,
-            moveTimer: 0, moveDelay: baseSpeed + 6 });
+        enemies.push({ type: 'redball', row: spawnRow, col: spawnCol });
     } else if (type === 'greenball') {
-        enemies.push({ type: 'greenball', row: spawnRow, col: spawnCol, hops: 0,
-            jumping: false, jumpT: 0, jumpDur: 0.12,
-            moveTimer: 0, moveDelay: baseSpeed + 8 });
+        enemies.push({ type: 'greenball', row: spawnRow, col: spawnCol });
     } else if (type === 'slick') {
-        enemies.push({ type: 'slick', row: spawnRow, col: spawnCol, hops: 0,
-            jumping: false, jumpT: 0, jumpDur: 0.12,
-            moveTimer: 0, moveDelay: baseSpeed + 18 });
+        enemies.push({ type: 'slick', row: spawnRow, col: spawnCol });
     }
 }
 
 function killPlayer() {
     if (player.dead) return;
     player.dead = true;
-    player.deathTimer = 100;
+    player.deathTimer = 3; // 3 turns of death
     lives--;
 }
 
 function useDisc(side) {
     discs[side].active = false;
     score += 300; checkExtraLife();
-    // Kill Coily/egg
     var survived = [];
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
@@ -613,43 +565,40 @@ function useDisc(side) {
         else survived.push(e);
     }
     enemies = survived;
-    // Disc ride — player returns to top
-    discRide = { timer: 56 }; // ~56 frames
-    player.jumping = true;
-    scheduleSpawn(180);
+    player.row = 0; player.col = 0;
+    stompCube(0, 0);
+    scheduleSpawn(8);
 }
 
 function tryMove(dirKey) {
-    if (player.dead || player.jumping) return;
-    var d = DIRS[dirKey]; if (!d) return;
+    if (player.dead) return false;
+    var d = DIRS[dirKey]; if (!d) return false;
     var nr = player.row + d.dr, nc = player.col + d.dc;
 
     if (!isValidPos(nr, nc)) {
-        // Check disc catch
         var lRow = discCatchRow(0);
         if (dirKey === 'UL' && player.col === 0 && player.row === lRow && discs[0].active) {
-            useDisc(0); return;
+            useDisc(0); return true;
         }
         var rRow = discCatchRow(1);
         if (dirKey === 'UR' && player.col === player.row && player.row === rRow && discs[1].active) {
-            useDisc(1); return;
+            useDisc(1); return true;
         }
         killPlayer();
-        return;
+        return false;
     }
 
-    // Begin jump
-    player.jumping = true;
-    player.jumpT = 0;
     player.row = nr; player.col = nc;
+    stompCube(nr, nc);
+    checkPlayerEnemyCollision();
+    return !player.dead;
 }
 
 function checkPlayerEnemyCollision() {
-    if (player.dead || player.jumping) return;
+    if (player.dead) return;
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
         if (e.type === 'spawn-timer') continue;
-        if (e.jumping) continue;
         if (e.row === player.row && e.col === player.col) {
             if (e.type === 'slick') {
                 score += 300; checkExtraLife();
@@ -664,105 +613,24 @@ function checkPlayerEnemyCollision() {
     }
 }
 
-function onEnemyLand(e, idx) {
-    if (e.type === 'slick') {
-        var cube = cubeAt(e.row, e.col);
-        if (cube && cube.state > 0) cube.state--;
-        if (!player.dead && !player.jumping && e.row === player.row && e.col === player.col) {
-            score += 300; checkExtraLife();
-            enemies.splice(idx, 1);
-        }
-        if (e.row >= ROWS - 1) {
-            enemies.splice(idx, 1);
-            if (round >= 4) scheduleSpawn(360, 'slick');
-        }
-    } else if (e.type === 'greenball') {
-        if (!player.dead && !player.jumping && e.row === player.row && e.col === player.col) {
-            score += 100; checkExtraLife();
-            enemies.splice(idx, 1);
-        }
-    } else {
-        // Coily/egg/redball — check collision
-        if (!player.dead && !player.jumping && e.row === player.row && e.col === player.col) {
-            killPlayer();
-        }
-    }
-}
-
-function updatePlayer() {
-    if (discRide) {
-        discRide.timer--;
-        if (discRide.timer <= 0) {
-            player.row = 0; player.col = 0;
-            player.jumping = false;
-            stompCube(0, 0);
-            discRide = null;
-        }
-        return;
-    }
-
-    if (player.dead) {
-        player.deathTimer--;
-        if (player.deathTimer <= 0 && lives > 0) {
-            player.dead = false;
-            player.row = 0; player.col = 0;
-            player.jumping = false;
-            stompCube(0, 0);
-            // Clear active enemies, keep spawn timers
-            var kept = [];
-            for (var i = 0; i < enemies.length; i++)
-                if (enemies[i].type === 'spawn-timer') kept.push(enemies[i]);
-            enemies = kept;
-            scheduleSpawn(150);
-            scheduleSpawn(120, 'redball');
-            if (round >= 4) scheduleSpawn(320, 'slick');
-            if (round >= 3) scheduleSpawn(250, 'greenball');
-        }
-        return;
-    }
-
-    if (player.jumping) {
-        player.jumpT += player.jumpDur;
-        if (player.jumpT >= 1) {
-            player.jumpT = 1; player.jumping = false;
-            stompCube(player.row, player.col);
-            checkPlayerEnemyCollision();
-            if (!player.dead && allColored()) {
-                score += 1000; checkExtraLife();
-                levelWon = true;
+// Move all enemies once per turn
+function moveEnemies() {
+    // Tick spawn timers
+    for (var i = enemies.length - 1; i >= 0; i--) {
+        if (enemies[i].type === 'spawn-timer') {
+            enemies[i].timer--;
+            if (enemies[i].timer <= 0) {
+                var ft = enemies[i].forcedType;
+                enemies.splice(i, 1);
+                spawnEnemy(ft);
             }
         }
     }
-}
 
-function updateEnemies() {
+    // Move each enemy once
     for (var i = enemies.length - 1; i >= 0; i--) {
         var e = enemies[i];
-
-        // Spawn timers
-        if (e.type === 'spawn-timer') {
-            e.timer--;
-            if (e.timer <= 0) {
-                enemies.splice(i, 1);
-                spawnEnemy(e.forcedType);
-            }
-            continue;
-        }
-
-        // Jump interpolation
-        if (e.jumping) {
-            e.jumpT += e.jumpDur;
-            if (e.jumpT >= 1) {
-                e.jumpT = 1; e.jumping = false;
-                onEnemyLand(e, i);
-            }
-            continue;
-        }
-
-        // Move timer
-        e.moveTimer++;
-        if (e.moveTimer < e.moveDelay) continue;
-        e.moveTimer = 0;
+        if (e.type === 'spawn-timer') continue;
 
         if (e.type === 'egg') {
             var dir = Math.random() < 0.5 ? 'DL' : 'DR';
@@ -770,15 +638,12 @@ function updateEnemies() {
             var nr = e.row + delta.dr, nc = e.col + delta.dc;
             if (isValidPos(nr, nc)) {
                 e.hops++;
-                e.jumping = true; e.jumpT = 0;
                 e.row = nr; e.col = nc;
                 if (e.hops >= 6 || nr >= ROWS - 1) {
                     e.type = 'coily';
-                    e.moveDelay = Math.max(12, 35 - round * 2);
                 }
             } else {
                 e.type = 'coily';
-                e.moveDelay = Math.max(12, 35 - round * 2);
             }
         } else if (e.type === 'coily') {
             var bestDir = null, bestDist = Infinity;
@@ -790,68 +655,119 @@ function updateEnemies() {
                 if (dist < bestDist) { bestDist = dist; bestDir = { nr: enr, nc: enc }; }
             }
             if (bestDir) {
-                e.jumping = true; e.jumpT = 0;
                 e.row = bestDir.nr; e.col = bestDir.nc;
             } else {
                 enemies.splice(i, 1);
-                scheduleSpawn(180);
+                scheduleSpawn(8);
+                continue;
             }
         } else if (e.type === 'redball') {
             var rbdir = Math.random() < 0.5 ? 'DL' : 'DR';
             var rbdelta = DIRS[rbdir];
             var rbnr = e.row + rbdelta.dr, rbnc = e.col + rbdelta.dc;
             if (isValidPos(rbnr, rbnc)) {
-                e.jumping = true; e.jumpT = 0;
                 e.row = rbnr; e.col = rbnc;
             } else {
                 enemies.splice(i, 1);
-                scheduleSpawn(Math.max(120, 200 - round * 10), 'redball');
+                scheduleSpawn(Math.max(5, 8 - Math.floor(round / 2)), 'redball');
+                continue;
             }
         } else if (e.type === 'greenball') {
             var gbdir = Math.random() < 0.5 ? 'DL' : 'DR';
             var gbdelta = DIRS[gbdir];
             var gbnr = e.row + gbdelta.dr, gbnc = e.col + gbdelta.dc;
             if (isValidPos(gbnr, gbnc)) {
-                e.jumping = true; e.jumpT = 0;
                 e.row = gbnr; e.col = gbnc;
             } else {
                 enemies.splice(i, 1);
-                if (round >= 3) scheduleSpawn(300, 'greenball');
+                if (round >= 3) scheduleSpawn(12, 'greenball');
+                continue;
             }
         } else if (e.type === 'slick') {
             var sdir = Math.random() < 0.5 ? 'DL' : 'DR';
             var sdelta = DIRS[sdir];
             var snr = e.row + sdelta.dr, snc = e.col + sdelta.dc;
             if (isValidPos(snr, snc)) {
-                e.jumping = true; e.jumpT = 0;
                 e.row = snr; e.col = snc;
             } else {
                 enemies.splice(i, 1);
-                if (round >= 4) scheduleSpawn(360, 'slick');
+                if (round >= 4) scheduleSpawn(15, 'slick');
+                continue;
+            }
+        }
+    }
+
+    // Apply slick effects and check collisions after all moves
+    for (var i = enemies.length - 1; i >= 0; i--) {
+        var e = enemies[i];
+        if (e.type === 'spawn-timer') continue;
+
+        if (e.type === 'slick') {
+            var cube = cubeAt(e.row, e.col);
+            if (cube && cube.state > 0) cube.state--;
+            if (e.row >= ROWS - 1) {
+                enemies.splice(i, 1);
+                if (round >= 4) scheduleSpawn(15, 'slick');
+                continue;
+            }
+        }
+
+        if (!player.dead && e.row === player.row && e.col === player.col) {
+            if (e.type === 'slick') {
+                score += 300; checkExtraLife();
+                enemies.splice(i, 1);
+            } else if (e.type === 'greenball') {
+                score += 100; checkExtraLife();
+                enemies.splice(i, 1);
+            } else {
+                killPlayer();
             }
         }
     }
 }
 
-// Frame-based update — mirrors real game's update() exactly
-function simFrame() {
-    frameCount++;
-    if (levelWon) return;
-    updatePlayer();
-    updateEnemies();
+// One turn: AI picks move, player moves, enemies move
+function simTurn() {
+    turnCount++;
+    if (levelWon) return null;
 
-    // AI move (same timing as real game)
-    if (!player.jumping && !player.dead && !discRide) {
-        aiMoveTimer++;
-        var aiDelay = Math.max(8, 22 - round * 2);
-        if (aiMoveTimer >= aiDelay) {
-            aiMoveTimer = 0;
-            var dir = computeAIMove();
-            if (dir) tryMove(dir);
-            return dir; // signal that AI moved
+    // Handle death
+    if (player.dead) {
+        player.deathTimer--;
+        if (player.deathTimer <= 0 && lives > 0) {
+            player.dead = false;
+            player.row = 0; player.col = 0;
+            stompCube(0, 0);
+            var kept = [];
+            for (var i = 0; i < enemies.length; i++)
+                if (enemies[i].type === 'spawn-timer') kept.push(enemies[i]);
+            enemies = kept;
+            scheduleSpawn(7);
+            scheduleSpawn(5, 'redball');
+            if (round >= 4) scheduleSpawn(13, 'slick');
+            if (round >= 3) scheduleSpawn(10, 'greenball');
         }
+        return null;
     }
-    return null;
+
+    // AI computes move
+    var dir = computeAIMove();
+    if (!dir) return null;
+
+    // Player moves
+    if (!tryMove(dir)) return dir;
+
+    // Check round complete
+    if (!player.dead && allColored()) {
+        score += 1000; checkExtraLife();
+        levelWon = true;
+        return dir;
+    }
+
+    // Enemies move
+    if (!player.dead) moveEnemies();
+
+    return dir;
 }
 
 // ─── Visualization ─────────────────────────────────────────────────────────────
@@ -862,7 +778,6 @@ function drawBoard() {
         var c = cubeStates[i];
         grid[c.row + ',' + c.col] = c.state >= tgt ? '#' : '.';
     }
-    // Mark enemies
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
         if (e.type === 'spawn-timer') continue;
@@ -873,7 +788,6 @@ function drawBoard() {
         else if (e.type === 'greenball') grid[k] = 'G';
         else if (e.type === 'slick') grid[k] = 'S';
     }
-    // Mark player (overwrites)
     grid[player.row + ',' + player.col] = '@';
 
     var lines = [];
@@ -908,7 +822,7 @@ function enemySummary() {
     return parts.length ? parts.join(' ') : 'none';
 }
 
-// ─── Run simulation (frame-based, matches real game) ──────────────────────────
+// ─── Run simulation (turn-based) ──────────────────────────────────────────────
 function runGame(maxRounds, verbose) {
     round = 1;
     score = 0;
@@ -920,7 +834,7 @@ function runGame(maxRounds, verbose) {
     for (; round <= maxRounds; round++) {
         initRound();
         var moveNum = 0;
-        var maxFrames = 20000; // safety limit
+        var maxTurns = 500; // safety limit
 
         if (verbose) {
             console.log('\n' + '='.repeat(50));
@@ -928,13 +842,13 @@ function runGame(maxRounds, verbose) {
             console.log('='.repeat(50));
         }
 
-        for (var frame = 0; frame < maxFrames; frame++) {
-            var aiMove = simFrame();
+        for (var turn = 0; turn < maxTurns; turn++) {
+            var aiMove = simTurn();
 
             // Track deaths
             if (lives < prevLives) {
                 totalDeaths += prevLives - lives;
-                if (verbose) console.log('  Frame ' + frame + ': DIED! Lives=' + lives);
+                if (verbose) console.log('  Turn ' + turn + ': DIED! Lives=' + lives);
                 prevLives = lives;
             }
             if (lives <= 0) {
@@ -954,7 +868,7 @@ function runGame(maxRounds, verbose) {
                             if (cubeStates[ci].state < tgt) uncolored.push('(' + cubeStates[ci].row + ',' + cubeStates[ci].col + ')');
                         extra = '  need=' + uncolored.join(',');
                     }
-                    console.log('  Move ' + moveNum + ' (f' + frame + '): ' + aiMove +
+                    console.log('  Move ' + moveNum + ': ' + aiMove +
                         ' -> (' + player.row + ',' + player.col + ')  remaining=' + remaining +
                         '  enemies: ' + enemySummary() + extra);
                     if (moveNum % 10 === 0) console.log(drawBoard());
@@ -969,8 +883,8 @@ function runGame(maxRounds, verbose) {
             }
         }
 
-        if (!levelWon && frame >= maxFrames) {
-            console.log('  Round ' + round + ' TIMEOUT after ' + maxFrames + ' frames');
+        if (!levelWon && turn >= maxTurns) {
+            console.log('  Round ' + round + ' TIMEOUT after ' + maxTurns + ' turns');
         }
 
         // levelWon already incremented round, so adjust
