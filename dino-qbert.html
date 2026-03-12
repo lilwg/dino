@@ -1136,17 +1136,27 @@ function exTourCost(st) {
 // total remaining moves, so the AI prefers moves that shorten the
 // overall path to completing the board (not just nearest cube distance).
 function exLeafValue(st) {
-    if (!st.alive) return -5000;
+    if (!st.alive) return -50000;
     if (st.cubesColored >= st.cubes.length) return 50000;
     var tourCost = exTourCost(st);
-    return st.cubesColored * 100 + st.score * 0.3 + 200 - tourCost * 10;
+    var val = st.cubesColored * 100 + st.score * 0.3 + 200 - tourCost * 10;
+    // Mild proximity penalty to Coily — keeps the AI from wandering
+    // straight toward Coily when tour costs are similar, but small enough
+    // not to override progress toward completing the board
+    for (var i = 0; i < st.det.length; i++) {
+        var e = st.det[i];
+        var d = exBfsDist(st.pr, st.pc, e.row, e.col);
+        if (d <= 1) val -= 300;
+        else if (d <= 2) val -= 80;
+    }
+    return val;
 }
 
 // Expectimax: max over player moves, average over stochastic enemy outcomes.
 // Returns a single expected value — death is just a large negative folded
 // into the average, so the AI naturally weighs risk vs progress.
 function expectimax(st, depth) {
-    if (!st.alive) return -5000;
+    if (!st.alive) return -50000;
     if (depth === 0) return exLeafValue(st);
 
     var bestVal = -Infinity;
@@ -1156,7 +1166,7 @@ function expectimax(st, depth) {
 
         var child = exClone(st);
         if (!exPlayerMove(child, DIR_KEYS[k])) {
-            if (-5000 > bestVal) bestVal = -5000;
+            if (-50000 > bestVal) bestVal = -50000;
             continue;
         }
 
@@ -1179,7 +1189,7 @@ function expectimax(st, depth) {
 // Run expectimax for a single first move
 function expectimaxEval(dirKey) {
     var st = exCloneState();
-    if (!exPlayerMove(st, dirKey)) return -5000;
+    if (!exPlayerMove(st, dirKey)) return -50000;
 
     var numStoch = Math.min(st.stoch.length, 5);
     var depth = numStoch <= 1 ? 4 : numStoch <= 2 ? 3 : 2;
