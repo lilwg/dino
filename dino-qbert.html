@@ -996,19 +996,50 @@ function simStep(st, dirKey) {
     }
 }
 
+// Check if a tile is occupied by a dangerous enemy in sim state
+function simIsDangerous(st, row, col) {
+    for (var i = 0; i < st.enemies.length; i++) {
+        var e = st.enemies[i];
+        if (e.row === row && e.col === col &&
+            e.type !== 'slick' && e.type !== 'greenball') return true;
+    }
+    return false;
+}
+
+// Check if any dangerous enemy is adjacent (can step onto us next turn)
+function simAdjacentDanger(st, row, col) {
+    for (var i = 0; i < st.enemies.length; i++) {
+        var e = st.enemies[i];
+        if (e.type === 'slick' || e.type === 'greenball') continue;
+        var dist = Math.abs(e.row - row) + Math.abs(e.col - col);
+        // Adjacent on the pyramid means dist 1 in a valid direction
+        if (dist === 1) {
+            // Verify it's actually a valid hop (not just manhattan-close)
+            for (var k = 0; k < 4; k++) {
+                var dk = DIRS[DIR_KEYS[k]];
+                if (e.row + dk.dr === row && e.col + dk.dc === col) return true;
+                if (row + dk.dr === e.row && col + dk.dc === e.col) return true;
+            }
+        }
+    }
+    return false;
+}
+
 // Evaluate a terminal simulation state (higher = better)
 function simEval(st, startUncolored) {
-    if (!st.alive) return -500;
+    if (!st.alive) return -2000; // death is catastrophic — must strongly outweigh any cube rewards
     var uncolored = simCountUncolored(st);
     var colored = startUncolored - uncolored;
     var nearDist = simNearestUncolored(st);
-    // Reward: cubes colored, score gained, proximity to next target, survival
-    return colored * 80 + st.score * 0.3 + 100 - nearDist * 8;
+    var val = colored * 60 + st.score * 0.2 + 200 - nearDist * 6;
+    // Penalty for being adjacent to danger at end of rollout
+    if (simAdjacentDanger(st, st.pr, st.pc)) val -= 150;
+    return val;
 }
 
 // ── MCTS Node ──
 
-var MCTS_ITERATIONS = 200;
+var MCTS_ITERATIONS = 300;
 var MCTS_DEPTH = 8;
 var MCTS_C = 1.41; // UCB1 exploration constant
 
@@ -1046,20 +1077,27 @@ function mctsBestChild(node, c) {
 function mctsRollout(st, depth, startUncolored) {
     for (var d = 0; d < depth; d++) {
         if (!st.alive) break;
-        // Random valid move
-        var valid = [];
+        // Collect valid moves, separating safe from dangerous
+        var safe = [], risky = [];
         for (var k = 0; k < 4; k++) {
             var dk = DIRS[DIR_KEYS[k]];
-            if (isValidPos(st.pr + dk.dr, st.pc + dk.dc)) valid.push(DIR_KEYS[k]);
+            var tr = st.pr + dk.dr, tc = st.pc + dk.dc;
+            if (!isValidPos(tr, tc)) continue;
+            if (simIsDangerous(st, tr, tc) || simAdjacentDanger(st, tr, tc))
+                risky.push(DIR_KEYS[k]);
+            else
+                safe.push(DIR_KEYS[k]);
         }
-        if (valid.length === 0) { st.alive = false; break; }
-        // Bias toward uncolored cubes during rollout (smarter rollout policy)
-        var chosen = valid[Math.floor(Math.random() * valid.length)];
-        for (var v = 0; v < valid.length; v++) {
-            var vd = DIRS[valid[v]];
+        var pool = safe.length > 0 ? safe : risky;
+        if (pool.length === 0) { st.alive = false; break; }
+
+        // Prefer uncolored cubes among the safe moves
+        var chosen = pool[Math.floor(Math.random() * pool.length)];
+        for (var v = 0; v < pool.length; v++) {
+            var vd = DIRS[pool[v]];
             var vr = st.pr + vd.dr, vc = st.pc + vd.dc;
             var vcube = simCubeAt(st, vr, vc);
-            if (vcube && vcube.state < st.tgt) { chosen = valid[v]; break; }
+            if (vcube && vcube.state < st.tgt) { chosen = pool[v]; break; }
         }
         simStep(st, chosen);
     }
@@ -1072,16 +1110,27 @@ function computeAIMove() {
     for (var i = 0; i < cubeStates.length; i++)
         if (cubeStates[i].state < tgt) startUncolored++;
 
-    // ── Immediate disc escape override (safety-critical, don't leave to MCTS) ──
+    // ── Build immediate danger set for safety filtering ──
+    var dangerTiles = {};  // tiles with dangerous enemies on them
+    var adjacentDanger = {}; // tiles adjacent to dangerous enemies
     var coilyDist = 999;
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
+        if (e.type === 'spawn-timer' || e.type === 'slick' || e.type === 'greenball') continue;
+        dangerTiles[e.row + ',' + e.col] = true;
+        for (var k = 0; k < 4; k++) {
+            var dk = DIRS[DIR_KEYS[k]];
+            var ar = e.row + dk.dr, ac = e.col + dk.dc;
+            if (isValidPos(ar, ac)) adjacentDanger[ar + ',' + ac] = true;
+        }
         if (e.type === 'coily') {
             var cd = Math.abs(e.row - player.row) + Math.abs(e.col - player.col);
             if (cd < coilyDist) coilyDist = cd;
         }
     }
-    if (coilyDist <= 2) {
+
+    // ── Disc escape override (safety-critical, don't leave to MCTS) ──
+    if (coilyDist <= 3) {
         var lDiscRow = discCatchRow(0), rDiscRow = discCatchRow(1);
         if (discs[0].active && player.col === 0 && player.row === lDiscRow) {
             aiDetailPath = [{ row: 0, col: 0 }]; aiTourDots = [];
@@ -1090,6 +1139,29 @@ function computeAIMove() {
         if (discs[1].active && player.col === player.row && player.row === rDiscRow) {
             aiDetailPath = [{ row: 0, col: 0 }]; aiTourDots = [];
             return 'UR';
+        }
+        // Try to reach disc in 1 move
+        if (coilyDist <= 2) {
+            if (discs[0].active) {
+                for (var dk0 = 0; dk0 < 4; dk0++) {
+                    var d0 = DIRS[DIR_KEYS[dk0]];
+                    var r0 = player.row + d0.dr, c0 = player.col + d0.dc;
+                    if (isValidPos(r0, c0) && c0 === 0 && r0 === lDiscRow && !dangerTiles[r0+','+c0]) {
+                        aiDetailPath = [{ row: r0, col: c0 }]; aiTourDots = [];
+                        return DIR_KEYS[dk0];
+                    }
+                }
+            }
+            if (discs[1].active) {
+                for (var dk1 = 0; dk1 < 4; dk1++) {
+                    var d1 = DIRS[DIR_KEYS[dk1]];
+                    var r1 = player.row + d1.dr, c1 = player.col + d1.dc;
+                    if (isValidPos(r1, c1) && c1 === r1 && r1 === rDiscRow && !dangerTiles[r1+','+c1]) {
+                        aiDetailPath = [{ row: r1, col: c1 }]; aiTourDots = [];
+                        return DIR_KEYS[dk1];
+                    }
+                }
+            }
         }
     }
 
@@ -1123,21 +1195,38 @@ function computeAIMove() {
         }
     }
 
-    // Pick the root child with most visits (robust policy)
-    var bestChild = null, bestVisits = -1;
+    // Pick the root child with most visits, but apply safety override
+    // Separate moves into safe (not on/adjacent-to enemy) and unsafe
+    var safeMoves = [], unsafeMoves = [];
     for (var i = 0; i < root.children.length; i++) {
         var ch = root.children[i];
-        // Skip moves that fall off the pyramid
         var dd = DIRS[ch.dir];
-        if (!isValidPos(player.row + dd.dr, player.col + dd.dc)) {
+        var mr = player.row + dd.dr, mc = player.col + dd.dc;
+        if (!isValidPos(mr, mc)) {
             // Allow disc moves
             var lDiscRow2 = discCatchRow(0), rDiscRow2 = discCatchRow(1);
             var isDisc = false;
             if (ch.dir === 'UL' && player.col === 0 && player.row === lDiscRow2 && discs[0].active) isDisc = true;
             if (ch.dir === 'UR' && player.col === player.row && player.row === rDiscRow2 && discs[1].active) isDisc = true;
             if (!isDisc) continue;
+            safeMoves.push(ch); // disc escapes are always safe
+            continue;
         }
-        if (ch.visits > bestVisits) { bestVisits = ch.visits; bestChild = ch; }
+        var key = mr + ',' + mc;
+        if (dangerTiles[key]) {
+            unsafeMoves.push(ch); // stepping ON an enemy = death
+        } else if (adjacentDanger[key] && coilyDist <= 3) {
+            unsafeMoves.push(ch); // stepping next to enemy when Coily near
+        } else {
+            safeMoves.push(ch);
+        }
+    }
+
+    // Prefer safe moves; only fall back to unsafe if no safe option
+    var pool2 = safeMoves.length > 0 ? safeMoves : unsafeMoves;
+    var bestChild = null, bestVisits = -1;
+    for (var i = 0; i < pool2.length; i++) {
+        if (pool2[i].visits > bestVisits) { bestVisits = pool2[i].visits; bestChild = pool2[i]; }
     }
 
     // ── Build viz path: show MCTS best sequence ──
