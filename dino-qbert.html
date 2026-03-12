@@ -31,7 +31,7 @@
 
         <h2 style="margin-top:16px;">How it works</h2>
         <p class="si-prose">DinoQbert recreates the 1982 Gottlieb arcade original: hop-based movement, one jump per keypress with a 150ms arc animation, and the classic @!#?@! swear bubble on death. Coily spawns as an egg, bounces randomly down the pyramid, then hatches and chases the player. Dark balls bounce down and kill on contact; light balls are safe to catch for 100 pts. Slick (round 4+) hops down uncoloring cubes. Two transport discs at variable positions let Q*bert escape and lure Coily to his death.</p>
-        <p class="si-prose">Tap <strong>Viz</strong> to reveal the AI&rsquo;s plan: a fading line traces the MCTS best path, with dots shrinking to show decreasing confidence at deeper steps. Faint dots mark remaining uncolored cubes. The AI uses Monte Carlo Tree Search (200 iterations per move, depth 8): it clones the full game state&mdash;player, cubes, all enemies&mdash;then runs hundreds of random rollouts. Coily moves deterministically (greedy chase) while all other enemies (cacti, evil dino) move randomly in each simulation, so MCTS naturally handles the stochastic environment. Rollouts are biased toward uncolored cubes. A hard-coded disc escape fires when Coily is within 2 hops of a catch position.</p>
+        <p class="si-prose">Tap <strong>Viz</strong> to reveal the AI&rsquo;s plan: a dashed line traces the BFS path to its next target, with faint dots marking the rest of its queued tour. The AI forward-simulates Coily&rsquo;s greedy chase 3 steps ahead to build both immediate and predicted danger maps, then plans a danger-weighted nearest-neighbour tour over all uncolored cubes. BFS pathfinding routes around dangerous tiles. Every move is scored by a multi-criteria evaluator: path progress, cube productivity, safety margin, escape-route count, and 2-step lookahead. When the top candidates score within 15 points of each other, a Monte Carlo tiebreaker (40 rollouts, depth 6) simulates each option to pick the best. It intercepts nearby Slicks for bonus points, and triggers disc escapes when cornered or when Coily closes to 3 hops.</p>
 
         <p style="margin-top:20px;"><a href="/" style="color:#0071e3;font-size:14px;text-decoration:none;">&larr; Back</a></p>
     </div>
@@ -204,6 +204,9 @@ var swearBubble;       // { x, y, timer }
 var aiDetailPath = [];  // BFS steps to current tour target (valid Q*bert moves)
 var aiTourDots   = [];  // remaining tour centres — drawn as dots only (no lines)
 var aiMoveTimer  = 0;
+var aiTour       = [];
+var aiTourIdx    = 0;
+var aiBoardSig   = '';
 var inputQueue  = [];
 var discRide    = null;  // { side, t, sx, sy, tx, ty } — player riding disc to top
 
@@ -335,6 +338,9 @@ function initRound() {
     aiDetailPath = [];
     aiTourDots   = [];
     aiMoveTimer  = 0;
+    aiTour       = [];
+    aiTourIdx    = 0;
+    aiBoardSig   = '';
     // Schedule first Coily spawn after brief delay
     scheduleSpawn(180);
     // Red balls start from round 1 — first one drops early
@@ -797,9 +803,9 @@ function updatePlayer() {
     }
 }
 
-// ─── AI: Monte Carlo Tree Search ─────────────────────────────────────────────
+// ─── AI ──────────────────────────────────────────────────────────────────────
 
-// BFS from (r1,c1) to (r2,c2) — used for viz path display
+// BFS from (r1,c1) to (r2,c2); optionally avoids tiles in avoidSet
 function bfsTo(r1, c1, r2, c2, avoidSet) {
     if (r1 === r2 && c1 === c2) return { dist: 0, path: [] };
     var visited = {}; visited[r1 + ',' + c1] = true;
@@ -822,31 +828,179 @@ function bfsTo(r1, c1, r2, c2, avoidSet) {
     return null;
 }
 
-// ── Simulation state: lightweight clone of game for MCTS rollouts ──
+// Board state signature for change detection
+function boardSig() {
+    var s = '';
+    for (var i = 0; i < cubeStates.length; i++) s += cubeStates[i].state;
+    return s;
+}
+
+// Predict where Coily will be in N steps (greedy chase toward a position)
+function predictCoilyPos(coily, targetRow, targetCol, steps) {
+    var cr = coily.row, cc = coily.col;
+    for (var s = 0; s < steps; s++) {
+        var bestDir = null, bestDist = Infinity;
+        for (var k = 0; k < DIR_KEYS.length; k++) {
+            var dk = DIRS[DIR_KEYS[k]];
+            var nr = cr + dk.dr, nc = cc + dk.dc;
+            if (!isValidPos(nr, nc)) continue;
+            var dist = Math.abs(targetRow - nr) + Math.abs(targetCol - nc);
+            if (dist < bestDist) { bestDist = dist; bestDir = k; }
+        }
+        if (bestDir === null) break;
+        var dd = DIRS[DIR_KEYS[bestDir]];
+        cr += dd.dr; cc += dd.dc;
+    }
+    return { row: cr, col: cc };
+}
+
+// Build danger maps: immediate danger + predicted future danger
+function buildDangerMaps() {
+    var immediate = {};  // tiles dangerous RIGHT NOW (enemy + adjacent)
+    var predicted = {};  // tiles that will be dangerous in 1-3 steps
+    var coilies = [];
+
+    for (var i = 0; i < enemies.length; i++) {
+        var e = enemies[i];
+        if (e.type === 'spawn-timer') continue;
+        // Green balls and slicks are safe to touch — skip danger marking
+        if (e.type === 'greenball' || e.type === 'slick') continue;
+
+        // Mark enemy tile and all adjacent as immediately dangerous
+        immediate[e.row + ',' + e.col] = true;
+        for (var k = 0; k < DIR_KEYS.length; k++) {
+            var dk = DIRS[DIR_KEYS[k]];
+            var nr = e.row + dk.dr, nc = e.col + dk.dc;
+            if (isValidPos(nr, nc)) immediate[nr + ',' + nc] = true;
+        }
+
+        if (e.type === 'coily') coilies.push(e);
+    }
+
+    // Predict Coily positions 1-3 steps ahead and mark those zones
+    for (var ci = 0; ci < coilies.length; ci++) {
+        for (var step = 1; step <= 3; step++) {
+            var fp = predictCoilyPos(coilies[ci], player.row, player.col, step);
+            predicted[fp.row + ',' + fp.col] = true;
+            for (var k = 0; k < DIR_KEYS.length; k++) {
+                var dk = DIRS[DIR_KEYS[k]];
+                var nr = fp.row + dk.dr, nc = fp.col + dk.dc;
+                if (isValidPos(nr, nc)) predicted[nr + ',' + nc] = true;
+            }
+        }
+    }
+
+    return { immediate: immediate, predicted: predicted, coilies: coilies };
+}
+
+// Count how many safe moves are available from a position
+function countEscapes(row, col, dangerSet) {
+    var count = 0;
+    for (var k = 0; k < DIR_KEYS.length; k++) {
+        var dk = DIRS[DIR_KEYS[k]];
+        var nr = row + dk.dr, nc = col + dk.dc;
+        if (isValidPos(nr, nc) && !dangerSet[nr + ',' + nc]) count++;
+    }
+    return count;
+}
+
+// Score a candidate move for safety (higher = safer)
+function scoreMoveForSafety(nr, nc, danger) {
+    var s = 0;
+    // Immediate danger is very bad
+    if (danger.immediate[nr + ',' + nc]) s -= 100;
+    // Predicted danger is moderately bad
+    if (danger.predicted[nr + ',' + nc]) s -= 30;
+    // Prefer tiles with more escape routes (avoid corners/traps)
+    var escapes = countEscapes(nr, nc, danger.immediate);
+    s += escapes * 12;
+    // Strong penalty for dead-end corners (0-1 escape routes)
+    if (escapes <= 1) s -= 40;
+    // Prefer staying away from edges (more mobility)
+    if (nc > 0 && nc < nr) s += 5;
+    if (nr > 0 && nr < ROWS - 1) s += 4;
+    // Strong penalty for bottom corners (true dead ends)
+    if (nr >= ROWS - 1 && (nc === 0 || nc === nr)) s -= 25;
+    // Bonus for moving away from closest Coily
+    for (var ci = 0; ci < danger.coilies.length; ci++) {
+        var c = danger.coilies[ci];
+        var distNow = Math.abs(c.row - player.row) + Math.abs(c.col - player.col);
+        var distNew = Math.abs(c.row - nr) + Math.abs(c.col - nc);
+        if (distNew > distNow) s += 8;       // moving away is good
+        else if (distNew < distNow) s -= 10;  // moving toward Coily is bad
+    }
+    return s;
+}
+
+// Find nearby Slicks worth intercepting
+function findSlickTarget(danger) {
+    var tgt = targetState();
+    var bestSlick = null, bestDist = Infinity;
+    for (var i = 0; i < enemies.length; i++) {
+        var e = enemies[i];
+        if (e.type !== 'slick') continue;
+        var dist = Math.abs(e.row - player.row) + Math.abs(e.col - player.col);
+        if (dist <= 3) {
+            var res = bfsTo(player.row, player.col, e.row, e.col, danger.immediate);
+            if (res && res.dist <= 2 && res.dist < bestDist) {
+                bestDist = res.dist;
+                bestSlick = { row: e.row, col: e.col, path: res.path };
+            }
+        }
+    }
+    return bestSlick;
+}
+
+// Build optimized tour: nearest-neighbor with danger weighting
+function buildTour() {
+    var tgt = targetState();
+    var danger = buildDangerMaps();
+    var remaining = [];
+    for (var i = 0; i < cubeStates.length; i++)
+        if (cubeStates[i].state < tgt)
+            remaining.push({ row: cubeStates[i].row, col: cubeStates[i].col });
+
+    var tour = [];
+    var cr = player.row, cc = player.col;
+    while (remaining.length > 0) {
+        var best = null, bestCost = Infinity, bestIdx = -1;
+        for (var i = 0; i < remaining.length; i++) {
+            var res = bfsTo(cr, cc, remaining[i].row, remaining[i].col);
+            if (!res) continue;
+            var cost = res.dist;
+            if (danger.immediate[remaining[i].row + ',' + remaining[i].col]) cost += 8;
+            if (danger.predicted[remaining[i].row + ',' + remaining[i].col]) cost += 3;
+            var tr = remaining[i].row, tc2 = remaining[i].col;
+            if (tr >= ROWS - 1 && (tc2 === 0 || tc2 === tr)) cost += 4;
+            if (danger.coilies.length > 0 && countEscapes(tr, tc2, danger.immediate) <= 1) cost += 6;
+            if (cost < bestCost) {
+                bestCost = cost; best = remaining[i]; bestIdx = i;
+            }
+        }
+        if (!best) break;
+        tour.push(best);
+        remaining.splice(bestIdx, 1);
+        cr = best.row; cc = best.col;
+    }
+    aiTour    = tour;
+    aiTourIdx = 0;
+    aiBoardSig = boardSig();
+}
+
+// ── MCTS tiebreaker: used when rules engine has close-scoring candidates ──
 
 function cloneState() {
     var tgt = targetState();
-    // Clone cube states as flat array of {row, col, state}
     var cs = new Array(cubeStates.length);
     for (var i = 0; i < cubeStates.length; i++)
         cs[i] = { row: cubeStates[i].row, col: cubeStates[i].col, state: cubeStates[i].state };
-    // Clone enemies (only active ones, skip spawn-timers for speed)
     var en = [];
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
         if (e.type === 'spawn-timer') continue;
-        en.push({ type: e.type, row: e.row, col: e.col, hops: e.hops || 0,
-                   moveTimer: e.moveTimer, moveDelay: e.moveDelay });
+        en.push({ type: e.type, row: e.row, col: e.col, hops: e.hops || 0 });
     }
-    return {
-        pr: player.row, pc: player.col,
-        cubes: cs,
-        enemies: en,
-        alive: true,
-        score: 0,       // incremental score gained during sim
-        cubesColored: 0, // cubes stomped during sim
-        tgt: tgt
-    };
+    return { pr: player.row, pc: player.col, cubes: cs, enemies: en, alive: true, score: 0, tgt: tgt };
 }
 
 function simCubeAt(st, row, col) {
@@ -855,74 +1009,16 @@ function simCubeAt(st, row, col) {
     return null;
 }
 
-function simCountUncolored(st) {
-    var n = 0;
-    for (var i = 0; i < st.cubes.length; i++)
-        if (st.cubes[i].state < st.tgt) n++;
-    return n;
-}
-
-// Find nearest uncolored cube distance (BFS)
-function simNearestUncolored(st) {
-    var visited = {}; visited[st.pr + ',' + st.pc] = true;
-    var queue = [{ row: st.pr, col: st.pc, d: 0 }];
-    while (queue.length > 0) {
-        var cur = queue.shift();
-        var cube = simCubeAt(st, cur.row, cur.col);
-        if (cube && cube.state < st.tgt) return cur.d;
-        for (var k = 0; k < 4; k++) {
-            var dk = DIRS[DIR_KEYS[k]];
-            var nr = cur.row + dk.dr, nc = cur.col + dk.dc;
-            if (!isValidPos(nr, nc)) continue;
-            var key = nr + ',' + nc;
-            if (visited[key]) continue;
-            visited[key] = true;
-            queue.push({ row: nr, col: nc, d: cur.d + 1 });
-        }
-    }
-    return 99;
-}
-
-// Step a simulation state forward by one player move + one enemy tick
 function simStep(st, dirKey) {
     if (!st.alive) return;
-
-    // Player move
     var d = DIRS[dirKey];
     var nr = st.pr + d.dr, nc = st.pc + d.dc;
-    if (!isValidPos(nr, nc)) {
-        // Check disc escape (simplified: just survive and teleport to top)
-        var lRow = discCatchRow(0), rRow = discCatchRow(1);
-        if (dirKey === 'UL' && st.pc === 0 && st.pr === lRow && discs[0].active) {
-            st.pr = 0; st.pc = 0; st.score += 300;
-            // Kill coily in sim
-            for (var i = st.enemies.length - 1; i >= 0; i--)
-                if (st.enemies[i].type === 'coily' || st.enemies[i].type === 'egg')
-                    { st.enemies.splice(i, 1); st.score += 300; }
-            return;
-        }
-        if (dirKey === 'UR' && st.pc === st.pr && st.pr === rRow && discs[1].active) {
-            st.pr = 0; st.pc = 0; st.score += 300;
-            for (var i = st.enemies.length - 1; i >= 0; i--)
-                if (st.enemies[i].type === 'coily' || st.enemies[i].type === 'egg')
-                    { st.enemies.splice(i, 1); st.score += 300; }
-            return;
-        }
-        st.alive = false; // fell off
-        return;
-    }
-
+    if (!isValidPos(nr, nc)) { st.alive = false; return; }
     st.pr = nr; st.pc = nc;
-
     // Stomp cube
     var cube = simCubeAt(st, nr, nc);
-    if (cube && cube.state < st.tgt) {
-        cube.state++;
-        st.score += 25;
-        st.cubesColored++;
-    }
-
-    // Check collision with enemies at new position
+    if (cube && cube.state < st.tgt) { cube.state++; st.score += 25; }
+    // Check collision
     for (var i = 0; i < st.enemies.length; i++) {
         var e = st.enemies[i];
         if (e.row === nr && e.col === nc) {
@@ -931,344 +1027,217 @@ function simStep(st, dirKey) {
             else { st.alive = false; return; }
         }
     }
-
-    // Enemy movement tick (simplified: each enemy gets one hop per player hop)
+    // Enemy tick
     for (var i = st.enemies.length - 1; i >= 0; i--) {
         var e = st.enemies[i];
-        var enr, enc;
-
         if (e.type === 'coily') {
-            // Deterministic: greedy chase toward player
-            var bestDir2 = null, bestDist2 = Infinity;
+            var bd = null, bv = Infinity;
             for (var k = 0; k < 4; k++) {
-                var dk2 = DIRS[DIR_KEYS[k]];
-                enr = e.row + dk2.dr; enc = e.col + dk2.dc;
-                if (!isValidPos(enr, enc)) continue;
-                var dist2 = Math.abs(st.pr - enr) + Math.abs(st.pc - enc);
-                if (dist2 < bestDist2) { bestDist2 = dist2; bestDir2 = k; }
+                var dk = DIRS[DIR_KEYS[k]]; var er = e.row+dk.dr, ec = e.col+dk.dc;
+                if (!isValidPos(er, ec)) continue;
+                var dv = Math.abs(st.pr-er)+Math.abs(st.pc-ec);
+                if (dv < bv) { bv = dv; bd = k; }
             }
-            if (bestDir2 !== null) {
-                var dd2 = DIRS[DIR_KEYS[bestDir2]];
-                e.row += dd2.dr; e.col += dd2.dc;
-            }
-        } else if (e.type === 'egg') {
-            // Random DL or DR
-            var edir = Math.random() < 0.5 ? 'DL' : 'DR';
-            var ed = DIRS[edir];
-            enr = e.row + ed.dr; enc = e.col + ed.dc;
-            if (isValidPos(enr, enc)) {
-                e.row = enr; e.col = enc;
-                e.hops++;
-                if (e.hops >= 6 || enr >= ROWS - 1) e.type = 'coily';
-            } else {
-                e.type = 'coily'; // hatch on edge
-            }
-        } else if (e.type === 'redball') {
+            if (bd !== null) { var dd=DIRS[DIR_KEYS[bd]]; e.row+=dd.dr; e.col+=dd.dc; }
+        } else {
             var rdir = Math.random() < 0.5 ? 'DL' : 'DR';
-            var rd = DIRS[rdir];
-            enr = e.row + rd.dr; enc = e.col + rd.dc;
-            if (isValidPos(enr, enc)) { e.row = enr; e.col = enc; }
-            else { st.enemies.splice(i, 1); continue; }
-        } else if (e.type === 'slick') {
-            var sdir2 = Math.random() < 0.5 ? 'DL' : 'DR';
-            var sd2 = DIRS[sdir2];
-            enr = e.row + sd2.dr; enc = e.col + sd2.dc;
-            if (isValidPos(enr, enc)) {
-                e.row = enr; e.col = enc;
-                // Uncolor cube
-                var sc2 = simCubeAt(st, enr, enc);
-                if (sc2 && sc2.state > 0) sc2.state--;
-            } else { st.enemies.splice(i, 1); continue; }
-        } else if (e.type === 'greenball') {
-            var gdir = Math.random() < 0.5 ? 'DL' : 'DR';
-            var gd = DIRS[gdir];
-            enr = e.row + gd.dr; enc = e.col + gd.dc;
-            if (isValidPos(enr, enc)) { e.row = enr; e.col = enc; }
+            var rd = DIRS[rdir]; var er=e.row+rd.dr, ec=e.col+rd.dc;
+            if (isValidPos(er, ec)) { e.row=er; e.col=ec; }
             else { st.enemies.splice(i, 1); continue; }
         }
-
-        // Post-move collision check
-        if (e.row === st.pr && e.col === st.pc) {
-            if (e.type === 'slick') { st.score += 300; st.enemies.splice(i, 1); }
-            else if (e.type === 'greenball') { st.score += 100; st.enemies.splice(i, 1); }
-            else if (e.type !== 'greenball') { st.alive = false; return; }
+        if (e.row===st.pr && e.col===st.pc) {
+            if (e.type==='slick'||e.type==='greenball') { st.enemies.splice(i,1); }
+            else { st.alive=false; return; }
         }
     }
 }
 
-// Check if a tile is occupied by a dangerous enemy in sim state
-function simIsDangerous(st, row, col) {
-    for (var i = 0; i < st.enemies.length; i++) {
-        var e = st.enemies[i];
-        if (e.row === row && e.col === col &&
-            e.type !== 'slick' && e.type !== 'greenball') return true;
-    }
-    return false;
-}
-
-// Check if any dangerous enemy is adjacent (can step onto us next turn)
-function simAdjacentDanger(st, row, col) {
-    for (var i = 0; i < st.enemies.length; i++) {
-        var e = st.enemies[i];
-        if (e.type === 'slick' || e.type === 'greenball') continue;
-        var dist = Math.abs(e.row - row) + Math.abs(e.col - col);
-        // Adjacent on the pyramid means dist 1 in a valid direction
-        if (dist === 1) {
-            // Verify it's actually a valid hop (not just manhattan-close)
+// Run N random rollouts for a given first move, return average value
+function mctsEval(dirKey, numRollouts, depth) {
+    var total = 0;
+    for (var r = 0; r < numRollouts; r++) {
+        var st = cloneState();
+        simStep(st, dirKey);
+        for (var d = 1; d < depth && st.alive; d++) {
+            var valid = [];
             for (var k = 0; k < 4; k++) {
                 var dk = DIRS[DIR_KEYS[k]];
-                if (e.row + dk.dr === row && e.col + dk.dc === col) return true;
-                if (row + dk.dr === e.row && col + dk.dc === e.col) return true;
+                if (isValidPos(st.pr+dk.dr, st.pc+dk.dc)) valid.push(DIR_KEYS[k]);
             }
+            if (valid.length === 0) { st.alive = false; break; }
+            // Bias: prefer uncolored cubes
+            var ch = valid[Math.floor(Math.random()*valid.length)];
+            for (var v = 0; v < valid.length; v++) {
+                var vd=DIRS[valid[v]]; var vr=st.pr+vd.dr, vc=st.pc+vd.dc;
+                var vcube = simCubeAt(st, vr, vc);
+                if (vcube && vcube.state < st.tgt) { ch = valid[v]; break; }
+            }
+            simStep(st, ch);
+        }
+        if (!st.alive) { total -= 1000; }
+        else {
+            var unc = 0;
+            for (var i = 0; i < st.cubes.length; i++) if (st.cubes[i].state < st.tgt) unc++;
+            total += st.score + (cubeStates.length - unc) * 50;
         }
     }
-    return false;
-}
-
-// Evaluate a terminal simulation state (higher = better)
-function simEval(st, startUncolored) {
-    if (!st.alive) return -2000; // death is catastrophic — must strongly outweigh any cube rewards
-    var uncolored = simCountUncolored(st);
-    var colored = startUncolored - uncolored;
-    var nearDist = simNearestUncolored(st);
-    var val = colored * 60 + st.score * 0.2 + 200 - nearDist * 6;
-    // Penalty for being adjacent to danger at end of rollout
-    if (simAdjacentDanger(st, st.pr, st.pc)) val -= 150;
-    return val;
-}
-
-// ── MCTS Node ──
-
-var MCTS_ITERATIONS = 300;
-var MCTS_DEPTH = 8;
-var MCTS_C = 1.41; // UCB1 exploration constant
-
-function mctsNode(dirKey, parent) {
-    return {
-        dir: dirKey,      // the action taken to reach this node (null for root)
-        parent: parent,
-        children: null,   // lazy: array of mctsNode or null
-        visits: 0,
-        totalValue: 0
-    };
-}
-
-function mctsExpand(node) {
-    node.children = [];
-    for (var k = 0; k < DIR_KEYS.length; k++) {
-        node.children.push(mctsNode(DIR_KEYS[k], node));
-    }
-}
-
-function mctsBestChild(node, c) {
-    var best = null, bestUCB = -Infinity;
-    var logN = Math.log(node.visits + 1);
-    for (var i = 0; i < node.children.length; i++) {
-        var ch = node.children[i];
-        if (ch.visits === 0) return ch; // unvisited — select immediately
-        var exploit = ch.totalValue / ch.visits;
-        var explore = c * Math.sqrt(logN / ch.visits);
-        var ucb = exploit + explore;
-        if (ucb > bestUCB) { bestUCB = ucb; best = ch; }
-    }
-    return best;
-}
-
-function mctsRollout(st, depth, startUncolored) {
-    for (var d = 0; d < depth; d++) {
-        if (!st.alive) break;
-        // Collect valid moves, separating safe from dangerous
-        var safe = [], risky = [];
-        for (var k = 0; k < 4; k++) {
-            var dk = DIRS[DIR_KEYS[k]];
-            var tr = st.pr + dk.dr, tc = st.pc + dk.dc;
-            if (!isValidPos(tr, tc)) continue;
-            if (simIsDangerous(st, tr, tc) || simAdjacentDanger(st, tr, tc))
-                risky.push(DIR_KEYS[k]);
-            else
-                safe.push(DIR_KEYS[k]);
-        }
-        var pool = safe.length > 0 ? safe : risky;
-        if (pool.length === 0) { st.alive = false; break; }
-
-        // Prefer uncolored cubes among the safe moves
-        var chosen = pool[Math.floor(Math.random() * pool.length)];
-        for (var v = 0; v < pool.length; v++) {
-            var vd = DIRS[pool[v]];
-            var vr = st.pr + vd.dr, vc = st.pc + vd.dc;
-            var vcube = simCubeAt(st, vr, vc);
-            if (vcube && vcube.state < st.tgt) { chosen = pool[v]; break; }
-        }
-        simStep(st, chosen);
-    }
-    return simEval(st, startUncolored);
+    return total / numRollouts;
 }
 
 function computeAIMove() {
     var tgt = targetState();
-    var startUncolored = 0;
-    for (var i = 0; i < cubeStates.length; i++)
-        if (cubeStates[i].state < tgt) startUncolored++;
+    var danger = buildDangerMaps();
 
-    // ── Build immediate danger set for safety filtering ──
-    var dangerTiles = {};  // tiles with dangerous enemies on them
-    var adjacentDanger = {}; // tiles adjacent to dangerous enemies
-    var coilyDist = 999;
-    for (var i = 0; i < enemies.length; i++) {
-        var e = enemies[i];
-        if (e.type === 'spawn-timer' || e.type === 'slick' || e.type === 'greenball') continue;
-        dangerTiles[e.row + ',' + e.col] = true;
-        for (var k = 0; k < 4; k++) {
-            var dk = DIRS[DIR_KEYS[k]];
-            var ar = e.row + dk.dr, ac = e.col + dk.dc;
-            if (isValidPos(ar, ac)) adjacentDanger[ar + ',' + ac] = true;
-        }
-        if (e.type === 'coily') {
-            var cd = Math.abs(e.row - player.row) + Math.abs(e.col - player.col);
-            if (cd < coilyDist) coilyDist = cd;
-        }
+    // ── 1. Disc escape: strategic use when Coily threatens ──
+    var closestCoily = null, coilyDist = 999;
+    for (var i = 0; i < danger.coilies.length; i++) {
+        var c = danger.coilies[i];
+        var d = Math.abs(c.row - player.row) + Math.abs(c.col - player.col);
+        if (d < coilyDist) { coilyDist = d; closestCoily = c; }
     }
 
-    // ── Disc escape override (safety-critical, don't leave to MCTS) ──
-    if (coilyDist <= 3) {
+    var shouldEscape = coilyDist <= 3;
+    var safeMoveCount = countEscapes(player.row, player.col, danger.immediate);
+    if (safeMoveCount <= 1 && coilyDist <= 4) shouldEscape = true;
+
+    if (shouldEscape) {
         var lDiscRow = discCatchRow(0), rDiscRow = discCatchRow(1);
-        if (discs[0].active && player.col === 0 && player.row === lDiscRow) {
-            aiDetailPath = [{ row: 0, col: 0 }]; aiTourDots = [];
-            return 'UL';
-        }
-        if (discs[1].active && player.col === player.row && player.row === rDiscRow) {
-            aiDetailPath = [{ row: 0, col: 0 }]; aiTourDots = [];
-            return 'UR';
-        }
-        // Try to reach disc in 1 move
+        if (discs[0].active && player.col === 0 && player.row === lDiscRow) return 'UL';
+        if (discs[1].active && player.col === player.row && player.row === rDiscRow) return 'UR';
+
         if (coilyDist <= 2) {
             if (discs[0].active) {
-                for (var dk0 = 0; dk0 < 4; dk0++) {
-                    var d0 = DIRS[DIR_KEYS[dk0]];
-                    var r0 = player.row + d0.dr, c0 = player.col + d0.dc;
-                    if (isValidPos(r0, c0) && c0 === 0 && r0 === lDiscRow && !dangerTiles[r0+','+c0]) {
-                        aiDetailPath = [{ row: r0, col: c0 }]; aiTourDots = [];
-                        return DIR_KEYS[dk0];
-                    }
-                }
+                var ulD = DIRS['UL'];
+                var ulR = player.row + ulD.dr, ulC = player.col + ulD.dc;
+                if (isValidPos(ulR, ulC) && ulC === 0 && ulR === lDiscRow && !danger.immediate[ulR + ',' + ulC]) return 'UL';
+                var dlD = DIRS['DL'];
+                var dlR = player.row + dlD.dr, dlC = player.col + dlD.dc;
+                if (isValidPos(dlR, dlC) && dlC === 0 && dlR === lDiscRow && !danger.immediate[dlR + ',' + dlC]) return 'DL';
             }
             if (discs[1].active) {
-                for (var dk1 = 0; dk1 < 4; dk1++) {
-                    var d1 = DIRS[DIR_KEYS[dk1]];
-                    var r1 = player.row + d1.dr, c1 = player.col + d1.dc;
-                    if (isValidPos(r1, c1) && c1 === r1 && r1 === rDiscRow && !dangerTiles[r1+','+c1]) {
-                        aiDetailPath = [{ row: r1, col: c1 }]; aiTourDots = [];
-                        return DIR_KEYS[dk1];
-                    }
-                }
+                var urD = DIRS['UR'];
+                var urR = player.row + urD.dr, urC = player.col + urD.dc;
+                if (isValidPos(urR, urC) && urC === urR && urR === rDiscRow && !danger.immediate[urR + ',' + urC]) return 'UR';
+                var drD = DIRS['DR'];
+                var drR = player.row + drD.dr, drC = player.col + drD.dc;
+                if (isValidPos(drR, drC) && drC === drR && drR === rDiscRow && !danger.immediate[drR + ',' + drC]) return 'DR';
             }
         }
     }
 
-    // ── MCTS ──
-    var root = mctsNode(null, null);
-    mctsExpand(root);
-
-    for (var iter = 0; iter < MCTS_ITERATIONS; iter++) {
-        // 1. Selection: walk tree picking best UCB child
-        var node = root;
-        var st = cloneState();
-        var depth = 0;
-
-        while (node.children && depth < MCTS_DEPTH && st.alive) {
-            node = mctsBestChild(node, MCTS_C);
-            simStep(st, node.dir);
-            depth++;
-            if (!node.children && node.visits > 0 && depth < MCTS_DEPTH) {
-                mctsExpand(node);
+    // ── 2. Slick interception: catch nearby Slicks for 300 pts ──
+    var slickTarget = findSlickTarget(danger);
+    if (slickTarget && slickTarget.path.length > 0) {
+        var sd = DIRS[slickTarget.path[0]];
+        var snr = player.row + sd.dr, snc = player.col + sd.dc;
+        if (!danger.immediate[snr + ',' + snc]) {
+            aiDetailPath = [];
+            var sr = player.row, sc = player.col;
+            for (var i = 0; i < slickTarget.path.length; i++) {
+                var sdd = DIRS[slickTarget.path[i]];
+                sr += sdd.dr; sc += sdd.dc;
+                aiDetailPath.push({ row: sr, col: sc });
             }
-        }
-
-        // 2. Rollout from this position
-        var value = mctsRollout(st, MCTS_DEPTH - depth, startUncolored);
-
-        // 3. Backpropagate
-        while (node) {
-            node.visits++;
-            node.totalValue += value;
-            node = node.parent;
+            return slickTarget.path[0];
         }
     }
 
-    // Pick the root child with most visits, but apply safety override
-    // Separate moves into safe (not on/adjacent-to enemy) and unsafe
-    var safeMoves = [], unsafeMoves = [];
-    for (var i = 0; i < root.children.length; i++) {
-        var ch = root.children[i];
-        var dd = DIRS[ch.dir];
-        var mr = player.row + dd.dr, mc = player.col + dd.dc;
-        if (!isValidPos(mr, mc)) {
-            // Allow disc moves
-            var lDiscRow2 = discCatchRow(0), rDiscRow2 = discCatchRow(1);
-            var isDisc = false;
-            if (ch.dir === 'UL' && player.col === 0 && player.row === lDiscRow2 && discs[0].active) isDisc = true;
-            if (ch.dir === 'UR' && player.col === player.row && player.row === rDiscRow2 && discs[1].active) isDisc = true;
-            if (!isDisc) continue;
-            safeMoves.push(ch); // disc escapes are always safe
-            continue;
-        }
-        var key = mr + ',' + mc;
-        if (dangerTiles[key]) {
-            unsafeMoves.push(ch); // stepping ON an enemy = death
-        } else if (adjacentDanger[key] && coilyDist <= 3) {
-            unsafeMoves.push(ch); // stepping next to enemy when Coily near
-        } else {
-            safeMoves.push(ch);
-        }
+    // ── 3. Replan tour whenever board state changes ──
+    if (boardSig() !== aiBoardSig || aiTour.length === 0) buildTour();
+
+    while (aiTourIdx < aiTour.length) {
+        var t = aiTour[aiTourIdx];
+        var tc = cubeAt(t.row, t.col);
+        if (tc && tc.state < tgt) break;
+        aiTourIdx++;
     }
 
-    // Prefer safe moves; only fall back to unsafe if no safe option
-    var pool2 = safeMoves.length > 0 ? safeMoves : unsafeMoves;
-    var bestChild = null, bestVisits = -1;
-    for (var i = 0; i < pool2.length; i++) {
-        if (pool2[i].visits > bestVisits) { bestVisits = pool2[i].visits; bestChild = pool2[i]; }
+    // ── 4. Evaluate the best move using multi-criteria scoring ──
+    function fallbackMove() {
+        var bestDir = null, bestScore = -Infinity;
+        for (var fk = 0; fk < DIR_KEYS.length; fk++) {
+            var fd0 = DIRS[DIR_KEYS[fk]];
+            var fbr = player.row + fd0.dr, fbc = player.col + fd0.dc;
+            if (!isValidPos(fbr, fbc)) continue;
+            var ms = scoreMoveForSafety(fbr, fbc, danger);
+            var cube = cubeAt(fbr, fbc);
+            if (cube && cube.state < tgt) ms += 15;
+            if (ms > bestScore) { bestScore = ms; bestDir = DIR_KEYS[fk]; }
+        }
+        return bestDir;
     }
 
-    // ── Build viz path: show MCTS best sequence ──
+    if (aiTourIdx >= aiTour.length) {
+        aiDetailPath = []; aiTourDots = [];
+        return fallbackMove();
+    }
+
+    // BFS to the current tour target, avoiding dangerous tiles
+    var target = aiTour[aiTourIdx];
+    var res = bfsTo(player.row, player.col, target.row, target.col, danger.immediate);
+    if (!res || res.path.length === 0) {
+        res = bfsTo(player.row, player.col, target.row, target.col);
+    }
+    if (!res || res.path.length === 0) {
+        aiDetailPath = []; aiTourDots = [];
+        return fallbackMove();
+    }
+
+    // Build viz
     aiDetailPath = [];
+    var pr = player.row, pc = player.col;
+    for (var i = 0; i < res.path.length; i++) {
+        var dd = DIRS[res.path[i]];
+        pr += dd.dr; pc += dd.dc;
+        aiDetailPath.push({ row: pr, col: pc });
+    }
     aiTourDots = [];
-    if (bestChild) {
-        // Trace the most-visited path down the tree for viz
-        var vizNode = bestChild;
-        var vr = player.row, vc = player.col;
-        var vd = DIRS[vizNode.dir];
-        vr += vd.dr; vc += vd.dc;
-        if (isValidPos(vr, vc)) aiDetailPath.push({ row: vr, col: vc });
-        while (vizNode.children) {
-            var nextBest = null, nextV = -1;
-            for (var j = 0; j < vizNode.children.length; j++) {
-                if (vizNode.children[j].visits > nextV) {
-                    nextV = vizNode.children[j].visits;
-                    nextBest = vizNode.children[j];
-                }
-            }
-            if (!nextBest || nextV <= 0) break;
-            var nd = DIRS[nextBest.dir];
-            var nr2 = vr + nd.dr, nc2 = vc + nd.dc;
-            if (!isValidPos(nr2, nc2)) break;
-            vr = nr2; vc = nc2;
-            aiDetailPath.push({ row: vr, col: vc });
-            vizNode = nextBest;
-        }
-        // Show uncolored cubes as tour dots
-        for (var i = 0; i < cubeStates.length; i++) {
-            if (cubeStates[i].state < tgt)
-                aiTourDots.push({ row: cubeStates[i].row, col: cubeStates[i].col });
-        }
-        return bestChild.dir;
+    for (var i = aiTourIdx + 1; i < aiTour.length; i++)
+        aiTourDots.push({ row: aiTour[i].row, col: aiTour[i].col });
+
+    // ── 5. Smart first-step selection with MCTS tiebreaker ──
+    var firstDir = res.path[0];
+
+    // Score all candidate moves
+    var candidates = [];
+    for (var k = 0; k < DIR_KEYS.length; k++) {
+        var ad = DIRS[DIR_KEYS[k]];
+        var anr = player.row + ad.dr, anc = player.col + ad.dc;
+        if (!isValidPos(anr, anc)) continue;
+
+        var ms = scoreMoveForSafety(anr, anc, danger);
+        if (DIR_KEYS[k] === firstDir) ms += 25;
+        var cube = cubeAt(anr, anc);
+        if (cube && cube.state < tgt) ms += 20;
+        var futureEscapes = countEscapes(anr, anc, danger.predicted);
+        ms += futureEscapes * 5;
+
+        candidates.push({ dir: DIR_KEYS[k], score: ms });
     }
 
-    // Fallback: any valid move
-    for (var k = 0; k < 4; k++) {
-        var fdd = DIRS[DIR_KEYS[k]];
-        if (isValidPos(player.row + fdd.dr, player.col + fdd.dc)) return DIR_KEYS[k];
+    candidates.sort(function(a, b) { return b.score - a.score; });
+
+    if (candidates.length === 0) return fallbackMove();
+    if (candidates.length === 1) return candidates[0].dir;
+
+    // If top candidates are within 15 points, use MCTS to tiebreak
+    var margin = candidates[0].score - candidates[1].score;
+    if (margin < 15 && candidates[0].score > -50) {
+        var tiedMoves = [candidates[0]];
+        for (var i = 1; i < candidates.length && i < 3; i++) {
+            if (candidates[0].score - candidates[i].score < 15) tiedMoves.push(candidates[i]);
+        }
+        if (tiedMoves.length > 1) {
+            var bestMCTS = null, bestMCTSval = -Infinity;
+            for (var i = 0; i < tiedMoves.length; i++) {
+                var val = mctsEval(tiedMoves[i].dir, 40, 6);
+                if (val > bestMCTSval) { bestMCTSval = val; bestMCTS = tiedMoves[i].dir; }
+            }
+            return bestMCTS;
+        }
     }
-    return 'DL';
+
+    return candidates[0].dir;
 }
 
 // ─── Update ───────────────────────────────────────────────────────────────────
@@ -1416,41 +1385,34 @@ function drawVizPath() {
     if (aiDetailPath.length === 0 && aiTourDots.length === 0) return;
     ctx.save();
 
-    // MCTS best path: solid line with fading confidence
+    // Dashed line + large dots for the BFS path to the next target
     if (aiDetailPath.length > 0) {
+        ctx.setLineDash([4, 4]);
+        ctx.strokeStyle = 'rgba(255,200,0,0.80)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
         var sp = cubeXY(player.row, player.col);
-        var maxSteps = aiDetailPath.length;
-
-        // Draw connecting line segments with fading opacity
+        ctx.moveTo(sp.cx, sp.cy);
         for (var i = 0; i < aiDetailPath.length; i++) {
-            var alpha = 0.85 - (i / maxSteps) * 0.55;
             var pt = cubeXY(aiDetailPath[i].row, aiDetailPath[i].col);
-            var prev = i === 0 ? sp : cubeXY(aiDetailPath[i - 1].row, aiDetailPath[i - 1].col);
-            ctx.strokeStyle = 'rgba(255,200,0,' + alpha.toFixed(2) + ')';
-            ctx.lineWidth = Math.max(1, 2.5 - i * 0.3);
-            ctx.beginPath();
-            ctx.moveTo(prev.cx, prev.cy);
             ctx.lineTo(pt.cx, pt.cy);
-            ctx.stroke();
         }
-
-        // Dots: first step is large (high confidence), later steps shrink
+        ctx.stroke();
+        ctx.setLineDash([]);
         for (var i = 0; i < aiDetailPath.length; i++) {
             var pt2 = cubeXY(aiDetailPath[i].row, aiDetailPath[i].col);
-            var radius = Math.max(2, 5 - i * 0.5);
-            var alpha2 = 0.90 - (i / maxSteps) * 0.50;
             ctx.beginPath();
-            ctx.arc(pt2.cx, pt2.cy, radius, 0, Math.PI * 2);
-            ctx.fillStyle = 'rgba(255,200,0,' + alpha2.toFixed(2) + ')'; ctx.fill();
+            ctx.arc(pt2.cx, pt2.cy, 4, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(255,200,0,0.90)'; ctx.fill();
         }
     }
 
-    // Uncolored cubes: small faint dots showing remaining targets
+    // Small dots for the rest of the tour
     for (var j = 0; j < aiTourDots.length; j++) {
         var dp = cubeXY(aiTourDots[j].row, aiTourDots[j].col);
         ctx.beginPath();
-        ctx.arc(dp.cx, dp.cy, 2.5, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(255,200,0,0.30)'; ctx.fill();
+        ctx.arc(dp.cx, dp.cy, 3, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255,200,0,0.45)'; ctx.fill();
     }
 
     ctx.restore();
