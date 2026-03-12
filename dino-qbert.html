@@ -192,6 +192,8 @@ var paused   = false;
 var gameOver = false;
 var levelWon = false;
 var turnPhase = 'idle'; // 'idle' | 'player-jumping' | 'enemies-jumping'
+var idleTimer = 0;      // frames spent idle — enemies advance when this hits threshold
+var IDLE_TURN_DELAY = 30; // ~0.5s at 60fps before enemies get a free turn
 
 var score, hiScore, lives, round;
 var extraLifeGiven;
@@ -1327,7 +1329,15 @@ function update() {
             }
         } else {
             if (inputQueue.length > 0) {
+                idleTimer = 0;
                 tryMove(inputQueue.shift());
+            } else {
+                // Time-based advancement: enemies get a turn even if player stands still
+                idleTimer++;
+                if (idleTimer >= IDLE_TURN_DELAY) {
+                    idleTimer = 0;
+                    startEnemyTurns();
+                }
             }
         }
     }
@@ -1801,6 +1811,7 @@ window.restartGame = function () {
     paused    = false;
     levelWon  = false;
     turnPhase = 'idle';
+    idleTimer   = 0;
     aiMoveTimer = 0;
     inputQueue  = [];
     inverted    = false;
