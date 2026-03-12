@@ -11,7 +11,7 @@ src = src.replace(/\/\/ ─── Main ─[\s\S]*$/, '');
 eval(src);
 
 // Now run instrumented games
-var NUM_GAMES = 20;
+var NUM_GAMES = 3;
 var MAX_ROUNDS = 10;
 var allDeaths = [];
 
@@ -26,7 +26,7 @@ for (var g = 0; g < NUM_GAMES; g++) {
         var moveNum = 0;
         var recentMoves = [];
 
-        for (var turn = 0; turn < 500; turn++) {
+        for (var turn = 0; turn < 20000; turn++) {
             var prevAlive = !player.dead;
             var prevRow = player.row, prevCol = player.col;
 
@@ -38,7 +38,7 @@ for (var g = 0; g < NUM_GAMES; g++) {
                 enemySnap.push({ type: e.type, row: e.row, col: e.col });
             }
 
-            var aiMove = simTurn();
+            var aiMove = simFrame();
 
             if (aiMove) {
                 moveNum++;
