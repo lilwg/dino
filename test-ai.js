@@ -23,7 +23,21 @@ function cubeAt(row, col) {
     return null;
 }
 
-function targetState() { return round >= 5 ? 2 : 1; }
+function arcadeLevel() { return Math.min(9, Math.ceil(round / 4)); }
+
+function targetState() {
+    var lv = arcadeLevel();
+    return (lv === 1 || lv === 3) ? 1 : 2;
+}
+
+function nextCubeState(state) {
+    var lv = arcadeLevel();
+    var tgt = targetState();
+    if (lv <= 2) return Math.min(state + 1, tgt);
+    if (lv === 3) return state === 0 ? 1 : 0;
+    if (lv === 4) return state === 2 ? 1 : state + 1;
+    return (state + 1) % 3;
+}
 
 function allColored() {
     var tgt = targetState();
@@ -165,11 +179,11 @@ function buildTour() {
 
 // ─── Expectimax with per-enemy move countdowns ────────────────────────────────
 // Each turn = one player hop. Enemies move only when their countdown reaches 0.
-// Countdown values derived from real-time intervals / player hop frames (~8).
+// Player hop = ~12 frames (8 jump + 4 wait). Enemies hop on their own intervals.
 var EX_HOPS_PER_MOVE = {
-    egg:   4,   // 35 frames / 8 ≈ 4 player hops
-    coily: 4,   // 28 frames / 8 ≈ 4 player hops
-    redball: 4  // 30 frames / 8 ≈ 4 player hops
+    egg:   3,   // 35 frames / 12 ≈ 3 player hops
+    coily: 2,   // 28 frames / 12 ≈ 2 player hops
+    redball: 3  // 30 frames / 12 ≈ 3 player hops
 };
 
 // Precompute all pairwise BFS distances
@@ -342,7 +356,13 @@ function exPlayerMove(st, dirKey, stochOutcome) {
     }
     st.pr = nr; st.pc = nc;
     var cube = exCubeAt(st, nr, nc);
-    if (cube && cube.state < st.tgt) { cube.state++; st.score += 25; st.cubesColored++; }
+    if (cube) {
+        var oldC = Math.min(cube.state, st.tgt);
+        cube.state = nextCubeState(cube.state);
+        var newC = Math.min(cube.state, st.tgt);
+        st.cubesColored += newC - oldC;
+        if (newC > oldC) st.score += 25;
+    }
     if (st.cubesColored >= st.cubes.length * st.tgt) {
         st.score += 1000; st.enemies = []; return true;
     }
@@ -505,11 +525,11 @@ function computeAIMove() {
 // ─── Game simulation with per-enemy move countdowns ────────────────────────────
 // Each turn = one player hop. Enemies move only when their countdown expires.
 var SIM_HOPS_PER_MOVE = {
-    egg:       4,   // 35 frames / 8
-    coily:     4,   // 28 frames / 8
-    redball:   4,   // 30 frames / 8
-    greenball: 5,   // 38 frames / 8
-    slick:     5    // 40 frames / 8
+    egg:       3,   // 35 frames / 12
+    coily:     2,   // 28 frames / 12
+    redball:   3,   // 30 frames / 12
+    greenball: 3,   // 38 frames / 12
+    slick:     3    // 40 frames / 12
 };
 
 var lives, extraLifeGiven, levelWon, turnCount;
@@ -522,7 +542,11 @@ function stompCube(row, col) {
     var cube = cubeAt(row, col);
     if (!cube) return;
     var tgt = targetState();
-    if (cube.state < tgt) { cube.state++; score += 25; checkExtraLife(); }
+    var next = nextCubeState(cube.state);
+    if (next !== cube.state) {
+        cube.state = next;
+        if (cube.state <= tgt && cube.state > 0) { score += 25; checkExtraLife(); }
+    }
 }
 
 function initRound() {
@@ -869,7 +893,7 @@ function runGame(maxRounds, verbose) {
 
         if (verbose) {
             console.log('\n' + '='.repeat(50));
-            console.log('ROUND ' + round + ' (target: ' + targetState() + ')');
+            console.log('LV ' + arcadeLevel() + ' ROUND ' + ((round - 1) % 4 + 1) + ' (target: ' + targetState() + ', lv' + arcadeLevel() + ')');
             console.log('='.repeat(50));
         }
 
@@ -908,8 +932,10 @@ function runGame(maxRounds, verbose) {
 
             if (levelWon) {
                 round++;
-                if (verbose) console.log('  Round ' + (round-1) + ' COMPLETE in ' + moveNum + ' moves! Score=' + score);
-                else console.log('Round ' + (round-1) + ' done in ' + moveNum + ' moves, deaths=' + totalDeaths + ', score=' + score);
+                var lvl = Math.min(9, Math.ceil((round-1) / 4));
+                var rnd = ((round - 2) % 4 + 1);
+                if (verbose) console.log('  Lv' + lvl + '-' + rnd + ' COMPLETE in ' + moveNum + ' moves! Score=' + score);
+                else console.log('Lv' + lvl + '-' + rnd + ' done in ' + moveNum + ' moves, deaths=' + totalDeaths + ', score=' + score);
                 break;
             }
         }
