@@ -191,9 +191,15 @@ var vizOn    = false;
 var paused   = false;
 var gameOver = false;
 var levelWon = false;
-var turnPhase = 'idle'; // 'idle' | 'player-jumping' | 'enemies-jumping'
-var idleTimer = 0;      // frames spent idle — enemies advance when this hits threshold
-var IDLE_TURN_DELAY = 30; // ~0.5s at 60fps before enemies get a free turn
+
+// Real-time enemy move intervals (frames at 60fps) — each enemy hops independently
+var ENEMY_MOVE_INTERVALS = {
+    egg:       35,   // ~0.58s
+    coily:     28,   // ~0.47s — faster, chases player
+    redball:   30,   // ~0.50s
+    greenball: 38,   // ~0.63s — leisurely
+    slick:     40    // ~0.67s — slow
+};
 
 var score, hiScore, lives, round;
 var extraLifeGiven;
@@ -340,18 +346,17 @@ function initRound() {
     roundMsg   = { text: 'ROUND ' + round, timer: 90 };
     swearBubble = null;
     discRide    = null;
-    turnPhase   = 'idle';
     aiDetailPath = [];
     aiTourDots   = [];
     aiMoveTimer  = 0;
     aiTour       = [];
     aiTourIdx    = 0;
     aiBoardSig   = '';
-    // Spawn timers in turns (player hops), not frames
-    scheduleSpawn(8);              // Coily egg
-    scheduleSpawn(4, 'redball');
-    if (round >= 4) scheduleSpawn(15, 'slick');
-    if (round >= 3) scheduleSpawn(10, 'greenball');
+    // Spawn timers in frames (at 60fps)
+    scheduleSpawn(280);                          // Coily egg (~4.7s)
+    scheduleSpawn(140, 'redball');               // ~2.3s
+    if (round >= 4) scheduleSpawn(525, 'slick');   // ~8.75s
+    if (round >= 3) scheduleSpawn(350, 'greenball'); // ~5.8s
 }
 
 function scheduleSpawn(delay, forcedType) {
@@ -387,7 +392,8 @@ function spawnEnemy(forcedType) {
             jumpSX: eggPos.cx, jumpSY: eggPos.cy,
             tx: eggPos.cx, ty: eggPos.cy,
             hops: 0,
-            frame: 0, frameTimer: 0
+            frame: 0, frameTimer: 0,
+            moveTimer: 0, moveInterval: ENEMY_MOVE_INTERVALS.egg
         });
     } else if (type === 'redball') {
         enemies.push({
@@ -397,7 +403,8 @@ function spawnEnemy(forcedType) {
             jumping: false, jumpT: 0, jumpDur: 0.12,
             jumpSX: sp.cx, jumpSY: sp.cy,
             tx: sp.cx, ty: sp.cy,
-            frame: 0, frameTimer: 0
+            frame: 0, frameTimer: 0,
+            moveTimer: 0, moveInterval: ENEMY_MOVE_INTERVALS.redball
         });
     } else if (type === 'greenball') {
         enemies.push({
@@ -407,7 +414,8 @@ function spawnEnemy(forcedType) {
             jumping: false, jumpT: 0, jumpDur: 0.12,
             jumpSX: sp.cx, jumpSY: sp.cy,
             tx: sp.cx, ty: sp.cy,
-            frame: 0, frameTimer: 0
+            frame: 0, frameTimer: 0,
+            moveTimer: 0, moveInterval: ENEMY_MOVE_INTERVALS.greenball
         });
     } else if (type === 'slick') {
         enemies.push({
@@ -417,7 +425,8 @@ function spawnEnemy(forcedType) {
             jumping: false, jumpT: 0, jumpDur: 0.12,
             jumpSX: sp.cx, jumpSY: sp.cy,
             tx: sp.cx, ty: sp.cy,
-            frame: 0, frameTimer: 0
+            frame: 0, frameTimer: 0,
+            moveTimer: 0, moveInterval: ENEMY_MOVE_INTERVALS.slick
         });
     }
 }
@@ -456,7 +465,6 @@ function tryMove(dirKey) {
 
     // Valid move — begin jump arc
     startPlayerJump(nr, nc);
-    turnPhase = 'player-jumping';
 }
 
 function startPlayerJump(nr, nc) {
@@ -518,10 +526,9 @@ function useDisc(side) {
     player.px = dp.x; player.py = dp.y;
     player.jumping = true; // block input during ride
     player.jumpT = 0;
-    turnPhase = 'player-jumping';
 
-    // Schedule new Coily after delay (turns)
-    scheduleSpawn(8);
+    // Schedule new Coily after delay (frames)
+    scheduleSpawn(280);
 }
 
 // ─── Collision check ──────────────────────────────────────────────────────────
@@ -551,41 +558,9 @@ function checkPlayerEnemyCollision() {
     }
 }
 
-// ─── Update enemies (animation only — movement is triggered by startEnemyTurns) ──
+// ─── Update enemies (real-time: each enemy moves on its own independent timer) ──
 function updateEnemies() {
-    var allDone = true;
-    for (var i = enemies.length - 1; i >= 0; i--) {
-        var e = enemies[i];
-        if (e.type === 'spawn-timer') continue;
-
-        // Sprite frame animation
-        e.frameTimer = (e.frameTimer || 0) + 1;
-        if (e.frameTimer > 8) { e.frameTimer = 0; e.frame = e.frame ^ 1; }
-
-        // Jump arc interpolation
-        if (e.jumping) {
-            allDone = false;
-            e.jumpT += e.jumpDur;
-            if (e.jumpT >= 1) {
-                e.jumpT = 1; e.jumping = false;
-                e.px = e.tx; e.py = e.ty;
-                onEnemyLand(e, i);
-            } else {
-                var arc = Math.sin(e.jumpT * Math.PI) * 16;
-                e.px = e.jumpSX + (e.tx - e.jumpSX) * e.jumpT;
-                e.py = e.jumpSY + (e.ty - e.jumpSY) * e.jumpT - arc;
-            }
-        }
-    }
-    // When all enemy animations finish, return to idle
-    if (turnPhase === 'enemies-jumping' && allDone) {
-        turnPhase = 'idle';
-    }
-}
-
-// ─── Start enemy turns (called after player lands) ────────────────────────────
-function startEnemyTurns() {
-    // Tick spawn timers (turn-based)
+    // Tick spawn timers (frame-based)
     for (var i = enemies.length - 1; i >= 0; i--) {
         if (enemies[i].type === 'spawn-timer') {
             enemies[i].timer--;
@@ -597,13 +572,35 @@ function startEnemyTurns() {
         }
     }
 
-    // Move each enemy once
-    var anyJumping = false;
     for (var i = enemies.length - 1; i >= 0; i--) {
         var e = enemies[i];
         if (e.type === 'spawn-timer') continue;
-        if (e.jumping) continue;
 
+        // Sprite frame animation
+        e.frameTimer = (e.frameTimer || 0) + 1;
+        if (e.frameTimer > 8) { e.frameTimer = 0; e.frame = e.frame ^ 1; }
+
+        // Jump arc interpolation
+        if (e.jumping) {
+            e.jumpT += e.jumpDur;
+            if (e.jumpT >= 1) {
+                e.jumpT = 1; e.jumping = false;
+                e.px = e.tx; e.py = e.ty;
+                onEnemyLand(e, i);
+            } else {
+                var arc = Math.sin(e.jumpT * Math.PI) * 16;
+                e.px = e.jumpSX + (e.tx - e.jumpSX) * e.jumpT;
+                e.py = e.jumpSY + (e.ty - e.jumpSY) * e.jumpT - arc;
+            }
+            continue; // don't tick move timer while jumping
+        }
+
+        // Independent move timer — tick each frame, hop when threshold reached
+        e.moveTimer++;
+        if (e.moveTimer < e.moveInterval) continue;
+        e.moveTimer = 0;
+
+        // Execute this enemy's move
         if (e.type === 'egg') {
             var dir = Math.random() < 0.5 ? 'DL' : 'DR';
             var delta = DIRS[dir];
@@ -611,12 +608,13 @@ function startEnemyTurns() {
             if (isValidPos(nr, nc)) {
                 e.hops++;
                 enemyJumpTo(e, nr, nc);
-                anyJumping = true;
                 if (e.hops >= 6 || nr >= ROWS - 1) {
                     e.type = 'coily';
+                    e.moveInterval = ENEMY_MOVE_INTERVALS.coily;
                 }
             } else {
                 e.type = 'coily';
+                e.moveInterval = ENEMY_MOVE_INTERVALS.coily;
             }
         } else if (e.type === 'coily') {
             var bestDir = null, bestDist = Infinity;
@@ -629,10 +627,9 @@ function startEnemyTurns() {
             }
             if (bestDir) {
                 enemyJumpTo(e, bestDir.nr, bestDir.nc);
-                anyJumping = true;
             } else {
                 enemies.splice(i, 1);
-                scheduleSpawn(8);
+                scheduleSpawn(280);
             }
         } else if (e.type === 'redball') {
             var rbdir = Math.random() < 0.5 ? 'DL' : 'DR';
@@ -640,10 +637,9 @@ function startEnemyTurns() {
             var rbnr = e.row + rbdelta.dr, rbnc = e.col + rbdelta.dc;
             if (isValidPos(rbnr, rbnc)) {
                 enemyJumpTo(e, rbnr, rbnc);
-                anyJumping = true;
             } else {
                 enemies.splice(i, 1);
-                scheduleSpawn(Math.max(5, 8 - Math.floor(round / 2)), 'redball');
+                scheduleSpawn(Math.max(175, 280 - Math.floor(round / 2) * 35), 'redball');
             }
         } else if (e.type === 'greenball') {
             var gbdir = Math.random() < 0.5 ? 'DL' : 'DR';
@@ -651,10 +647,9 @@ function startEnemyTurns() {
             var gbnr = e.row + gbdelta.dr, gbnc = e.col + gbdelta.dc;
             if (isValidPos(gbnr, gbnc)) {
                 enemyJumpTo(e, gbnr, gbnc);
-                anyJumping = true;
             } else {
                 enemies.splice(i, 1);
-                if (round >= 3) scheduleSpawn(12, 'greenball');
+                if (round >= 3) scheduleSpawn(420, 'greenball');
             }
         } else if (e.type === 'slick') {
             var sdir = Math.random() < 0.5 ? 'DL' : 'DR';
@@ -662,15 +657,12 @@ function startEnemyTurns() {
             var snr = e.row + sdelta.dr, snc = e.col + sdelta.dc;
             if (isValidPos(snr, snc)) {
                 enemyJumpTo(e, snr, snc);
-                anyJumping = true;
             } else {
                 enemies.splice(i, 1);
-                if (round >= 4) scheduleSpawn(15, 'slick');
+                if (round >= 4) scheduleSpawn(525, 'slick');
             }
         }
     }
-
-    turnPhase = anyJumping ? 'enemies-jumping' : 'idle';
 }
 
 function onEnemyLand(e, idx) {
@@ -686,7 +678,7 @@ function onEnemyLand(e, idx) {
         // Check if slick reached bottom — remove it
         if (e.row >= ROWS - 1) {
             enemies.splice(idx, 1);
-            if (round >= 4) scheduleSpawn(15, 'slick');
+            if (round >= 4) scheduleSpawn(525, 'slick');
         }
     } else if (e.type === 'greenball') {
         // Green ball is safe — player catches it for 100 points
@@ -722,7 +714,6 @@ function updatePlayer() {
             player.jumping = false;
             stompCube(0, 0);
             discRide = null;
-            turnPhase = 'idle';
         } else {
             var t = discRide.t;
             // Two-phase animation like the arcade:
@@ -767,11 +758,10 @@ function updatePlayer() {
                 if (enemies[i].type === 'spawn-timer') kept.push(enemies[i]);
             }
             enemies = kept;
-            turnPhase = 'idle';
-            scheduleSpawn(7);
-            scheduleSpawn(5, 'redball');
-            if (round >= 4) scheduleSpawn(13, 'slick');
-            if (round >= 3) scheduleSpawn(10, 'greenball');
+            scheduleSpawn(245);                          // Coily egg (~4.1s)
+            scheduleSpawn(175, 'redball');               // ~2.9s
+            if (round >= 4) scheduleSpawn(455, 'slick');   // ~7.6s
+            if (round >= 3) scheduleSpawn(350, 'greenball'); // ~5.8s
         }
         return;
     }
@@ -790,15 +780,12 @@ function updatePlayer() {
                 score += 1000; checkExtraLife();
                 round++;
                 levelWon = true;
-                turnPhase = 'idle';
                 DinoSounds.reached();
                 roundMsg = { text: 'ROUND ' + round, timer: 110 };
                 var savedRound = round;
                 setTimeout(function () {
                     if (round === savedRound) initRound();
                 }, 2000);
-            } else if (!player.dead) {
-                startEnemyTurns();
             }
         } else {
             var arc = Math.sin(player.jumpT * Math.PI) * 26;
@@ -1318,8 +1305,8 @@ function update() {
     updatePlayer();
     updateEnemies();
 
-    // Accept input / AI only when idle
-    if (turnPhase === 'idle' && !player.jumping && !player.dead && !discRide) {
+    // Accept input / AI when player is ready (not jumping, not dead, not on disc)
+    if (!player.jumping && !player.dead && !discRide) {
         if (gameMode === 'rules') {
             aiMoveTimer++;
             if (aiMoveTimer >= 4) {
@@ -1329,15 +1316,7 @@ function update() {
             }
         } else {
             if (inputQueue.length > 0) {
-                idleTimer = 0;
                 tryMove(inputQueue.shift());
-            } else {
-                // Time-based advancement: enemies get a turn even if player stands still
-                idleTimer++;
-                if (idleTimer >= IDLE_TURN_DELAY) {
-                    idleTimer = 0;
-                    startEnemyTurns();
-                }
             }
         }
     }
@@ -1810,8 +1789,6 @@ window.restartGame = function () {
     gameOver  = false;
     paused    = false;
     levelWon  = false;
-    turnPhase = 'idle';
-    idleTimer   = 0;
     aiMoveTimer = 0;
     inputQueue  = [];
     inverted    = false;
