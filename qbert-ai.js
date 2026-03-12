@@ -17,14 +17,15 @@ var ROWS = 7;
 var DIRS = { UL: {dr:-1, dc:-1}, UR: {dr:-1, dc:0}, DL: {dr:1, dc:0}, DR: {dr:1, dc:1} };
 var DIR_KEYS = ['UL', 'UR', 'DL', 'DR'];
 
-// Arcade: Q*bert=9f, enemies=12f land-to-land → ratio 3:4
-// Enemy moves once per 1.33 Q*bert hops (round to 1)
+// Arcade: Q*bert=9f, enemies=12f land-to-land → ratio 3:4 (1.33 hops).
+// Round to 2 for search model — gives AI realistic planning headroom
+// while the real-time game uses frame-accurate independent timers.
 var EX_HOPS_PER_MOVE = {
-    egg:      1,   // 12f / 9f ≈ 1.33 player hops
-    coily:    1,   // 12f / 9f ≈ 1.33 player hops
-    redball:  1,   // 12f / 9f ≈ 1.33 player hops
-    ugg:      1,   // 12f / 9f ≈ 1.33 player hops
-    wrongway: 1    // 12f / 9f ≈ 1.33 player hops
+    egg:      2,   // ~1.33 real, rounded up for search stability
+    coily:    2,   // ~1.33 real, rounded up for search stability
+    redball:  2,   // ~1.33 real, rounded up for search stability
+    ugg:      2,   // ~1.33 real, rounded up for search stability
+    wrongway: 2    // ~1.33 real, rounded up for search stability
 };
 
 var EX_DEATH = -50000;
