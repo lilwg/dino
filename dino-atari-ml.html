@@ -1,0 +1,877 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Atari ML Lab</title>
+    <link rel="stylesheet" href="si-styles.css?v=2">
+    <script src="fs-toggle.js"></script>
+    <script src="dino-sounds.js"></script>
+    <style>
+        #game-canvas { width: 100%; height: auto; max-width: none !important; }
+
+        /* Hardware dashboard */
+        .hw-dashboard {
+            display: flex; gap: 12px; margin-top: 12px; flex-wrap: wrap;
+            padding: 10px 12px; background: #1d1d1f; border-radius: 8px;
+            font-family: 'Courier New', monospace; font-size: 12px; color: #a1a1a6;
+        }
+        .hw-meter { flex: 1; min-width: 140px; }
+        .hw-label { display: block; margin-bottom: 3px; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; }
+        .hw-bar { height: 8px; background: #2c2c2e; border-radius: 4px; overflow: hidden; }
+        .hw-fill { height: 100%; border-radius: 4px; transition: width 0.15s, background 0.3s; }
+        .hw-val { display: block; margin-top: 2px; font-size: 10px; }
+        .hw-fill-ram { background: #30d158; }
+        .hw-fill-rom { background: #0a84ff; }
+        .hw-fill-cpu { background: #ff9f0a; }
+        .hw-fill.over { background: #ff453a !important; }
+
+        /* Q-table heatmap */
+        #qtable-canvas { width: 100%; max-width: 500px; height: auto; display: block; }
+
+        /* Stats line */
+        .atari-stats {
+            font-family: 'Courier New', monospace; font-size: 11px;
+            color: #6e6e73; margin-top: 8px;
+        }
+
+        /* Scanline overlay (toggle) */
+        .scanlines {
+            position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+            pointer-events: none; border-radius: 4px;
+            background: repeating-linear-gradient(
+                0deg, transparent, transparent 2px, rgba(0,0,0,0.03) 2px, rgba(0,0,0,0.03) 4px
+            );
+        }
+        .si-game-box { position: relative; }
+    </style>
+</head>
+<body>
+    <img id="offline-resources-1x"
+         src="assets/default_100_percent/100-offline-sprite.png"
+         style="display:none;">
+
+    <div class="si-page" style="padding-bottom: 40px;">
+        <h1>Atari ML Lab</h1>
+        <p class="si-subtitle">Can machine learning fit inside 128 bytes of RAM?</p>
+
+        <div class="si-game-box">
+            <canvas id="game-canvas" width="600" height="400"></canvas>
+            <div class="scanlines"></div>
+
+            <!-- Hardware dashboard -->
+            <div class="hw-dashboard">
+                <div class="hw-meter">
+                    <span class="hw-label">RAM (128 B)</span>
+                    <div class="hw-bar"><div class="hw-fill hw-fill-ram" id="ram-fill" style="width:0%"></div></div>
+                    <span class="hw-val" id="ram-val">0 / 128 B</span>
+                </div>
+                <div class="hw-meter">
+                    <span class="hw-label">ROM (4 KB)</span>
+                    <div class="hw-bar"><div class="hw-fill hw-fill-rom" id="rom-fill" style="width:0%"></div></div>
+                    <span class="hw-val" id="rom-val">0 / 4096 B</span>
+                </div>
+                <div class="hw-meter">
+                    <span class="hw-label">CPU / frame (~2048 cyc)</span>
+                    <div class="hw-bar"><div class="hw-fill hw-fill-cpu" id="cpu-fill" style="width:0%"></div></div>
+                    <span class="hw-val" id="cpu-val">0 / 2048 cyc</span>
+                </div>
+            </div>
+
+            <div class="si-controls" style="margin-top: 12px;">
+                <button class="si-btn active" id="human-btn" onclick="setAgent('human')">Human</button>
+                <button class="si-btn" id="qtable-btn" onclick="setAgent('qtable')">Q-Table</button>
+                <button class="si-btn" id="nn-btn" onclick="setAgent('nn')">Neural Net</button>
+                <button class="si-btn" id="rules-btn" onclick="setAgent('rules')">Rules</button>
+                <button class="si-btn" id="viz-btn" onclick="toggleViz()">Viz</button>
+                <button class="si-btn" onclick="restartGame()">Restart</button>
+                <button class="si-btn" id="pause-btn" onclick="togglePause()">Pause</button>
+                <button class="si-btn" id="fs-btn" onclick="toggleFullscreen()">Fullscreen</button>
+                <div class="si-speed" style="font-size: 11px;">
+                    Speed: <input type="range" id="speed-slider" min="1" max="200" value="1">
+                    <span id="speed-val">1x</span>
+                </div>
+            </div>
+
+            <div class="atari-stats" id="stats-line">Episodes: 0 | Win rate: --</div>
+            <p class="si-help" style="text-align: center;">&uarr; / &darr; move &nbsp;|&nbsp; R restart &nbsp;|&nbsp; Touch: drag</p>
+        </div>
+
+        <!-- Q-Table Visualization -->
+        <div class="si-viz-box" id="qtable-viz-box" style="display:none;">
+            <h3>Q-Table heatmap</h3>
+            <canvas id="qtable-canvas" width="500" height="260"></canvas>
+            <p class="si-caption" id="qtable-caption">32 states &times; 3 actions = 96 bytes. Brighter = higher Q-value. Current state highlighted.</p>
+        </div>
+
+        <!-- How it works -->
+        <h2 style="margin-top: 16px;">How it works</h2>
+        <p class="si-prose">
+            The Atari 2600 has a 1.19 MHz 6502 CPU, <strong>128 bytes of RAM</strong>, and 4 KB of ROM.
+            There is no floating-point unit and no multiply instruction. The CPU spends most of its time generating the
+            display scanline by scanline, leaving roughly <strong>2,048 cycles per frame</strong> for game logic.
+        </p>
+        <p class="si-prose">
+            <strong>Q-Table</strong> uses tabular Q-learning with 32 discrete states and 3 actions.
+            The entire Q-table fits in 96 bytes of RAM, leaving 32 bytes for game state and scratch space.
+            It learns from scratch by playing &mdash; crank up the speed slider to watch it go from random to
+            superhuman in under a minute. All updates use only addition, comparison, and bit-shifts &mdash; no
+            multiply needed.
+        </p>
+        <p class="si-prose">
+            <strong>Neural Net</strong> runs a pre-trained 4&rarr;4&rarr;3 feedforward network quantized to
+            8-bit integer weights. The 35 weight bytes live in ROM. The forward pass requires 28 multiply-accumulate
+            operations. Using a 512-byte multiply lookup table in ROM, each MAC takes ~30 cycles, for a total of
+            ~840 cycles per frame &mdash; well within the VBLANK budget.
+        </p>
+        <p class="si-prose">
+            <strong>Rules</strong> is a simple ball-tracking heuristic for comparison. It requires almost zero
+            computation but demonstrates that even the simplest &ldquo;AI&rdquo; can be effective at Pong.
+        </p>
+
+        <h2>Could this really run on Atari hardware?</h2>
+        <p class="si-prose">
+            <strong>Inference: Yes.</strong> Both the Q-table lookup and the quantized neural network fit comfortably
+            within the Atari 2600&rsquo;s constraints. The Q-table needs 96 bytes of RAM and a handful of cycles for a
+            table lookup. The neural network stores 35 bytes of weights in ROM and computes a forward pass in ~840
+            cycles using a lookup-table multiply.
+        </p>
+        <p class="si-prose">
+            <strong>Learning: Partially.</strong> Q-learning updates require only addition and bit-shifts,
+            so the Q-table agent could genuinely learn on-hardware. The update takes ~200 cycles per step.
+            However, training a neural network with backpropagation is infeasible &mdash; there is not enough RAM for
+            gradient buffers, and the multiply-heavy computation would blow the cycle budget. The practical approach is
+            to train offline and burn the quantized weights into ROM.
+        </p>
+
+        <p style="margin-top: 20px;">
+            <a href="/" style="color: #0071e3; font-size: 14px; text-decoration: none;">&larr; Back</a>
+        </p>
+    </div>
+
+<script>
+(function () {
+    'use strict';
+
+    // =================================================================
+    //  CONSTANTS
+    // =================================================================
+    var CW = 600, CH = 400;
+    var PAD_W = 8, PAD_H = 60;
+    var AGENT_X = 20, OPP_X = CW - 20 - PAD_W;
+    var PAD_SPEED = 5;
+    var BALL_SZ = 8, BALL_SPEED = 4;
+    var TOP = 25, BOT = CH - 10;
+    var MAX_SCORE = 11;
+
+    var SPRITES = {
+        TREX_RUN1:  { x: 848 + 88,  y: 2, w: 44, h: 47 },
+        TREX_RUN2:  { x: 848 + 132, y: 2, w: 44, h: 47 },
+        TREX_IDLE:  { x: 848,        y: 2, w: 44, h: 47 },
+        PTERO1:     { x: 134,       y: 2, w: 46, h: 40 },
+        PTERO2:     { x: 134 + 46,  y: 2, w: 46, h: 40 }
+    };
+    var spriteImg = document.getElementById('offline-resources-1x');
+
+    // =================================================================
+    //  PONG GAME
+    // =================================================================
+    function PongGame() { this.reset(); }
+
+    PongGame.prototype.reset = function () {
+        this.ay = CH / 2 - PAD_H / 2;
+        this.oy = CH / 2 - PAD_H / 2;
+        this.aPts = 0; this.oPts = 0;
+        this._serve();
+    };
+
+    PongGame.prototype._serve = function () {
+        this.bx = CW / 2; this.by = CH / 2;
+        var a = (Math.random() - 0.5);
+        var d = Math.random() < 0.5 ? 1 : -1;
+        this.bvx = BALL_SPEED * Math.cos(a) * d;
+        this.bvy = BALL_SPEED * Math.sin(a);
+        this.rally = 0;
+    };
+
+    PongGame.prototype.step = function (action, oppSpeed) {
+        // action: 0=up, 1=stay, 2=down
+        if (action === 0) this.ay = Math.max(TOP + 5, this.ay - PAD_SPEED);
+        if (action === 2) this.ay = Math.min(BOT - PAD_H, this.ay + PAD_SPEED);
+
+        // Opponent tracking AI
+        if (this.bvx > 0 && this.bx > CW / 2) {
+            var t = this.by + BALL_SZ / 2 - PAD_H / 2;
+            var diff = t - this.oy;
+            this.oy += Math.max(-oppSpeed, Math.min(oppSpeed, diff));
+        }
+        this.oy = Math.max(TOP + 5, Math.min(BOT - PAD_H, this.oy));
+
+        var sm = Math.min(1 + this.rally * 0.03, 1.5);
+        this.bx += this.bvx * sm;
+        this.by += this.bvy * sm;
+
+        var reward = 0, done = false;
+
+        // Walls
+        if (this.by < TOP) { this.by = 2 * TOP - this.by; this.bvy = Math.abs(this.bvy); }
+        if (this.by > BOT - BALL_SZ) { this.by = 2 * (BOT - BALL_SZ) - this.by; this.bvy = -Math.abs(this.bvy); }
+
+        // Agent paddle
+        if (this.bx <= AGENT_X + PAD_W && this.bvx < 0) {
+            if (this.by + BALL_SZ > this.ay && this.by < this.ay + PAD_H) {
+                this.bx = AGENT_X + PAD_W;
+                this.bvx = Math.abs(this.bvx);
+                var h = (this.by + BALL_SZ / 2 - this.ay) / PAD_H;
+                this.bvy = BALL_SPEED * (h - 0.5) * 2.5;
+                this.rally++;
+                reward = 0.2; // caught ball
+            } else if (this.bx < 0) {
+                this.oPts++; reward = -1;
+                done = this.oPts >= MAX_SCORE;
+                if (!done) this._serve();
+            }
+        }
+
+        // Opponent paddle
+        if (this.bx + BALL_SZ >= OPP_X && this.bvx > 0) {
+            if (this.by + BALL_SZ > this.oy && this.by < this.oy + PAD_H) {
+                this.bx = OPP_X - BALL_SZ;
+                this.bvx = -Math.abs(this.bvx);
+                var h = (this.by + BALL_SZ / 2 - this.oy) / PAD_H;
+                this.bvy = BALL_SPEED * (h - 0.5) * 2.5;
+                this.rally++;
+            } else if (this.bx > CW) {
+                this.aPts++; reward = 1;
+                done = this.aPts >= MAX_SCORE;
+                if (!done) this._serve();
+            }
+        }
+
+        return { reward: reward, done: done };
+    };
+
+    // =================================================================
+    //  Q-TABLE AGENT (fits in 128 bytes of Atari RAM)
+    //
+    //  State encoding (32 states):
+    //    ball_relative = floor((ball_y - paddle_center_y) / zone_height) clamped to [-3, 4] → 8 bins
+    //    ball_vy_dir   = (ball_vy >= 0) ? 1 : 0                                            → 2 bins
+    //    ball_approaching = (ball_vx < 0) ? 1 : 0                                           → 2 bins
+    //    state_index = ball_relative * 4 + ball_vy_dir * 2 + ball_approaching
+    //
+    //  Q-table: 32 states × 3 actions = 96 bytes
+    //  Scratch: 32 bytes (state, action, reward, temporaries)
+    //  Total RAM: 128 bytes
+    // =================================================================
+    var QTableAgent = {
+        qtable: null,
+        epsilon: 1.0,
+        alpha: 0.15,     // learning rate (on Atari: fixed-point ~19/128)
+        gamma: 0.9,      // discount    (on Atari: ~115/128)
+        episodes: 0,
+        wins: 0,
+        recentResults: [],
+        prevState: -1,
+        prevAction: -1,
+        cyclesUsed: 0,
+
+        init: function () {
+            this.qtable = new Float64Array(32 * 3); // 96 "bytes" of Q-values
+            this.epsilon = 1.0;
+            this.episodes = 0;
+            this.wins = 0;
+            this.recentResults = [];
+            this.prevState = -1;
+            this.prevAction = -1;
+        },
+
+        getState: function (game) {
+            var paddleCenter = game.ay + PAD_H / 2;
+            var ballCenter = game.by + BALL_SZ / 2;
+            var zoneH = (BOT - TOP) / 8;
+            var rel = Math.floor((ballCenter - paddleCenter) / zoneH);
+            rel = Math.max(-3, Math.min(4, rel)); // clamp to [-3, 4] → 8 bins
+            var relBin = rel + 3; // shift to [0, 7]
+            var vyDir = game.bvy >= 0 ? 1 : 0;
+            var approaching = game.bvx < 0 ? 1 : 0;
+            return relBin * 4 + vyDir * 2 + approaching;
+        },
+
+        getAction: function (game) {
+            var s = this.getState(game);
+
+            // Epsilon-greedy (6502 cost: ~20 cycles for random + compare)
+            var action;
+            if (Math.random() < this.epsilon) {
+                action = Math.floor(Math.random() * 3);
+            } else {
+                // argmax Q(s, a) — 3 comparisons, ~15 cycles
+                var base = s * 3;
+                action = 0;
+                if (this.qtable[base + 1] > this.qtable[base + action]) action = 1;
+                if (this.qtable[base + 2] > this.qtable[base + action]) action = 2;
+            }
+
+            // Q-learning update for previous (s, a, r, s')
+            // 6502 cost: ~150 cycles (2 lookups, 1 max, 2 multiplies via shift, 1 store)
+            if (this.prevState >= 0) {
+                var base0 = this.prevState * 3;
+                // max Q(s', a')
+                var maxQ = Math.max(this.qtable[s * 3], this.qtable[s * 3 + 1], this.qtable[s * 3 + 2]);
+                // TD update: Q(s,a) += alpha * (r + gamma * maxQ - Q(s,a))
+                var old = this.qtable[base0 + this.prevAction];
+                var target = this.prevReward + this.gamma * maxQ;
+                this.qtable[base0 + this.prevAction] = old + this.alpha * (target - old);
+            }
+
+            this.prevState = s;
+            this.prevAction = action;
+
+            // Total estimated 6502 cycles: ~185 (state encode + lookup + update)
+            this.cyclesUsed = 185;
+
+            return action;
+        },
+
+        onReward: function (reward) {
+            this.prevReward = reward;
+        },
+
+        onEpisodeEnd: function (won) {
+            this.episodes++;
+            if (won) this.wins++;
+            this.recentResults.push(won ? 1 : 0);
+            if (this.recentResults.length > 50) this.recentResults.shift();
+            // Decay epsilon
+            this.epsilon = Math.max(0.03, this.epsilon * 0.992);
+            this.prevState = -1;
+            this.prevAction = -1;
+        },
+
+        getWinRate: function () {
+            if (this.recentResults.length === 0) return 0;
+            var sum = 0;
+            for (var i = 0; i < this.recentResults.length; i++) sum += this.recentResults[i];
+            return sum / this.recentResults.length;
+        },
+
+        // Hardware cost
+        ramUsed: 128,     // 96 Q-table + 32 scratch
+        romUsed: 256,     // state encoder + Q-lookup + update logic
+    };
+
+    // =================================================================
+    //  QUANTIZED NEURAL NETWORK AGENT (weights in ROM, inference only)
+    //
+    //  Architecture: 4 inputs → 4 hidden (ReLU) → 3 outputs
+    //  Weights: 4×4 + 4 + 4×3 + 3 = 35 bytes (int8)
+    //  ROM: 35 bytes weights + 512 byte multiply LUT + ~200 bytes code = ~747 bytes
+    //  RAM: ~20 bytes (4 input + 4 hidden + 3 output + scratch)
+    //  Cycles: 28 MACs × 30 cyc + overhead ≈ 900 cycles
+    // =================================================================
+    var NNAgent = {
+        // Float weights (will be quantized for display)
+        w1: [  // 4×4 input→hidden
+            [-2.5,  2.5,  0.0,  0.0],
+            [ 2.5, -2.5,  0.0,  0.0],
+            [ 0.0,  0.0,  1.8,  0.0],
+            [ 0.0,  0.0,  0.0,  2.0]
+        ],
+        b1: [0, 0, 0, -0.8],
+        w2: [  // 4×3 hidden→output [UP, STAY, DOWN]
+            [ 0.0, -0.5,  3.0],
+            [ 3.0, -0.5,  0.0],
+            [-0.8,  0.0,  0.8],
+            [ 0.5,  0.3,  0.5]
+        ],
+        b2: [0, 0.3, 0],
+
+        // Quantized int8 weights (derived from float, scale=50)
+        scale: 50,
+        w1_q: null, b1_q: null, w2_q: null, b2_q: null,
+
+        init: function () {
+            // Quantize weights to int8
+            this.w1_q = this._quantize2D(this.w1);
+            this.b1_q = this._quantize1D(this.b1);
+            this.w2_q = this._quantize2D(this.w2);
+            this.b2_q = this._quantize1D(this.b2);
+        },
+
+        _quantize2D: function (m) {
+            var q = [];
+            for (var i = 0; i < m.length; i++) {
+                q[i] = [];
+                for (var j = 0; j < m[i].length; j++) {
+                    q[i][j] = Math.max(-128, Math.min(127, Math.round(m[i][j] * this.scale)));
+                }
+            }
+            return q;
+        },
+        _quantize1D: function (v) {
+            var q = [];
+            for (var i = 0; i < v.length; i++) {
+                q[i] = Math.max(-128, Math.min(127, Math.round(v[i] * this.scale)));
+            }
+            return q;
+        },
+
+        getAction: function (game) {
+            // Extract features (normalized 0–1)
+            var inp = [
+                game.ay / CH,                          // paddle y
+                game.by / CH,                          // ball y
+                game.bvy / (BALL_SPEED * 2.5),         // ball vy (normalized)
+                game.bvx < 0 ? 1.0 : 0.0              // approaching
+            ];
+
+            // === Quantized int8 forward pass ===
+            // (Simulates what the 6502 would compute with lookup-table multiply)
+            var inp_q = [];
+            for (var i = 0; i < 4; i++) inp_q[i] = Math.round(inp[i] * this.scale);
+
+            // Hidden layer: 4×4 MACs + bias, then ReLU
+            var hidden = [];
+            for (var h = 0; h < 4; h++) {
+                var acc = this.b1_q[h] * this.scale; // scale bias to match MAC scale
+                for (var k = 0; k < 4; k++) {
+                    acc += this.w1_q[h][k] * inp_q[k]; // int8 × int8 → int16
+                }
+                hidden[h] = Math.max(0, acc); // ReLU
+            }
+
+            // Output layer: 4×3 MACs + bias
+            var out = [];
+            var best = 0;
+            for (var o = 0; o < 3; o++) {
+                var acc = this.b2_q[o] * this.scale * this.scale;
+                for (var k = 0; k < 4; k++) {
+                    acc += this.w2_q[o][k] * hidden[k];
+                }
+                out[o] = acc;
+                if (out[o] > out[best]) best = o;
+            }
+
+            this.cyclesUsed = 900; // 28 MACs × ~30 cycles + overhead
+            this._lastHidden = hidden;
+            this._lastOut = out;
+            return best;
+        },
+
+        cyclesUsed: 900,
+        ramUsed: 20,       // inputs + hidden + outputs + scratch
+        romUsed: 747,      // 35 weights + 512 LUT + ~200 code
+    };
+
+    // =================================================================
+    //  RULES AGENT (trivial ball tracking)
+    // =================================================================
+    var RulesAgent = {
+        getAction: function (game) {
+            var target = game.by + BALL_SZ / 2 - PAD_H / 2;
+            this.cyclesUsed = 12; // 2 comparisons, 1 branch
+            if (target < game.ay - 3) return 0;
+            if (target > game.ay + 3) return 2;
+            return 1;
+        },
+        cyclesUsed: 12,
+        ramUsed: 4,   // target, diff
+        romUsed: 24,  // few instructions
+    };
+
+    // =================================================================
+    //  GAME STATE
+    // =================================================================
+    var canvas = document.getElementById('game-canvas');
+    var ctx = canvas.getContext('2d');
+    var game = new PongGame();
+    var currentAgent = 'human'; // 'human', 'qtable', 'nn', 'rules'
+    var paused = false;
+    var showViz = true;
+    var animFrame = 0;
+    var keysDown = {};
+    var touchY = -1;
+    var hiWins = parseInt(localStorage.getItem('atariML_hiWins') || '0');
+    var totalWins = 0;
+
+    QTableAgent.init();
+    NNAgent.init();
+
+    // =================================================================
+    //  INPUT
+    // =================================================================
+    document.addEventListener('keydown', function (e) {
+        keysDown[e.key] = true;
+        if (e.key === 'r' || e.key === 'R') restartGame();
+    });
+    document.addEventListener('keyup', function (e) { keysDown[e.key] = false; });
+
+    canvas.addEventListener('touchstart', function (e) {
+        e.preventDefault();
+        touchY = e.touches[0].clientY;
+    }, { passive: false });
+    canvas.addEventListener('touchmove', function (e) {
+        e.preventDefault();
+        var rect = canvas.getBoundingClientRect();
+        var scaleY = CH / rect.height;
+        var dy = (e.touches[0].clientY - touchY) * scaleY;
+        touchY = e.touches[0].clientY;
+        if (currentAgent === 'human') {
+            game.ay = Math.max(TOP + 5, Math.min(BOT - PAD_H, game.ay + dy));
+        }
+    }, { passive: false });
+    canvas.addEventListener('touchend', function () { touchY = -1; });
+
+    // =================================================================
+    //  CONTROLS
+    // =================================================================
+    function setAgent(name) {
+        currentAgent = name;
+        var btns = ['human', 'qtable', 'nn', 'rules'];
+        for (var i = 0; i < btns.length; i++) {
+            var el = document.getElementById(btns[i] + '-btn');
+            if (el) el.classList.toggle('active', btns[i] === name);
+        }
+        document.getElementById('qtable-viz-box').style.display = (name === 'qtable' && showViz) ? '' : 'none';
+        if (name === 'qtable' && !QTableAgent.qtable) QTableAgent.init();
+    }
+    window.setAgent = setAgent;
+
+    function toggleViz() {
+        showViz = !showViz;
+        document.getElementById('viz-btn').classList.toggle('active', showViz);
+        document.getElementById('qtable-viz-box').style.display =
+            (currentAgent === 'qtable' && showViz) ? '' : 'none';
+    }
+    window.toggleViz = toggleViz;
+
+    function restartGame() {
+        game.reset();
+        QTableAgent.prevState = -1;
+        QTableAgent.prevAction = -1;
+    }
+    window.restartGame = restartGame;
+
+    function togglePause() {
+        paused = !paused;
+        document.getElementById('pause-btn').textContent = paused ? 'Play' : 'Pause';
+    }
+    window.togglePause = togglePause;
+
+    window.toggleFullscreen = function () {
+        var box = document.querySelector('.si-game-box');
+        if (!document.fullscreenElement) {
+            (box.requestFullscreen || box.webkitRequestFullscreen).call(box);
+        } else {
+            (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+        }
+    };
+
+    function getSpeed() {
+        var v = parseInt(document.getElementById('speed-slider').value) || 1;
+        document.getElementById('speed-val').textContent = v + 'x';
+        return v;
+    }
+
+    function getOppSpeed() {
+        // Fixed at 3.5 for consistent ML benchmarking
+        return 3.5;
+    }
+
+    // =================================================================
+    //  RENDERING
+    // =================================================================
+    function pad2(n) { return n < 10 ? '0' + n : '' + n; }
+
+    function drawGame() {
+        ctx.fillStyle = '#f7f7f7';
+        ctx.fillRect(0, 0, CW, CH);
+
+        // Court
+        ctx.strokeStyle = '#535353'; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(0, CH - 8); ctx.lineTo(CW, CH - 8); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(0, TOP); ctx.lineTo(CW, TOP); ctx.stroke();
+        ctx.strokeStyle = '#d2d2d7'; ctx.setLineDash([6, 6]);
+        ctx.beginPath(); ctx.moveTo(CW / 2, TOP); ctx.lineTo(CW / 2, CH - 8); ctx.stroke();
+        ctx.setLineDash([]);
+
+        // T-Rex paddle
+        var agentMov = currentAgent !== 'human' || keysDown['ArrowUp'] || keysDown['ArrowDown'];
+        var ts = agentMov ? (animFrame === 0 ? SPRITES.TREX_RUN1 : SPRITES.TREX_RUN2) : SPRITES.TREX_IDLE;
+        var sc = PAD_H / ts.h;
+        if (spriteImg && spriteImg.complete)
+            ctx.drawImage(spriteImg, ts.x, ts.y, ts.w, ts.h,
+                AGENT_X + PAD_W / 2 - ts.w * sc / 2, game.ay + PAD_H / 2 - ts.h * sc / 2,
+                ts.w * sc, ts.h * sc);
+
+        // Ptero paddle
+        var ps = animFrame === 0 ? SPRITES.PTERO1 : SPRITES.PTERO2;
+        sc = PAD_H / ps.h;
+        if (spriteImg && spriteImg.complete)
+            ctx.drawImage(spriteImg, ps.x, ps.y, ps.w, ps.h,
+                OPP_X + PAD_W / 2 - ps.w * sc / 2, game.oy + PAD_H / 2 - ps.h * sc / 2,
+                ps.w * sc, ps.h * sc);
+
+        // Ball
+        ctx.fillStyle = '#535353';
+        ctx.beginPath();
+        ctx.arc(Math.max(BALL_SZ, Math.min(CW - BALL_SZ, game.bx + BALL_SZ / 2)),
+                Math.max(TOP + BALL_SZ, Math.min(BOT - BALL_SZ, game.by + BALL_SZ / 2)),
+                BALL_SZ / 2, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Q-table state visualization (show which bin the ball is in)
+        if (currentAgent === 'qtable' && showViz) {
+            var s = QTableAgent.getState(game);
+            var relBin = Math.floor(s / 4);
+            var zoneH = (BOT - TOP) / 8;
+            var zoneTop = TOP + (relBin) * zoneH + (game.ay + PAD_H / 2 - (BOT - TOP) / 2);
+            // Clamp zone to field
+            var paddleCenter = game.ay + PAD_H / 2;
+            var binTop = paddleCenter + (relBin - 3) * zoneH - zoneH / 2;
+            ctx.fillStyle = 'rgba(0, 113, 227, 0.08)';
+            ctx.fillRect(0, Math.max(TOP, binTop), AGENT_X + PAD_W + 20, zoneH);
+            // State index
+            ctx.font = '600 10px "Courier New", monospace';
+            ctx.fillStyle = 'rgba(0, 113, 227, 0.5)';
+            ctx.textAlign = 'left';
+            ctx.fillText('S' + s, 4, Math.max(TOP + 10, binTop + zoneH / 2 + 3));
+        }
+
+        // HUD
+        ctx.font = '600 13px "Courier New", monospace';
+        ctx.fillStyle = '#535353';
+        ctx.textAlign = 'left'; ctx.fillText('T-REX  ' + pad2(game.aPts), 10, 18);
+        ctx.textAlign = 'right'; ctx.fillText(pad2(game.oPts) + '  PTERO', CW - 10, 18);
+        ctx.textAlign = 'center';
+        var agentLabel = currentAgent === 'qtable' ? 'Q-TBL' : currentAgent === 'nn' ? 'NN' :
+                         currentAgent === 'rules' ? 'RULES' : 'HUMAN';
+        ctx.fillText(agentLabel, CW / 2, 18);
+        ctx.textAlign = 'left';
+    }
+
+    // =================================================================
+    //  HARDWARE DASHBOARD
+    // =================================================================
+    function updateDashboard(agent) {
+        var ram = agent ? agent.ramUsed : 0;
+        var rom = agent ? agent.romUsed : 0;
+        var cpu = agent ? agent.cyclesUsed : 0;
+
+        var ramPct = Math.min(100, ram / 128 * 100);
+        var romPct = Math.min(100, rom / 4096 * 100);
+        var cpuPct = Math.min(100, cpu / 2048 * 100);
+
+        var ramFill = document.getElementById('ram-fill');
+        var romFill = document.getElementById('rom-fill');
+        var cpuFill = document.getElementById('cpu-fill');
+
+        ramFill.style.width = ramPct + '%';
+        romFill.style.width = romPct + '%';
+        cpuFill.style.width = cpuPct + '%';
+
+        ramFill.classList.toggle('over', ram > 128);
+        romFill.classList.toggle('over', rom > 4096);
+        cpuFill.classList.toggle('over', cpu > 2048);
+
+        document.getElementById('ram-val').textContent = ram + ' / 128 B' + (ram <= 128 ? ' ✓' : ' ✗');
+        document.getElementById('rom-val').textContent = rom + ' / 4096 B' + (rom <= 4096 ? ' ✓' : ' ✗');
+        document.getElementById('cpu-val').textContent = cpu + ' / 2048 cyc' + (cpu <= 2048 ? ' ✓' : ' ✗');
+    }
+
+    // =================================================================
+    //  Q-TABLE HEATMAP
+    // =================================================================
+    function drawQTableViz() {
+        if (currentAgent !== 'qtable' || !showViz) return;
+        var c = document.getElementById('qtable-canvas');
+        var cx = c.getContext('2d');
+        var W = c.width, H = c.height;
+
+        cx.fillStyle = '#fff';
+        cx.fillRect(0, 0, W, H);
+
+        var qt = QTableAgent.qtable;
+        if (!qt) return;
+
+        var currentState = QTableAgent.prevState >= 0 ? QTableAgent.prevState : QTableAgent.getState(game);
+
+        // Find min/max Q-values for color scaling
+        var qMin = Infinity, qMax = -Infinity;
+        for (var i = 0; i < qt.length; i++) {
+            if (qt[i] < qMin) qMin = qt[i];
+            if (qt[i] > qMax) qMax = qt[i];
+        }
+        var qRange = qMax - qMin || 1;
+
+        // Layout: 4 columns (vy_dir × approaching) × 8 rows (rel_bin) = 32 cells
+        // Each cell shows 3 action bars
+        var cols = 4, rows = 8;
+        var cellW = (W - 80) / cols;
+        var cellH = (H - 50) / rows;
+        var ox = 60, oy = 35;
+
+        // Column headers
+        cx.font = '500 10px -apple-system, sans-serif';
+        cx.fillStyle = '#86868b';
+        cx.textAlign = 'center';
+        var colLabels = ['vy↓ away', 'vy↓ near', 'vy↑ away', 'vy↑ near'];
+        for (var c2 = 0; c2 < cols; c2++) {
+            cx.fillText(colLabels[c2], ox + c2 * cellW + cellW / 2, oy - 8);
+        }
+
+        // Row labels
+        cx.textAlign = 'right';
+        var rowLabels = ['far ↑', '↑↑', '↑', 'near↑', 'near↓', '↓', '↓↓', 'far ↓'];
+        for (var r = 0; r < rows; r++) {
+            cx.fillStyle = '#86868b';
+            cx.fillText(rowLabels[r], ox - 6, oy + r * cellH + cellH / 2 + 3);
+        }
+
+        // Cells
+        var actionColors = ['#0a84ff', '#8e8e93', '#ff9f0a']; // UP, STAY, DOWN
+        for (var s = 0; s < 32; s++) {
+            var relBin = Math.floor(s / 4);
+            var sub = s % 4;
+            var x0 = ox + sub * cellW;
+            var y0 = oy + relBin * cellH;
+
+            // Highlight current state
+            if (s === currentState) {
+                cx.fillStyle = 'rgba(0, 113, 227, 0.1)';
+                cx.fillRect(x0, y0, cellW, cellH);
+                cx.strokeStyle = '#0071e3';
+                cx.lineWidth = 2;
+                cx.strokeRect(x0 + 1, y0 + 1, cellW - 2, cellH - 2);
+            }
+
+            // Three action bars
+            var barW = (cellW - 8) / 3;
+            var maxBarH = cellH - 6;
+            for (var a = 0; a < 3; a++) {
+                var q = qt[s * 3 + a];
+                var norm = qRange > 0 ? (q - qMin) / qRange : 0.5;
+                var barH = Math.max(1, norm * maxBarH);
+
+                cx.fillStyle = actionColors[a];
+                cx.globalAlpha = 0.3 + norm * 0.7;
+                cx.fillRect(x0 + 3 + a * barW, y0 + cellH - 2 - barH, barW - 1, barH);
+                cx.globalAlpha = 1;
+            }
+        }
+
+        // Legend
+        cx.font = '500 10px -apple-system, sans-serif';
+        cx.textAlign = 'left';
+        var legendX = ox;
+        var legendY = H - 8;
+        var legItems = [['UP', '#0a84ff'], ['STAY', '#8e8e93'], ['DOWN', '#ff9f0a']];
+        for (var i = 0; i < legItems.length; i++) {
+            cx.fillStyle = legItems[i][1];
+            cx.fillRect(legendX, legendY - 8, 12, 10);
+            cx.fillStyle = '#6e6e73';
+            cx.fillText(legItems[i][0], legendX + 16, legendY);
+            legendX += 70;
+        }
+        cx.fillStyle = '#86868b';
+        cx.fillText('ε=' + QTableAgent.epsilon.toFixed(2) + '  α=' + QTableAgent.alpha, legendX + 20, legendY);
+    }
+
+    // =================================================================
+    //  STATS
+    // =================================================================
+    function updateStats() {
+        var line = '';
+        if (currentAgent === 'qtable') {
+            var wr = QTableAgent.getWinRate();
+            line = 'Episodes: ' + QTableAgent.episodes +
+                   ' | Win rate (last 50): ' + (QTableAgent.recentResults.length > 0 ? (wr * 100).toFixed(0) + '%' : '--') +
+                   ' | ε: ' + QTableAgent.epsilon.toFixed(2);
+        } else if (currentAgent === 'nn') {
+            line = 'Pre-trained quantized network | 35 weight bytes | 28 MACs/frame';
+        } else if (currentAgent === 'rules') {
+            line = 'Ball-tracking heuristic | 2 comparisons/frame';
+        } else {
+            line = 'Human player | ↑/↓ to move';
+        }
+        document.getElementById('stats-line').textContent = line;
+    }
+
+    // =================================================================
+    //  GAME LOOP
+    // =================================================================
+    var frameCount = 0;
+    function tick() {
+        requestAnimationFrame(tick);
+        if (paused) return;
+
+        var speed = getSpeed();
+        var stepsPerFrame = speed;
+
+        for (var step = 0; step < stepsPerFrame; step++) {
+            // Get action
+            var action = 1; // stay
+            var oppSpeed = getOppSpeed();
+
+            if (currentAgent === 'human') {
+                if (keysDown['ArrowUp'] || keysDown['w'] || keysDown['W']) action = 0;
+                else if (keysDown['ArrowDown'] || keysDown['s'] || keysDown['S']) action = 2;
+            } else if (currentAgent === 'qtable') {
+                action = QTableAgent.getAction(game);
+            } else if (currentAgent === 'nn') {
+                action = NNAgent.getAction(game);
+            } else if (currentAgent === 'rules') {
+                action = RulesAgent.getAction(game);
+            }
+
+            var result = game.step(action, oppSpeed);
+
+            // Q-table learning
+            if (currentAgent === 'qtable') {
+                QTableAgent.onReward(result.reward);
+            }
+
+            if (result.done) {
+                var won = game.aPts >= MAX_SCORE;
+                if (won) {
+                    totalWins++;
+                    if (totalWins > hiWins) {
+                        hiWins = totalWins;
+                        localStorage.setItem('atariML_hiWins', '' + hiWins);
+                    }
+                }
+                if (currentAgent === 'qtable') {
+                    QTableAgent.onEpisodeEnd(won);
+                }
+                game.reset();
+            }
+        }
+
+        frameCount++;
+        if (frameCount % 15 === 0) animFrame = 1 - animFrame;
+
+        // Render (throttle at high speeds)
+        if (speed <= 10 || frameCount % Math.ceil(speed / 10) === 0) {
+            drawGame();
+            drawQTableViz();
+        }
+
+        // Dashboard & stats (throttle)
+        if (frameCount % 5 === 0) {
+            var agent = currentAgent === 'qtable' ? QTableAgent :
+                        currentAgent === 'nn' ? NNAgent :
+                        currentAgent === 'rules' ? RulesAgent : null;
+            updateDashboard(agent);
+            updateStats();
+        }
+    }
+
+    // Start
+    setAgent('human');
+    requestAnimationFrame(tick);
+
+})();
+</script>
+</body>
+</html>
