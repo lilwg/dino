@@ -307,18 +307,18 @@ var posAdj = [];  // posAdj[i] = array of neighbor indices
     }
 })();
 
-// ─── Greedy BFS tour cost with bitmask ───────────────────────────────────────
-// Greedy nearest-neighbor tour using bitmask to track remaining cubes.
-// On revert levels, walking through completed cubes adds them back to the mask.
-function greedyTourCost(startIdx, needsMask, completedMask, isRevert) {
-    if (needsMask === 0) return 0;
+// ─── Greedy BFS tour cost with single bitmask ────────────────────────────────
+// Single bitmask: bit set = cube needs coloring. Completed = ~needs & ALL_CUBES.
+// On revert levels, walking through completed cubes flips them back to needing.
+var ALL_CUBES = (1 << POS_COUNT) - 1;  // all 28 bits set
+
+function greedyTourCost(startIdx, needs, isRevert) {
+    if (needs === 0) return 0;
     var pos = startIdx;
-    var needs = needsMask;
-    var completed = completedMask;
     var totalCost = 0;
 
     while (needs !== 0) {
-        // Find nearest cube that still needs coloring via BFS
+        // Find nearest cube that still needs coloring
         var bestIdx = -1, bestDist = 99;
         for (var i = 0; i < POS_COUNT; i++) {
             if (!(needs & (1 << i))) continue;
@@ -327,10 +327,8 @@ function greedyTourCost(startIdx, needsMask, completedMask, isRevert) {
         }
         if (bestIdx < 0) break;
 
-        // Walk the BFS path to target; on revert levels, any completed cube
-        // we pass through gets added back to needs
+        // On revert levels, trace BFS path and revert completed cubes we cross
         if (isRevert && bestDist > 1) {
-            // BFS from pos to bestIdx, tracking reverts along the way
             var visited = new Uint8Array(POS_COUNT);
             var prev = new Int8Array(POS_COUNT);
             for (var i = 0; i < POS_COUNT; i++) prev[i] = -1;
@@ -349,24 +347,16 @@ function greedyTourCost(startIdx, needsMask, completedMask, isRevert) {
                     queue.push(v);
                 }
             }
-            // Walk path, mark reverted cubes
             if (found) {
-                var path = [];
-                for (var v = bestIdx; v !== pos; v = prev[v]) path.push(v);
-                for (var p = path.length - 1; p >= 0; p--) {
-                    var step = path[p];
-                    var bit = 1 << step;
-                    if (step !== bestIdx && (completed & bit)) {
-                        needs |= bit;       // reverted — needs re-coloring
-                        completed &= ~bit;
-                    }
+                for (var v = prev[bestIdx]; v !== pos; v = prev[v]) {
+                    // Intermediate cube is completed? Revert it.
+                    if (!(needs & (1 << v))) needs |= (1 << v);
                 }
             }
         }
 
         totalCost += bestDist;
-        needs &= ~(1 << bestIdx);       // mark target as done
-        completed |= (1 << bestIdx);    // now completed
+        needs &= ~(1 << bestIdx);  // done — clear bit
         pos = bestIdx;
     }
     return totalCost;
@@ -544,21 +534,13 @@ function exCountStoch(st) {
 
 function exTourCost(st) {
     var lv = st.lv !== undefined ? st.lv : arcadeLevel();
-    var isRevert = lv >= 3;
-
-    // Build bitmasks: which cubes need coloring, which are completed
-    var needsMask = 0, completedMask = 0;
+    var needs = 0;
     for (var i = 0; i < st.cubes.length; i++) {
-        var idx = posToIdx[st.cubes[i].row * ROWS + st.cubes[i].col];
         if (st.cubes[i].state < st.tgt)
-            needsMask |= (1 << idx);
-        else
-            completedMask |= (1 << idx);
+            needs |= (1 << posToIdx[st.cubes[i].row * ROWS + st.cubes[i].col]);
     }
-    if (needsMask === 0) return 0;
-
-    var startIdx = posToIdx[st.pr * ROWS + st.pc];
-    return greedyTourCost(startIdx, needsMask, completedMask, isRevert);
+    if (needs === 0) return 0;
+    return greedyTourCost(posToIdx[st.pr * ROWS + st.pc], needs, lv >= 3);
 }
 
 function exStateKey(st, depth) {
