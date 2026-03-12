@@ -1250,7 +1250,7 @@ function expectimax(st, depth) {
 function expectimaxEval(dirKey) {
     var st = exCloneState();
     var numStoch = exCountStoch(st);
-    var depth = numStoch <= 1 ? 4 : numStoch <= 2 ? 3 : 2;
+    var depth = numStoch <= 1 ? 5 : numStoch <= 2 ? 4 : 3;
     var numOutcomes = 1 << numStoch;
     var prob = 1.0 / numOutcomes;
     var total = 0;
