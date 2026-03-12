@@ -191,6 +191,7 @@ var vizOn    = false;
 var paused   = false;
 var gameOver = false;
 var levelWon = false;
+var roundStarted = false; // true after first player move — enemies frozen until then
 
 // Real-time enemy move intervals (frames at 60fps) — each enemy hops independently
 var ENEMY_MOVE_INTERVALS = {
@@ -313,6 +314,7 @@ function discCatchRow(side) {
 // ─── Init level ───────────────────────────────────────────────────────────────
 function initRound() {
     levelWon = false;
+    roundStarted = false;
     cubeStates = [];
     for (var r = 0; r < ROWS; r++)
         for (var c = 0; c <= r; c++)
@@ -444,6 +446,7 @@ function enemyJumpTo(e, nr, nc) {
 function tryMove(dirKey) {
     if (player.dead || player.jumping || gameOver || paused) return;
     var d = DIRS[dirKey]; if (!d) return;
+    roundStarted = true;
     var nr = player.row + d.dr, nc = player.col + d.dc;
 
     // Check disc catch on edge-jump
@@ -560,6 +563,7 @@ function checkPlayerEnemyCollision() {
 
 // ─── Update enemies (real-time: each enemy moves on its own independent timer) ──
 function updateEnemies() {
+    if (!roundStarted) return; // enemies frozen until first player move
     // Tick spawn timers (frame-based)
     for (var i = enemies.length - 1; i >= 0; i--) {
         if (enemies[i].type === 'spawn-timer') {
@@ -758,6 +762,7 @@ function updatePlayer() {
                 if (enemies[i].type === 'spawn-timer') kept.push(enemies[i]);
             }
             enemies = kept;
+            roundStarted = false; // wait for first move again after respawn
             scheduleSpawn(245);                          // Coily egg (~4.1s)
             scheduleSpawn(175, 'redball');               // ~2.9s
             if (round >= 4) scheduleSpawn(455, 'slick');   // ~7.6s
