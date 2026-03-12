@@ -48,6 +48,7 @@
 var round, player, enemies, cubeStates, discs;
 var aiTour, aiTourIdx, aiBoardSig;
 var exMemoTable, exCloneState;
+var gameSpeed = 0.5;  // global speed scale (0.25–2x), default half arcade speed
 
 (function () {
 'use strict';
@@ -196,7 +197,6 @@ function drawCube(c, cx, cy, state) {
 
 // ─── Game state ───────────────────────────────────────────────────────────────
 var gameMode = 'off';   // 'off' | 'rules'
-var gameSpeed = 0.5;    // global speed scale (0.25–2x), default half arcade speed
 var vizOn    = false;
 var paused   = false;
 var gameOver = false;
