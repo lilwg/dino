@@ -21,11 +21,13 @@ var DIR_KEYS = ['UL', 'UR', 'DL', 'DR'];
 // 9/enemy_frames toward their next move. Enemy moves when accumulator >= 1.0.
 // Q*bert=9f, Coily=12f, red ball=12f → ratio 9/12=0.75 per player hop.
 var EX_MOVE_RATE = {
-    egg:      9 / 12,   // 0.75 — moves 3 times per 4 player hops
-    coily:    9 / 12,   // 0.75
-    redball:  9 / 12,   // 0.75
-    ugg:      9 / 12,   // 0.75
-    wrongway: 9 / 12    // 0.75
+    egg:       9 / 12,   // 0.75 — moves 3 times per 4 player hops
+    coily:     9 / 12,   // 0.75
+    redball:   9 / 12,   // 0.75
+    ugg:       9 / 12,   // 0.75
+    wrongway:  9 / 12,   // 0.75
+    greenball: 9 / 15,   // 0.60
+    slick:     9 / 17    // 0.53
 };
 
 var EX_DEATH = -50000;
@@ -218,7 +220,15 @@ function buildTour() {
             if (danger.immediate[remaining[i].row + ',' + remaining[i].col]) cost += 8;
             if (danger.predicted[remaining[i].row + ',' + remaining[i].col]) cost += 3;
             var tr = remaining[i].row, tc2 = remaining[i].col;
-            if (tr >= ROWS - 1 && (tc2 === 0 || tc2 === tr)) cost += 4;
+            // Bottom-corners-first: mildly prioritize peripheral cubes when safe
+            // These are hardest to revisit, so clear them early — but only
+            // when no enemies are nearby (Ugg/Wrongway spawn at bottom)
+            var isEdge = (tc2 === 0 || tc2 === tr);
+            var isBottom = (tr >= ROWS - 2);
+            if (!danger.immediate[tr + ',' + tc2]) {
+                if (isBottom && isEdge) cost -= 2;
+                else if (isBottom || isEdge) cost -= 1;
+            }
             if (danger.coilies.length > 0 && countEscapes(tr, tc2, danger.immediate) <= 1) cost += 6;
             if (cost < bestCost) {
                 bestCost = cost; best = remaining[i]; bestIdx = i;
@@ -519,6 +529,8 @@ function deathProb(st) {
     var pSurvive = 1.0;
     for (var i = 0; i < st.enemies.length; i++) {
         var e = st.enemies[i];
+        // Slick/greenball don't kill — skip them
+        if (e.type === 'slick' || e.type === 'greenball') continue;
         if (e.cloud) {
             // Random enemy — check probability mass at player pos
             for (var j = 0; j < e.cloud.length; j++) {
@@ -581,6 +593,20 @@ function exMoveEnemies(st) {
             // Already a cloud — expand it
             e.cloud = expandCloud(e.cloud, e.type);
             if (e.cloud.length === 0) { st.enemies.splice(i, 1); continue; }
+            // Slick/sam: probabilistically revert cubes they land on
+            if (e.type === 'slick') {
+                for (var j = 0; j < e.cloud.length; j++) {
+                    var cp = e.cloud[j];
+                    var cube = exCubeAt(st, cp.row, cp.col);
+                    if (cube && cube.state > 0) {
+                        // Expected reversion: reduce state by prob
+                        var oldC = Math.min(cube.state, st.tgt);
+                        cube.state = Math.max(0, Math.round(cube.state - cp.prob));
+                        var newC = Math.min(cube.state, st.tgt);
+                        st.cubesColored += newC - oldC;
+                    }
+                }
+            }
         } else {
             // First move — convert to cloud
             e.cloud = [{ row: e.row, col: e.col, prob: 1.0 }];
@@ -641,6 +667,25 @@ function exPlayerMove(st, dirKey) {
     if (pDeath >= 1.0) { st.alive = false; return false; }
     st.stepDeathProb = pDeath;
 
+    // Catch slick/greenball if overlapping (probabilistic via cloud)
+    for (var ei = st.enemies.length - 1; ei >= 0; ei--) {
+        var en = st.enemies[ei];
+        if (en.type !== 'slick' && en.type !== 'greenball') continue;
+        if (en.cloud) {
+            for (var j = 0; j < en.cloud.length; j++) {
+                if (en.cloud[j].row === nr && en.cloud[j].col === nc) {
+                    // Probabilistic catch — award expected points
+                    st.score += (en.type === 'slick' ? 300 : 100) * en.cloud[j].prob;
+                }
+            }
+        }
+        // If exact position matches (before cloud conversion), catch deterministically
+        if (!en.cloud && en.row === nr && en.col === nc) {
+            st.score += en.type === 'slick' ? 300 : 100;
+            st.enemies.splice(ei, 1);
+        }
+    }
+
     // Color cube
     var cube = exCubeAt(st, nr, nc);
     if (cube) {
@@ -700,9 +745,33 @@ function exLeafValue(st) {
     if (st.cubesColored >= st.cubes.length * st.tgt) return EX_WIN;
     var tourCost = exTourCost(st);
     var val = st.cubesColored * 100 - tourCost * 10;
-    // Penalize proximity to dangerous enemies
+    // Penalize proximity to dangerous enemies, incentivize catching slick/greenball
     for (var i = 0; i < st.enemies.length; i++) {
         var e = st.enemies[i];
+        if (e.type === 'slick') {
+            // Slick reverts cubes — penalize its existence, reward proximity (catch it!)
+            val -= 80; // each living slick will revert ~3-4 cubes before falling off
+            if (e.cloud) {
+                for (var j = 0; j < e.cloud.length; j++) {
+                    var cp = e.cloud[j];
+                    var dist = exBfsDist(st.pr, st.pc, cp.row, cp.col);
+                    if (dist <= 1) val += 60 * cp.prob; // reward being close to catch it
+                    else if (dist <= 2) val += 30 * cp.prob;
+                }
+            }
+            continue;
+        }
+        if (e.type === 'greenball') {
+            // Greenball freezes enemies — reward proximity
+            if (e.cloud) {
+                for (var j = 0; j < e.cloud.length; j++) {
+                    var cp = e.cloud[j];
+                    var dist = exBfsDist(st.pr, st.pc, cp.row, cp.col);
+                    if (dist <= 1) val += 40 * cp.prob;
+                }
+            }
+            continue;
+        }
         if (e.type === 'coily') {
             // Coily is deterministic — exact position known
             var dist = exBfsDist(st.pr, st.pc, e.row, e.col);
@@ -718,7 +787,6 @@ function exLeafValue(st) {
                 else if (dist <= 2) val -= 80 * cp.prob;
             }
         } else {
-            // Enemy not yet converted to cloud (shouldn't happen but fallback)
             var dist = exBfsDist(st.pr, st.pc, e.row, e.col);
             if (dist <= 1) val -= 200;
             else if (dist <= 2) val -= 80;
