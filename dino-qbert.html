@@ -684,7 +684,7 @@ function onEnemyLand(e, idx) {
         // Check if slick reached bottom — remove it
         if (e.row >= ROWS - 1) {
             enemies.splice(idx, 1);
-            if (round >= 4) scheduleSpawn(360, 'slick');
+            if (round >= 4) scheduleSpawn(15, 'slick');
         }
     } else if (e.type === 'greenball') {
         // Green ball is safe — player catches it for 100 points
