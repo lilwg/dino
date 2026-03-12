@@ -1145,7 +1145,9 @@ function expectimaxEval(dirKey) {
         exApplyStochastic(branch, out);
         total += expectimax(branch, depth - 1) * prob;
     }
-    return total;
+    // Tiny tiebreaker: prefer moves that are immediately closer to goal.
+    // Scale is small enough (0-0.01) to never override a real value difference.
+    return total + exLeafValue(st) * 0.0001;
 }
 
 function computeAIMove() {
