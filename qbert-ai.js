@@ -563,21 +563,32 @@ function exLeafValue(st) {
     if (st.cubesColored >= st.cubes.length * st.tgt) return EX_WIN;
     var tourCost = exTourCost(st);
     var val = st.cubesColored * 100 - tourCost * 10;
-    // Penalize proximity to dangerous enemies (survival bonus)
+    // Penalize proximity to dangerous enemies — Coily is extra dangerous (chases)
     for (var i = 0; i < st.enemies.length; i++) {
         var e = st.enemies[i];
-        if (e.type === 'coily' || e.type === 'redball' || e.type === 'egg' ||
-            e.type === 'ugg' || e.type === 'wrongway') {
+        if (e.type === 'coily') {
+            var dist = exBfsDist(st.pr, st.pc, e.row, e.col);
+            if (dist <= 1) val -= 500;
+            else if (dist <= 2) val -= 250;
+            else if (dist <= 3) val -= 100;
+        } else if (e.type === 'redball' || e.type === 'egg' ||
+                   e.type === 'ugg' || e.type === 'wrongway') {
             var dist = exBfsDist(st.pr, st.pc, e.row, e.col);
             if (dist <= 1) val -= 200;
             else if (dist <= 2) val -= 80;
         }
     }
-    // Count escape routes — penalize being cornered
+    // Count escape routes — include disc exits
     var escapes = 0;
     for (var k = 0; k < 4; k++) {
         var dk = DIRS[DIR_KEYS[k]];
         if (isValidPos(st.pr + dk.dr, st.pc + dk.dc)) escapes++;
+    }
+    for (var di = 0; di < st.discs.length; di++) {
+        var disc = st.discs[di];
+        if (!disc.active) continue;
+        if (disc.side === 0 && st.pc === 0 && st.pr === disc.row) escapes++;
+        if (disc.side === 1 && st.pc === st.pr && st.pr === disc.row) escapes++;
     }
     if (escapes <= 1) val -= 150;
     else if (escapes <= 2) val -= 40;
