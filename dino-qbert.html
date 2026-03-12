@@ -42,13 +42,15 @@
 
 <script src="fs-toggle.js"></script>
 <script src="dino-sounds.js"></script>
-<script src="qbert-ai.js"></script>
 <script>
-// Globals shared with qbert-ai.js (must be declared outside the IIFE)
+// Globals shared with qbert-ai.js (must be declared before it loads)
 var round, player, enemies, cubeStates, discs;
 var aiTour, aiTourIdx, aiBoardSig;
 var exMemoTable, exCloneState;
 var gameSpeed = 0.25;  // global speed scale; displayed as 1x–8x (display = internal × 4)
+</script>
+<script src="qbert-ai.js"></script>
+<script>
 
 (function () {
 'use strict';
