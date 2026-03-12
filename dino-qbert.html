@@ -30,7 +30,7 @@
         </div>
 
         <h2 style="margin-top:16px;">How it works</h2>
-        <p class="si-prose">DinoQbert recreates the 1982 Gottlieb arcade original: hop-based movement, one jump per keypress with a 150ms arc animation, and the classic @!#?@! swear bubble on death. Coily spawns as an egg, bounces randomly down the pyramid, then hatches and chases the player. Dark balls bounce down and kill on contact; light balls are safe to catch for 100 pts. Slick (round 4+) hops down uncoloring cubes. Two transport discs at variable positions let Q*bert escape and lure Coily to his death.</p>
+        <p class="si-prose">DinoQbert recreates the 1982 Gottlieb arcade original: hop-based movement, one jump per keypress with a 150ms arc animation, and the classic @!#?@! swear bubble on death. Coily spawns as an egg, bounces randomly down the pyramid, then hatches and chases the player. Dark balls bounce down and kill on contact; light balls are safe to catch for 100 pts. Slick (round 4+) hops down uncoloring cubes. Ugg and Wrongway (round 3+) crawl upward from the bottom corners. Two transport discs at variable positions let Q*bert escape and lure Coily to his death.</p>
         <p class="si-prose">Tap <strong>Viz</strong> to reveal the AI&rsquo;s plan: a dashed line traces the expected path, with faint dots marking uncolored cubes. The game uses <strong>turn-based logic</strong> matching the original arcade: player hops, then every enemy hops once, then collisions are checked. Every move is chosen by <strong>expectimax search</strong>&mdash;it enumerates every possible enemy outcome exactly. Coily is deterministic (greedy chase), so no branching needed; all other enemies fork DL/DR at p=0.5 each, giving 2<sup>N</sup> outcomes per step. Depth adapts to enemy count: 5 deep with 0&ndash;1 random enemies, 4 with 2, 3 with 3+.</p>
 
         <p style="margin-top:20px;"><a href="/" style="color:#0071e3;font-size:14px;text-decoration:none;">&larr; Back</a></p>
@@ -38,6 +38,7 @@
 
 <script src="fs-toggle.js"></script>
 <script src="dino-sounds.js"></script>
+<script src="qbert-ai.js"></script>
 <script>
 (function () {
 'use strict';
@@ -146,8 +147,7 @@ function applyNight(c) {
     c.globalCompositeOperation = 'source-over';
 }
 
-// ─── Isometric pyramid ───────────────────────────────────────────────────────
-var ROWS    = 7;
+// ─── Isometric pyramid (ROWS, DIRS, DIR_KEYS etc. loaded from qbert-ai.js) ──
 var TILE_W  = 64, TILE_H = 32;          // diamond: 64×32 (hw=32, hh=16)
 var CUBE_DEPTH = TILE_W / 2;            // = 32; side face is 32×32 → equal area to top diamond ✓
 var ROW_STEP   = TILE_H / 2 + CUBE_DEPTH; // = 48; perfect interlocking: face bottom = next row's diamond top
@@ -199,14 +199,10 @@ var BASE_ENEMY_INTERVALS = {
     coily:     28,   // ~0.47s — faster, chases player
     redball:   30,   // ~0.50s
     greenball: 38,   // ~0.63s — leisurely
-    slick:     40    // ~0.67s — slow
+    slick:     40,   // ~0.67s — slow
+    ugg:       30,   // ~0.50s — side-crawlers
+    wrongway:  30    // ~0.50s — side-crawlers
 };
-
-// Speed multiplier: arcade reaches ~2x by level 6, stays there
-function speedMultiplier() {
-    var lv = arcadeLevel();
-    return Math.min(2.0, 1.0 + (lv - 1) * 0.2);
-}
 
 // Effective enemy intervals for current level
 function enemyMoveInterval(type) {
@@ -233,59 +229,8 @@ var aiBestDir    = null;
 var inputQueue  = [];
 var discRide    = null;  // { side, t, sx, sy, tx, ty } — player riding disc to top
 
-// Direction deltas: UL=up-left, UR=up-right, DL=down-left, DR=down-right
-var DIRS = {
-    UL: { dr: -1, dc: -1 },
-    UR: { dr: -1, dc:  0 },
-    DL: { dr: +1, dc:  0 },
-    DR: { dr: +1, dc: +1 }
-};
-var DIR_KEYS = ['UL', 'UR', 'DL', 'DR'];
-
-function isValidPos(row, col) {
-    return row >= 0 && row < ROWS && col >= 0 && col <= row;
-}
-
-// Flat cube lookup
-function cubeAt(row, col) {
-    if (!isValidPos(row, col)) return null;
-    for (var i = 0; i < cubeStates.length; i++) {
-        if (cubeStates[i].row === row && cubeStates[i].col === col) return cubeStates[i];
-    }
-    return null;
-}
-
-// Arcade level progression: 9 levels × 4 rounds each. Our flat `round` maps:
-//   Round 1-4  → Level 1: 1 hit, stays      (S→D, D→D)
-//   Round 5-8  → Level 2: 2 hits, stays      (S→I→D, D→D)
-//   Round 9-12 → Level 3: 1 hit, toggles     (S→D, D→S)
-//   Round 13-16→ Level 4: 2 hits, D→I toggle (S→I→D, D→I)
-//   Round 17+  → Level 5+: 2 hits, D→S reset (S→I→D, D→S)
-function arcadeLevel() { return Math.min(9, Math.ceil(round / 4)); }
-
-function targetState() {
-    var lv = arcadeLevel();
-    return (lv === 1 || lv === 3) ? 1 : 2;
-}
-
-// Returns next cube state after stomping, per arcade level rules
-function nextCubeState(state) {
-    var lv = arcadeLevel();
-    var tgt = targetState();
-    if (lv <= 2) {
-        // Levels 1-2: increment toward target, then stay
-        return Math.min(state + 1, tgt);
-    } else if (lv === 3) {
-        // Level 3: toggle between 0 and 1
-        return state === 0 ? 1 : 0;
-    } else if (lv === 4) {
-        // Level 4: 0→1→2, but 2→1 (reverts to intermediate)
-        return state === 2 ? 1 : state + 1;
-    } else {
-        // Level 5+: 0→1→2→0 (full cycle)
-        return (state + 1) % 3;
-    }
-}
+// DIRS, DIR_KEYS, isValidPos, cubeAt, arcadeLevel, targetState, nextCubeState
+// loaded from qbert-ai.js
 
 function stompCube(row, col) {
     var cube = cubeAt(row, col);
@@ -305,33 +250,7 @@ function checkExtraLife() {
     }
 }
 
-function allColored() {
-    var tgt = targetState();
-    for (var i = 0; i < cubeStates.length; i++) {
-        if (cubeStates[i].state < tgt) return false;
-    }
-    return true;
-}
-
-// ─── Disc helpers ─────────────────────────────────────────────────────────────
-// Disc configurations per arcade level (side 0=left, 1=right, row=pyramid row)
-function discConfig() {
-    var lv = arcadeLevel();
-    var r = ((round - 1) % 4);  // 0-3 within each level
-    if (lv === 1) {
-        // 2 discs
-        return [{side: 0, row: [2,3,4,2][r]}, {side: 1, row: [3,2,3,4][r]}];
-    } else if (lv === 2) {
-        // 3 discs
-        return [{side: 0, row: [2,3,2,3][r]}, {side: 1, row: [3,2,4,3][r]}, {side: [0,1,0,1][r], row: [4,4,3,2][r]}];
-    } else if (lv <= 4) {
-        // 4 discs
-        return [{side: 0, row: 2}, {side: 1, row: 2}, {side: 0, row: [4,3,5,4][r]}, {side: 1, row: [3,4,4,5][r]}];
-    } else {
-        // 5 discs (level 5+)
-        return [{side: 0, row: 2}, {side: 1, row: 2}, {side: 0, row: 4}, {side: 1, row: 4}, {side: [0,1,0,1][r], row: [3,3,5,5][r]}];
-    }
-}
+// allColored, discConfig loaded from qbert-ai.js
 
 // Legacy helper: returns [leftRow, rightRow] for the first two discs
 function discRows() {
@@ -414,6 +333,8 @@ function initRound() {
     scheduleSpawn(140, 'redball');               // ~2.3s
     if (round >= 4) scheduleSpawn(525, 'slick');   // ~8.75s
     if (round >= 3) scheduleSpawn(350, 'greenball'); // ~5.8s
+    if (round >= 3) scheduleSpawn(420, 'ugg');       // ~7s
+    if (round >= 3) scheduleSpawn(490, 'wrongway');  // ~8.2s
 }
 
 function scheduleSpawn(delay, forcedType) {
@@ -484,6 +405,34 @@ function spawnEnemy(forcedType) {
             tx: sp.cx, ty: sp.cy,
             frame: 0, frameTimer: 0,
             moveTimer: 0, moveInterval: enemyMoveInterval('slick')
+        });
+    } else if (type === 'ugg') {
+        // Ugg spawns at bottom-right corner, moves upward
+        var uggRow = ROWS - 1, uggCol = ROWS - 1;
+        var usp = cubeXY(uggRow, uggCol);
+        enemies.push({
+            type: 'ugg',
+            row: uggRow, col: uggCol,
+            px: usp.cx, py: usp.cy,
+            jumping: false, jumpT: 0, jumpDur: 0.12 * speedMultiplier(),
+            jumpSX: usp.cx, jumpSY: usp.cy,
+            tx: usp.cx, ty: usp.cy,
+            frame: 0, frameTimer: 0,
+            moveTimer: 0, moveInterval: enemyMoveInterval('ugg')
+        });
+    } else if (type === 'wrongway') {
+        // Wrongway spawns at bottom-left corner, moves upward
+        var wwRow = ROWS - 1, wwCol = 0;
+        var wsp = cubeXY(wwRow, wwCol);
+        enemies.push({
+            type: 'wrongway',
+            row: wwRow, col: wwCol,
+            px: wsp.cx, py: wsp.cy,
+            jumping: false, jumpT: 0, jumpDur: 0.12 * speedMultiplier(),
+            jumpSX: wsp.cx, jumpSY: wsp.cy,
+            tx: wsp.cx, ty: wsp.cy,
+            frame: 0, frameTimer: 0,
+            moveTimer: 0, moveInterval: enemyMoveInterval('wrongway')
         });
     }
 }
@@ -608,7 +557,7 @@ function checkPlayerEnemyCollision() {
                 enemies.splice(i, 1);
                 i--;
             } else {
-                // Coily/egg/redball kills player
+                // Coily/egg/redball/ugg/wrongway kills player
                 killPlayer();
                 return;
             }
@@ -720,6 +669,28 @@ function updateEnemies() {
                 enemies.splice(i, 1);
                 if (round >= 4) scheduleSpawn(525, 'slick');
             }
+        } else if (e.type === 'ugg') {
+            // Ugg moves upward: random UL or UR
+            var udir = Math.random() < 0.5 ? 'UL' : 'UR';
+            var udelta = DIRS[udir];
+            var unr = e.row + udelta.dr, unc = e.col + udelta.dc;
+            if (isValidPos(unr, unc)) {
+                enemyJumpTo(e, unr, unc);
+            } else {
+                enemies.splice(i, 1);
+                if (round >= 3) scheduleSpawn(420, 'ugg');
+            }
+        } else if (e.type === 'wrongway') {
+            // Wrongway moves upward: random UL or UR
+            var wdir = Math.random() < 0.5 ? 'UL' : 'UR';
+            var wdelta = DIRS[wdir];
+            var wnr = e.row + wdelta.dr, wnc = e.col + wdelta.dc;
+            if (isValidPos(wnr, wnc)) {
+                enemyJumpTo(e, wnr, wnc);
+            } else {
+                enemies.splice(i, 1);
+                if (round >= 3) scheduleSpawn(490, 'wrongway');
+            }
         }
     }
 }
@@ -752,6 +723,11 @@ function onEnemyLand(e, idx) {
         }
     } else if (e.type === 'coily' || e.type === 'egg') {
         // Check player collision
+        if (!player.dead && !player.jumping && e.row === player.row && e.col === player.col) {
+            killPlayer();
+        }
+    } else if (e.type === 'ugg' || e.type === 'wrongway') {
+        // Lethal side-crawlers kill on contact
         if (!player.dead && !player.jumping && e.row === player.row && e.col === player.col) {
             killPlayer();
         }
@@ -822,6 +798,8 @@ function updatePlayer() {
             scheduleSpawn(175, 'redball');               // ~2.9s
             if (round >= 4) scheduleSpawn(455, 'slick');   // ~7.6s
             if (round >= 3) scheduleSpawn(350, 'greenball'); // ~5.8s
+            if (round >= 3) scheduleSpawn(385, 'ugg');       // ~6.4s
+            if (round >= 3) scheduleSpawn(455, 'wrongway');  // ~7.6s
         }
         return;
     }
@@ -857,151 +835,7 @@ function updatePlayer() {
     }
 }
 
-// ─── AI ──────────────────────────────────────────────────────────────────────
-
-// BFS from (r1,c1) to (r2,c2); optionally avoids tiles in avoidSet
-function bfsTo(r1, c1, r2, c2, avoidSet) {
-    if (r1 === r2 && c1 === c2) return { dist: 0, path: [] };
-    var visited = {}; visited[r1 + ',' + c1] = true;
-    var queue = [{ row: r1, col: c1, path: [] }];
-    while (queue.length > 0) {
-        var cur = queue.shift();
-        for (var k = 0; k < DIR_KEYS.length; k++) {
-            var dk = DIRS[DIR_KEYS[k]];
-            var nr = cur.row + dk.dr, nc = cur.col + dk.dc;
-            if (!isValidPos(nr, nc)) continue;
-            var key = nr + ',' + nc;
-            if (visited[key]) continue;
-            if (avoidSet && avoidSet[key]) continue;
-            visited[key] = true;
-            var np = cur.path.concat([DIR_KEYS[k]]);
-            if (nr === r2 && nc === c2) return { dist: np.length, path: np };
-            queue.push({ row: nr, col: nc, path: np });
-        }
-    }
-    return null;
-}
-
-// Board state signature for change detection
-function boardSig() {
-    var s = '';
-    for (var i = 0; i < cubeStates.length; i++) s += cubeStates[i].state;
-    return s;
-}
-
-// Predict where Coily will be in N steps (greedy chase toward a position)
-function predictCoilyPos(coily, targetRow, targetCol, steps) {
-    var cr = coily.row, cc = coily.col;
-    for (var s = 0; s < steps; s++) {
-        var bestDir = null, bestDist = Infinity;
-        for (var k = 0; k < DIR_KEYS.length; k++) {
-            var dk = DIRS[DIR_KEYS[k]];
-            var nr = cr + dk.dr, nc = cc + dk.dc;
-            if (!isValidPos(nr, nc)) continue;
-            var dist = Math.abs(targetRow - nr) + Math.abs(targetCol - nc);
-            if (dist < bestDist) { bestDist = dist; bestDir = k; }
-        }
-        if (bestDir === null) break;
-        var dd = DIRS[DIR_KEYS[bestDir]];
-        cr += dd.dr; cc += dd.dc;
-    }
-    return { row: cr, col: cc };
-}
-
-// Build danger maps: immediate danger + predicted future danger
-function buildDangerMaps() {
-    var immediate = {};  // tiles dangerous RIGHT NOW (enemy + adjacent)
-    var predicted = {};  // tiles that will be dangerous in 1-3 steps
-    var coilies = [];
-
-    for (var i = 0; i < enemies.length; i++) {
-        var e = enemies[i];
-        if (e.type === 'spawn-timer') continue;
-        // Green balls and slicks are safe to touch — skip danger marking
-        if (e.type === 'greenball' || e.type === 'slick') continue;
-
-        // Mark enemy tile and all adjacent as immediately dangerous
-        immediate[e.row + ',' + e.col] = true;
-        for (var k = 0; k < DIR_KEYS.length; k++) {
-            var dk = DIRS[DIR_KEYS[k]];
-            var nr = e.row + dk.dr, nc = e.col + dk.dc;
-            if (isValidPos(nr, nc)) immediate[nr + ',' + nc] = true;
-        }
-
-        if (e.type === 'coily') coilies.push(e);
-    }
-
-    // Predict Coily positions 1-3 steps ahead and mark those zones
-    for (var ci = 0; ci < coilies.length; ci++) {
-        for (var step = 1; step <= 3; step++) {
-            var fp = predictCoilyPos(coilies[ci], player.row, player.col, step);
-            predicted[fp.row + ',' + fp.col] = true;
-            for (var k = 0; k < DIR_KEYS.length; k++) {
-                var dk = DIRS[DIR_KEYS[k]];
-                var nr = fp.row + dk.dr, nc = fp.col + dk.dc;
-                if (isValidPos(nr, nc)) predicted[nr + ',' + nc] = true;
-            }
-        }
-    }
-
-    return { immediate: immediate, predicted: predicted, coilies: coilies };
-}
-
-// Count how many safe moves are available from a position
-function countEscapes(row, col, dangerSet) {
-    var count = 0;
-    for (var k = 0; k < DIR_KEYS.length; k++) {
-        var dk = DIRS[DIR_KEYS[k]];
-        var nr = row + dk.dr, nc = col + dk.dc;
-        if (isValidPos(nr, nc) && !dangerSet[nr + ',' + nc]) count++;
-    }
-    return count;
-}
-
-// Build optimized tour: nearest-neighbor with danger weighting (used for viz)
-function buildTour() {
-    var tgt = targetState();
-    var danger = buildDangerMaps();
-    var remaining = [];
-    for (var i = 0; i < cubeStates.length; i++)
-        if (cubeStates[i].state < tgt)
-            remaining.push({ row: cubeStates[i].row, col: cubeStates[i].col });
-
-    var tour = [];
-    var cr = player.row, cc = player.col;
-    while (remaining.length > 0) {
-        var best = null, bestCost = Infinity, bestIdx = -1;
-        for (var i = 0; i < remaining.length; i++) {
-            var res = bfsTo(cr, cc, remaining[i].row, remaining[i].col);
-            if (!res) continue;
-            var cost = res.dist;
-            if (danger.immediate[remaining[i].row + ',' + remaining[i].col]) cost += 8;
-            if (danger.predicted[remaining[i].row + ',' + remaining[i].col]) cost += 3;
-            var tr = remaining[i].row, tc2 = remaining[i].col;
-            if (tr >= ROWS - 1 && (tc2 === 0 || tc2 === tr)) cost += 4;
-            if (danger.coilies.length > 0 && countEscapes(tr, tc2, danger.immediate) <= 1) cost += 6;
-            if (cost < bestCost) {
-                bestCost = cost; best = remaining[i]; bestIdx = i;
-            }
-        }
-        if (!best) break;
-        tour.push(best);
-        remaining.splice(bestIdx, 1);
-        cr = best.row; cc = best.col;
-    }
-    aiTour    = tour;
-    aiTourIdx = 0;
-    aiBoardSig = boardSig();
-}
-
-// ── Expectimax with per-enemy move countdowns ──
-// Each turn = one player hop. Enemies move only when their countdown reaches 0.
-// Player hop = ~12 frames (8 jump + 4 aiMoveTimer wait).
-var EX_HOPS_PER_MOVE = {
-    egg:   3,   // 35 frames / 12 ≈ 3 player hops
-    coily: 2,   // 28 frames / 12 ≈ 2 player hops
-    redball: 3  // 30 frames / 12 ≈ 3 player hops
-};
+// ─── AI (bfsTo, boardSig, dangerMaps, buildTour, expectimax etc. from qbert-ai.js) ──
 
 function exCloneState() {
     var tgt = targetState();
@@ -1030,329 +864,9 @@ function exCloneState() {
              discs: ds, lv: arcadeLevel() };
 }
 
-function exCubeAt(st, row, col) {
-    for (var i = 0; i < st.cubes.length; i++)
-        if (st.cubes[i].row === row && st.cubes[i].col === col) return st.cubes[i];
-    return null;
-}
-
-function exClone(st) {
-    var cs = new Array(st.cubes.length);
-    for (var i = 0; i < st.cubes.length; i++)
-        cs[i] = { row: st.cubes[i].row, col: st.cubes[i].col, state: st.cubes[i].state };
-    var ens = [];
-    for (var i = 0; i < st.enemies.length; i++) {
-        var e = st.enemies[i];
-        ens.push({ type: e.type, row: e.row, col: e.col, hops: e.hops, countdown: e.countdown });
-    }
-    var ds = [];
-    for (var i = 0; i < st.discs.length; i++)
-        ds.push({ side: st.discs[i].side, row: st.discs[i].row, active: st.discs[i].active });
-    return { pr: st.pr, pc: st.pc, cubes: cs, enemies: ens,
-             alive: st.alive, score: st.score, cubesColored: st.cubesColored, tgt: st.tgt,
-             discs: ds, lv: st.lv };
-}
-
-// Move enemies whose countdown reaches 0. stochOutcome: bit field for random directions
-function exMoveEnemies(st, stochOutcome) {
-    var stochBit = 0;
-    for (var i = st.enemies.length - 1; i >= 0; i--) {
-        var e = st.enemies[i];
-        // Tick countdown — only move when it reaches 0
-        e.countdown--;
-        if (e.countdown > 0) continue;
-        e.countdown = EX_HOPS_PER_MOVE[e.type] || 4;
-        if (e.type === 'coily') {
-            var bestDir = null, bestDist = Infinity;
-            for (var k = 0; k < 4; k++) {
-                var dk = DIRS[DIR_KEYS[k]];
-                var er = e.row + dk.dr, ec = e.col + dk.dc;
-                if (!isValidPos(er, ec)) continue;
-                var dist = Math.abs(st.pr - er) + Math.abs(st.pc - ec);
-                if (dist < bestDist) { bestDist = dist; bestDir = k; }
-            }
-            if (bestDir !== null) {
-                var dd = DIRS[DIR_KEYS[bestDir]];
-                e.row += dd.dr; e.col += dd.dc;
-            }
-        } else if (e.type === 'egg') {
-            var dir = ((stochOutcome >> stochBit) & 1) ? 'DR' : 'DL';
-            stochBit++;
-            var dd = DIRS[dir];
-            var nr = e.row + dd.dr, nc = e.col + dd.dc;
-            if (isValidPos(nr, nc)) {
-                e.row = nr; e.col = nc;
-                e.hops++;
-                if (e.hops >= 6 || nr >= ROWS - 1) {
-                    e.type = 'coily';
-                }
-            } else {
-                e.type = 'coily';
-            }
-        } else if (e.type === 'redball') {
-            var dir = ((stochOutcome >> stochBit) & 1) ? 'DR' : 'DL';
-            stochBit++;
-            var dd = DIRS[dir];
-            var nr = e.row + dd.dr, nc = e.col + dd.dc;
-            if (isValidPos(nr, nc)) {
-                e.row = nr; e.col = nc;
-            } else {
-                st.enemies.splice(i, 1);
-            }
-        }
-    }
-    // Check collisions after all enemies move
-    for (var i = 0; i < st.enemies.length; i++) {
-        var e = st.enemies[i];
-        if (e.row === st.pr && e.col === st.pc) {
-            if (e.type === 'coily' || e.type === 'redball' || e.type === 'egg') {
-                st.alive = false; return;
-            }
-        }
-    }
-}
-
-function exPlayerMove(st, dirKey, stochOutcome) {
-    if (!st.alive) return false;
-    var d = DIRS[dirKey];
-    var nr = st.pr + d.dr, nc = st.pc + d.dc;
-    if (!isValidPos(nr, nc)) {
-        for (var di = 0; di < st.discs.length; di++) {
-            var disc = st.discs[di];
-            if (!disc.active) continue;
-            if (disc.side === 0 && dirKey === 'UL' && st.pc === 0 && st.pr === disc.row) {
-                disc.active = false;
-                st.score += 600;
-                for (var i = st.enemies.length - 1; i >= 0; i--) {
-                    if (st.enemies[i].type === 'coily' || st.enemies[i].type === 'egg') {
-                        st.score += 300;
-                        st.enemies.splice(i, 1);
-                    }
-                }
-                st.pr = 0; st.pc = 0;
-                return true;
-            }
-            if (disc.side === 1 && dirKey === 'UR' && st.pc === st.pr && st.pr === disc.row) {
-                disc.active = false;
-                st.score += 600;
-                for (var i = st.enemies.length - 1; i >= 0; i--) {
-                    if (st.enemies[i].type === 'coily' || st.enemies[i].type === 'egg') {
-                        st.score += 300;
-                        st.enemies.splice(i, 1);
-                    }
-                }
-                st.pr = 0; st.pc = 0;
-                return true;
-            }
-        }
-        st.alive = false; return false;
-    }
-    st.pr = nr; st.pc = nc;
-    var cube = exCubeAt(st, nr, nc);
-    if (cube) {
-        var oldC = Math.min(cube.state, st.tgt);
-        cube.state = nextCubeState(cube.state);
-        var newC = Math.min(cube.state, st.tgt);
-        st.cubesColored += newC - oldC;
-        if (newC > oldC) st.score += 25;
-    }
-    if (st.cubesColored >= st.cubes.length * st.tgt) {
-        st.score += 1000; st.enemies = []; return true;
-    }
-    // Check collision with enemies at landing position
-    for (var i = 0; i < st.enemies.length; i++) {
-        var e = st.enemies[i];
-        if (e.row === nr && e.col === nc) {
-            if (e.type === 'coily' || e.type === 'redball' || e.type === 'egg') {
-                st.alive = false; return false;
-            }
-        }
-    }
-    // Enemies with expired countdowns move
-    exMoveEnemies(st, stochOutcome);
-    return st.alive;
-}
-
-// Precomputed pairwise BFS distances
-var bfsDistTable = {};
-(function buildDistTable() {
-    var positions = [];
-    for (var r = 0; r < ROWS; r++)
-        for (var c = 0; c <= r; c++)
-            positions.push({ r: r, c: c });
-    for (var i = 0; i < positions.length; i++) {
-        var src = positions[i];
-        var key0 = src.r + ',' + src.c;
-        var dist = {}; dist[key0] = 0;
-        var queue = [src];
-        while (queue.length > 0) {
-            var cur = queue.shift();
-            var cd = dist[cur.r + ',' + cur.c];
-            for (var k = 0; k < 4; k++) {
-                var dk = DIRS[DIR_KEYS[k]];
-                var nr = cur.r + dk.dr, nc = cur.c + dk.dc;
-                if (!isValidPos(nr, nc)) continue;
-                var nk = nr + ',' + nc;
-                if (dist[nk] !== undefined) continue;
-                dist[nk] = cd + 1;
-                queue.push({ r: nr, c: nc });
-            }
-        }
-        bfsDistTable[key0] = dist;
-    }
-})();
-
-function exBfsDist(r1, c1, r2, c2) {
-    var d = bfsDistTable[r1 + ',' + c1];
-    return d ? (d[r2 + ',' + c2] || 99) : 99;
-}
-
-function exTourCost(st) {
-    var lv = st.lv !== undefined ? st.lv : arcadeLevel();
-    var isRevert = lv >= 3;
-    var remaining = [];
-    for (var i = 0; i < st.cubes.length; i++) {
-        var hitsNeeded = st.tgt - st.cubes[i].state;
-        if (hitsNeeded <= 0) continue;
-        for (var h = 0; h < hitsNeeded; h++)
-            remaining.push(st.cubes[i]);
-    }
-    if (remaining.length === 0) return 0;
-    // Greedy nearest-neighbor using precomputed BFS distances
-    var totalDist = 0;
-    var cr = st.pr, cc = st.pc;
-    var used = new Array(remaining.length);
-    for (var step = 0; step < remaining.length; step++) {
-        var bestIdx = -1, bestDist = 99;
-        for (var j = 0; j < remaining.length; j++) {
-            if (used[j]) continue;
-            var d = exBfsDist(cr, cc, remaining[j].row, remaining[j].col);
-            if (d === 0) d = 2;
-            if (d < bestDist) { bestDist = d; bestIdx = j; }
-        }
-        if (bestIdx < 0) break;
-        used[bestIdx] = true;
-        totalDist += bestDist;
-        cr = remaining[bestIdx].row; cc = remaining[bestIdx].col;
-    }
-    // On revert levels, penalize isolated remaining cubes (surrounded by completed cubes).
-    // Each completed neighbor means the path likely crosses a completed cube, costing extra.
-    if (isRevert) {
-        var completedSet = {};
-        for (var i = 0; i < st.cubes.length; i++)
-            if (st.cubes[i].state >= st.tgt)
-                completedSet[st.cubes[i].row + ',' + st.cubes[i].col] = true;
-        var penalty = 0;
-        for (var i = 0; i < remaining.length; i++) {
-            var blockedSides = 0;
-            for (var k = 0; k < 4; k++) {
-                var dk = DIRS[DIR_KEYS[k]];
-                var nr = remaining[i].row + dk.dr, nc = remaining[i].col + dk.dc;
-                if (!isValidPos(nr, nc) || completedSet[nr + ',' + nc]) blockedSides++;
-            }
-            // Fully blocked = isolated, needs detour through completed cubes
-            if (blockedSides >= 3) penalty += 4;
-            else if (blockedSides >= 2) penalty += 2;
-        }
-        totalDist += penalty;
-    }
-    return totalDist;
-}
-
-function exLeafValue(st) {
-    if (!st.alive) return -50000;
-    if (st.cubesColored >= st.cubes.length * st.tgt) return 50000;
-    var tourCost = exTourCost(st);
-    return st.cubesColored * 100 - tourCost * 10;
-}
-
-function exCanMove(st, dirKey) {
-    var d = DIRS[dirKey];
-    var nr = st.pr + d.dr, nc = st.pc + d.dc;
-    if (isValidPos(nr, nc)) return true;
-    for (var di = 0; di < st.discs.length; di++) {
-        var disc = st.discs[di];
-        if (!disc.active) continue;
-        if (disc.side === 0 && dirKey === 'UL' && st.pc === 0 && st.pr === disc.row) return true;
-        if (disc.side === 1 && dirKey === 'UR' && st.pc === st.pr && st.pr === disc.row) return true;
-    }
-    return false;
-}
-
-// Count stochastic enemies that will move this turn (countdown == 1, about to tick to 0)
-function exCountStoch(st) {
-    var count = 0;
-    for (var i = 0; i < st.enemies.length; i++) {
-        var e = st.enemies[i];
-        if ((e.type === 'egg' || e.type === 'redball') && e.countdown <= 1) count++;
-    }
-    return Math.min(count, 5);
-}
-
-// State hash for memoization — includes countdown for timing-aware search
-function exStateKey(st, depth) {
-    var k = st.pr + ',' + st.pc + '|';
-    for (var i = 0; i < st.cubes.length; i++) k += st.cubes[i].state;
-    k += '|';
-    for (var i = 0; i < st.enemies.length; i++) {
-        var e = st.enemies[i];
-        k += e.type[0] + e.row + ',' + e.col + 'c' + e.countdown + ';';
-    }
-    k += '|' + depth + '|';
-    for (var i = 0; i < st.discs.length; i++) k += st.discs[i].active ? 1 : 0;
-    return k;
-}
-
-var exMemoTable = {};
-
-function expectimax(st, depth) {
-    if (!st.alive) return -50000;
-    if (st.cubesColored >= st.cubes.length * st.tgt) return 50000 + depth * 100;
-    if (depth === 0) return exLeafValue(st);
-
-    var key = exStateKey(st, depth);
-    if (exMemoTable[key] !== undefined) return exMemoTable[key];
-
-    var numStoch = exCountStoch(st);
-    var numOutcomes = 1 << numStoch;
-    var prob = 1.0 / numOutcomes;
-
-    var bestVal = -Infinity;
-    for (var k = 0; k < 4; k++) {
-        if (!exCanMove(st, DIR_KEYS[k])) continue;
-        var total = 0;
-        for (var out = 0; out < numOutcomes; out++) {
-            var child = exClone(st);
-            if (!exPlayerMove(child, DIR_KEYS[k], out)) {
-                total += -50000 * prob;
-            } else {
-                total += expectimax(child, depth - 1) * prob;
-            }
-        }
-        if (total > bestVal) bestVal = total;
-    }
-
-    exMemoTable[key] = bestVal;
-    return bestVal;
-}
-
-function expectimaxEval(dirKey) {
-    var st = exCloneState();
-    var numStoch = exCountStoch(st);
-    var depth = numStoch <= 1 ? 5 : numStoch <= 2 ? 4 : 3;
-    var numOutcomes = 1 << numStoch;
-    var prob = 1.0 / numOutcomes;
-    var total = 0;
-    for (var out = 0; out < numOutcomes; out++) {
-        var branch = exClone(st);
-        if (!exPlayerMove(branch, dirKey, out)) {
-            total += -50000 * prob;
-        } else {
-            total += expectimax(branch, depth - 1) * prob;
-        }
-    }
-    return total + exLeafValue(st) * 0.0001;
-}
+// exCubeAt, exClone, exMoveEnemies, exPlayerMove, bfsDistTable, exBfsDist,
+// exTourCost, exLeafValue, exCanMove, exCountStoch, exStateKey, exMemoTable,
+// expectimax, expectimaxEval loaded from qbert-ai.js
 
 function computeAIMove() {
     var tgt = targetState();
@@ -1798,6 +1312,22 @@ function drawEnemy(e) {
         ctx.save();
         ctx.globalAlpha = 0.55;
         _drawSpriteOutlined(e.px, e.py, SPRITES.CACTUS_SM, 0.65);
+        ctx.restore();
+
+    } else if (e.type === 'ugg') {
+        // Ugg: smaller ptero, slightly darker tint
+        var usp = e.frame ? SPRITES.PTERO2 : SPRITES.PTERO1;
+        ctx.save();
+        ctx.globalAlpha = 0.85;
+        _drawSpriteOutlined(e.px, e.py, usp, 0.60);
+        ctx.restore();
+
+    } else if (e.type === 'wrongway') {
+        // Wrongway: smaller ptero, slightly lighter
+        var wsp = e.frame ? SPRITES.PTERO2 : SPRITES.PTERO1;
+        ctx.save();
+        ctx.globalAlpha = 0.75;
+        _drawSpriteOutlined(e.px, e.py, wsp, 0.60);
         ctx.restore();
     }
 }
