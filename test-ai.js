@@ -372,17 +372,12 @@ function exCountStoch(st) {
 
 function exTourCost(st) {
     var remaining = [];
-    for (var i = 0; i < st.cubes.length; i++)
-        if (st.cubes[i].state < st.tgt)
+    for (var i = 0; i < st.cubes.length; i++) {
+        var hitsNeeded = st.tgt - st.cubes[i].state;
+        for (var h = 0; h < hitsNeeded; h++)
             remaining.push(st.cubes[i]);
-    if (remaining.length === 0) return 0;
-    // For multi-hit levels, each cube needing N more hits requires N visits.
-    // Extra visits beyond the first cost 2 hops each (leave + return).
-    var extraVisits = 0;
-    for (var i = 0; i < remaining.length; i++) {
-        var hitsNeeded = st.tgt - remaining[i].state;
-        if (hitsNeeded > 1) extraVisits += hitsNeeded - 1;
     }
+    if (remaining.length === 0) return 0;
     var totalDist = 0;
     var cr = st.pr, cc = st.pc;
     var used = new Array(remaining.length);
@@ -391,6 +386,7 @@ function exTourCost(st) {
         for (var j = 0; j < remaining.length; j++) {
             if (used[j]) continue;
             var d = exBfsDist(cr, cc, remaining[j].row, remaining[j].col);
+            if (d === 0) d = 2; // must leave and return to re-hit same cube
             if (d < bestDist) { bestDist = d; bestIdx = j; }
         }
         if (bestIdx < 0) break;
@@ -398,7 +394,7 @@ function exTourCost(st) {
         totalDist += bestDist;
         cr = remaining[bestIdx].row; cc = remaining[bestIdx].col;
     }
-    return totalDist + extraVisits * 2;
+    return totalDist;
 }
 
 // State hash for memoization — includes countdown for timing-aware search
