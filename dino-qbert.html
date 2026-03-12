@@ -43,7 +43,7 @@
 // Globals shared with qbert-ai.js (must be declared outside the IIFE)
 var round, player, enemies, cubeStates, discs;
 var aiTour, aiTourIdx, aiBoardSig;
-var exMemoTable;
+var exMemoTable, exCloneState;
 
 (function () {
 'use strict';
@@ -840,7 +840,7 @@ function updatePlayer() {
 
 // ─── AI (bfsTo, boardSig, dangerMaps, buildTour, expectimax etc. from qbert-ai.js) ──
 
-function exCloneState() {
+exCloneState = function() {
     var tgt = targetState();
     var cs = new Array(cubeStates.length);
     for (var i = 0; i < cubeStates.length; i++)
@@ -865,7 +865,7 @@ function exCloneState() {
     return { pr: player.row, pc: player.col, cubes: cs, enemies: ens,
              alive: true, score: 0, cubesColored: colored, tgt: tgt,
              discs: ds, lv: arcadeLevel() };
-}
+};
 
 // exCubeAt, exClone, exMoveEnemies, exPlayerMove, bfsDistTable, exBfsDist,
 // exTourCost, exLeafValue, exCanMove, exCountStoch, exStateKey, exMemoTable,
