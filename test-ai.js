@@ -19,7 +19,7 @@ var SIM_HOPS_PER_MOVE = {
     wrongway:  3
 };
 
-var lives, extraLifeGiven, levelWon, turnCount;
+var lives, extraLifeGiven, levelWon, turnCount, freezeTimer;
 
 // ─── exCloneState (test-specific: uses moveCountdown directly) ───────────────
 function exCloneState() {
@@ -65,7 +65,12 @@ function computeAIMove() {
 
 // ─── Game simulation ─────────────────────────────────────────────────────────
 function checkExtraLife() {
-    if (!extraLifeGiven && score >= 8000) { extraLifeGiven = true; lives++; }
+    // First extra life at 8000, then every 14000 after that
+    var nextThreshold = extraLifeGiven ? (8000 + extraLifeGiven * 14000) : 8000;
+    if (score >= nextThreshold) {
+        extraLifeGiven = (extraLifeGiven || 0) + 1;
+        lives++;
+    }
 }
 
 function stompCube(row, col) {
@@ -75,7 +80,8 @@ function stompCube(row, col) {
     var next = nextCubeState(cube.state);
     if (next !== cube.state) {
         cube.state = next;
-        if (cube.state <= tgt && cube.state > 0) { score += 25; checkExtraLife(); }
+        if (cube.state === tgt) { score += 25; checkExtraLife(); }
+        else if (cube.state > 0 && cube.state < tgt) { score += 15; checkExtraLife(); }
     }
 }
 
@@ -95,16 +101,24 @@ function initRound() {
         discs.push({ side: dc[i].side, row: dc[i].row, active: true });
     enemies = [];
     turnCount = 0;
+    freezeTimer = 0;
     aiDetailPath = []; aiTourDots = [];
     aiTour = []; aiTourIdx = 0; aiBoardSig = '';
 
-    scheduleSpawn(8);              // Coily egg
-    scheduleSpawn(4, 'redball');
-    if (round >= 3) scheduleSpawn(10, 'greenball');
-    if (round >= 4) scheduleSpawn(15, 'slick');
-    // Ugg/Wrongway appear from round 3 (arcade: level 1 round 3)
-    if (round >= 3) scheduleSpawn(12, 'ugg');
-    if (round >= 3) scheduleSpawn(14, 'wrongway');
+    // Enemy spawn patterns per arcade manual round progression
+    var lv = arcadeLevel();
+    scheduleSpawn(8);              // Coily egg (always present)
+    scheduleSpawn(4, 'redball');   // Red ball (always present)
+    // Level 1 round 3+: Ugg & Wrongway appear
+    if (lv >= 1 && round >= 3) scheduleSpawn(12, 'ugg');
+    if (lv >= 1 && round >= 3) scheduleSpawn(14, 'wrongway');
+    // Level 2+: Slick/Sam appear (revert cubes)
+    if (lv >= 2) scheduleSpawn(15, 'slick');
+    // Level 3+: Green ball (freeze power-up)
+    if (lv >= 3) scheduleSpawn(10, 'greenball');
+    // Higher levels: more frequent and additional enemies
+    if (lv >= 3) scheduleSpawn(20, 'redball'); // second red ball
+    if (lv >= 4) scheduleSpawn(18, 'slick');   // second slick
 }
 
 function scheduleSpawn(delay, forcedType) {
@@ -149,14 +163,13 @@ function killPlayer() {
 
 function useDisc(idx) {
     discs[idx].active = false;
-    score += 300; checkExtraLife();
-    var survived = [];
+    // 500pts per Coily/egg lured off the pyramid
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
-        if (e.type === 'coily' || e.type === 'egg') { score += 300; checkExtraLife(); }
-        else survived.push(e);
+        if (e.type === 'coily' || e.type === 'egg') { score += 500; checkExtraLife(); }
     }
-    enemies = survived;
+    // Clear ALL enemies when using a disc (per arcade manual)
+    enemies = [];
     player.row = 0; player.col = 0;
     stompCube(0, 0);
     scheduleSpawn(8);
@@ -198,6 +211,7 @@ function checkPlayerEnemyCollision() {
                 enemies.splice(i, 1); i--;
             } else if (e.type === 'greenball') {
                 score += 100; checkExtraLife();
+                freezeTimer = 5; // Freeze all enemies for ~5 turns
                 enemies.splice(i, 1); i--;
             } else {
                 killPlayer(); return;
@@ -207,7 +221,7 @@ function checkPlayerEnemyCollision() {
 }
 
 function moveEnemies() {
-    // Tick spawn timers
+    // Tick spawn timers (spawns still happen during freeze)
     for (var i = enemies.length - 1; i >= 0; i--) {
         if (enemies[i].type === 'spawn-timer') {
             enemies[i].timer--;
@@ -218,6 +232,9 @@ function moveEnemies() {
             }
         }
     }
+
+    // Green ball freeze: enemies don't move while frozen
+    if (freezeTimer > 0) { freezeTimer--; return; }
 
     // Tick countdown and move enemies whose countdown reaches 0
     for (var i = enemies.length - 1; i >= 0; i--) {
@@ -338,6 +355,7 @@ function moveEnemies() {
                 enemies.splice(i, 1);
             } else if (e.type === 'greenball') {
                 score += 100; checkExtraLife();
+                freezeTimer = 5;
                 enemies.splice(i, 1);
             } else {
                 killPlayer();
@@ -376,7 +394,9 @@ function simTurn() {
     if (!tryMove(dir)) return dir;
 
     if (!player.dead && allColored()) {
-        score += 1000; checkExtraLife();
+        score += roundCompletionBonus();
+        score += unusedDiscBonus();
+        checkExtraLife();
         levelWon = true;
         return dir;
     }
@@ -445,7 +465,7 @@ function runGame(maxRounds, verbose) {
     round = 1;
     score = 0;
     lives = 3;
-    extraLifeGiven = false;
+    extraLifeGiven = 0;
     var totalDeaths = 0;
     var prevLives = lives;
 
