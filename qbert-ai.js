@@ -419,6 +419,16 @@ function exTourCost(st) {
             remaining.push(st.cubes[i]);
     }
     if (remaining.length === 0) return 0;
+
+    // On revert levels, estimate crossing penalty per hop
+    var completedFrac = 0;
+    if (isRevert) {
+        var numCompleted = 0;
+        for (var i = 0; i < st.cubes.length; i++)
+            if (st.cubes[i].state >= st.tgt) numCompleted++;
+        completedFrac = numCompleted / st.cubes.length;
+    }
+
     var totalDist = 0;
     var cr = st.pr, cc = st.pc;
     var used = new Array(remaining.length);
@@ -428,30 +438,15 @@ function exTourCost(st) {
             if (used[j]) continue;
             var d = exBfsDist(cr, cc, remaining[j].row, remaining[j].col);
             if (d === 0) d = 2;
+            // On revert levels, each hop has probability completedFrac of crossing
+            // a completed cube, costing 2 extra (uncomplete + re-complete later)
+            if (isRevert && d > 1) d += Math.round((d - 1) * completedFrac * 2);
             if (d < bestDist) { bestDist = d; bestIdx = j; }
         }
         if (bestIdx < 0) break;
         used[bestIdx] = true;
         totalDist += bestDist;
         cr = remaining[bestIdx].row; cc = remaining[bestIdx].col;
-    }
-    if (isRevert) {
-        var completedSet = {};
-        for (var i = 0; i < st.cubes.length; i++)
-            if (st.cubes[i].state >= st.tgt)
-                completedSet[st.cubes[i].row + ',' + st.cubes[i].col] = true;
-        var penalty = 0;
-        for (var i = 0; i < remaining.length; i++) {
-            var blockedSides = 0;
-            for (var k = 0; k < 4; k++) {
-                var dk = DIRS[DIR_KEYS[k]];
-                var nr = remaining[i].row + dk.dr, nc = remaining[i].col + dk.dc;
-                if (!isValidPos(nr, nc) || completedSet[nr + ',' + nc]) blockedSides++;
-            }
-            if (blockedSides >= 3) penalty += 4;
-            else if (blockedSides >= 2) penalty += 2;
-        }
-        totalDist += penalty;
     }
     return totalDist;
 }
@@ -475,7 +470,22 @@ function exLeafValue(st) {
     if (!st.alive) return EX_DEATH;
     if (st.cubesColored >= st.cubes.length * st.tgt) return EX_WIN;
     var tourCost = exTourCost(st);
-    return st.cubesColored * 100 - tourCost * 10;
+    var val = st.cubesColored * 100 - tourCost * 10;
+    // On revert levels, penalize being surrounded by completed cubes (trap avoidance)
+    var lv = st.lv !== undefined ? st.lv : arcadeLevel();
+    if (lv >= 3) {
+        var completedNeighbors = 0;
+        for (var k = 0; k < 4; k++) {
+            var dk = DIRS[DIR_KEYS[k]];
+            var nr = st.pr + dk.dr, nc = st.pc + dk.dc;
+            if (!isValidPos(nr, nc)) continue;
+            var cube = exCubeAt(st, nr, nc);
+            if (cube && cube.state >= st.tgt) completedNeighbors++;
+        }
+        // Each completed neighbor is a potential trap — penalize heavily
+        val -= completedNeighbors * 30;
+    }
+    return val;
 }
 
 function exCanMove(st, dirKey) {
