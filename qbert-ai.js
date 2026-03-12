@@ -307,18 +307,52 @@ var posAdj = [];  // posAdj[i] = array of neighbor indices
     }
 })();
 
-// ─── Greedy BFS tour cost with single bitmask ────────────────────────────────
-// Single bitmask: bit set = cube needs coloring. Completed = ~needs & ALL_CUBES.
-// On revert levels, walking through completed cubes flips them back to needing.
+// ─── Tour cost with connected-component awareness ────────────────────────────
+// On revert levels, completed cubes act as barriers. Uncolored cubes form
+// connected components. Strategy: finish current component, then cross to the
+// nearest component (paying a crossing penalty per completed cube traversed).
 var ALL_CUBES = (1 << POS_COUNT) - 1;  // all 28 bits set
 
-function greedyTourCost(startIdx, needs, isRevert) {
-    if (needs === 0) return 0;
-    var pos = startIdx;
-    var totalCost = 0;
+// Find connected components of set bits in 'needs' using pyramid adjacency.
+// Returns array of bitmasks, one per component.
+function findComponents(needs) {
+    var components = [];
+    var remaining = needs;
+    while (remaining !== 0) {
+        // Pick any set bit as seed
+        var seed = -1;
+        for (var i = 0; i < POS_COUNT; i++) {
+            if (remaining & (1 << i)) { seed = i; break; }
+        }
+        if (seed < 0) break;
+        // BFS flood fill through 'needs' neighbors
+        var comp = 1 << seed;
+        var queue = [seed];
+        remaining &= ~(1 << seed);
+        while (queue.length > 0) {
+            var cur = queue.shift();
+            var adj = posAdj[cur];
+            for (var a = 0; a < adj.length; a++) {
+                var v = adj[a];
+                if (remaining & (1 << v)) {
+                    comp |= (1 << v);
+                    remaining &= ~(1 << v);
+                    queue.push(v);
+                }
+            }
+        }
+        components.push(comp);
+    }
+    return components;
+}
 
+// Greedy nearest-neighbor tour cost within a single component (no crossing penalty).
+function intraComponentCost(startIdx, comp) {
+    if (comp === 0) return 0;
+    var pos = startIdx;
+    var needs = comp;
+    var totalCost = 0;
     while (needs !== 0) {
-        // Find nearest cube that still needs coloring
         var bestIdx = -1, bestDist = 99;
         for (var i = 0; i < POS_COUNT; i++) {
             if (!(needs & (1 << i))) continue;
@@ -326,38 +360,91 @@ function greedyTourCost(startIdx, needs, isRevert) {
             if (d < bestDist) { bestDist = d; bestIdx = i; }
         }
         if (bestIdx < 0) break;
+        totalCost += bestDist;
+        needs &= ~(1 << bestIdx);
+        pos = bestIdx;
+    }
+    return { cost: totalCost, endIdx: pos };
+}
 
-        // On revert levels, trace BFS path and revert completed cubes we cross
-        if (isRevert && bestDist > 1) {
-            var visited = new Uint8Array(POS_COUNT);
-            var prev = new Int8Array(POS_COUNT);
-            for (var i = 0; i < POS_COUNT; i++) prev[i] = -1;
-            visited[pos] = 1;
-            var queue = [pos];
-            var found = false;
-            while (queue.length > 0 && !found) {
-                var cur = queue.shift();
-                var adj = posAdj[cur];
-                for (var a = 0; a < adj.length; a++) {
-                    var v = adj[a];
-                    if (visited[v]) continue;
-                    visited[v] = 1;
-                    prev[v] = cur;
-                    if (v === bestIdx) { found = true; break; }
-                    queue.push(v);
-                }
+// Minimum BFS distance from any cube in 'fromSet' to any cube in 'toSet',
+// crossing through completed cubes. Returns {dist, crossings} where crossings
+// is the number of completed cubes on the shortest path.
+function crossingDistance(fromIdx, toComp, needs) {
+    var bestDist = 99, bestCrossings = 0;
+    // Find nearest cube in toComp from fromIdx, counting completed cubes crossed
+    var visited = new Uint8Array(POS_COUNT);
+    var distArr = new Uint8Array(POS_COUNT);
+    var crossArr = new Uint8Array(POS_COUNT);
+    visited[fromIdx] = 1;
+    var queue = [fromIdx];
+    while (queue.length > 0) {
+        var cur = queue.shift();
+        if (toComp & (1 << cur)) {
+            return { dist: distArr[cur], crossings: crossArr[cur] };
+        }
+        var adj = posAdj[cur];
+        for (var a = 0; a < adj.length; a++) {
+            var v = adj[a];
+            if (visited[v]) continue;
+            visited[v] = 1;
+            distArr[v] = distArr[cur] + 1;
+            // Count completed cubes crossed (not in needs = completed)
+            crossArr[v] = crossArr[cur] + ((needs & (1 << v)) ? 0 : 1);
+            queue.push(v);
+        }
+    }
+    return { dist: 99, crossings: 0 };
+}
+
+// Main tour cost function. On revert levels, uses component-aware planning.
+// Non-revert levels use simple greedy nearest-neighbor.
+function greedyTourCost(startIdx, needs, isRevert) {
+    if (needs === 0) return 0;
+
+    if (!isRevert) {
+        // Simple greedy nearest-neighbor (no crossing penalties)
+        return intraComponentCost(startIdx, needs).cost;
+    }
+
+    // Revert level: find connected components of uncolored cubes
+    var components = findComponents(needs);
+    if (components.length <= 1) {
+        // Single component — just do greedy tour within it
+        return intraComponentCost(startIdx, needs).cost;
+    }
+
+    // Multiple components — find which one we're in (or nearest to)
+    var pos = startIdx;
+    var totalCost = 0;
+    var visited = 0; // bitmask of visited component indices
+
+    while (visited !== (1 << components.length) - 1) {
+        // Find nearest unvisited component
+        var bestComp = -1, bestDist = 99, bestCross = 0;
+        for (var ci = 0; ci < components.length; ci++) {
+            if (visited & (1 << ci)) continue;
+            // Are we already inside this component?
+            if (components[ci] & (1 << pos)) {
+                bestComp = ci; bestDist = 0; bestCross = 0;
+                break;
             }
-            if (found) {
-                for (var v = prev[bestIdx]; v !== pos; v = prev[v]) {
-                    // Intermediate cube is completed? Revert it.
-                    if (!(needs & (1 << v))) needs |= (1 << v);
-                }
+            var cd = crossingDistance(pos, components[ci], needs);
+            if (cd.dist < bestDist) {
+                bestDist = cd.dist; bestComp = ci; bestCross = cd.crossings;
             }
         }
+        if (bestComp < 0) break;
 
-        totalCost += bestDist;
-        needs &= ~(1 << bestIdx);  // done — clear bit
-        pos = bestIdx;
+        // Cost to reach this component (crossing penalty: each completed cube
+        // crossed will be reverted, costing ~2 extra moves to re-complete)
+        totalCost += bestDist + bestCross * 2;
+
+        // Cost to finish this component
+        var intra = intraComponentCost(pos, components[bestComp]);
+        totalCost += intra.cost;
+        pos = intra.endIdx;
+        visited |= (1 << bestComp);
     }
     return totalCost;
 }
