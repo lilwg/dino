@@ -337,6 +337,214 @@ function heldKarp(allDists, N) {
     return best;
 }
 
+// ─── A* revert-aware tour cost ───────────────────────────────────────────────
+// Binary min-heap for A* priority queue
+function AStarHeap() {
+    this.data = [];
+}
+AStarHeap.prototype.push = function(node) {
+    this.data.push(node);
+    var i = this.data.length - 1;
+    while (i > 0) {
+        var p = (i - 1) >> 1;
+        if (this.data[p].f <= this.data[i].f) break;
+        var tmp = this.data[p]; this.data[p] = this.data[i]; this.data[i] = tmp;
+        i = p;
+    }
+};
+AStarHeap.prototype.pop = function() {
+    var top = this.data[0];
+    var last = this.data.pop();
+    if (this.data.length > 0) {
+        this.data[0] = last;
+        var i = 0, n = this.data.length;
+        while (true) {
+            var l = 2*i+1, r = 2*i+2, smallest = i;
+            if (l < n && this.data[l].f < this.data[smallest].f) smallest = l;
+            if (r < n && this.data[r].f < this.data[smallest].f) smallest = r;
+            if (smallest === i) break;
+            var tmp = this.data[i]; this.data[i] = this.data[smallest]; this.data[smallest] = tmp;
+            i = smallest;
+        }
+    }
+    return top;
+};
+AStarHeap.prototype.size = function() { return this.data.length; };
+
+// Compute revert penalty: how many stomps a completed cube needs after being reverted
+function revertStomps(lv, tgt) {
+    // Level 3: state toggles 0↔1, target=1. Revert: 1→0, needs 1 stomp
+    // Level 4: state 2→1, else +1, target=2. Revert: 2→1, needs 1 stomp
+    // Level 5+: state cycles 0→1→2→0, target=2. Revert: 2→0, needs 2 stomps
+    if (lv <= 4) return 1;
+    return tgt; // level 5+: needs full tgt stomps
+}
+
+// MST heuristic using precomputed distMatrix (admissible: ignores reverts)
+// pos: current position index, needsLo/needsHi: packed cube needs (2 bits per cube)
+// needsLo bit i = cube i needs >= 1 stomp, needsHi bit i = cube i needs >= 2 stomps
+function astarMST(pos, needsLo, needsHi) {
+    // Collect target positions
+    var nodes = [pos];
+    var extraStomps = 0;
+    for (var i = 0; i < POS_COUNT; i++) {
+        if (needsLo & (1 << i)) {
+            nodes.push(i);
+            if (needsHi & (1 << i)) extraStomps++; // needs 2 stomps, 1 extra
+        }
+    }
+    if (nodes.length <= 1) return extraStomps * 2;
+
+    // Prim's MST
+    var n = nodes.length;
+    var inMST = new Uint8Array(n);
+    var minEdge = new Int8Array(n);
+    for (var i = 0; i < n; i++) minEdge[i] = 99;
+    minEdge[0] = 0;
+    var mstCost = 0;
+
+    for (var iter = 0; iter < n; iter++) {
+        var u = -1, minVal = 99;
+        for (var i = 0; i < n; i++) {
+            if (!inMST[i] && minEdge[i] < minVal) {
+                minVal = minEdge[i]; u = i;
+            }
+        }
+        if (u < 0) break;
+        inMST[u] = 1;
+        mstCost += minVal;
+        for (var v = 0; v < n; v++) {
+            if (inMST[v]) continue;
+            var d = distMatrix[nodes[u] * POS_COUNT + nodes[v]];
+            if (d < minEdge[v]) minEdge[v] = d;
+        }
+    }
+
+    return mstCost + extraStomps * 2;
+}
+
+// A* search for exact minimum moves to complete all cubes on revert levels.
+// Models the revert mechanic: stepping on completed cubes reverts them.
+// Uses MST of remaining targets (ignoring reverts) as admissible heuristic.
+var ASTAR_NODE_LIMIT = 5000;
+var astarTourCache = {};
+var astarTourCacheHits = 0;
+var astarTourCacheMisses = 0;
+
+function astarRevertTourCost(st) {
+    var tgt = st.tgt;
+    var lv = st.lv !== undefined ? st.lv : arcadeLevel();
+    var revPenalty = revertStomps(lv, tgt);
+
+    // Build initial needs: 2 bits per cube packed into two ints
+    // needsLo bit i = cube i needs >= 1 stomp
+    // needsHi bit i = cube i needs >= 2 stomps
+    var needsLo = 0, needsHi = 0;
+    var cubeExistsMask = 0; // which positions have cubes
+    var totalNeeded = 0;
+    for (var i = 0; i < st.cubes.length; i++) {
+        var idx = posToIdx[st.cubes[i].row * ROWS + st.cubes[i].col];
+        cubeExistsMask |= (1 << idx);
+        var needed = tgt - st.cubes[i].state;
+        if (needed > 0) {
+            needsLo |= (1 << idx);
+            if (needed >= 2) needsHi |= (1 << idx);
+            totalNeeded += needed;
+        }
+    }
+    if (totalNeeded === 0) return 0;
+
+    var startPos = posToIdx[st.pr * ROWS + st.pc];
+
+    // Check cache
+    var cacheKey = startPos + '|' + needsLo + '|' + needsHi + '|' + cubeExistsMask + '|' + revPenalty;
+    if (astarTourCache[cacheKey] !== undefined) {
+        astarTourCacheHits++;
+        return astarTourCache[cacheKey];
+    }
+    astarTourCacheMisses++;
+
+    // State key: pos | needsLo | needsHi (packed as string)
+    function sKey(p, lo, hi) {
+        return p + '|' + lo + '|' + hi;
+    }
+
+    var open = new AStarHeap();
+    var gBest = {};
+    var h0 = astarMST(startPos, needsLo, needsHi);
+    var initKey = sKey(startPos, needsLo, needsHi);
+    open.push({ pos: startPos, lo: needsLo, hi: needsHi, g: 0, f: h0, key: initKey });
+    gBest[initKey] = 0;
+
+    var nodesExpanded = 0;
+
+    while (open.size() > 0) {
+        var cur = open.pop();
+
+        // Goal check: no cubes need stomping
+        if (cur.lo === 0) {
+            if (typeof astarStats !== 'undefined') {
+                astarStats.solved++;
+                astarStats.totalNodes += nodesExpanded;
+            }
+            astarTourCache[cacheKey] = cur.g;
+            return cur.g;
+        }
+
+        // Skip if we've found a better path to this state
+        if (gBest[cur.key] !== undefined && gBest[cur.key] < cur.g) continue;
+
+        nodesExpanded++;
+        if (nodesExpanded > ASTAR_NODE_LIMIT) {
+            // Fall back to MST estimate if too many nodes
+            if (typeof astarStats !== 'undefined') {
+                astarStats.fallbacks++;
+                astarStats.totalNodes += nodesExpanded;
+            }
+            var fallback = cur.g + astarMST(cur.pos, cur.lo, cur.hi);
+            astarTourCache[cacheKey] = fallback;
+            return fallback;
+        }
+
+        // Expand neighbors
+        var adj = posAdj[cur.pos];
+        for (var a = 0; a < adj.length; a++) {
+            var np = adj[a];
+            var newG = cur.g + 1;
+            var newLo = cur.lo, newHi = cur.hi;
+            var bit = 1 << np;
+
+            if (cubeExistsMask & bit) {
+                if (newLo & bit) {
+                    // Cube needs stomping
+                    if (newHi & bit) {
+                        // Needs 2+ stomps: first stomp reduces to 1
+                        newHi &= ~bit;
+                    } else {
+                        // Needs exactly 1 stomp: done!
+                        newLo &= ~bit;
+                    }
+                } else {
+                    // Completed cube: stepping on it reverts!
+                    newLo |= bit;
+                    if (revPenalty >= 2) newHi |= bit;
+                }
+            }
+
+            var nKey = sKey(np, newLo, newHi);
+            if (gBest[nKey] !== undefined && gBest[nKey] <= newG) continue;
+            gBest[nKey] = newG;
+
+            var h = astarMST(np, newLo, newHi);
+            open.push({ pos: np, lo: newLo, hi: newHi, g: newG, f: newG + h, key: nKey });
+        }
+    }
+
+    // No solution (shouldn't happen on valid board)
+    astarTourCache[cacheKey] = 999;
+    return 999;
+}
+
 // ─── Expectimax search ───────────────────────────────────────────────────────
 function exCubeAt(st, row, col) {
     for (var i = 0; i < st.cubes.length; i++)
@@ -473,6 +681,16 @@ function exPlayerMove(st, dirKey, stochOutcome) {
         st.alive = false; return false;
     }
     st.pr = nr; st.pc = nc;
+    // Check enemy collision BEFORE level completion (matches actual game order)
+    for (var i = 0; i < st.enemies.length; i++) {
+        var e = st.enemies[i];
+        if (e.row === nr && e.col === nc) {
+            if (e.type === 'coily' || e.type === 'redball' || e.type === 'egg' ||
+                e.type === 'ugg' || e.type === 'wrongway') {
+                st.alive = false; return false;
+            }
+        }
+    }
     var cube = exCubeAt(st, nr, nc);
     if (cube) {
         var oldC = Math.min(cube.state, st.tgt);
@@ -483,15 +701,6 @@ function exPlayerMove(st, dirKey, stochOutcome) {
     }
     if (st.cubesColored >= st.cubes.length * st.tgt) {
         st.score += 1000; st.enemies = []; return true;
-    }
-    for (var i = 0; i < st.enemies.length; i++) {
-        var e = st.enemies[i];
-        if (e.row === nr && e.col === nc) {
-            if (e.type === 'coily' || e.type === 'redball' || e.type === 'egg' ||
-                e.type === 'ugg' || e.type === 'wrongway') {
-                st.alive = false; return false;
-            }
-        }
     }
     exMoveEnemies(st, stochOutcome);
     return st.alive;
@@ -529,6 +738,13 @@ function exTourCost(st) {
     var startIdx = posToIdx[st.pr * ROWS + st.pc];
     var N = targetIdxs.length;
 
+    // Use A* for revert levels with few remaining targets — exact cost with reverts
+    // When many cubes remain, the revert risk is low and A* state space is too large
+    // A* for revert levels — only when very few targets remain
+    // Disabled inside expectimax (too slow per call); enabled for standalone evaluation
+    if (isRevert && N <= 5 && typeof astarEnabled !== 'undefined' && astarEnabled)
+        return astarRevertTourCost(st);
+
     // Use Held-Karp for small N (≤ 10 unique targets)
     if (N <= 10) {
         var allPos = [startIdx].concat(targetIdxs);
@@ -536,7 +752,7 @@ function exTourCost(st) {
         var dists = new Float32Array(M * M);
 
         if (isRevert) {
-            // Build completed bitmask (using array for >32 positions)
+            // Build completed bitmask
             var completedBits = new Int32Array(1);
             for (var i = 0; i < st.cubes.length; i++) {
                 if (st.cubes[i].state >= st.tgt) {
@@ -544,7 +760,6 @@ function exTourCost(st) {
                     completedBits[ci >> 5] |= (1 << (ci & 31));
                 }
             }
-            // Dijkstra from each position with weighted edges
             for (var s = 0; s < M; s++) {
                 var dd = dijkstraWeighted(allPos[s], completedBits);
                 for (var d = 0; d < M; d++)
