@@ -9,20 +9,20 @@ var astarStats = { solved: 0, fallbacks: 0, totalNodes: 0, cacheHits: 0 };
 eval(require('fs').readFileSync(__dirname + '/qbert-ai.js', 'utf8'));
 
 // ─── Simulation constants ────────────────────────────────────────────────────
-// Arcade: Q*bert=9f, enemies=12f → ratio 3:4 (~1.33), rounded to 2 for search
-var SIM_HOPS_PER_MOVE = {
-    egg:       2,
-    coily:     2,
-    redball:   2,
-    greenball: 3,   // slightly slower (15f / 9f ≈ 1.67)
-    slick:     3,   // slightly slower (17f / 9f ≈ 1.89)
-    ugg:       2,
-    wrongway:  2
+// Arcade frame-accurate: enemy accumulates PLAYER_FRAMES/ENEMY_FRAMES per player hop
+var SIM_MOVE_RATE = {
+    egg:       9 / 12,   // 0.75
+    coily:     9 / 12,   // 0.75
+    redball:   9 / 12,   // 0.75
+    greenball: 9 / 15,   // 0.60
+    slick:     9 / 17,   // 0.53
+    ugg:       9 / 12,   // 0.75
+    wrongway:  9 / 12    // 0.75
 };
 
 var lives, extraLifeGiven, levelWon, turnCount, freezeTimer;
 
-// ─── exCloneState (test-specific: uses moveCountdown directly) ───────────────
+// ─── exCloneState (test-specific: uses accum directly) ───────────────────────
 function exCloneState() {
     var tgt = targetState();
     var cs = new Array(cubeStates.length);
@@ -33,9 +33,8 @@ function exCloneState() {
         var e = enemies[i];
         if (e.type === 'spawn-timer') continue;
         if (e.type === 'greenball' || e.type === 'slick') continue;
-        var interval = EX_HOPS_PER_MOVE[e.type] || 4;
-        var cd = e.moveCountdown !== undefined ? e.moveCountdown : interval;
-        ens.push({ type: e.type, row: e.row, col: e.col, hops: e.hops || 0, countdown: cd });
+        var acc = e.accum !== undefined ? e.accum : 0;
+        ens.push({ type: e.type, row: e.row, col: e.col, hops: e.hops || 0, accum: acc });
     }
     var colored = 0;
     for (var i = 0; i < cs.length; i++) colored += Math.min(cs[i].state, tgt);
@@ -134,24 +133,21 @@ function spawnEnemy(forcedType) {
             if (enemies[i].type === 'coily' || enemies[i].type === 'egg') { hasCoily = true; break; }
         type = hasCoily ? 'redball' : 'egg';
     }
-    var cd = SIM_HOPS_PER_MOVE[type] || 4;
     if (type === 'egg') {
-        enemies.push({ type: 'egg', row: 0, col: 0, hops: 0, moveCountdown: cd });
+        enemies.push({ type: 'egg', row: 0, col: 0, hops: 0, accum: 0 });
     } else if (type === 'redball') {
         var spawnCol = Math.floor(Math.random() * 2);
-        enemies.push({ type: 'redball', row: 1, col: spawnCol, moveCountdown: cd });
+        enemies.push({ type: 'redball', row: 1, col: spawnCol, accum: 0 });
     } else if (type === 'greenball') {
         var spawnCol = Math.floor(Math.random() * 2);
-        enemies.push({ type: 'greenball', row: 1, col: spawnCol, moveCountdown: cd });
+        enemies.push({ type: 'greenball', row: 1, col: spawnCol, accum: 0 });
     } else if (type === 'slick') {
         var spawnCol = Math.floor(Math.random() * 2);
-        enemies.push({ type: 'slick', row: 1, col: spawnCol, moveCountdown: cd });
+        enemies.push({ type: 'slick', row: 1, col: spawnCol, accum: 0 });
     } else if (type === 'ugg') {
-        // Ugg spawns bottom-right, moves upward
-        enemies.push({ type: 'ugg', row: ROWS - 1, col: ROWS - 1, moveCountdown: cd });
+        enemies.push({ type: 'ugg', row: ROWS - 1, col: ROWS - 1, accum: 0 });
     } else if (type === 'wrongway') {
-        // Wrongway spawns bottom-left, moves upward
-        enemies.push({ type: 'wrongway', row: ROWS - 1, col: 0, moveCountdown: cd });
+        enemies.push({ type: 'wrongway', row: ROWS - 1, col: 0, accum: 0 });
     }
 }
 
@@ -242,9 +238,9 @@ function moveEnemies() {
         var e = enemies[i];
         if (e.type === 'spawn-timer') continue;
 
-        e.moveCountdown--;
-        if (e.moveCountdown > 0) continue;
-        e.moveCountdown = SIM_HOPS_PER_MOVE[e.type] || 4;
+        e.accum = (e.accum || 0) + (SIM_MOVE_RATE[e.type] || 0.75);
+        if (e.accum < 1.0) continue;
+        e.accum -= 1.0;
 
         if (e.type === 'egg') {
             var dir = Math.random() < 0.5 ? 'DL' : 'DR';

@@ -6,7 +6,7 @@
 //   aiTour, aiTourIdx, aiBoardSig
 //
 // Globals provided by this file:
-//   ROWS, DIRS, DIR_KEYS, EX_HOPS_PER_MOVE, EX_DEATH, EX_WIN, exMemoTable
+//   ROWS, DIRS, DIR_KEYS, EX_MOVE_RATE, EX_DEATH, EX_WIN, exMemoTable
 //   All AI/expectimax functions, BFS, tour planning, danger maps
 //   Board utility functions (isValidPos, arcadeLevel, targetState, etc.)
 //
@@ -17,15 +17,15 @@ var ROWS = 7;
 var DIRS = { UL: {dr:-1, dc:-1}, UR: {dr:-1, dc:0}, DL: {dr:1, dc:0}, DR: {dr:1, dc:1} };
 var DIR_KEYS = ['UL', 'UR', 'DL', 'DR'];
 
-// Arcade: Q*bert=9f, enemies=12f land-to-land → ratio 3:4 (1.33 hops).
-// Round to 2 for search model — gives AI realistic planning headroom
-// while the real-time game uses frame-accurate independent timers.
-var EX_HOPS_PER_MOVE = {
-    egg:      2,   // ~1.33 real, rounded up for search stability
-    coily:    2,   // ~1.33 real, rounded up for search stability
-    redball:  2,   // ~1.33 real, rounded up for search stability
-    ugg:      2,   // ~1.33 real, rounded up for search stability
-    wrongway: 2    // ~1.33 real, rounded up for search stability
+// Arcade frame-accurate speeds: each player hop (9f), enemies accumulate
+// 9/enemy_frames toward their next move. Enemy moves when accumulator >= 1.0.
+// Q*bert=9f, Coily=12f, red ball=12f → ratio 9/12=0.75 per player hop.
+var EX_MOVE_RATE = {
+    egg:      9 / 12,   // 0.75 — moves 3 times per 4 player hops
+    coily:    9 / 12,   // 0.75
+    redball:  9 / 12,   // 0.75
+    ugg:      9 / 12,   // 0.75
+    wrongway: 9 / 12    // 0.75
 };
 
 var EX_DEATH = -50000;
@@ -588,7 +588,7 @@ function exClone(st) {
     var ens = [];
     for (var i = 0; i < st.enemies.length; i++) {
         var e = st.enemies[i];
-        ens.push({ type: e.type, row: e.row, col: e.col, hops: e.hops, countdown: e.countdown });
+        ens.push({ type: e.type, row: e.row, col: e.col, hops: e.hops, accum: e.accum });
     }
     var ds = [];
     for (var i = 0; i < st.discs.length; i++)
@@ -602,9 +602,9 @@ function exMoveEnemies(st, stochOutcome) {
     var stochBit = 0;
     for (var i = st.enemies.length - 1; i >= 0; i--) {
         var e = st.enemies[i];
-        e.countdown--;
-        if (e.countdown > 0) continue;
-        e.countdown = EX_HOPS_PER_MOVE[e.type] || 4;
+        e.accum += EX_MOVE_RATE[e.type] || 0.75;
+        if (e.accum < 1.0) continue;
+        e.accum -= 1.0;
         if (e.type === 'coily') {
             var bestDir = null, bestDist = Infinity;
             for (var k = 0; k < 4; k++) {
@@ -738,7 +738,8 @@ function exCountStoch(st) {
     var count = 0;
     for (var i = 0; i < st.enemies.length; i++) {
         var e = st.enemies[i];
-        if ((e.type === 'egg' || e.type === 'redball' || e.type === 'ugg' || e.type === 'wrongway') && e.countdown <= 1) count++;
+        var rate = EX_MOVE_RATE[e.type] || 0.75;
+        if ((e.type === 'egg' || e.type === 'redball' || e.type === 'ugg' || e.type === 'wrongway') && e.accum + rate >= 1.0) count++;
     }
     return Math.min(count, 5);
 }
@@ -847,7 +848,7 @@ function exStateKey(st, depth) {
     k += '|';
     for (var i = 0; i < st.enemies.length; i++) {
         var e = st.enemies[i];
-        k += e.type[0] + e.row + ',' + e.col + 'c' + e.countdown + ';';
+        k += e.type[0] + e.row + ',' + e.col + 'a' + e.accum.toFixed(2) + ';';
     }
     k += '|' + depth + '|';
     for (var i = 0; i < st.discs.length; i++) k += st.discs[i].active ? 1 : 0;
