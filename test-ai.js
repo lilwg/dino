@@ -34,7 +34,12 @@ function exCloneState() {
         if (e.type === 'spawn-timer') continue;
         if (e.type === 'greenball' || e.type === 'slick') continue;
         var acc = e.accum !== undefined ? e.accum : 0;
-        ens.push({ type: e.type, row: e.row, col: e.col, hops: e.hops || 0, accum: acc });
+        var entry = { type: e.type, row: e.row, col: e.col, hops: e.hops || 0, accum: acc };
+        // Random enemies get a point cloud at their current position
+        if (e.type !== 'coily') {
+            entry.cloud = [{ row: e.row, col: e.col, prob: 1.0 }];
+        }
+        ens.push(entry);
     }
     var colored = 0;
     for (var i = 0; i < cs.length; i++) colored += Math.min(cs[i].state, tgt);

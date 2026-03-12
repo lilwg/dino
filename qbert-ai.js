@@ -376,7 +376,13 @@ function exClone(st) {
     var ens = [];
     for (var i = 0; i < st.enemies.length; i++) {
         var e = st.enemies[i];
-        ens.push({ type: e.type, row: e.row, col: e.col, hops: e.hops, accum: e.accum });
+        var clone = { type: e.type, row: e.row, col: e.col, hops: e.hops, accum: e.accum };
+        if (e.cloud) {
+            clone.cloud = new Array(e.cloud.length);
+            for (var j = 0; j < e.cloud.length; j++)
+                clone.cloud[j] = { row: e.cloud[j].row, col: e.cloud[j].col, prob: e.cloud[j].prob };
+        }
+        ens.push(clone);
     }
     var ds = [];
     for (var i = 0; i < st.discs.length; i++)
@@ -386,13 +392,70 @@ function exClone(st) {
              discs: ds, lv: st.lv };
 }
 
-function exMoveEnemies(st, stochOutcome) {
-    var stochBit = 0;
+// ─── Probability-cloud enemy model ───────────────────────────────────────────
+// Random enemies are tracked as probability distributions over positions.
+// Each step, each position spawns 2 children at 50% (DL/DR for balls/eggs,
+// UL/UR for ugg/wrongway). This gives O(N) positions after N steps, not 2^N.
+// Coily is deterministic (greedy chase) — single position, no branching.
+
+// Expand a random enemy's probability cloud by one step.
+// Returns new array of {row, col, prob} entries (merged by position).
+function expandCloud(cloud, type) {
+    var merged = {};
+    for (var i = 0; i < cloud.length; i++) {
+        var c = cloud[i];
+        var moves;
+        if (type === 'egg' || type === 'redball') {
+            moves = [DIRS['DL'], DIRS['DR']];
+        } else if (type === 'ugg') {
+            moves = [{dr:-1, dc:-1}, {dr:-1, dc:0}]; // UL, UR
+        } else { // wrongway
+            moves = [{dr:-1, dc:0}, {dr:-1, dc:-1}]; // UR, UL
+        }
+        for (var m = 0; m < 2; m++) {
+            var nr = c.row + moves[m].dr, nc = c.col + moves[m].dc;
+            if (isValidPos(nr, nc)) {
+                var key = nr + ',' + nc;
+                if (!merged[key]) merged[key] = { row: nr, col: nc, prob: 0 };
+                merged[key].prob += c.prob * 0.5;
+            }
+            // If invalid, probability mass is lost (enemy fell off)
+        }
+    }
+    var result = [];
+    for (var key in merged) result.push(merged[key]);
+    return result;
+}
+
+// Compute P(death) from enemy clouds at player position
+function deathProb(st) {
+    var pSurvive = 1.0;
+    for (var i = 0; i < st.enemies.length; i++) {
+        var e = st.enemies[i];
+        if (e.cloud) {
+            // Random enemy — check probability mass at player pos
+            for (var j = 0; j < e.cloud.length; j++) {
+                if (e.cloud[j].row === st.pr && e.cloud[j].col === st.pc) {
+                    pSurvive *= (1 - e.cloud[j].prob);
+                }
+            }
+        } else {
+            // Deterministic enemy (Coily) — certain death if overlapping
+            if (e.row === st.pr && e.col === st.pc) return 1.0;
+        }
+    }
+    return 1 - pSurvive;
+}
+
+// Move all enemies one step. Coily moves deterministically, random enemies
+// expand their probability clouds.
+function exMoveEnemies(st) {
     for (var i = st.enemies.length - 1; i >= 0; i--) {
         var e = st.enemies[i];
         e.accum += EX_MOVE_RATE[e.type] || 0.75;
         if (e.accum < 1.0) continue;
         e.accum -= 1.0;
+
         if (e.type === 'coily') {
             var bestDir = null, bestDist = Infinity;
             for (var k = 0; k < 4; k++) {
@@ -407,65 +470,59 @@ function exMoveEnemies(st, stochOutcome) {
                 e.row += dd.dr; e.col += dd.dc;
             }
         } else if (e.type === 'egg') {
-            var dir = ((stochOutcome >> stochBit) & 1) ? 'DR' : 'DL';
-            stochBit++;
-            var dd = DIRS[dir];
-            var nr = e.row + dd.dr, nc = e.col + dd.dc;
-            if (isValidPos(nr, nc)) {
-                e.row = nr; e.col = nc;
-                e.hops++;
-                if (e.hops >= 6 || nr >= ROWS - 1) {
-                    e.type = 'coily';
-                }
-            } else {
+            // Egg: expand cloud, check if any position triggers hatch
+            if (!e.cloud) e.cloud = [{ row: e.row, col: e.col, prob: 1.0 }];
+            e.cloud = expandCloud(e.cloud, 'egg');
+            e.hops++;
+            if (e.hops >= 6) {
+                // Hatch: pick highest-probability cloud position for Coily
                 e.type = 'coily';
+                if (e.cloud && e.cloud.length > 0) {
+                    var bestP = 0, bestR = e.row, bestC = e.col;
+                    for (var j = 0; j < e.cloud.length; j++) {
+                        if (e.cloud[j].prob > bestP) {
+                            bestP = e.cloud[j].prob;
+                            bestR = e.cloud[j].row;
+                            bestC = e.cloud[j].col;
+                        }
+                    }
+                    e.row = bestR; e.col = bestC;
+                }
+                delete e.cloud;
             }
-        } else if (e.type === 'redball') {
-            var dir = ((stochOutcome >> stochBit) & 1) ? 'DR' : 'DL';
-            stochBit++;
-            var dd = DIRS[dir];
-            var nr = e.row + dd.dr, nc = e.col + dd.dc;
-            if (isValidPos(nr, nc)) {
-                e.row = nr; e.col = nc;
-            } else {
-                st.enemies.splice(i, 1);
-            }
-        } else if (e.type === 'ugg' || e.type === 'wrongway') {
-            // Ugg/Wrongway move sideways on pyramid faces — random up or sideways
-            var dir = ((stochOutcome >> stochBit) & 1);
-            stochBit++;
-            var nr, nc;
-            if (e.type === 'ugg') {
-                // Ugg: spawns bottom-right, moves up-left. Choices: UL or UR (up vs sideways-left)
-                if (dir) { nr = e.row - 1; nc = e.col - 1; } // UL
-                else     { nr = e.row - 1; nc = e.col; }     // UR
-            } else {
-                // Wrongway: spawns bottom-left, moves up-right. Choices: UR or UL (up vs sideways-right)
-                if (dir) { nr = e.row - 1; nc = e.col; }     // UR
-                else     { nr = e.row - 1; nc = e.col - 1; } // UL
-            }
-            if (isValidPos(nr, nc)) {
-                e.row = nr; e.col = nc;
-            } else {
-                st.enemies.splice(i, 1);
-            }
-        }
-    }
-    for (var i = 0; i < st.enemies.length; i++) {
-        var e = st.enemies[i];
-        if (e.row === st.pr && e.col === st.pc) {
-            if (e.type === 'coily' || e.type === 'redball' || e.type === 'egg' ||
-                e.type === 'ugg' || e.type === 'wrongway') {
-                st.alive = false; return;
-            }
+        } else if (e.cloud) {
+            // Already a cloud — expand it
+            e.cloud = expandCloud(e.cloud, e.type);
+            if (e.cloud.length === 0) { st.enemies.splice(i, 1); continue; }
+        } else {
+            // First move — convert to cloud
+            e.cloud = [{ row: e.row, col: e.col, prob: 1.0 }];
+            e.cloud = expandCloud(e.cloud, e.type);
+            if (e.cloud.length === 0) { st.enemies.splice(i, 1); continue; }
         }
     }
 }
 
-function exPlayerMove(st, dirKey, stochOutcome) {
+// Check if Coily would be lured off the edge by a disc
+function coilyLured(e, disc) {
+    var targetR = disc.row - 1;
+    var targetC = disc.side === 0 ? 0 : disc.row;
+    var bestDir = null, bestDist = Infinity;
+    for (var k = 0; k < 4; k++) {
+        var dk = DIRS[DIR_KEYS[k]];
+        var er = e.row + dk.dr, ec = e.col + dk.dc;
+        var dd = Math.abs(targetR - er) + Math.abs(targetC - ec);
+        if (dd < bestDist) { bestDist = dd; bestDir = { nr: er, nc: ec }; }
+    }
+    return bestDir && !isValidPos(bestDir.nr, bestDir.nc);
+}
+
+function exPlayerMove(st, dirKey) {
     if (!st.alive) return false;
     var d = DIRS[dirKey];
     var nr = st.pr + d.dr, nc = st.pc + d.dc;
+
+    // Disc escape
     if (!isValidPos(nr, nc)) {
         for (var di = 0; di < st.discs.length; di++) {
             var disc = st.discs[di];
@@ -473,26 +530,11 @@ function exPlayerMove(st, dirKey, stochOutcome) {
             if ((disc.side === 0 && dirKey === 'UL' && st.pc === 0 && st.pr === disc.row) ||
                 (disc.side === 1 && dirKey === 'UR' && st.pc === st.pr && st.pr === disc.row)) {
                 disc.active = false;
-                // Coily only dies if his greedy chase would take him off-edge
                 var survived = [];
                 for (var i = 0; i < st.enemies.length; i++) {
                     var e = st.enemies[i];
-                    if (e.type === 'coily') {
-                        var lured = false;
-                        // Check if Coily's best move toward disc edge is off the pyramid
-                        var targetR = disc.row - 1;
-                        var targetC = disc.side === 0 ? 0 : disc.row;
-                        var bestDir2 = null, bestDist2 = Infinity;
-                        for (var k = 0; k < 4; k++) {
-                            var dk2 = DIRS[DIR_KEYS[k]];
-                            var er = e.row + dk2.dr, ec = e.col + dk2.dc;
-                            var dd = Math.abs(targetR - er) + Math.abs(targetC - ec);
-                            if (dd < bestDist2) { bestDist2 = dd; bestDir2 = { nr: er, nc: ec }; }
-                        }
-                        if (bestDir2 && !isValidPos(bestDir2.nr, bestDir2.nc)) {
-                            st.score += 500; lured = true;
-                        }
-                        if (!lured) survived.push(e);
+                    if (e.type === 'coily' && coilyLured(e, disc)) {
+                        st.score += 500;
                     } else {
                         survived.push(e);
                     }
@@ -504,42 +546,34 @@ function exPlayerMove(st, dirKey, stochOutcome) {
         }
         st.alive = false; return false;
     }
+
     st.pr = nr; st.pc = nc;
-    // Check enemy collision BEFORE level completion (matches actual game order)
-    for (var i = 0; i < st.enemies.length; i++) {
-        var e = st.enemies[i];
-        if (e.row === nr && e.col === nc) {
-            if (e.type === 'coily' || e.type === 'redball' || e.type === 'egg' ||
-                e.type === 'ugg' || e.type === 'wrongway') {
-                st.alive = false; return false;
-            }
-        }
-    }
+
+    // Check death probability from enemy positions/clouds (per-step, not accumulated)
+    var pDeath = deathProb(st);
+    if (pDeath >= 1.0) { st.alive = false; return false; }
+    st.stepDeathProb = pDeath;
+
+    // Color cube
     var cube = exCubeAt(st, nr, nc);
     if (cube) {
         var oldC = Math.min(cube.state, st.tgt);
         cube.state = nextCubeState(cube.state);
         var newC = Math.min(cube.state, st.tgt);
         st.cubesColored += newC - oldC;
-        if (newC > oldC) {
-            st.score += (cube.state === st.tgt) ? 25 : 15;
-        }
+        if (newC > oldC) st.score += (cube.state === st.tgt) ? 25 : 15;
     }
     if (st.cubesColored >= st.cubes.length * st.tgt) {
         st.score += EX_WIN; st.enemies = []; return true;
     }
-    exMoveEnemies(st, stochOutcome);
-    return st.alive;
-}
 
-function exCountStoch(st) {
-    var count = 0;
-    for (var i = 0; i < st.enemies.length; i++) {
-        var e = st.enemies[i];
-        var rate = EX_MOVE_RATE[e.type] || 0.75;
-        if ((e.type === 'egg' || e.type === 'redball' || e.type === 'ugg' || e.type === 'wrongway') && e.accum + rate >= 1.0) count++;
-    }
-    return Math.min(count, 5);
+    exMoveEnemies(st);
+    // Check again after enemy moves — enemies may have landed on player
+    var pDeath2 = deathProb(st);
+    if (pDeath2 >= 1.0) { st.alive = false; return false; }
+    // Combine pre- and post-move death probs: P(survive both) = (1-p1)(1-p2)
+    st.stepDeathProb = 1 - (1 - st.stepDeathProb) * (1 - pDeath2);
+    return st.alive;
 }
 
 function exTourCost(st) {
@@ -559,7 +593,13 @@ function exStateKey(st, depth) {
     k += '|';
     for (var i = 0; i < st.enemies.length; i++) {
         var e = st.enemies[i];
-        k += e.type[0] + e.row + ',' + e.col + 'a' + e.accum.toFixed(2) + ';';
+        if (e.cloud) {
+            // Cloud enemies: position is deterministic from type+hops+accum
+            k += e.type[0] + 'h' + (e.hops || 0) + 'a' + e.accum.toFixed(2) + ';';
+        } else {
+            // Deterministic enemies (Coily): exact position matters
+            k += e.type[0] + e.row + ',' + e.col + 'a' + e.accum.toFixed(2) + ';';
+        }
     }
     k += '|' + depth + '|';
     for (var i = 0; i < st.discs.length; i++) k += st.discs[i].active ? 1 : 0;
@@ -573,16 +613,25 @@ function exLeafValue(st) {
     if (st.cubesColored >= st.cubes.length * st.tgt) return EX_WIN;
     var tourCost = exTourCost(st);
     var val = st.cubesColored * 100 - tourCost * 10;
-    // Penalize proximity to dangerous enemies — Coily is extra dangerous (chases)
+    // Penalize proximity to dangerous enemies
     for (var i = 0; i < st.enemies.length; i++) {
         var e = st.enemies[i];
         if (e.type === 'coily') {
+            // Coily is deterministic — exact position known
             var dist = exBfsDist(st.pr, st.pc, e.row, e.col);
             if (dist <= 1) val -= 500;
             else if (dist <= 2) val -= 250;
             else if (dist <= 3) val -= 100;
-        } else if (e.type === 'redball' || e.type === 'egg' ||
-                   e.type === 'ugg' || e.type === 'wrongway') {
+        } else if (e.cloud) {
+            // Random enemy — expected penalty weighted by probability
+            for (var j = 0; j < e.cloud.length; j++) {
+                var cp = e.cloud[j];
+                var dist = exBfsDist(st.pr, st.pc, cp.row, cp.col);
+                if (dist <= 1) val -= 200 * cp.prob;
+                else if (dist <= 2) val -= 80 * cp.prob;
+            }
+        } else {
+            // Enemy not yet converted to cloud (shouldn't happen but fallback)
             var dist = exBfsDist(st.pr, st.pc, e.row, e.col);
             if (dist <= 1) val -= 200;
             else if (dist <= 2) val -= 80;
@@ -639,23 +688,19 @@ function expectimax(st, depth) {
     var key = exStateKey(st, depth);
     if (exMemoTable[key] !== undefined) return exMemoTable[key];
 
-    var numStoch = exCountStoch(st);
-    var numOutcomes = 1 << numStoch;
-    var prob = 1.0 / numOutcomes;
-
     var bestVal = -Infinity;
     for (var k = 0; k < 4; k++) {
         if (!exCanMove(st, DIR_KEYS[k])) continue;
-        var total = 0;
-        for (var out = 0; out < numOutcomes; out++) {
-            var child = exClone(st);
-            if (!exPlayerMove(child, DIR_KEYS[k], out)) {
-                total += EX_DEATH * prob;
-            } else {
-                total += expectimax(child, depth - 1) * prob;
-            }
+        var child = exClone(st);
+        if (!exPlayerMove(child, DIR_KEYS[k])) {
+            bestVal = Math.max(bestVal, EX_DEATH);
+        } else {
+            // Blend survival/death using this step's deathProb from clouds
+            var pDeath = child.stepDeathProb || 0;
+            var survive = expectimax(child, depth - 1);
+            var val = (1 - pDeath) * survive + pDeath * EX_DEATH;
+            bestVal = Math.max(bestVal, val);
         }
-        if (total > bestVal) bestVal = total;
     }
 
     exMemoTable[key] = bestVal;
@@ -664,18 +709,13 @@ function expectimax(st, depth) {
 
 function expectimaxEval(dirKey) {
     var st = exCloneState();
-    var numStoch = exCountStoch(st);
-    var depth = numStoch <= 1 ? 6 : numStoch <= 2 ? 5 : 4;
-    var numOutcomes = 1 << numStoch;
-    var prob = 1.0 / numOutcomes;
-    var total = 0;
-    for (var out = 0; out < numOutcomes; out++) {
-        var branch = exClone(st);
-        if (!exPlayerMove(branch, dirKey, out)) {
-            total += EX_DEATH * prob;
-        } else {
-            total += expectimax(branch, depth - 1) * prob;
-        }
+    var nEnemies = st.enemies.length;
+    var depth = nEnemies <= 1 ? 7 : nEnemies <= 3 ? 6 : 5;
+    var child = exClone(st);
+    if (!exPlayerMove(child, dirKey)) {
+        return EX_DEATH + exLeafValue(st) * 0.0001;
     }
-    return total + exLeafValue(st) * 0.0001;
+    var pDeath = child.stepDeathProb || 0;
+    var val = (1 - pDeath) * expectimax(child, depth - 1) + pDeath * EX_DEATH;
+    return val + exLeafValue(st) * 0.0001;
 }
