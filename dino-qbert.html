@@ -40,6 +40,11 @@
 <script src="dino-sounds.js"></script>
 <script src="qbert-ai.js"></script>
 <script>
+// Globals shared with qbert-ai.js (must be declared outside the IIFE)
+var round, player, enemies, cubeStates, discs;
+var aiTour, aiTourIdx, aiBoardSig;
+var exMemoTable;
+
 (function () {
 'use strict';
 
@@ -209,21 +214,19 @@ function enemyMoveInterval(type) {
     return Math.round((BASE_ENEMY_INTERVALS[type] || 30) / speedMultiplier());
 }
 
-var score, hiScore, lives, round;
+var score, hiScore, lives;
 var extraLifeGiven;
-var cubeStates;   // flat array indexed [row * ROWS + col] — only valid cols used
-var player;
-var enemies;
-var discs;
+// round, player, enemies, cubeStates, discs, aiTour, aiTourIdx, aiBoardSig
+// are globals (declared before IIFE) shared with qbert-ai.js
 var frameCount;
 var roundMsg;          // { text, timer }
 var swearBubble;       // { x, y, timer }
 var aiDetailPath = [];  // BFS steps to current tour target (valid Q*bert moves)
 var aiTourDots   = [];  // remaining tour centres — drawn as dots only (no lines)
 var aiMoveTimer  = 0;
-var aiTour       = [];
-var aiTourIdx    = 0;
-var aiBoardSig   = '';
+aiTour       = [];
+aiTourIdx    = 0;
+aiBoardSig   = '';
 var aiMoveScores = {};  // { UL: val, UR: val, DL: val, DR: val } — expectimax values per direction
 var aiBestDir    = null;
 var inputQueue  = [];
