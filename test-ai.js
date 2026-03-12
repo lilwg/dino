@@ -9,15 +9,15 @@ var astarStats = { solved: 0, fallbacks: 0, totalNodes: 0, cacheHits: 0 };
 eval(require('fs').readFileSync(__dirname + '/qbert-ai.js', 'utf8'));
 
 // ─── Simulation constants ────────────────────────────────────────────────────
-// Arcade: Q*bert=9f, enemies=12f → ratio 3:4, enemy moves every ~1.33 player hops
+// Arcade: Q*bert=9f, enemies=12f → ratio 3:4 (~1.33), rounded to 2 for search
 var SIM_HOPS_PER_MOVE = {
-    egg:       1,
-    coily:     1,
-    redball:   1,
-    greenball: 2,   // slightly slower (15f / 9f ≈ 1.67)
-    slick:     2,   // slightly slower (17f / 9f ≈ 1.89)
-    ugg:       1,
-    wrongway:  1
+    egg:       2,
+    coily:     2,
+    redball:   2,
+    greenball: 3,   // slightly slower (15f / 9f ≈ 1.67)
+    slick:     3,   // slightly slower (17f / 9f ≈ 1.89)
+    ugg:       2,
+    wrongway:  2
 };
 
 var lives, extraLifeGiven, levelWon, turnCount, freezeTimer;
