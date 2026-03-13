@@ -599,9 +599,9 @@ function exMoveEnemies(st) {
                     st.enemies.push({ type: 'wrongway', row: ROWS-1, col: 0, accum: 0,
                         cloud: [{ row: ROWS-1, col: 0, prob: 1.0 }] });
                 } else if (ft === 'egg' || !ft) {
-                    // Egg spawns at (0,0)
-                    st.enemies.push({ type: 'egg', row: 0, col: 0, hops: 0, accum: 0,
-                        cloud: [{ row: 0, col: 0, prob: 1.0 }] });
+                    // Arcade: egg spawns at row 1 (not apex)
+                    st.enemies.push({ type: 'egg', row: 1, col: 0, hops: 0, accum: 0,
+                        cloud: [{ row: 1, col: 0, prob: 0.5 }, { row: 1, col: 1, prob: 0.5 }] });
                 } else if (ft === 'redball') {
                     // Redball spawns at row 1 — model as cloud over both columns
                     st.enemies.push({ type: 'redball', row: 1, col: 0, accum: 0,
@@ -707,11 +707,33 @@ function exPlayerMove(st, dirKey) {
             if ((disc.side === 0 && dirKey === 'UL' && st.pc === 0 && st.pr === disc.row) ||
                 (disc.side === 1 && dirKey === 'UR' && st.pc === st.pr && st.pr === disc.row)) {
                 disc.active = false;
-                // Arcade: disc clears all enemies (Coily lured off, others cleared)
+                // Arcade: Coily only dies if greedy chase takes him off edge
+                var exitRow = disc.row;
+                var discSide = disc.side;
+                var coilyDied = false;
+                var survived = [];
                 for (var i = 0; i < st.enemies.length; i++) {
-                    if (st.enemies[i].type === 'coily') st.score += 500;
+                    var en = st.enemies[i];
+                    if (en.type === 'coily') {
+                        var bestDir = null, bestDist = Infinity;
+                        for (var kk = 0; kk < DIR_KEYS.length; kk++) {
+                            var dk = DIRS[DIR_KEYS[kk]];
+                            var enr = en.row + dk.dr, enc = en.col + dk.dc;
+                            var dd = Math.abs(exitRow - 1 - enr) + Math.abs((discSide === 0 ? 0 : exitRow) - enc);
+                            if (dd < bestDist) { bestDist = dd; bestDir = { nr: enr, nc: enc }; }
+                        }
+                        if (bestDir && !isValidPos(bestDir.nr, bestDir.nc)) {
+                            st.score += 500;
+                            coilyDied = true;
+                        } else {
+                            survived.push(en);
+                        }
+                    } else {
+                        survived.push(en);
+                    }
                 }
-                st.enemies = [];
+                // When Coily dies, all other enemies are also cleared
+                st.enemies = coilyDied ? [] : survived;
                 st.pr = 0; st.pc = 0;
                 // Color the landing cube
                 var cube = exCubeAt(st, 0, 0);
@@ -823,11 +845,6 @@ function exLeafValue(st) {
     if (!st.alive) return EX_DEATH;
     if (st.cubesColored >= st.cubes.length * st.tgt) return EX_WIN;
     var val = -exTourCost(st);
-    // Fewer enemies = easier future progress (makes disc use attractive)
-    for (var i = 0; i < st.enemies.length; i++) {
-        var e = st.enemies[i];
-        if (e.type !== 'slick' && e.type !== 'greenball') val -= 8;
-    }
     return val;
 }
 
@@ -1022,27 +1039,6 @@ function predictCoilyNext(coilyR, coilyC, targetR, targetC) {
     return { row: coilyR + dd.dr, col: coilyC + dd.dc };
 }
 
-// Check if moving to (nr, nc) would result in certain or likely death:
-// 1. Enemy already at destination
-// 2. Coily will deterministically chase to our destination
-function isMoveLethal(nr, nc) {
-    for (var i = 0; i < enemies.length; i++) {
-        var e = enemies[i];
-        if (e.type === 'spawn-timer' || e.type === 'slick' || e.type === 'greenball') continue;
-        // Enemy already at destination
-        if (e.row === nr && e.col === nc) return true;
-        // Coily is deterministic — predict next position
-        if (e.type === 'coily') {
-            var nextAccum = (e.accum || 0) + (EX_MOVE_RATE['coily'] || 0.75);
-            if (nextAccum >= 1.0) {
-                var cp = predictCoilyNext(e.row, e.col, nr, nc);
-                if (cp.row === nr && cp.col === nc) return true;
-            }
-        }
-    }
-    return false;
-}
-
 var aiResumePath = null;
 
 function aiPickBestDir() {
@@ -1077,29 +1073,19 @@ function aiPickBestDir() {
         }
     }
 
-    // Phase 2: Expectimax search
+    // Phase 2: Expectimax search — trust the search to avoid lethal moves
     aiRecordState();
     exMemoTable = {};
 
     var bestDir = null, bestVal = -Infinity;
-    var safeDir = null, safeVal = -Infinity;
-    var fallbackDir = null, fallbackVal = -Infinity;
     for (var k = 0; k < 4; k++) {
         if (!exCanMove(tmpSt, DIR_KEYS[k])) continue;
         var val = expectimaxEval(DIR_KEYS[k]);
-        if (val > fallbackVal) { fallbackVal = val; fallbackDir = DIR_KEYS[k]; }
-        // Check if this move avoids landing where enemies are or could move
-        var dd = DIRS[DIR_KEYS[k]];
-        var nr = player.row + dd.dr, nc = player.col + dd.dc;
-        var lethal = isValidPos(nr, nc) && isMoveLethal(nr, nc);
-        if (!lethal && val > safeVal) { safeVal = val; safeDir = DIR_KEYS[k]; }
         if (val > bestVal) { bestVal = val; bestDir = DIR_KEYS[k]; }
     }
 
     aiLastPos = player.row + ',' + player.col;
-    // Strongly prefer non-lethal move; only override if search VERY strongly prefers
-    var chosen = safeDir || bestDir || fallbackDir || 'DL';
-    return chosen;
+    return bestDir || 'DL';
 }
 var aiLastScores = {};
 

@@ -151,7 +151,8 @@ function spawnEnemy(forcedType) {
         type = hasCoily ? 'redball' : 'egg';
     }
     if (type === 'egg') {
-        enemies.push({ type: 'egg', row: 0, col: 0, hops: 0, accum: 0 });
+        var spawnCol = Math.floor(Math.random() * 2);
+        enemies.push({ type: 'egg', row: 1, col: spawnCol, hops: 0, accum: 0 });
     } else if (type === 'redball') {
         var spawnCol = Math.floor(Math.random() * 2);
         enemies.push({ type: 'redball', row: 1, col: spawnCol, accum: 0 });
@@ -177,23 +178,46 @@ function killPlayer(reason) {
 }
 
 function useDisc(idx) {
-    discs[idx].active = false;
-    // Arcade: only Coily is lured off if chasing close enough; other enemies survive
+    var disc = discs[idx];
+    disc.active = false;
+    // Arcade: Coily only dies if his greedy chase toward Q*bert's disc position
+    // would take him off the pyramid edge (he follows you off)
+    var exitRow = disc.row;
+    var discSide = disc.side;
+    var exitCol = (discSide === 0) ? -1 : exitRow + 1;
+    var coilyDied = false;
     var survived = [];
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
         if (e.type === 'coily') {
-            // Coily follows Q*bert and falls off — award 500 points
-            score += 500; checkExtraLife();
-            // All other enemies are also cleared when Coily dies (arcade behavior)
-        } else if (e.type === 'egg') {
-            // Eggs also fall off
+            var bestDir = null, bestDist = Infinity;
+            for (var k = 0; k < DIR_KEYS.length; k++) {
+                var dk = DIRS[DIR_KEYS[k]];
+                var nr = e.row + dk.dr, nc = e.col + dk.dc;
+                var dist = Math.abs(exitRow - 1 - nr) + Math.abs((discSide === 0 ? 0 : exitRow) - nc);
+                if (dist < bestDist) { bestDist = dist; bestDir = { nr: nr, nc: nc }; }
+            }
+            if (bestDir && !isValidPos(bestDir.nr, bestDir.nc)) {
+                score += 500; checkExtraLife();
+                coilyDied = true;
+            } else {
+                survived.push(e);
+            }
         } else if (e.type === 'spawn-timer') {
             survived.push(e);
+        } else {
+            survived.push(e);
         }
-        // Other active enemies are cleared too (arcade: disc clears the board)
     }
-    enemies = survived;
+    // Arcade: when Coily dies, all other enemies are also cleared
+    if (coilyDied) {
+        var kept = [];
+        for (var i = 0; i < survived.length; i++)
+            if (survived[i].type === 'spawn-timer') kept.push(survived[i]);
+        enemies = kept;
+    } else {
+        enemies = survived;
+    }
     player.row = 0; player.col = 0;
     stompCube(0, 0);
     scheduleSpawn(8);
