@@ -699,7 +699,7 @@ function exPlayerMove(st, dirKey) {
     var d = DIRS[dirKey];
     var nr = st.pr + d.dr, nc = st.pc + d.dc;
 
-    // Disc escape
+    // Disc escape: matches arcade behavior — disc clears ALL enemies
     if (!isValidPos(nr, nc)) {
         for (var di = 0; di < st.discs.length; di++) {
             var disc = st.discs[di];
@@ -707,17 +707,20 @@ function exPlayerMove(st, dirKey) {
             if ((disc.side === 0 && dirKey === 'UL' && st.pc === 0 && st.pr === disc.row) ||
                 (disc.side === 1 && dirKey === 'UR' && st.pc === st.pr && st.pr === disc.row)) {
                 disc.active = false;
-                var survived = [];
+                // Arcade: disc clears all enemies (Coily lured off, others cleared)
                 for (var i = 0; i < st.enemies.length; i++) {
-                    var e = st.enemies[i];
-                    if (e.type === 'coily' && coilyLured(e, disc)) {
-                        st.score += 500;
-                    } else {
-                        survived.push(e);
-                    }
+                    if (st.enemies[i].type === 'coily') st.score += 500;
                 }
-                st.enemies = survived;
+                st.enemies = [];
                 st.pr = 0; st.pc = 0;
+                // Color the landing cube
+                var cube = exCubeAt(st, 0, 0);
+                if (cube) {
+                    var oldC = Math.min(cube.state, st.tgt);
+                    cube.state = nextCubeState(cube.state);
+                    var newC = Math.min(cube.state, st.tgt);
+                    st.cubesColored += newC - oldC;
+                }
                 return true;
             }
         }
@@ -819,7 +822,13 @@ var exMemoTable = {};
 function exLeafValue(st) {
     if (!st.alive) return EX_DEATH;
     if (st.cubesColored >= st.cubes.length * st.tgt) return EX_WIN;
-    return -exTourCost(st);
+    var val = -exTourCost(st);
+    // Fewer enemies = easier future progress (makes disc use attractive)
+    for (var i = 0; i < st.enemies.length; i++) {
+        var e = st.enemies[i];
+        if (e.type !== 'slick' && e.type !== 'greenball') val -= 8;
+    }
+    return val;
 }
 
 function exCanMove(st, dirKey) {
@@ -865,8 +874,8 @@ function expectimax(st, depth) {
 function expectimaxEval(dirKey) {
     var st = exCloneState();
     var nEnemies = st.enemies.length;
-    // Deeper search for better survival. Memoization keeps it fast.
-    var depth = nEnemies <= 1 ? 10 : nEnemies <= 2 ? 9 : nEnemies <= 4 ? 7 : 6;
+    // Search depth balanced for speed. Memoization keeps single-enemy fast.
+    var depth = nEnemies === 0 ? 9 : nEnemies <= 1 ? 7 : nEnemies <= 2 ? 5 : 4;
     var lv = st.lv !== undefined ? st.lv : arcadeLevel();
     // Endgame on cycling levels: deeper
     if (lv >= 5) {
@@ -882,22 +891,24 @@ function expectimaxEval(dirKey) {
     }
     var pDeath = child.stepDeathProb || 0;
     var val = (1 - pDeath) * expectimax(child, depth - 1) + pDeath * EX_DEATH;
-    // Apply repeat penalty to the immediate next state (first move matters most)
-    if (lv >= 3) {
-        var bh = boardHash(child);
-        var visits = aiBoardHistory[bh] || 0;
-        if (visits > 0) val -= visits * AI_REPEAT_PENALTY;
-    }
+    // Board-state repeat penalty
+    var bh = boardHash(child);
+    var visits = aiBoardHistory[bh] || 0;
+    if (visits > 0) val -= visits * AI_REPEAT_PENALTY;
+    // Position-history penalty: penalize revisiting recent positions
+    var posVisits = posVisitCount(child.pr, child.pc);
+    if (posVisits > 0) val -= posVisits * 80;
     return val + exLeafValue(st) * 0.0001;
 }
 
 // ─── Board-state repetition tracking ─────────────────────────────────────────
-// Simple counter of how many times each board state has been seen.
-// States that have been visited before get penalized in exLeafValue.
 var aiBoardHistory = {};
-var AI_REPEAT_PENALTY = 120;
-var aiLastPos = '';  // last position for oscillation detection
-var aiStuckCount = 0; // turns spent at same remaining count
+var AI_REPEAT_PENALTY = 300;
+var aiLastPos = '';
+var aiStuckCount = 0;
+// Track last N positions for oscillation detection
+var aiPosHistory = [];
+var AI_POS_HISTORY_LEN = 12;
 
 function boardHash(st) {
     var h = st.pr + ',' + st.pc + '|';
@@ -909,6 +920,20 @@ function aiRecordState() {
     var st = exCloneState();
     var h = boardHash(st);
     aiBoardHistory[h] = (aiBoardHistory[h] || 0) + 1;
+    // Track position history
+    var pos = st.pr + ',' + st.pc;
+    aiPosHistory.push(pos);
+    if (aiPosHistory.length > AI_POS_HISTORY_LEN) aiPosHistory.shift();
+}
+
+// Count how many times a position appears in recent history
+function posVisitCount(row, col) {
+    var pos = row + ',' + col;
+    var count = 0;
+    for (var i = 0; i < aiPosHistory.length; i++) {
+        if (aiPosHistory[i] === pos) count++;
+    }
+    return count;
 }
 
 // ─── Precomputed optimal tours from (0,0) ────────────────────────────────────
@@ -982,110 +1007,98 @@ function findTourResumePath() {
     return null;
 }
 
-function hasNearbyDanger(st) {
-    for (var i = 0; i < st.enemies.length; i++) {
-        var e = st.enemies[i];
-        if (e.type === 'slick' || e.type === 'greenball') continue;
-        // Coily is deterministic and fast — detect at 3 hops
-        // Random enemies — detect at 2 hops
-        var threshold = (e.type === 'coily') ? 3 : 2;
-        var dist = exBfsDist(st.pr, st.pc, e.row, e.col);
-        if (dist <= threshold) return true;
-        // Also check if enemy cloud has probability mass near player
-        if (e.cloud) {
-            for (var j = 0; j < e.cloud.length; j++) {
-                if (e.cloud[j].prob > 0.1) {
-                    var cd = exBfsDist(st.pr, st.pc, e.cloud[j].row, e.cloud[j].col);
-                    if (cd <= threshold) return true;
-                }
+// Predict where Coily will move given it chases toward (targetR, targetC)
+function predictCoilyNext(coilyR, coilyC, targetR, targetC) {
+    var bestDir = null, bestDist = Infinity;
+    for (var k = 0; k < 4; k++) {
+        var dk = DIRS[DIR_KEYS[k]];
+        var nr = coilyR + dk.dr, nc = coilyC + dk.dc;
+        if (!isValidPos(nr, nc)) continue;
+        var dist = Math.abs(targetR - nr) + Math.abs(targetC - nc);
+        if (dist < bestDist) { bestDist = dist; bestDir = k; }
+    }
+    if (bestDir === null) return { row: coilyR, col: coilyC };
+    var dd = DIRS[DIR_KEYS[bestDir]];
+    return { row: coilyR + dd.dr, col: coilyC + dd.dc };
+}
+
+// Check if moving to (nr, nc) would result in certain or likely death:
+// 1. Enemy already at destination
+// 2. Coily will deterministically chase to our destination
+function isMoveLethal(nr, nc) {
+    for (var i = 0; i < enemies.length; i++) {
+        var e = enemies[i];
+        if (e.type === 'spawn-timer' || e.type === 'slick' || e.type === 'greenball') continue;
+        // Enemy already at destination
+        if (e.row === nr && e.col === nc) return true;
+        // Coily is deterministic — predict next position
+        if (e.type === 'coily') {
+            var nextAccum = (e.accum || 0) + (EX_MOVE_RATE['coily'] || 0.75);
+            if (nextAccum >= 1.0) {
+                var cp = predictCoilyNext(e.row, e.col, nr, nc);
+                if (cp.row === nr && cp.col === nc) return true;
             }
         }
     }
     return false;
 }
 
-var aiResumePath = null; // BFS path to resume tour after dodging
+var aiResumePath = null;
 
 function aiPickBestDir() {
-    // Follow precomputed tour if available, on track, and safe
-    if (aiTourMoves && aiTourStep < aiTourMoves.length) {
-        var tmpSt = exCloneState();
-        // Check for nearby danger — if so, drop to expectimax
-        if (hasNearbyDanger(tmpSt)) {
-            aiResumePath = null; // invalidate resume path during danger
-            // Fall through to expectimax search
-        } else {
-            var tourDir = aiTourMoves[aiTourStep];
-            // Check if we're at the expected position for this tour step
-            var expectedPos = aiTourStep > 0 ? aiTourPositions[aiTourStep - 1] : { row: 0, col: 0 };
-            var onTrack = (tmpSt.pr === expectedPos.row && tmpSt.pc === expectedPos.col);
-
-            if (onTrack && exCanMove(tmpSt, tourDir)) {
-                aiTourStep++;
-                aiResumePath = null;
-                return tourDir;
-            }
-
-            // Off track — try to resume by navigating to next uncolored tour position
-            if (!aiResumePath || aiResumePath.length === 0) {
-                aiResumePath = findTourResumePath();
-            }
-            if (aiResumePath && aiResumePath.length > 0) {
-                var nextDir = aiResumePath.shift();
-                // Safety: don't follow resume path onto an enemy
-                if (exCanMove(tmpSt, nextDir) && isSafeMove(nextDir)) return nextDir;
-                aiResumePath = null; // path blocked, fall through to expectimax
-            }
-        }
-    }
-
-    // Record current state before evaluating moves
-    aiRecordState();
-
-    exMemoTable = {};
     var tmpSt = exCloneState();
-    var lv = tmpSt.lv !== undefined ? tmpSt.lv : arcadeLevel();
-    var curPos = tmpSt.pr + ',' + tmpSt.pc;
 
-    // Detect if stuck: same position as 2 turns ago = bouncing
-    var blocked = '';
-    if (lv >= 3 && aiLastPos !== '') {
-        var bh = boardHash(tmpSt);
-        var visits = aiBoardHistory[bh] || 0;
-        if (visits >= 3) {
-            // This exact board state has been seen 3+ times — block returning
-            blocked = aiLastPos;
+    // Phase 1: Follow precomputed tour when safe (no lethal enemy within 2 hops)
+    var nearestEnemyDist = 99;
+    for (var i = 0; i < enemies.length; i++) {
+        var e = enemies[i];
+        if (e.type === 'spawn-timer' || e.type === 'slick' || e.type === 'greenball') continue;
+        var d = exBfsDist(player.row, player.col, e.row, e.col);
+        if (d < nearestEnemyDist) nearestEnemyDist = d;
+    }
+
+    if (nearestEnemyDist > 2 && aiTourMoves && aiTourStep < aiTourMoves.length) {
+        var tourDir = aiTourMoves[aiTourStep];
+        var expectedPos = aiTourStep > 0 ? aiTourPositions[aiTourStep - 1] : { row: 0, col: 0 };
+        var onTrack = (player.row === expectedPos.row && player.col === expectedPos.col);
+        if (onTrack && exCanMove(tmpSt, tourDir)) {
+            aiTourStep++;
+            aiResumePath = null;
+            return tourDir;
+        }
+        // Off track — try BFS resume
+        if (!aiResumePath || aiResumePath.length === 0) {
+            aiResumePath = findTourResumePath();
+        }
+        if (aiResumePath && aiResumePath.length > 0) {
+            var nextDir = aiResumePath.shift();
+            if (exCanMove(tmpSt, nextDir) && isSafeMove(nextDir)) return nextDir;
+            aiResumePath = null;
         }
     }
+
+    // Phase 2: Expectimax search
+    aiRecordState();
+    exMemoTable = {};
 
     var bestDir = null, bestVal = -Infinity;
-    var safeDir = null, safeVal = -Infinity; // best move that doesn't land on an enemy
+    var safeDir = null, safeVal = -Infinity;
     var fallbackDir = null, fallbackVal = -Infinity;
-    var scores = {};
     for (var k = 0; k < 4; k++) {
         if (!exCanMove(tmpSt, DIR_KEYS[k])) continue;
         var val = expectimaxEval(DIR_KEYS[k]);
-        scores[DIR_KEYS[k]] = val;
-        // Track fallback (best of all moves regardless of safety)
         if (val > fallbackVal) { fallbackVal = val; fallbackDir = DIR_KEYS[k]; }
-        // Track best safe move (doesn't land directly on enemy)
-        if (isSafeMove(DIR_KEYS[k]) && val > safeVal) {
-            safeVal = val; safeDir = DIR_KEYS[k];
-        }
-        // Skip blocked direction (the position we keep returning to)
-        if (blocked !== '') {
-            var d = DIRS[DIR_KEYS[k]];
-            var nr = tmpSt.pr + d.dr, nc = tmpSt.pc + d.dc;
-            if (nr + ',' + nc === blocked) continue;
-        }
+        // Check if this move avoids landing where enemies are or could move
+        var dd = DIRS[DIR_KEYS[k]];
+        var nr = player.row + dd.dr, nc = player.col + dd.dc;
+        var lethal = isValidPos(nr, nc) && isMoveLethal(nr, nc);
+        if (!lethal && val > safeVal) { safeVal = val; safeDir = DIR_KEYS[k]; }
         if (val > bestVal) { bestVal = val; bestDir = DIR_KEYS[k]; }
     }
 
-    aiLastPos = curPos;
-    aiLastScores = scores;
-    // Prefer safe moves; only use unsafe move if ALL moves are unsafe (cornered)
-    var chosen = bestDir || fallbackDir || 'DL';
-    if (safeDir && !isSafeMove(chosen)) chosen = safeDir;
+    aiLastPos = player.row + ',' + player.col;
+    // Strongly prefer non-lethal move; only override if search VERY strongly prefers
+    var chosen = safeDir || bestDir || fallbackDir || 'DL';
     return chosen;
 }
 var aiLastScores = {};
