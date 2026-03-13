@@ -25,7 +25,7 @@
                 <button class="si-btn" onclick="restartGame()">Restart</button>
                 <button class="si-btn" id="pause-btn" onclick="togglePause()">Pause</button>
                 <button class="si-btn" id="fs-btn" onclick="toggleFullscreen()">Fullscreen</button>
-                <button class="si-btn" id="enemies-btn" onclick="toggleEnemies()">Enemies: Off</button>
+                <button class="si-btn active" id="enemies-btn" onclick="toggleEnemies()">Enemies: On</button>
                 <label style="display:inline-flex;align-items:center;gap:4px;margin-left:8px;font-size:12px;color:#535353;">
                     Speed <input type="range" id="speed-slider" min="0.25" max="2" step="0.25" value="0.25" style="width:80px;" oninput="setGameSpeed(parseFloat(this.value))">
                     <span id="speed-label">1x</span>
@@ -49,7 +49,7 @@ var round, player, enemies, cubeStates, discs;
 var aiTour, aiTourIdx, aiBoardSig;
 var exMemoTable, exCloneState;
 var gameSpeed = 0.25;  // global speed scale; displayed as 1x–8x (display = internal × 4)
-var enemiesEnabled = false;  // toggle via UI button
+var enemiesEnabled = true;  // toggle via UI button
 </script>
 <script src="qbert-ai.js"></script>
 <script>
