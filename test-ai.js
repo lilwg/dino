@@ -95,7 +95,7 @@ function initRound() {
             cubeStates.push({ row: r, col: c, state: 0 });
 
     player = { row: 0, col: 0, dead: false, deathTimer: 0 };
-    stompCube(0, 0);
+    // In the arcade, Q*bert does NOT color (0,0) on spawn
 
     var dc = discConfig();
     discs = [];
@@ -107,6 +107,7 @@ function initRound() {
     aiDetailPath = []; aiTourDots = [];
     aiTour = []; aiTourIdx = 0; aiBoardSig = '';
     aiBoardHistory = {}; aiLastPos = ''; aiStuckCount = 0;
+    aiTourInit();
 
     // Enemy spawn patterns per arcade manual round progression
     var lv = arcadeLevel();

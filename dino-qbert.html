@@ -322,8 +322,7 @@ function initRound() {
         deathAnimTimer: 0
     };
 
-    // Immediately color starting cube
-    stompCube(0, 0);
+    // In the arcade, Q*bert does NOT color (0,0) on spawn
 
     var cfg = discConfig();
     discs = [];
@@ -340,6 +339,7 @@ function initRound() {
     aiMoveTimer  = 0;
     aiTour       = [];
     aiBoardHistory = {}; aiLastPos = ''; aiStuckCount = 0;
+    aiTourInit();
     aiTourIdx    = 0;
     aiBoardSig   = '';
     // TEMP: enemies disabled for routing debug

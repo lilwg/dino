@@ -886,7 +886,59 @@ function aiRecordState() {
     aiBoardHistory[h] = (aiBoardHistory[h] || 0) + 1;
 }
 
+// ─── Precomputed optimal tours from (0,0) ────────────────────────────────────
+// Computed offline via beam search. These are optimal (or near-optimal) move
+// sequences for clearing all 28 cubes with no enemies present.
+var PRECOMPUTED_TOURS = {
+    // lv1 (tgt=1, simple): 32 moves
+    1: ["DL","UR","DR","DR","DR","DR","DR","DR","UL","DL","UL","DL","UL","UR","UL","UL","DL","UL","DL","DL","DL","DL","UR","DR","UR","UR","DR","UR","DL","DL","UR","DR"],
+    // lv2 (tgt=2, no revert): 64 moves
+    2: ["DL","DL","UR","DL","DL","DL","UR","DL","DL","DL","UR","DL","UR","DR","UR","DL","UR","DR","UR","DL","UR","UL","UR","DL","UR","UR","DR","UL","DR","DL","DR","UL","DR","DR","UR","DL","UR","DR","UR","DL","UR","DR","UL","DR","UL","UL","UL","DR","UL","UL","UL","UL","DR","UL","DR","DR","DL","DR","DL","UR","DL","DL","UL","DR"],
+    // lv3 (tgt=1, toggle 0→1→0): 44 moves
+    3: ["DL","UR","DR","DL","DL","UL","DL","DL","DL","DL","UR","DR","UR","UR","DR","UR","UR","UR","DR","DR","DR","DR","UL","DL","UR","UL","DL","UR","DL","UL","DR","DL","UL","DL","UL","DL","UR","UL","UL","DR","UL","DL","DL","UR"],
+    // lv4 (tgt=2, revert 2→1): 68 moves
+    4: ["DL","DL","DL","DL","DL","DR","UL","DR","UR","UL","DR","UR","UL","UR","UR","UR","DR","UL","DR","DL","DL","UR","DL","DL","DR","UR","DL","UR","UR","UR","DL","UR","DR","DR","UL","DR","DR","DR","UL","DR","UL","DL","UR","DL","UL","UL","DR","UL","DL","DR","UL","DR","UL","DL","UR","DL","UL","DL","UR","DL","UL","UL","DR","UL","DL","DL","UR","DL"],
+    // lv5+ (tgt=2, cycling 0→1→2→0): 77 moves
+    5: ["DL","UR","DL","UR","DR","DR","UL","DR","DR","DR","UL","DR","DR","DL","UR","DL","UL","DL","UR","DL","UL","UR","DL","UR","UL","UL","DR","UL","DL","UL","DL","UR","DR","DR","DL","UL","DR","UL","UL","DL","DL","UR","DL","DL","UR","DL","UR","DR","UL","DR","UR","DR","UL","DR","UR","UR","DL","DR","UL","DR","UR","UR","DL","UR","DL","UR","UR","DR","UL","DR","UL","DR","DR","DR","UL","DR","UL"]
+};
+var aiTourMoves = null;  // current tour move sequence
+var aiTourStep = 0;      // current position in tour
+
+function aiTourInit() {
+    var lv = arcadeLevel();
+    var tour;
+    if (lv >= 5) tour = PRECOMPUTED_TOURS[5];
+    else if (lv === 4) tour = PRECOMPUTED_TOURS[4];
+    else if (lv === 3) tour = PRECOMPUTED_TOURS[3];
+    else if (lv === 2) tour = PRECOMPUTED_TOURS[2];
+    else tour = PRECOMPUTED_TOURS[1];
+    aiTourMoves = tour;
+    aiTourStep = 0;
+}
+
+function aiTourNext() {
+    if (!aiTourMoves || aiTourStep >= aiTourMoves.length) return null;
+    return aiTourMoves[aiTourStep++];
+}
+
 function aiPickBestDir() {
+    // Follow precomputed tour if available and on track
+    if (aiTourMoves && aiTourStep < aiTourMoves.length) {
+        var tourDir = aiTourMoves[aiTourStep];
+        var tmpSt = exCloneState();
+        if (tmpSt.pr === 0 && tmpSt.pc === 0 && aiTourStep === 0) {
+            // At start position, follow tour
+            aiTourStep++;
+            return tourDir;
+        }
+        if (exCanMove(tmpSt, tourDir)) {
+            aiTourStep++;
+            return tourDir;
+        }
+        // Tour broken (enemy killed us, position changed) — fall back to search
+        aiTourMoves = null;
+    }
+
     // Record current state before evaluating moves
     aiRecordState();
 
