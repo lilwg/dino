@@ -122,16 +122,18 @@ function initRound() {
     aiTourInit();
 
     // Arcade-accurate enemy spawn schedule
-    var lv = arcadeLevel();
-    scheduleSpawn(8);                                  // Coily egg (always present)
-    if (hasRedBall())     scheduleSpawn(4, 'redball');  // Red ball
-    if (hasUggWrongway()) scheduleSpawn(12, 'ugg');
-    if (hasUggWrongway()) scheduleSpawn(14, 'wrongway');
-    if (hasSlick())       scheduleSpawn(15, 'slick');
-    if (hasGreenBall())   scheduleSpawn(10, 'greenball');
-    // Higher levels: additional enemies
-    if (lv >= 3 && hasRedBall()) scheduleSpawn(20, 'redball'); // second red ball
-    if (lv >= 4 && hasSlick())   scheduleSpawn(18, 'slick');   // second slick
+    if (!noEnemies) {
+        var lv = arcadeLevel();
+        scheduleSpawn(8);                                  // Coily egg (always present)
+        if (hasRedBall())     scheduleSpawn(4, 'redball');  // Red ball
+        if (hasUggWrongway()) scheduleSpawn(12, 'ugg');
+        if (hasUggWrongway()) scheduleSpawn(14, 'wrongway');
+        if (hasSlick())       scheduleSpawn(15, 'slick');
+        if (hasGreenBall())   scheduleSpawn(10, 'greenball');
+        // Higher levels: additional enemies
+        if (lv >= 3 && hasRedBall()) scheduleSpawn(20, 'redball'); // second red ball
+        if (lv >= 4 && hasSlick())   scheduleSpawn(18, 'slick');   // second slick
+    }
 }
 
 function scheduleSpawn(delay, forcedType) {
@@ -550,18 +552,20 @@ function runGame(maxRounds, verbose) {
                 moveNum++;
                 if (verbose) {
                     var remaining = countRemaining();
+                    var tc = mstTourCost(posToIdx[player.row * ROWS + player.col], cubeStates, targetState(), arcadeLevel());
                     var extra = '';
-                    if (remaining <= 3) {
+                    if (remaining <= 5) {
                         var tgt = targetState();
                         var uncolored = [];
                         for (var ci = 0; ci < cubeStates.length; ci++)
                             if (cubeStates[ci].state < tgt) uncolored.push('(' + cubeStates[ci].row + ',' + cubeStates[ci].col + ')');
                         extra = '  need=' + uncolored.join(',');
                     }
-                    console.log('  Move ' + moveNum + ': ' + aiMove +
-                        ' -> (' + player.row + ',' + player.col + ')  remaining=' + remaining +
-                        '  enemies: ' + enemySummary() + extra);
-                    if (moveNum % 10 === 0) console.log(drawBoard());
+                    console.log('  #' + moveNum + ' ' + aiMove +
+                        ' -> (' + player.row + ',' + player.col + ')  left=' + remaining +
+                        '  h=' + tc +
+                        (enemies.length > 0 ? '  enemies: ' + enemySummary() : '') + extra);
+                    if (noEnemies && moveNum % 10 === 0) console.log(drawBoard());
                 }
             }
 
@@ -587,10 +591,15 @@ function runGame(maxRounds, verbose) {
 
 // ─── Main ────────────────────────────────────────────────────────────────────
 var verbose = process.argv.includes('-v') || process.argv.includes('--verbose');
+var noEnemies = process.argv.includes('--no-enemies');
 var numRounds = 5;
 for (var i = 2; i < process.argv.length; i++) {
     var n = parseInt(process.argv[i]);
     if (!isNaN(n) && n > 0) { numRounds = n; break; }
+}
+if (noEnemies) {
+    // Disable precomputed tours so the AI uses search + tour cost heuristic
+    PRECOMPUTED_TOURS = {};
 }
 
 console.log('Running ' + numRounds + ' rounds' + (verbose ? ' (verbose)' : '') + '...\n');
