@@ -361,83 +361,141 @@ var posAdj = [];  // posAdj[i] = array of neighbor indices
     }
 })();
 
-// ─── MST-based admissible tour cost heuristic ────────────────────────────────
-// h = MST(BFS distances between needing-work cubes, rooted at player)
+// ─── MST-based tour cost heuristic with weighted traversal ───────────────────
+// Uses weighted Dijkstra for inter-cube distances: stepping on a completed cube
+// costs 1 (hop) + penalty (future fix cost). MST of these weighted distances
+// captures the "residue" damage of walking through completed territory.
+//
+// h = MST(weighted distances, rooted at player)
 //   + Σ 2 × max(0, stomps_needed(cube_i) - 1)
 //
-// MST is a lower bound on travel distance (MST ≤ TSP).
-// The per-cube extra stomp cost accounts for cubes needing multiple visits
-// (e.g., cycling levels where state 0→2 requires 2 stomps = 1 extra round trip).
-// These don't overlap: MST covers first visits, extra cost covers revisits.
+// MST covers first-visit travel (including traversal damage).
+// Extra stomp sum covers revisit overhead for multi-stomp cubes.
 
 // How many stomps does a cube need to reach target state?
 function stompsNeeded(cubeState, lv) {
     var tgt = (lv === 1 || lv === 3) ? 1 : 2;
     if (cubeState >= tgt) return 0;
-    if (lv <= 2) return tgt - cubeState; // simple: just stomp (tgt - current) times
-    if (lv === 3) return cubeState === 0 ? 1 : 0; // toggle: 0→1 = 1 stomp
-    if (lv === 4) return cubeState === 0 ? 2 : (cubeState === 1 ? 1 : 0); // 0→1→2
-    // lv5+ cycling (0→1→2→0): need state ≡ 2
+    if (lv <= 2) return tgt - cubeState;
+    if (lv === 3) return cubeState === 0 ? 1 : 0;
+    if (lv === 4) return cubeState === 0 ? 2 : (cubeState === 1 ? 1 : 0);
+    // lv5+ cycling: 0 needs 2 stomps, 1 needs 1 stomp
     return cubeState === 0 ? 2 : (cubeState === 1 ? 1 : 0);
 }
 
-// MST cost using Prim's algorithm.
-// nodes[] = array of position indices that need work.
-// startIdx = player's position index (included as the root).
-// Returns MST weight (sum of edge weights using precomputed distMatrix).
-function mstCost(startIdx, nodes) {
-    var n = nodes.length;
+// Penalty for stepping on a completed cube (future fix cost).
+// Lv1-2: 0 (no revert). Lv3-4: 1 stomp to fix. Lv5+: 2 stomps to fix.
+function revertPenalty(lv) {
+    if (lv <= 2) return 0;
+    if (lv <= 4) return 1;
+    return 2;
+}
+
+// Dijkstra from srcIdx with penalty for stepping on completed cubes.
+// completedMask = bitmask of position indices that are at target state.
+// penalty = extra cost per completed cube crossed.
+// Returns array of weighted distances to all POS_COUNT positions.
+function dijkstraWeighted(srcIdx, completedMask, penalty) {
+    var dist = new Array(POS_COUNT);
+    var visited = new Uint8Array(POS_COUNT);
+    for (var i = 0; i < POS_COUNT; i++) dist[i] = 999;
+    dist[srcIdx] = 0;
+
+    for (var iter = 0; iter < POS_COUNT; iter++) {
+        var u = -1, uDist = 999;
+        for (var i = 0; i < POS_COUNT; i++) {
+            if (!visited[i] && dist[i] < uDist) { uDist = dist[i]; u = i; }
+        }
+        if (u < 0) break;
+        visited[u] = 1;
+
+        var adj = posAdj[u];
+        for (var a = 0; a < adj.length; a++) {
+            var v = adj[a];
+            if (visited[v]) continue;
+            // Cost: 1 hop + penalty if stepping on a completed cube
+            var cost = 1 + ((completedMask & (1 << v)) ? penalty : 0);
+            var newDist = dist[u] + cost;
+            if (newDist < dist[v]) dist[v] = newDist;
+        }
+    }
+    return dist;
+}
+
+// MST using Prim's with a precomputed distance table.
+// distTable[i] = array of distances from allNodes[i] to all POS_COUNT positions.
+// Returns MST weight.
+function mstFromDistTable(allNodes, distTable) {
+    var n = allNodes.length;
     if (n === 0) return 0;
 
-    // Include player position as root node
-    // Build index: allNodes[0] = startIdx, allNodes[1..n] = nodes[]
-    var allCount = n + 1;
-    var allNodes = new Array(allCount);
-    allNodes[0] = startIdx;
-    for (var i = 0; i < n; i++) allNodes[i + 1] = nodes[i];
-
-    // Prim's: track cheapest edge from MST to each non-MST node
-    var inMST = new Uint8Array(allCount);
-    var minEdge = new Int8Array(allCount);
-    for (var i = 0; i < allCount; i++) minEdge[i] = 99;
+    var inMST = new Uint8Array(n);
+    var minEdge = new Array(n);
+    for (var i = 0; i < n; i++) minEdge[i] = 999;
     minEdge[0] = 0;
     var total = 0;
 
-    for (var iter = 0; iter < allCount; iter++) {
-        // Pick cheapest non-MST node
-        var u = -1, uCost = 99;
-        for (var i = 0; i < allCount; i++) {
+    for (var iter = 0; iter < n; iter++) {
+        var u = -1, uCost = 999;
+        for (var i = 0; i < n; i++) {
             if (!inMST[i] && minEdge[i] < uCost) { uCost = minEdge[i]; u = i; }
         }
         if (u < 0) break;
         inMST[u] = 1;
         total += uCost;
 
-        // Update cheapest edges from MST
-        var uIdx = allNodes[u];
-        for (var i = 0; i < allCount; i++) {
+        // Update cheapest edges using u's distance table
+        var uDists = distTable[u];
+        for (var i = 0; i < n; i++) {
             if (inMST[i]) continue;
-            var d = distMatrix[uIdx * POS_COUNT + allNodes[i]];
+            var d = uDists[allNodes[i]];
             if (d < minEdge[i]) minEdge[i] = d;
         }
     }
     return total;
 }
 
-// Main tour cost: MST + per-cube extra stomp overhead.
-// Admissible: MST ≤ optimal travel, extra stomps ≤ actual revisit cost.
+// Main tour cost: weighted MST + per-cube extra stomp overhead.
 function mstTourCost(startIdx, cubes, tgt, lv) {
+    var penalty = revertPenalty(lv);
+
+    // Build completed mask and nodes-needing-work list
+    var completedMask = 0;
     var nodes = [];
     var extraStomps = 0;
     for (var i = 0; i < cubes.length; i++) {
+        var idx = posToIdx[cubes[i].row * ROWS + cubes[i].col];
         var s = stompsNeeded(cubes[i].state, lv);
         if (s > 0) {
-            nodes.push(posToIdx[cubes[i].row * ROWS + cubes[i].col]);
-            extraStomps += 2 * (s - 1); // each extra stomp = leave + return
+            nodes.push(idx);
+            extraStomps += 2 * (s - 1);
+        } else {
+            completedMask |= (1 << idx);
         }
     }
     if (nodes.length === 0) return 0;
-    return mstCost(startIdx, nodes) + extraStomps;
+
+    // On simple levels (no penalty), use precomputed BFS distances for speed
+    if (penalty === 0) {
+        var allNodes = [startIdx].concat(nodes);
+        var distTable = [];
+        for (var i = 0; i < allNodes.length; i++) {
+            // Use precomputed distMatrix row as distance array
+            var dists = new Array(POS_COUNT);
+            var base = allNodes[i] * POS_COUNT;
+            for (var j = 0; j < POS_COUNT; j++) dists[j] = distMatrix[base + j];
+            distTable.push(dists);
+        }
+        return mstFromDistTable(allNodes, distTable) + extraStomps;
+    }
+
+    // Toggle/cycling levels: run Dijkstra from each node with traversal penalty
+    var allNodes = [startIdx].concat(nodes);
+    var distTable = [];
+    for (var i = 0; i < allNodes.length; i++) {
+        distTable.push(dijkstraWeighted(allNodes[i], completedMask, penalty));
+    }
+    return mstFromDistTable(allNodes, distTable) + extraStomps;
 }
 
 // ─── Expectimax search ───────────────────────────────────────────────────────
@@ -747,32 +805,7 @@ function exPlayerMove(st, dirKey) {
 
 function exTourCost(st) {
     var lv = st.lv !== undefined ? st.lv : arcadeLevel();
-    var needs = 0;
-    for (var i = 0; i < st.cubes.length; i++) {
-        if (st.cubes[i].state < st.tgt)
-            needs |= (1 << posToIdx[st.cubes[i].row * ROWS + st.cubes[i].col]);
-    }
-    if (needs === 0) return 0;
-    var base = greedyTourCost(posToIdx[st.pr * ROWS + st.pc], needs, lv >= 3, lv);
-    // On cycling levels (lv>=5), add isolation penalty: each remaining cube
-    // surrounded by completed cubes will require crossing (reverting) to reach.
-    if (lv >= 5) {
-        for (var i = 0; i < POS_COUNT; i++) {
-            if (!(needs & (1 << i))) continue;
-            var r = idxToPos[i][0], c = idxToPos[i][1];
-            var completedAdj = 0, totalAdj = 0;
-            for (var k = 0; k < 4; k++) {
-                var dk = DIRS[DIR_KEYS[k]];
-                var nr = r + dk.dr, nc = c + dk.dc;
-                if (!isValidPos(nr, nc)) continue;
-                totalAdj++;
-                var nidx = posToIdx[nr * ROWS + nc];
-                if (!(needs & (1 << nidx))) completedAdj++;
-            }
-            if (totalAdj > 0) base += completedAdj * 2;
-        }
-    }
-    return base;
+    return mstTourCost(posToIdx[st.pr * ROWS + st.pc], st.cubes, st.tgt, lv);
 }
 
 function exStateKey(st, depth) {
