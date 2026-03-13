@@ -944,8 +944,8 @@ function aiTourInit() {
     else if (lv === 3) tour = PRECOMPUTED_TOURS[3];
     else if (lv === 2) tour = PRECOMPUTED_TOURS[2];
     else tour = PRECOMPUTED_TOURS[1];
-    aiTourMoves = tour;
-    aiTourPositions = tourToPositions(tour);
+    aiTourMoves = tour || null;
+    aiTourPositions = tour ? tourToPositions(tour) : null;
     aiTourStep = 0;
 }
 
