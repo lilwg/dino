@@ -993,6 +993,30 @@ function predictCoilyNext(coilyR, coilyC, targetR, targetC) {
 
 var aiResumePath = null;
 
+// Shallow minimax on tour cost only (no enemy simulation).
+// Returns the minimum achievable tour cost in 'depth' more moves.
+var tourMinimaxMemo = {};
+function tourMinimax(st, depth) {
+    if (st.cubesColored >= st.cubes.length * st.tgt) return -1000;
+    if (depth === 0) return exTourCost(st);
+
+    var key = st.pr + ',' + st.pc + '|';
+    for (var i = 0; i < st.cubes.length; i++) key += st.cubes[i].state;
+    key += '|' + depth;
+    if (tourMinimaxMemo[key] !== undefined) return tourMinimaxMemo[key];
+
+    var bestCost = Infinity;
+    for (var k = 0; k < 4; k++) {
+        if (!exCanMove(st, DIR_KEYS[k])) continue;
+        var child = exClone(st);
+        if (!exPlayerMove(child, DIR_KEYS[k])) continue;
+        var cost = tourMinimax(child, depth - 1);
+        if (cost < bestCost) bestCost = cost;
+    }
+    tourMinimaxMemo[key] = bestCost;
+    return bestCost;
+}
+
 function aiPickBestDir() {
     var tmpSt = exCloneState();
 
@@ -1037,9 +1061,33 @@ function aiPickBestDir() {
         }
     }
 
-    // Phase 2: Expectimax search — only incentives are tour cost and survival
-    exMemoTable = {};
+    // Phase 2: Pick the move that minimizes tour cost
+    // With no enemies, greedy 1-step is sufficient.
+    // With enemies, use expectimax for survival-aware search.
+    var hasLethalEnemy = false;
+    for (var i = 0; i < enemies.length; i++) {
+        var e = enemies[i];
+        if (e.type !== 'spawn-timer' && e.type !== 'slick' && e.type !== 'greenball') {
+            hasLethalEnemy = true; break;
+        }
+    }
 
+    if (!hasLethalEnemy) {
+        // No danger — shallow minimax on tour cost (depth 3 breaks oscillation)
+        tourMinimaxMemo = {};
+        var bestDir = null, bestCost = Infinity;
+        for (var k = 0; k < 4; k++) {
+            if (!exCanMove(tmpSt, DIR_KEYS[k])) continue;
+            var child = exClone(tmpSt);
+            if (!exPlayerMove(child, DIR_KEYS[k])) continue;
+            var cost = tourMinimax(child, 2); // 2 more levels after this move = depth 3 total
+            if (cost < bestCost) { bestCost = cost; bestDir = DIR_KEYS[k]; }
+        }
+        return bestDir || 'DL';
+    }
+
+    // Enemies present — expectimax search
+    exMemoTable = {};
     var bestDir = null, bestVal = -Infinity;
     for (var k = 0; k < 4; k++) {
         if (!exCanMove(tmpSt, DIR_KEYS[k])) continue;
