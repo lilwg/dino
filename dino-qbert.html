@@ -1087,6 +1087,9 @@ function draw() {
     // AI viz path (before inversion — color elements excluded from inversion)
     if (vizOn) drawVizPath();
 
+    // Shade enemy collision faces red (debug/viz mode)
+    if (debugEnemies || vizOn) drawEnemyCollisionFaces();
+
     // Enemies and player (before inversion so they invert with scene, like dino-runner)
     // White outline becomes black outline at night automatically
     for (var i = 0; i < enemies.length; i++) drawEnemy(enemies[i]);
@@ -1357,6 +1360,28 @@ function _drawEvilDino(px, py, sp, sc) {
         outlineCache[bodyKey] = tmp2;
     }
     ctx.drawImage(outlineCache[bodyKey], dx, dy);
+}
+
+// Shade the top face of each enemy's collision cube in red
+function drawEnemyCollisionFaces() {
+    var hw = TILE_W / 2, hh = TILE_H / 2;
+    for (var i = 0; i < enemies.length; i++) {
+        var e = enemies[i];
+        if (e.type === 'spawn-timer') continue;
+        var pos = cubeXY(e.row, e.col);
+        var cx = pos.cx, cy = pos.cy;
+        ctx.save();
+        ctx.globalAlpha = 0.35;
+        ctx.beginPath();
+        ctx.moveTo(cx, cy - hh);
+        ctx.lineTo(cx + hw, cy);
+        ctx.lineTo(cx, cy + hh);
+        ctx.lineTo(cx - hw, cy);
+        ctx.closePath();
+        ctx.fillStyle = '#ff0000';
+        ctx.fill();
+        ctx.restore();
+    }
 }
 
 // Draw a cactus sprite rotated to sit on a cube side-face
