@@ -858,7 +858,8 @@ function exLeafValue(st) {
             var dist = exBfsDist(st.pr, st.pc, e.row, e.col);
             if (dist <= 1) val -= 500;
             else if (dist <= 2) val -= 250;
-            else if (dist <= 3) val -= 100;
+            else if (dist <= 3) val -= 120;
+            else if (dist <= 4) val -= 40;
             // Lure bonus: reward moving toward a disc that would kill Coily
             for (var di = 0; di < st.discs.length; di++) {
                 var disc = st.discs[di];
