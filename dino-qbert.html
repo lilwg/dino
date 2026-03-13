@@ -1365,9 +1365,9 @@ function _drawRotatedCactus(px, py, angle, sc) {
     if (!src) return;
     var sp = SPRITES.CACTUS_SM;
     var dw = Math.round(sp.w * sc), dh = Math.round(sp.h * sc);
-    // Position: center on the cube face (offset toward the face side)
+    // Position: caller provides the side-face center
     var cx = Math.round(px);
-    var cy = Math.round(py - TILE_H / 2);
+    var cy = Math.round(py);
     ctx.save();
     ctx.translate(cx, cy);
     ctx.rotate(angle);
@@ -1440,12 +1440,12 @@ function drawEnemy(e) {
         ctx.restore();
 
     } else if (e.type === 'ugg') {
-        // Ugg: cactus rotated to sit on right cube face (rotated 90° CW)
-        _drawRotatedCactus(e.px, e.py, Math.PI / 2, 0.75);
+        // Ugg: cactus on right cube face — rotated CCW, offset to right face center
+        _drawRotatedCactus(e.px + TILE_W / 4, e.py + TILE_H / 4 + CUBE_DEPTH / 2, -Math.PI / 2, 0.75);
 
     } else if (e.type === 'wrongway') {
-        // Wrongway: cactus rotated to sit on left cube face (rotated 90° CCW)
-        _drawRotatedCactus(e.px, e.py, -Math.PI / 2, 0.75);
+        // Wrongway: cactus on left cube face — rotated CW, offset to left face center
+        _drawRotatedCactus(e.px - TILE_W / 4, e.py + TILE_H / 4 + CUBE_DEPTH / 2, Math.PI / 2, 0.75);
     }
 }
 
