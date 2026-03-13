@@ -1482,13 +1482,13 @@ function drawEnemy(e) {
 
     } else if (e.type === 'redball') {
         // Dangerous cactus (dark, with white outline)
-        _drawSpriteOutlined(e.px, e.py, SPRITES.CACTUS_SM, 0.75);
+        _drawSpriteOutlined(e.px, e.py, SPRITES.CACTUS_SM, 0.75, e.facing === 'L');
 
     } else if (e.type === 'greenball') {
         // Safe cactus (lighter, semi-transparent to look friendly)
         ctx.save();
         ctx.globalAlpha = 0.55;
-        _drawSpriteOutlined(e.px, e.py, SPRITES.CACTUS_SM, 0.75);
+        _drawSpriteOutlined(e.px, e.py, SPRITES.CACTUS_SM, 0.75, e.facing === 'L');
         ctx.restore();
 
     } else if (e.type === 'ugg') {
