@@ -882,6 +882,22 @@ function exLeafValue(st) {
                 var dist = exBfsDist(st.pr, st.pc, cp.row, cp.col);
                 if (dist <= 1) val -= 200 * cp.prob;
                 else if (dist <= 2) val -= 80 * cp.prob;
+                else if (dist <= 3) val -= 25 * cp.prob;
+            }
+            // Convergence penalty: enemy above player heading same direction = trap risk
+            // Eggs/redballs move DL/DR (increasing row). If player is at or below enemy
+            // row and near a corner, the enemy will chase us into a dead end.
+            if (e.type === 'egg' || e.type === 'redball') {
+                for (var j = 0; j < e.cloud.length; j++) {
+                    var cp = e.cloud[j];
+                    if (cp.row <= st.pr && Math.abs(cp.col - st.pc) <= 2) {
+                        // Player is below enemy with limited lateral space
+                        var lateralSpace = Math.min(st.pc, st.pr - st.pc);
+                        if (lateralSpace <= 1 && st.pr >= ROWS - 3) {
+                            val -= 80 * cp.prob;
+                        }
+                    }
+                }
             }
         } else {
             var dist = exBfsDist(st.pr, st.pc, e.row, e.col);
