@@ -50,6 +50,7 @@ var aiTour, aiTourIdx, aiBoardSig;
 var exMemoTable, exCloneState;
 var gameSpeed = 0.25;  // global speed scale; displayed as 1x–8x (display = internal × 4)
 var enemiesEnabled = true;  // toggle via UI button
+var debugEnemies = false;   // ?debug URL param: spawn all enemies, hide player
 </script>
 <script src="qbert-ai.js?v=2"></script>
 <script>
@@ -344,7 +345,15 @@ function initRound() {
     aiTourInit();
     aiTourIdx    = 0;
     aiBoardSig   = '';
-    if (enemiesEnabled) {
+    if (debugEnemies) {
+    // Debug mode: spawn one of every enemy type immediately
+    scheduleSpawn(30);                       // Coily egg
+    scheduleSpawn(60, 'redball');
+    scheduleSpawn(90, 'greenball');
+    scheduleSpawn(120, 'slick');
+    scheduleSpawn(150, 'ugg');
+    scheduleSpawn(180, 'wrongway');
+    } else if (enemiesEnabled) {
     // Spawn timers in frames (at 60fps) — arcade-accurate schedule
     scheduleSpawn(280);                                    // Coily egg (~4.7s) — always
     if (hasRedBall())    scheduleSpawn(140, 'redball');     // ~2.3s
@@ -510,7 +519,7 @@ function startPlayerJump(nr, nc) {
 }
 
 function killPlayer() {
-    if (player.dead) return;
+    if (debugEnemies || player.dead) return;
     player.dead = true;
     DinoSounds.hit();
     player.deathTimer = 100;  // frames of death state
@@ -1235,6 +1244,7 @@ function drawVizPath() {
 }
 
 function drawPlayer() {
+    if (debugEnemies) return;  // hide player in debug mode
     if (player.dead) {
         // Flash during death
         if (Math.floor(player.deathAnimTimer / 5) % 2 === 0) {
@@ -1547,6 +1557,7 @@ window.restartGame = function () {
     var params = new URLSearchParams(window.location.search);
     var startLevel = parseInt(params.get('l'));
     round = (startLevel > 1 && startLevel <= 9) ? (startLevel - 1) * 4 + 1 : 1;
+    debugEnemies = params.has('debug');
     extraLifeGiven = false;
     gameOver  = false;
     paused    = false;
