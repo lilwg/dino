@@ -361,147 +361,83 @@ var posAdj = [];  // posAdj[i] = array of neighbor indices
     }
 })();
 
-// ─── Tour cost with connected-component awareness ────────────────────────────
-// On revert levels, completed cubes act as barriers. Uncolored cubes form
-// connected components. Strategy: finish current component, then cross to the
-// nearest component (paying a crossing penalty per completed cube traversed).
-var ALL_CUBES = (1 << POS_COUNT) - 1;  // all 28 bits set
+// ─── MST-based admissible tour cost heuristic ────────────────────────────────
+// h = MST(BFS distances between needing-work cubes, rooted at player)
+//   + Σ 2 × max(0, stomps_needed(cube_i) - 1)
+//
+// MST is a lower bound on travel distance (MST ≤ TSP).
+// The per-cube extra stomp cost accounts for cubes needing multiple visits
+// (e.g., cycling levels where state 0→2 requires 2 stomps = 1 extra round trip).
+// These don't overlap: MST covers first visits, extra cost covers revisits.
 
-// Find connected components of set bits in 'needs' using pyramid adjacency.
-// Returns array of bitmasks, one per component.
-function findComponents(needs) {
-    var components = [];
-    var remaining = needs;
-    while (remaining !== 0) {
-        // Pick any set bit as seed
-        var seed = -1;
-        for (var i = 0; i < POS_COUNT; i++) {
-            if (remaining & (1 << i)) { seed = i; break; }
-        }
-        if (seed < 0) break;
-        // BFS flood fill through 'needs' neighbors
-        var comp = 1 << seed;
-        var queue = [seed];
-        remaining &= ~(1 << seed);
-        while (queue.length > 0) {
-            var cur = queue.shift();
-            var adj = posAdj[cur];
-            for (var a = 0; a < adj.length; a++) {
-                var v = adj[a];
-                if (remaining & (1 << v)) {
-                    comp |= (1 << v);
-                    remaining &= ~(1 << v);
-                    queue.push(v);
-                }
-            }
-        }
-        components.push(comp);
-    }
-    return components;
+// How many stomps does a cube need to reach target state?
+function stompsNeeded(cubeState, lv) {
+    var tgt = (lv === 1 || lv === 3) ? 1 : 2;
+    if (cubeState >= tgt) return 0;
+    if (lv <= 2) return tgt - cubeState; // simple: just stomp (tgt - current) times
+    if (lv === 3) return cubeState === 0 ? 1 : 0; // toggle: 0→1 = 1 stomp
+    if (lv === 4) return cubeState === 0 ? 2 : (cubeState === 1 ? 1 : 0); // 0→1→2
+    // lv5+ cycling (0→1→2→0): need state ≡ 2
+    return cubeState === 0 ? 2 : (cubeState === 1 ? 1 : 0);
 }
 
-// Greedy nearest-neighbor tour cost within a single component (no crossing penalty).
-function intraComponentCost(startIdx, comp) {
-    if (comp === 0) return 0;
-    var pos = startIdx;
-    var needs = comp;
-    var totalCost = 0;
-    while (needs !== 0) {
-        var bestIdx = -1, bestDist = 99;
-        for (var i = 0; i < POS_COUNT; i++) {
-            if (!(needs & (1 << i))) continue;
-            var d = distMatrix[pos * POS_COUNT + i];
-            if (d < bestDist) { bestDist = d; bestIdx = i; }
+// MST cost using Prim's algorithm.
+// nodes[] = array of position indices that need work.
+// startIdx = player's position index (included as the root).
+// Returns MST weight (sum of edge weights using precomputed distMatrix).
+function mstCost(startIdx, nodes) {
+    var n = nodes.length;
+    if (n === 0) return 0;
+
+    // Include player position as root node
+    // Build index: allNodes[0] = startIdx, allNodes[1..n] = nodes[]
+    var allCount = n + 1;
+    var allNodes = new Array(allCount);
+    allNodes[0] = startIdx;
+    for (var i = 0; i < n; i++) allNodes[i + 1] = nodes[i];
+
+    // Prim's: track cheapest edge from MST to each non-MST node
+    var inMST = new Uint8Array(allCount);
+    var minEdge = new Int8Array(allCount);
+    for (var i = 0; i < allCount; i++) minEdge[i] = 99;
+    minEdge[0] = 0;
+    var total = 0;
+
+    for (var iter = 0; iter < allCount; iter++) {
+        // Pick cheapest non-MST node
+        var u = -1, uCost = 99;
+        for (var i = 0; i < allCount; i++) {
+            if (!inMST[i] && minEdge[i] < uCost) { uCost = minEdge[i]; u = i; }
         }
-        if (bestIdx < 0) break;
-        totalCost += bestDist;
-        needs &= ~(1 << bestIdx);
-        pos = bestIdx;
+        if (u < 0) break;
+        inMST[u] = 1;
+        total += uCost;
+
+        // Update cheapest edges from MST
+        var uIdx = allNodes[u];
+        for (var i = 0; i < allCount; i++) {
+            if (inMST[i]) continue;
+            var d = distMatrix[uIdx * POS_COUNT + allNodes[i]];
+            if (d < minEdge[i]) minEdge[i] = d;
+        }
     }
-    return { cost: totalCost, endIdx: pos };
+    return total;
 }
 
-// Minimum BFS distance from any cube in 'fromSet' to any cube in 'toSet',
-// crossing through completed cubes. Returns {dist, crossings} where crossings
-// is the number of completed cubes on the shortest path.
-function crossingDistance(fromIdx, toComp, needs) {
-    var bestDist = 99, bestCrossings = 0;
-    // Find nearest cube in toComp from fromIdx, counting completed cubes crossed
-    var visited = new Uint8Array(POS_COUNT);
-    var distArr = new Uint8Array(POS_COUNT);
-    var crossArr = new Uint8Array(POS_COUNT);
-    visited[fromIdx] = 1;
-    var queue = [fromIdx];
-    while (queue.length > 0) {
-        var cur = queue.shift();
-        if (toComp & (1 << cur)) {
-            return { dist: distArr[cur], crossings: crossArr[cur] };
-        }
-        var adj = posAdj[cur];
-        for (var a = 0; a < adj.length; a++) {
-            var v = adj[a];
-            if (visited[v]) continue;
-            visited[v] = 1;
-            distArr[v] = distArr[cur] + 1;
-            // Count completed cubes crossed (not in needs = completed)
-            crossArr[v] = crossArr[cur] + ((needs & (1 << v)) ? 0 : 1);
-            queue.push(v);
+// Main tour cost: MST + per-cube extra stomp overhead.
+// Admissible: MST ≤ optimal travel, extra stomps ≤ actual revisit cost.
+function mstTourCost(startIdx, cubes, tgt, lv) {
+    var nodes = [];
+    var extraStomps = 0;
+    for (var i = 0; i < cubes.length; i++) {
+        var s = stompsNeeded(cubes[i].state, lv);
+        if (s > 0) {
+            nodes.push(posToIdx[cubes[i].row * ROWS + cubes[i].col]);
+            extraStomps += 2 * (s - 1); // each extra stomp = leave + return
         }
     }
-    return { dist: 99, crossings: 0 };
-}
-
-// Main tour cost function. On revert levels, uses component-aware planning.
-// Non-revert levels use simple greedy nearest-neighbor.
-function greedyTourCost(startIdx, needs, isRevert, lv) {
-    if (needs === 0) return 0;
-
-    if (!isRevert) {
-        // Simple greedy nearest-neighbor (no crossing penalties)
-        return intraComponentCost(startIdx, needs).cost;
-    }
-
-    var revertPenalty = (lv >= 5) ? 5 : 2;
-
-    // Revert level: find connected components of uncolored cubes
-    var components = findComponents(needs);
-    if (components.length <= 1) {
-        // Single component — just do greedy tour within it
-        return intraComponentCost(startIdx, needs).cost;
-    }
-
-    // Multiple components — find which one we're in (or nearest to)
-    var pos = startIdx;
-    var totalCost = 0;
-    var visited = 0; // bitmask of visited component indices
-
-    while (visited !== (1 << components.length) - 1) {
-        // Find nearest unvisited component
-        var bestComp = -1, bestDist = 99, bestCross = 0;
-        for (var ci = 0; ci < components.length; ci++) {
-            if (visited & (1 << ci)) continue;
-            // Are we already inside this component?
-            if (components[ci] & (1 << pos)) {
-                bestComp = ci; bestDist = 0; bestCross = 0;
-                break;
-            }
-            var cd = crossingDistance(pos, components[ci], needs);
-            if (cd.dist < bestDist) {
-                bestDist = cd.dist; bestComp = ci; bestCross = cd.crossings;
-            }
-        }
-        if (bestComp < 0) break;
-
-        // Cost to reach this component (crossing completed cubes = reverts)
-        totalCost += bestDist + bestCross * revertPenalty;
-
-        // Cost to finish this component
-        var intra = intraComponentCost(pos, components[bestComp]);
-        totalCost += intra.cost;
-        pos = intra.endIdx;
-        visited |= (1 << bestComp);
-    }
-    return totalCost;
+    if (nodes.length === 0) return 0;
+    return mstCost(startIdx, nodes) + extraStomps;
 }
 
 // ─── Expectimax search ───────────────────────────────────────────────────────
