@@ -98,7 +98,7 @@ function initRound() {
     freezeTimer = 0;
     aiDetailPath = []; aiTourDots = [];
     aiTour = []; aiTourIdx = 0; aiBoardSig = '';
-    aiPosHistory = [];
+    aiBoardHistory = {};
 
     // Enemy spawn patterns per arcade manual round progression
     var lv = arcadeLevel();

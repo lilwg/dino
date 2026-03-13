@@ -845,18 +845,21 @@ function exLeafValue(st) {
         // Higher penalty on cycling levels where revert costs 2 hops
         val -= completedNeighbors * (lv >= 5 ? 50 : 20);
     }
-    // Tiebreaker: reward being adjacent to uncolored cubes (encourages
-    // moving toward remaining work rather than oscillating)
-    if (lv >= 5) {
-        var nearUncolored = 0;
-        for (var k = 0; k < 4; k++) {
-            var dk = DIRS[DIR_KEYS[k]];
-            var nr = st.pr + dk.dr, nc = st.pc + dk.dc;
-            if (!isValidPos(nr, nc)) continue;
-            var cube = exCubeAt(st, nr, nc);
-            if (cube && cube.state < st.tgt) nearUncolored++;
+    // Penalize repeated board states (anti-oscillation).
+    // Only in endgame on revert levels where oscillation is a real problem.
+    // Penalty scales up as fewer cubes remain (oscillation is harder to escape).
+    if (lv >= 3) {
+        var remaining = 0;
+        for (var i = 0; i < st.cubes.length; i++)
+            if (st.cubes[i].state < st.tgt) remaining++;
+        if (remaining <= 8) {
+            var bh = boardHash(st);
+            var visits = aiBoardHistory[bh] || 0;
+            if (visits > 0) {
+                var scale = remaining <= 3 ? 3 : remaining <= 5 ? 2 : 1;
+                val -= visits * AI_REPEAT_PENALTY * scale;
+            }
         }
-        val += nearUncolored * 3;
     }
     return val;
 }
@@ -924,51 +927,35 @@ function expectimaxEval(dirKey) {
     return val + exLeafValue(st) * 0.0001;
 }
 
-// ─── Anti-oscillation and AI entry point ────────────────────────────────────
-var aiPosHistory = [];
+// ─── Board-state repetition tracking ─────────────────────────────────────────
+// Simple counter of how many times each board state has been seen.
+// States that have been visited before get penalized in exLeafValue.
+var aiBoardHistory = {};
+var AI_REPEAT_PENALTY = 120;
+
+function boardHash(st) {
+    var h = st.pr + ',' + st.pc + '|';
+    for (var i = 0; i < st.cubes.length; i++) h += st.cubes[i].state;
+    return h;
+}
+
+function aiRecordState() {
+    var st = exCloneState();
+    var h = boardHash(st);
+    aiBoardHistory[h] = (aiBoardHistory[h] || 0) + 1;
+}
 
 function aiPickBestDir() {
+    // Record current state before evaluating moves
+    aiRecordState();
+
     exMemoTable = {};
     var tmpSt = exCloneState();
-
-    // Evaluate all directions
-    var scores = {};
     var bestDir = null, bestVal = -Infinity;
     for (var k = 0; k < 4; k++) {
         if (!exCanMove(tmpSt, DIR_KEYS[k])) continue;
         var val = expectimaxEval(DIR_KEYS[k]);
-        scores[DIR_KEYS[k]] = val;
         if (val > bestVal) { bestVal = val; bestDir = DIR_KEYS[k]; }
     }
-
-    // Anti-oscillation: detect bouncing between 2 positions
-    var lv = tmpSt.lv !== undefined ? tmpSt.lv : arcadeLevel();
-    if (lv >= 3 && aiPosHistory.length >= 4) {
-        var h = aiPosHistory;
-        var len = h.length;
-        // Check if last 4 positions alternate between 2 spots (A-B-A-B)
-        if (h[len-1] === h[len-3] && h[len-2] === h[len-4] && h[len-1] !== h[len-2]) {
-            // We're oscillating. Find which direction goes to the "other" position
-            // and penalize it, forcing the AI to try something different.
-            var otherPos = h[len-2]; // the position we keep bouncing to
-            for (var dk in scores) {
-                var d = DIRS[dk];
-                var nr = player.row + d.dr, nc = player.col + d.dc;
-                if (nr + ',' + nc === otherPos) {
-                    scores[dk] -= 1; // small penalty to break tie
-                }
-            }
-            // Re-pick best direction
-            bestDir = null; bestVal = -Infinity;
-            for (var dk in scores) {
-                if (scores[dk] > bestVal) { bestVal = scores[dk]; bestDir = dk; }
-            }
-        }
-    }
-
-    // Record position history (keep last 8)
-    aiPosHistory.push(player.row + ',' + player.col);
-    if (aiPosHistory.length > 8) aiPosHistory.shift();
-
     return bestDir || 'DL';
 }
