@@ -119,7 +119,6 @@ function initRound() {
     freezeTimer = 0;
     aiDetailPath = []; aiTourDots = [];
     aiTour = []; aiTourIdx = 0; aiBoardSig = '';
-    aiBoardHistory = {}; aiLastPos = ''; aiStuckCount = 0; aiPosHistory = [];
     aiTourInit();
 
     // Arcade-accurate enemy spawn schedule
