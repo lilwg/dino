@@ -168,7 +168,18 @@ function buildDangerMaps() {
     var immediate = {}, predicted = {}, coilies = [];
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
-        if (e.type === 'spawn-timer') continue;
+        if (e.type === 'spawn-timer') {
+            // Mark spawn positions as dangerous when timer is about to fire
+            if (e.timer <= 2) {
+                var ft = e.forcedType;
+                if (ft === 'ugg') {
+                    immediate[(ROWS-1) + ',' + (ROWS-1)] = true;
+                } else if (ft === 'wrongway') {
+                    immediate[(ROWS-1) + ',0'] = true;
+                }
+            }
+            continue;
+        }
         if (e.type === 'greenball' || e.type === 'slick') continue;
         immediate[e.row + ',' + e.col] = true;
         for (var k = 0; k < DIR_KEYS.length; k++) {
@@ -486,9 +497,15 @@ function exClone(st) {
     var ds = [];
     for (var i = 0; i < st.discs.length; i++)
         ds.push({ side: st.discs[i].side, row: st.discs[i].row, active: st.discs[i].active });
+    var sp = null;
+    if (st.spawns && st.spawns.length > 0) {
+        sp = [];
+        for (var i = 0; i < st.spawns.length; i++)
+            sp.push({ timer: st.spawns[i].timer, forcedType: st.spawns[i].forcedType });
+    }
     return { pr: st.pr, pc: st.pc, cubes: cs, enemies: ens,
              alive: st.alive, score: st.score, cubesColored: st.cubesColored, tgt: st.tgt,
-             discs: ds, lv: st.lv };
+             discs: ds, lv: st.lv, spawns: sp };
 }
 
 // ─── Probability-cloud enemy model ───────────────────────────────────────────
@@ -551,6 +568,25 @@ function deathProb(st) {
 // Move all enemies one step. Coily moves deterministically, random enemies
 // expand their probability clouds.
 function exMoveEnemies(st) {
+    // Tick spawn timers — spawn enemies into the simulation
+    if (st.spawns) {
+        for (var si = st.spawns.length - 1; si >= 0; si--) {
+            st.spawns[si].timer--;
+            if (st.spawns[si].timer <= 0) {
+                var ft = st.spawns[si].forcedType;
+                st.spawns.splice(si, 1);
+                // Add spawned enemy to the state
+                if (ft === 'ugg') {
+                    st.enemies.push({ type: 'ugg', row: ROWS-1, col: ROWS-1, accum: 0,
+                        cloud: [{ row: ROWS-1, col: ROWS-1, prob: 1.0 }] });
+                } else if (ft === 'wrongway') {
+                    st.enemies.push({ type: 'wrongway', row: ROWS-1, col: 0, accum: 0,
+                        cloud: [{ row: ROWS-1, col: 0, prob: 1.0 }] });
+                }
+                // Other spawn types (egg, redball) spawn at top — less dangerous, skip
+            }
+        }
+    }
     for (var i = st.enemies.length - 1; i >= 0; i--) {
         var e = st.enemies[i];
         e.accum += EX_MOVE_RATE[e.type] || 0.75;
@@ -842,6 +878,11 @@ function exLeafValue(st) {
     }
     if (escapes <= 1) val -= 150;
     else if (escapes <= 2) val -= 40;
+    // Penalize standing at enemy spawn points (Ugg/Wrongway corners)
+    if (st.pr === ROWS - 1) {
+        if (st.pc === ROWS - 1) val -= 120; // Ugg spawn corner
+        if (st.pc === 0) val -= 120;        // Wrongway spawn corner
+    }
     // On revert levels, penalize being surrounded by completed cubes (trap avoidance)
     var lv = st.lv !== undefined ? st.lv : arcadeLevel();
     if (lv >= 3) {

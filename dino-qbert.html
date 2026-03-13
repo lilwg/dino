@@ -901,9 +901,20 @@ exCloneState = function() {
     var ds = [];
     for (var i = 0; i < discs.length; i++)
         ds.push({ side: discs[i].side, row: discs[i].row, active: discs[i].active });
+    // Include imminent spawn timers for Ugg/Wrongway (dangerous spawn points)
+    var spawns = [];
+    for (var i = 0; i < enemies.length; i++) {
+        var e = enemies[i];
+        if (e.type === 'spawn-timer' && e.timer <= 3) {
+            var ft = e.forcedType;
+            if (ft === 'ugg' || ft === 'wrongway') {
+                spawns.push({ timer: e.timer, forcedType: ft });
+            }
+        }
+    }
     return { pr: player.row, pc: player.col, cubes: cs, enemies: ens,
              alive: true, score: 0, cubesColored: colored, tgt: tgt,
-             discs: ds, lv: arcadeLevel() };
+             discs: ds, lv: arcadeLevel(), spawns: spawns };
 };
 
 // exCubeAt, exClone, exMoveEnemies, exPlayerMove, bfsDistTable, exBfsDist,
