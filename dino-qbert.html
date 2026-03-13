@@ -1367,7 +1367,7 @@ function drawEnemyCollisionFaces() {
     var hw = TILE_W / 2, hh = TILE_H / 2;
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
-        if (e.type === 'spawn-timer') continue;
+        if (e.type === 'spawn-timer' || e.jumping) continue;
         var pos = cubeXY(e.row, e.col);
         var cx = pos.cx, cy = pos.cy;
         ctx.save();
