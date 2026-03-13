@@ -164,13 +164,22 @@ function killPlayer() {
 
 function useDisc(idx) {
     discs[idx].active = false;
-    // 500pts per Coily/egg lured off the pyramid
+    // Arcade: only Coily is lured off if chasing close enough; other enemies survive
+    var survived = [];
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
-        if (e.type === 'coily' || e.type === 'egg') { score += 500; checkExtraLife(); }
+        if (e.type === 'coily') {
+            // Coily follows Q*bert and falls off — award 500 points
+            score += 500; checkExtraLife();
+            // All other enemies are also cleared when Coily dies (arcade behavior)
+        } else if (e.type === 'egg') {
+            // Eggs also fall off
+        } else if (e.type === 'spawn-timer') {
+            survived.push(e);
+        }
+        // Other active enemies are cleared too (arcade: disc clears the board)
     }
-    // Clear ALL enemies when using a disc (per arcade manual)
-    enemies = [];
+    enemies = survived;
     player.row = 0; player.col = 0;
     stompCube(0, 0);
     scheduleSpawn(8);
@@ -253,9 +262,13 @@ function moveEnemies() {
             if (isValidPos(nr, nc)) {
                 e.hops++;
                 e.row = nr; e.col = nc;
-                if (e.hops >= 6 || nr >= ROWS - 1) e.type = 'coily';
+                // Arcade: egg only hatches into Coily when it reaches the bottom row
+                if (nr >= ROWS - 1) e.type = 'coily';
             } else {
-                e.type = 'coily';
+                // Fell off the edge — remove and respawn
+                enemies.splice(i, 1); i--;
+                scheduleSpawn(8);
+                continue;
             }
         } else if (e.type === 'coily') {
             var bestDir = null, bestDist = Infinity;
@@ -307,11 +320,13 @@ function moveEnemies() {
                 continue;
             }
         } else if (e.type === 'ugg') {
-            // Ugg moves upward from bottom-right: random UL or UR
+            // Arcade: Ugg spawns bottom-right, moves toward top-left.
+            // Can move UL (row-1,col-1) or stay same row move left (row,col-1)
+            // In pyramid terms: UL goes up-left, "left" means row stays, col decreases
             var udir = Math.random() < 0.5;
             var unr, unc;
-            if (udir) { unr = e.row - 1; unc = e.col - 1; } // UL
-            else      { unr = e.row - 1; unc = e.col; }      // UR
+            if (udir) { unr = e.row - 1; unc = e.col - 1; } // UL (up and left)
+            else      { unr = e.row;     unc = e.col - 1; }  // Left (same row)
             if (isValidPos(unr, unc)) {
                 e.row = unr; e.col = unc;
             } else {
@@ -320,11 +335,12 @@ function moveEnemies() {
                 continue;
             }
         } else if (e.type === 'wrongway') {
-            // Wrongway moves upward from bottom-left: random UR or UL
+            // Arcade: Wrongway spawns bottom-left, moves toward top-right.
+            // Can move UR (row-1,col) or stay same row move right (row,col+1)
             var wdir = Math.random() < 0.5;
             var wnr, wnc;
-            if (wdir) { wnr = e.row - 1; wnc = e.col; }      // UR
-            else      { wnr = e.row - 1; wnc = e.col - 1; }  // UL
+            if (wdir) { wnr = e.row - 1; wnc = e.col;     } // UR (up and right)
+            else      { wnr = e.row;     wnc = e.col + 1;  } // Right (same row)
             if (isValidPos(wnr, wnc)) {
                 e.row = wnr; e.col = wnc;
             } else {
