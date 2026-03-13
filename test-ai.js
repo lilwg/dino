@@ -50,10 +50,7 @@ function exCloneState() {
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
         if (e.type === 'spawn-timer' && e.timer <= 3) {
-            var ft = e.forcedType;
-            if (ft === 'ugg' || ft === 'wrongway') {
-                spawns.push({ timer: e.timer, forcedType: ft });
-            }
+            spawns.push({ timer: e.timer, forcedType: e.forcedType || null });
         }
     }
     return { pr: player.row, pc: player.col, cubes: cs, enemies: ens,

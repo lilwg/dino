@@ -902,14 +902,21 @@ exCloneState = function() {
     for (var i = 0; i < discs.length; i++)
         ds.push({ side: discs[i].side, row: discs[i].row, active: discs[i].active });
     // Include imminent spawn timers for Ugg/Wrongway (dangerous spawn points)
+    // Include spawn timers that will fire within the next few player hops.
+    // Timer is in frames; convert to "AI steps until spawn" by dividing by
+    // frames-per-hop. Each hop ≈ ceil(1/jumpDur) + aiMoveDelay frames,
+    // and the timer ticks by gameSpeed each frame.
+    var sm = speedMultiplier();
+    var framesPerHop = Math.ceil(1 / (0.111 * sm)) + Math.max(1, Math.round(2 / sm));
+    var frameTickPerHop = framesPerHop * (typeof gameSpeed !== 'undefined' ? gameSpeed : 1.0);
     var spawns = [];
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
-        if (e.type === 'spawn-timer' && e.timer <= 3) {
-            var ft = e.forcedType;
-            if (ft === 'ugg' || ft === 'wrongway') {
-                spawns.push({ timer: e.timer, forcedType: ft });
-            }
+        if (e.type !== 'spawn-timer') continue;
+        // Convert frame-based timer to AI steps
+        var stepsUntil = Math.ceil(e.timer / frameTickPerHop);
+        if (stepsUntil <= 3) {
+            spawns.push({ timer: stepsUntil, forcedType: e.forcedType || null });
         }
     }
     return { pr: player.row, pc: player.col, cubes: cs, enemies: ens,

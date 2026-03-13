@@ -169,13 +169,26 @@ function buildDangerMaps() {
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
         if (e.type === 'spawn-timer') {
-            // Mark spawn positions as dangerous when timer is about to fire
-            if (e.timer <= 2) {
+            // Mark spawn positions as dangerous when timer will fire within ~2 player hops
+            // Timer units differ: frames in HTML game, turns in test harness.
+            // Estimate frames-per-hop to normalize.
+            var sm = speedMultiplier();
+            var fph = Math.ceil(1 / (0.111 * sm)) + Math.max(1, Math.round(2 / sm));
+            var gs = (typeof gameSpeed !== 'undefined') ? gameSpeed : 1.0;
+            var tickPerHop = fph * gs;
+            // If timer > 100, it's frame-based (HTML); otherwise turn-based (test)
+            var hopsUntil = e.timer > 20 ? Math.ceil(e.timer / tickPerHop) : e.timer;
+            if (hopsUntil <= 2) {
                 var ft = e.forcedType;
                 if (ft === 'ugg') {
                     immediate[(ROWS-1) + ',' + (ROWS-1)] = true;
                 } else if (ft === 'wrongway') {
                     immediate[(ROWS-1) + ',0'] = true;
+                } else if (ft === 'egg' || !ft) {
+                    immediate['0,0'] = true;
+                } else if (ft === 'redball') {
+                    immediate['1,0'] = true;
+                    immediate['1,1'] = true;
                 }
             }
             continue;
@@ -569,6 +582,7 @@ function deathProb(st) {
 // expand their probability clouds.
 function exMoveEnemies(st) {
     // Tick spawn timers — spawn enemies into the simulation
+    // Timer is in "AI steps" (normalized by exCloneState), decrement by 1 per step.
     if (st.spawns) {
         for (var si = st.spawns.length - 1; si >= 0; si--) {
             st.spawns[si].timer--;
@@ -582,8 +596,18 @@ function exMoveEnemies(st) {
                 } else if (ft === 'wrongway') {
                     st.enemies.push({ type: 'wrongway', row: ROWS-1, col: 0, accum: 0,
                         cloud: [{ row: ROWS-1, col: 0, prob: 1.0 }] });
+                } else if (ft === 'egg' || !ft) {
+                    // Egg spawns at (0,0)
+                    st.enemies.push({ type: 'egg', row: 0, col: 0, hops: 0, accum: 0,
+                        cloud: [{ row: 0, col: 0, prob: 1.0 }] });
+                } else if (ft === 'redball') {
+                    // Redball spawns at row 1 — model as cloud over both columns
+                    st.enemies.push({ type: 'redball', row: 1, col: 0, accum: 0,
+                        cloud: [{ row: 1, col: 0, prob: 0.5 }, { row: 1, col: 1, prob: 0.5 }] });
+                } else if (ft === 'greenball') {
+                    st.enemies.push({ type: 'greenball', row: 1, col: 0, accum: 0,
+                        cloud: [{ row: 1, col: 0, prob: 0.5 }, { row: 1, col: 1, prob: 0.5 }] });
                 }
-                // Other spawn types (egg, redball) spawn at top — less dangerous, skip
             }
         }
     }
@@ -878,10 +902,10 @@ function exLeafValue(st) {
     }
     if (escapes <= 1) val -= 150;
     else if (escapes <= 2) val -= 40;
-    // Penalize standing at enemy spawn points (Ugg/Wrongway corners)
+    // Mild penalty for Ugg/Wrongway spawn corners (bottom edges, dead ends)
     if (st.pr === ROWS - 1) {
-        if (st.pc === ROWS - 1) val -= 120; // Ugg spawn corner
-        if (st.pc === 0) val -= 120;        // Wrongway spawn corner
+        if (st.pc === ROWS - 1) val -= 50; // Ugg spawn corner
+        if (st.pc === 0) val -= 50;        // Wrongway spawn corner
     }
     // On revert levels, penalize being surrounded by completed cubes (trap avoidance)
     var lv = st.lv !== undefined ? st.lv : arcadeLevel();
