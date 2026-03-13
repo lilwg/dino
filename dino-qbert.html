@@ -648,6 +648,23 @@ function updateEnemies() {
             if (e.jumpT >= 1) {
                 e.jumpT = 1; e.jumping = false;
                 e.px = e.tx; e.py = e.ty;
+                if (e.falling) {
+                    // Finished fall-off animation — remove and schedule respawn
+                    var ft = e.type;
+                    enemies.splice(i, 1);
+                    if (ft === 'egg' || ft === 'coily') scheduleSpawn(280);
+                    else if (ft === 'redball' && hasRedBall()) scheduleSpawn(Math.max(175, 280 - Math.floor(round / 2) * 35), 'redball');
+                    else if (ft === 'greenball' && hasGreenBall()) scheduleSpawn(420, 'greenball');
+                    else if (ft === 'slick' && hasSlick()) scheduleSpawn(525, 'slick');
+                    else if (ft === 'ugg' && hasUggWrongway()) scheduleSpawn(420, 'ugg');
+                    else if (ft === 'wrongway' && hasUggWrongway()) scheduleSpawn(490, 'wrongway');
+                    continue;
+                }
+                if (e.willHatch) {
+                    e.willHatch = false;
+                    e.type = 'coily';
+                    e.moveInterval = enemyMoveInterval('coily');
+                }
                 onEnemyLand(e, i);
             } else {
                 var arc = Math.sin(e.jumpT * Math.PI) * 16;
@@ -671,12 +688,11 @@ function updateEnemies() {
                 e.hops++;
                 enemyJumpTo(e, nr, nc);
                 if (e.hops >= 6 || nr >= ROWS - 1) {
-                    e.type = 'coily';
-                    e.moveInterval = enemyMoveInterval('coily');
+                    e.willHatch = true;  // hatch after landing
                 }
             } else {
-                e.type = 'coily';
-                e.moveInterval = enemyMoveInterval('coily');
+                enemyJumpTo(e, nr, nc);
+                e.falling = true;
             }
         } else if (e.type === 'coily') {
             var bestDir = null, bestDist = Infinity;
@@ -690,63 +706,45 @@ function updateEnemies() {
             if (bestDir) {
                 enemyJumpTo(e, bestDir.nr, bestDir.nc);
             } else {
-                enemies.splice(i, 1);
-                scheduleSpawn(280);
+                // Coily trapped — jump off nearest edge
+                var fd = Math.random() < 0.5 ? DIRS['DL'] : DIRS['DR'];
+                enemyJumpTo(e, e.row + fd.dr, e.col + fd.dc);
+                e.falling = true;
             }
         } else if (e.type === 'redball') {
             var rbdir = Math.random() < 0.5 ? 'DL' : 'DR';
             var rbdelta = DIRS[rbdir];
             var rbnr = e.row + rbdelta.dr, rbnc = e.col + rbdelta.dc;
-            if (isValidPos(rbnr, rbnc)) {
-                enemyJumpTo(e, rbnr, rbnc);
-            } else {
-                enemies.splice(i, 1);
-                if (hasRedBall()) scheduleSpawn(Math.max(175, 280 - Math.floor(round / 2) * 35), 'redball');
-            }
+            enemyJumpTo(e, rbnr, rbnc);
+            if (!isValidPos(rbnr, rbnc)) e.falling = true;
         } else if (e.type === 'greenball') {
             var gbdir = Math.random() < 0.5 ? 'DL' : 'DR';
             var gbdelta = DIRS[gbdir];
             var gbnr = e.row + gbdelta.dr, gbnc = e.col + gbdelta.dc;
-            if (isValidPos(gbnr, gbnc)) {
-                enemyJumpTo(e, gbnr, gbnc);
-            } else {
-                enemies.splice(i, 1);
-                if (hasGreenBall()) scheduleSpawn(420, 'greenball');
-            }
+            enemyJumpTo(e, gbnr, gbnc);
+            if (!isValidPos(gbnr, gbnc)) e.falling = true;
         } else if (e.type === 'slick') {
             var sdir = Math.random() < 0.5 ? 'DL' : 'DR';
             var sdelta = DIRS[sdir];
             var snr = e.row + sdelta.dr, snc = e.col + sdelta.dc;
-            if (isValidPos(snr, snc)) {
-                enemyJumpTo(e, snr, snc);
-            } else {
-                enemies.splice(i, 1);
-                if (hasSlick()) scheduleSpawn(525, 'slick');
-            }
+            enemyJumpTo(e, snr, snc);
+            if (!isValidPos(snr, snc)) e.falling = true;
         } else if (e.type === 'ugg') {
             // Ugg spawns bottom-right, hops on right cube faces toward top-left
             // Two moves: up (row-1,col-1) or left along same row (row,col-1)
             var unr, unc;
             if (Math.random() < 0.5) { unr = e.row - 1; unc = e.col - 1; } // up
             else                     { unr = e.row;     unc = e.col - 1; } // left
-            if (isValidPos(unr, unc)) {
-                enemyJumpTo(e, unr, unc);
-            } else {
-                enemies.splice(i, 1);
-                if (hasUggWrongway()) scheduleSpawn(420, 'ugg');
-            }
+            enemyJumpTo(e, unr, unc);
+            if (!isValidPos(unr, unc)) e.falling = true;
         } else if (e.type === 'wrongway') {
             // Wrongway spawns bottom-left, hops on left cube faces toward top-right
             // Two moves: up (row-1,col) or right along same row (row,col+1)
             var wnr, wnc;
             if (Math.random() < 0.5) { wnr = e.row - 1; wnc = e.col;     } // up
             else                     { wnr = e.row;     wnc = e.col + 1; } // right
-            if (isValidPos(wnr, wnc)) {
-                enemyJumpTo(e, wnr, wnc);
-            } else {
-                enemies.splice(i, 1);
-                if (hasUggWrongway()) scheduleSpawn(490, 'wrongway');
-            }
+            enemyJumpTo(e, wnr, wnc);
+            if (!isValidPos(wnr, wnc)) e.falling = true;
         }
     }
 }
