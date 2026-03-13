@@ -25,6 +25,7 @@
                 <button class="si-btn" onclick="restartGame()">Restart</button>
                 <button class="si-btn" id="pause-btn" onclick="togglePause()">Pause</button>
                 <button class="si-btn" id="fs-btn" onclick="toggleFullscreen()">Fullscreen</button>
+                <button class="si-btn" id="enemies-btn" onclick="toggleEnemies()">Enemies: Off</button>
                 <label style="display:inline-flex;align-items:center;gap:4px;margin-left:8px;font-size:12px;color:#535353;">
                     Speed <input type="range" id="speed-slider" min="0.25" max="2" step="0.25" value="0.25" style="width:80px;" oninput="setGameSpeed(parseFloat(this.value))">
                     <span id="speed-label">1x</span>
@@ -48,6 +49,7 @@ var round, player, enemies, cubeStates, discs;
 var aiTour, aiTourIdx, aiBoardSig;
 var exMemoTable, exCloneState;
 var gameSpeed = 0.25;  // global speed scale; displayed as 1x–8x (display = internal × 4)
+var enemiesEnabled = false;  // toggle via UI button
 </script>
 <script src="qbert-ai.js"></script>
 <script>
@@ -342,9 +344,7 @@ function initRound() {
     aiTourInit();
     aiTourIdx    = 0;
     aiBoardSig   = '';
-    // TEMP: enemies disabled for routing debug
-    var ENEMIES_DISABLED = true;
-    if (!ENEMIES_DISABLED) {
+    if (enemiesEnabled) {
     // Spawn timers in frames (at 60fps)
     scheduleSpawn(280);                          // Coily egg (~4.7s)
     scheduleSpawn(140, 'redball');               // ~2.3s
@@ -372,17 +372,18 @@ function spawnEnemy(forcedType) {
     }
 
     // Red balls and green balls spawn at row 1 (second row), matching arcade
-    // Coily egg also spawns at row 1 in arcade (bounces down from second row)
-    var spawnRow = (type === 'redball' || type === 'greenball') ? 1 : 0;
-    var spawnCol = (type === 'redball' || type === 'greenball')
-        ? Math.floor(Math.random() * 2) : 0; // row 1 has cols 0 and 1
+    // All enemies spawn at row 1 in arcade (egg, redball, greenball)
+    var spawnRow = 1;
+    var spawnCol = Math.floor(Math.random() * 2);
     var sp = cubeXY(spawnRow, spawnCol);
 
     if (type === 'egg') {
-        var eggPos = cubeXY(0, 0);
+        // Arcade: egg spawns at row 1 (not the apex)
+        var eggCol = Math.floor(Math.random() * 2);
+        var eggPos = cubeXY(1, eggCol);
         enemies.push({
             type: 'egg',
-            row: 0, col: 0,
+            row: 1, col: eggCol,
             px: eggPos.cx, py: eggPos.cy,
             jumping: false, jumpT: 0, jumpDur: 0.143 * speedMultiplier(),
             jumpSX: eggPos.cx, jumpSY: eggPos.cy,
@@ -1528,6 +1529,14 @@ window.toggleViz = function () {
 window.togglePause = function () {
     paused = !paused;
     document.getElementById('pause-btn').classList.toggle('active', paused);
+};
+
+window.toggleEnemies = function () {
+    enemiesEnabled = !enemiesEnabled;
+    var btn = document.getElementById('enemies-btn');
+    btn.textContent = 'Enemies: ' + (enemiesEnabled ? 'On' : 'Off');
+    btn.classList.toggle('active', enemiesEnabled);
+    restartGame();
 };
 
 window.setGameSpeed = function (v) {
