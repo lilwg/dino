@@ -218,7 +218,7 @@ function useDisc(idx) {
     }
     player.row = 0; player.col = 0;
     stompCube(0, 0);
-    scheduleSpawn(8);
+    if (!noEnemies) scheduleSpawn(8);
 }
 
 function tryMove(dirKey) {
@@ -431,12 +431,14 @@ function simTurn() {
             for (var i = 0; i < enemies.length; i++)
                 if (enemies[i].type === 'spawn-timer') kept.push(enemies[i]);
             enemies = kept;
-            scheduleSpawn(7);
-            if (hasRedBall())     scheduleSpawn(5, 'redball');
-            if (hasSlick())       scheduleSpawn(13, 'slick');
-            if (hasGreenBall())   scheduleSpawn(10, 'greenball');
-            if (hasUggWrongway()) scheduleSpawn(12, 'ugg');
-            if (hasUggWrongway()) scheduleSpawn(14, 'wrongway');
+            if (!noEnemies) {
+                scheduleSpawn(7);
+                if (hasRedBall())     scheduleSpawn(5, 'redball');
+                if (hasSlick())       scheduleSpawn(13, 'slick');
+                if (hasGreenBall())   scheduleSpawn(10, 'greenball');
+                if (hasUggWrongway()) scheduleSpawn(12, 'ugg');
+                if (hasUggWrongway()) scheduleSpawn(14, 'wrongway');
+            }
         }
         return null;
     }
