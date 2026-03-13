@@ -339,7 +339,7 @@ function initRound() {
     aiTourDots   = [];
     aiMoveTimer  = 0;
     aiTour       = [];
-    aiPosHistory = [];
+    aiBoardHistory = {};
     aiTourIdx    = 0;
     aiBoardSig   = '';
     // Spawn timers in frames (at 60fps)
@@ -913,6 +913,8 @@ function computeAIMove() {
     var tgt = targetState();
     var danger = buildDangerMaps();
 
+    // Record state for repetition penalty, then evaluate moves
+    aiRecordState();
     exMemoTable = {};
     var tmpSt = exCloneState();
     var bestDir = null, bestVal = -Infinity;
@@ -923,27 +925,6 @@ function computeAIMove() {
         aiMoveScores[DIR_KEYS[k]] = val;
         if (val > bestVal) { bestVal = val; bestDir = DIR_KEYS[k]; }
     }
-    // Anti-oscillation: use shared logic to break ties
-    var lv = tmpSt.lv !== undefined ? tmpSt.lv : arcadeLevel();
-    if (lv >= 3 && aiPosHistory.length >= 4) {
-        var h = aiPosHistory, len = h.length;
-        if (h[len-1] === h[len-3] && h[len-2] === h[len-4] && h[len-1] !== h[len-2]) {
-            var adjusted = {};
-            for (var dk in aiMoveScores) adjusted[dk] = aiMoveScores[dk];
-            var otherPos = h[len-2];
-            for (var dk in adjusted) {
-                var d = DIRS[dk];
-                var nr = player.row + d.dr, nc = player.col + d.dc;
-                if (nr + ',' + nc === otherPos) adjusted[dk] -= 1;
-            }
-            bestDir = null; bestVal = -Infinity;
-            for (var dk in adjusted) {
-                if (adjusted[dk] > bestVal) { bestVal = adjusted[dk]; bestDir = dk; }
-            }
-        }
-    }
-    aiPosHistory.push(player.row + ',' + player.col);
-    if (aiPosHistory.length > 8) aiPosHistory.shift();
     aiBestDir = bestDir;
 
     // Build viz: tour to show remaining targets, BFS path for detail
