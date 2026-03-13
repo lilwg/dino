@@ -85,6 +85,7 @@ var MOON_PHASES  = [140, 120, 100, 60, 40, 20, 0];
 var spriteImg   = document.getElementById('offline-resources-1x');
 var spriteClean = null;   // white→transparent, for HUD icons
 var spriteDark  = null;   // white→black, for game sprites (black outline day, white at night)
+var spriteInverted = null; // dark→white (white dino on transparent bg)
 var outlineCache = {};    // key → white-silhouette canvas, for dino outline
 
 function buildSpriteVariants() {
@@ -104,6 +105,26 @@ function buildSpriteVariants() {
     }
     spriteClean = process(function(d, i) { d[i+3] = 0; });
     spriteDark  = process(function(d, i) { d[i]=0; d[i+1]=0; d[i+2]=0; });
+
+    // Build inverted sprite: white→transparent, dark→white
+    var ic = document.createElement('canvas');
+    ic.width = w; ic.height = h;
+    var ix = ic.getContext('2d');
+    ix.drawImage(spriteImg, 0, 0);
+    var id = ix.getImageData(0, 0, w, h);
+    for (var i = 0; i < id.data.length; i += 4) {
+        var r = id.data[i], g = id.data[i+1], b = id.data[i+2], a = id.data[i+3];
+        if (a < 10) continue; // already transparent
+        if (r > 200 && g > 200 && b > 200) {
+            // white pixel → transparent
+            id.data[i+3] = 0;
+        } else {
+            // dark pixel → white
+            id.data[i] = 255; id.data[i+1] = 255; id.data[i+2] = 255;
+        }
+    }
+    ix.putImageData(id, 0, 0);
+    spriteInverted = ic;
 }
 if (spriteImg.complete) buildSpriteVariants();
 else spriteImg.addEventListener('load', buildSpriteVariants);
@@ -1326,7 +1347,7 @@ function _drawSpriteOutlined(px, py, sp, sc) {
 
 // Draw evil dino: color-inverted T-Rex, horizontally flipped
 function _drawEvilDino(px, py, sp, sc) {
-    if (!spriteDark) return;
+    if (!spriteInverted) return;
     var dw = Math.round(sp.w * sc), dh = Math.round(sp.h * sc);
     var dx = Math.round(px - dw / 2);
     var dy = Math.round(py - dh - TILE_H / 2 + 2);
@@ -1337,13 +1358,16 @@ function _drawEvilDino(px, py, sp, sc) {
     ctx.scale(-1, 1);
     ctx.translate(-Math.round(px), 0);
 
-    // Dark outline at cardinal offsets
-    var silKey = 'evilsil_' + sp.x + ',' + sp.y + ',' + sc;
+    // Dark outline: black silhouette at cardinal offsets
+    var silKey = 'evilinv_sil_' + sp.x + ',' + sp.y + ',' + sc;
     if (!outlineCache[silKey]) {
         var tmp = document.createElement('canvas');
         tmp.width = dw; tmp.height = dh;
         var tc = tmp.getContext('2d');
-        tc.drawImage(spriteDark, sp.x, sp.y, sp.w, sp.h, 0, 0, dw, dh);
+        tc.drawImage(spriteInverted, sp.x, sp.y, sp.w, sp.h, 0, 0, dw, dh);
+        tc.globalCompositeOperation = 'source-in';
+        tc.fillStyle = '#535353';
+        tc.fillRect(0, 0, dw, dh);
         outlineCache[silKey] = tmp;
     }
     var darkSil = outlineCache[silKey];
@@ -1352,19 +1376,8 @@ function _drawEvilDino(px, py, sp, sc) {
     ctx.drawImage(darkSil, dx, dy - 1);
     ctx.drawImage(darkSil, dx, dy + 1);
 
-    // White body
-    var bodyKey = 'evilbody_' + sp.x + ',' + sp.y + ',' + sc;
-    if (!outlineCache[bodyKey]) {
-        var tmp2 = document.createElement('canvas');
-        tmp2.width = dw; tmp2.height = dh;
-        var tc2 = tmp2.getContext('2d');
-        tc2.drawImage(spriteDark, sp.x, sp.y, sp.w, sp.h, 0, 0, dw, dh);
-        tc2.globalCompositeOperation = 'source-in';
-        tc2.fillStyle = '#ffffff';
-        tc2.fillRect(0, 0, dw, dh);
-        outlineCache[bodyKey] = tmp2;
-    }
-    ctx.drawImage(outlineCache[bodyKey], dx, dy);
+    // White body from inverted sprite
+    ctx.drawImage(spriteInverted, sp.x, sp.y, sp.w, sp.h, dx, dy, dw, dh);
 
     ctx.restore();
 }
