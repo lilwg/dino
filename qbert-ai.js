@@ -537,9 +537,11 @@ function expandCloud(cloud, type) {
         if (type === 'egg' || type === 'redball' || type === 'slick' || type === 'greenball') {
             moves = [DIRS['DL'], DIRS['DR']];
         } else if (type === 'ugg') {
-            moves = [{dr:-1, dc:-1}, {dr:-1, dc:0}]; // UL, UR
+            // Arcade: Ugg moves UL (row-1,col-1) or Left (row,col-1)
+            moves = [{dr:-1, dc:-1}, {dr:0, dc:-1}];
         } else { // wrongway
-            moves = [{dr:-1, dc:0}, {dr:-1, dc:-1}]; // UR, UL
+            // Arcade: Wrongway moves UR (row-1,col) or Right (row,col+1)
+            moves = [{dr:-1, dc:0}, {dr:0, dc:1}];
         }
         for (var m = 0; m < 2; m++) {
             var nr = c.row + moves[m].dr, nc = c.col + moves[m].dc;
@@ -723,7 +725,20 @@ function exPlayerMove(st, dirKey) {
     }
 
     st.pr = nr; st.pc = nc;
-    st.stepDeathProb = 0;
+
+    // Check for certain death at landing position (deterministic enemies like Coily)
+    // In the real game, collision kills you even if the cube would complete the level
+    for (var ei = 0; ei < st.enemies.length; ei++) {
+        var en = st.enemies[ei];
+        if (en.type === 'slick' || en.type === 'greenball') continue;
+        if (!en.cloud && en.row === st.pr && en.col === st.pc) {
+            st.alive = false;
+            return false;
+        }
+    }
+
+    // Check death probability from cloud-based enemies at landing position
+    var pDeathLand = deathProb(st);
 
     // Color cube
     var cube = exCubeAt(st, nr, nc);
@@ -737,6 +752,16 @@ function exPlayerMove(st, dirKey) {
     if (st.cubesColored >= st.cubes.length * st.tgt) {
         st.score += EX_WIN; return true;
     }
+
+    // Simulate enemy movement
+    exMoveEnemies(st);
+
+    // Check death probability after enemies move (they may land on us)
+    var pDeathAfter = deathProb(st);
+
+    // Combined death probability: survive both phases
+    st.stepDeathProb = 1 - (1 - pDeathLand) * (1 - pDeathAfter);
+
     return true;
 }
 
@@ -840,16 +865,16 @@ function expectimax(st, depth) {
 function expectimaxEval(dirKey) {
     var st = exCloneState();
     var nEnemies = st.enemies.length;
-    var depth = nEnemies <= 1 ? 7 : nEnemies <= 3 ? 6 : 5;
-    // Increase search depth in endgame on cycling levels (lv>=5)
+    // Deeper search for better survival. Memoization keeps it fast.
+    var depth = nEnemies <= 1 ? 10 : nEnemies <= 2 ? 9 : nEnemies <= 4 ? 7 : 6;
     var lv = st.lv !== undefined ? st.lv : arcadeLevel();
-    if (lv >= 5 && nEnemies <= 1) {
+    // Endgame on cycling levels: deeper
+    if (lv >= 5) {
         var remaining = 0;
         for (var i = 0; i < st.cubes.length; i++)
             if (st.cubes[i].state < st.tgt) remaining++;
-        if (remaining <= 3 && nEnemies === 0) depth = 10;
-        else if (remaining <= 6) depth = 9;
-        else depth = 8;
+        if (remaining <= 3 && nEnemies === 0) depth = 12;
+        else if (remaining <= 6 && nEnemies <= 1) depth = 11;
     }
     var child = exClone(st);
     if (!exPlayerMove(child, dirKey)) {
@@ -901,8 +926,21 @@ var PRECOMPUTED_TOURS = {
     // lv5+ (tgt=2, cycling 0→1→2→0): 77 moves
     5: ["DL","UR","DL","UR","DR","DR","UL","DR","DR","DR","UL","DR","DR","DL","UR","DL","UL","DL","UR","DL","UL","UR","DL","UR","UL","UL","DR","UL","DL","UL","DL","UR","DR","DR","DL","UL","DR","UL","UL","DL","DL","UR","DL","DL","UR","DL","UR","DR","UL","DR","UR","DR","UL","DR","UR","UR","DL","DR","UL","DR","UR","UR","DL","UR","DL","UR","UR","DR","UL","DR","UL","DR","DR","DR","UL","DR","UL"]
 };
-var aiTourMoves = null;  // current tour move sequence
+var aiTourMoves = null;  // current tour move sequence (directions)
 var aiTourStep = 0;      // current position in tour
+var aiTourPositions = null; // tour as positions for resumption
+
+// Convert direction sequence to position sequence starting from (0,0)
+function tourToPositions(dirs) {
+    var positions = [];
+    var r = 0, c = 0;
+    for (var i = 0; i < dirs.length; i++) {
+        var d = DIRS[dirs[i]];
+        r += d.dr; c += d.dc;
+        positions.push({ row: r, col: c });
+    }
+    return positions;
+}
 
 function aiTourInit() {
     var lv = arcadeLevel();
@@ -913,6 +951,7 @@ function aiTourInit() {
     else if (lv === 2) tour = PRECOMPUTED_TOURS[2];
     else tour = PRECOMPUTED_TOURS[1];
     aiTourMoves = tour;
+    aiTourPositions = tourToPositions(tour);
     aiTourStep = 0;
 }
 
@@ -921,22 +960,83 @@ function aiTourNext() {
     return aiTourMoves[aiTourStep++];
 }
 
+// Find the next uncolored position in the precomputed tour, starting from current tour step.
+// Returns the BFS path (as direction keys) from current player position, or null.
+function findTourResumePath() {
+    if (!aiTourPositions) return null;
+    var tgt = targetState();
+    // Find the next uncolored cube in the precomputed tour order
+    for (var i = aiTourStep; i < aiTourPositions.length; i++) {
+        var tp = aiTourPositions[i];
+        var cube = cubeAt(tp.row, tp.col);
+        if (cube && cube.state < tgt) {
+            // Found next target — BFS to it
+            var res = bfsTo(player.row, player.col, tp.row, tp.col);
+            if (res) {
+                aiTourStep = i; // align tour step
+                return res.path;
+            }
+        }
+    }
+    // All remaining tour positions are colored — tour is complete
+    return null;
+}
+
+function hasNearbyDanger(st) {
+    for (var i = 0; i < st.enemies.length; i++) {
+        var e = st.enemies[i];
+        if (e.type === 'slick' || e.type === 'greenball') continue;
+        // Coily is deterministic and fast — detect at 3 hops
+        // Random enemies — detect at 2 hops
+        var threshold = (e.type === 'coily') ? 3 : 2;
+        var dist = exBfsDist(st.pr, st.pc, e.row, e.col);
+        if (dist <= threshold) return true;
+        // Also check if enemy cloud has probability mass near player
+        if (e.cloud) {
+            for (var j = 0; j < e.cloud.length; j++) {
+                if (e.cloud[j].prob > 0.1) {
+                    var cd = exBfsDist(st.pr, st.pc, e.cloud[j].row, e.cloud[j].col);
+                    if (cd <= threshold) return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+var aiResumePath = null; // BFS path to resume tour after dodging
+
 function aiPickBestDir() {
-    // Follow precomputed tour if available and on track
+    // Follow precomputed tour if available, on track, and safe
     if (aiTourMoves && aiTourStep < aiTourMoves.length) {
-        var tourDir = aiTourMoves[aiTourStep];
         var tmpSt = exCloneState();
-        if (tmpSt.pr === 0 && tmpSt.pc === 0 && aiTourStep === 0) {
-            // At start position, follow tour
-            aiTourStep++;
-            return tourDir;
+        // Check for nearby danger — if so, drop to expectimax
+        if (hasNearbyDanger(tmpSt)) {
+            aiResumePath = null; // invalidate resume path during danger
+            // Fall through to expectimax search
+        } else {
+            var tourDir = aiTourMoves[aiTourStep];
+            // Check if we're at the expected position for this tour step
+            var expectedPos = aiTourStep > 0 ? aiTourPositions[aiTourStep - 1] : { row: 0, col: 0 };
+            var onTrack = (tmpSt.pr === expectedPos.row && tmpSt.pc === expectedPos.col);
+
+            if (onTrack && exCanMove(tmpSt, tourDir)) {
+                aiTourStep++;
+                aiResumePath = null;
+                return tourDir;
+            }
+
+            // Off track — try to resume by navigating to next uncolored tour position
+            if (!aiResumePath || aiResumePath.length === 0) {
+                aiResumePath = findTourResumePath();
+            }
+            if (aiResumePath && aiResumePath.length > 0) {
+                var nextDir = aiResumePath.shift();
+                // Safety: don't follow resume path onto an enemy
+                if (exCanMove(tmpSt, nextDir) && isSafeMove(nextDir)) return nextDir;
+                aiResumePath = null; // path blocked, fall through to expectimax
+            }
         }
-        if (exCanMove(tmpSt, tourDir)) {
-            aiTourStep++;
-            return tourDir;
-        }
-        // Tour broken (enemy killed us, position changed) — fall back to search
-        aiTourMoves = null;
     }
 
     // Record current state before evaluating moves
@@ -959,14 +1059,19 @@ function aiPickBestDir() {
     }
 
     var bestDir = null, bestVal = -Infinity;
+    var safeDir = null, safeVal = -Infinity; // best move that doesn't land on an enemy
     var fallbackDir = null, fallbackVal = -Infinity;
     var scores = {};
     for (var k = 0; k < 4; k++) {
         if (!exCanMove(tmpSt, DIR_KEYS[k])) continue;
         var val = expectimaxEval(DIR_KEYS[k]);
         scores[DIR_KEYS[k]] = val;
-        // Track fallback (best of all moves)
+        // Track fallback (best of all moves regardless of safety)
         if (val > fallbackVal) { fallbackVal = val; fallbackDir = DIR_KEYS[k]; }
+        // Track best safe move (doesn't land directly on enemy)
+        if (isSafeMove(DIR_KEYS[k]) && val > safeVal) {
+            safeVal = val; safeDir = DIR_KEYS[k];
+        }
         // Skip blocked direction (the position we keep returning to)
         if (blocked !== '') {
             var d = DIRS[DIR_KEYS[k]];
@@ -978,6 +1083,22 @@ function aiPickBestDir() {
 
     aiLastPos = curPos;
     aiLastScores = scores;
-    return bestDir || fallbackDir || 'DL';
+    // Prefer safe moves; only use unsafe move if ALL moves are unsafe (cornered)
+    var chosen = bestDir || fallbackDir || 'DL';
+    if (safeDir && !isSafeMove(chosen)) chosen = safeDir;
+    return chosen;
 }
 var aiLastScores = {};
+
+// Safety check: never move onto a position occupied by a lethal enemy
+function isSafeMove(dirKey) {
+    var d = DIRS[dirKey];
+    var nr = player.row + d.dr, nc = player.col + d.dc;
+    if (!isValidPos(nr, nc)) return true; // disc moves or falls are handled elsewhere
+    for (var i = 0; i < enemies.length; i++) {
+        var e = enemies[i];
+        if (e.type === 'spawn-timer' || e.type === 'slick' || e.type === 'greenball') continue;
+        if (e.row === nr && e.col === nc) return false;
+    }
+    return true;
+}
