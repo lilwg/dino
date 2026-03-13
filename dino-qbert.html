@@ -342,6 +342,9 @@ function initRound() {
     aiBoardHistory = {}; aiLastPos = ''; aiStuckCount = 0;
     aiTourIdx    = 0;
     aiBoardSig   = '';
+    // TEMP: enemies disabled for routing debug
+    var ENEMIES_DISABLED = true;
+    if (!ENEMIES_DISABLED) {
     // Spawn timers in frames (at 60fps)
     scheduleSpawn(280);                          // Coily egg (~4.7s)
     scheduleSpawn(140, 'redball');               // ~2.3s
@@ -349,6 +352,7 @@ function initRound() {
     if (round >= 3) scheduleSpawn(350, 'greenball'); // ~5.8s
     if (round >= 3) scheduleSpawn(420, 'ugg');       // ~7s
     if (round >= 3) scheduleSpawn(490, 'wrongway');  // ~8.2s
+    }
 }
 
 function scheduleSpawn(delay, forcedType) {
