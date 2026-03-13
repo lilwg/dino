@@ -8,6 +8,7 @@
 // Globals provided by this file:
 //   ROWS, DIRS, DIR_KEYS, EX_MOVE_RATE, EX_DEATH, EX_WIN, exMemoTable
 //   All AI/expectimax functions, BFS, tour planning, danger maps
+//   aiPickBestDir() — main entry point for choosing AI direction (with anti-oscillation)
 //   Board utility functions (isValidPos, arcadeLevel, targetState, etc.)
 //
 // exCloneState() must be defined by the including file (differs between game/test).
@@ -409,13 +410,15 @@ function crossingDistance(fromIdx, toComp, needs) {
 
 // Main tour cost function. On revert levels, uses component-aware planning.
 // Non-revert levels use simple greedy nearest-neighbor.
-function greedyTourCost(startIdx, needs, isRevert) {
+function greedyTourCost(startIdx, needs, isRevert, lv) {
     if (needs === 0) return 0;
 
     if (!isRevert) {
         // Simple greedy nearest-neighbor (no crossing penalties)
         return intraComponentCost(startIdx, needs).cost;
     }
+
+    var revertPenalty = (lv >= 5) ? 5 : 2;
 
     // Revert level: find connected components of uncolored cubes
     var components = findComponents(needs);
@@ -446,9 +449,8 @@ function greedyTourCost(startIdx, needs, isRevert) {
         }
         if (bestComp < 0) break;
 
-        // Cost to reach this component (crossing penalty: each completed cube
-        // crossed will be reverted, costing ~2 extra moves to re-complete)
-        totalCost += bestDist + bestCross * 2;
+        // Cost to reach this component (crossing completed cubes = reverts)
+        totalCost += bestDist + bestCross * revertPenalty;
 
         // Cost to finish this component
         var intra = intraComponentCost(pos, components[bestComp]);
@@ -716,7 +718,30 @@ function exTourCost(st) {
             needs |= (1 << posToIdx[st.cubes[i].row * ROWS + st.cubes[i].col]);
     }
     if (needs === 0) return 0;
-    return greedyTourCost(posToIdx[st.pr * ROWS + st.pc], needs, lv >= 3);
+    var base = greedyTourCost(posToIdx[st.pr * ROWS + st.pc], needs, lv >= 3, lv);
+    // On cycling levels (lv>=5), add isolation penalty: each remaining cube
+    // surrounded by completed cubes will require crossing (reverting) to reach.
+    // This makes the heuristic more realistic about the true cost.
+    if (lv >= 5) {
+        var isolationCost = 0;
+        for (var i = 0; i < POS_COUNT; i++) {
+            if (!(needs & (1 << i))) continue;
+            var r = idxToPos[i][0], c = idxToPos[i][1];
+            var completedAdj = 0, totalAdj = 0;
+            for (var k = 0; k < 4; k++) {
+                var dk = DIRS[DIR_KEYS[k]];
+                var nr = r + dk.dr, nc = c + dk.dc;
+                if (!isValidPos(nr, nc)) continue;
+                totalAdj++;
+                var idx = posToIdx[nr * ROWS + nc];
+                if (!(needs & (1 << idx))) completedAdj++;
+            }
+            // Each completed neighbor that must be crossed = revert damage
+            if (totalAdj > 0) isolationCost += completedAdj * 2;
+        }
+        base += isolationCost;
+    }
+    return base;
 }
 
 function exStateKey(st, depth) {
@@ -817,7 +842,21 @@ function exLeafValue(st) {
             var cube = exCubeAt(st, nr, nc);
             if (cube && cube.state >= st.tgt) completedNeighbors++;
         }
-        val -= completedNeighbors * 20;
+        // Higher penalty on cycling levels where revert costs 2 hops
+        val -= completedNeighbors * (lv >= 5 ? 50 : 20);
+    }
+    // Tiebreaker: reward being adjacent to uncolored cubes (encourages
+    // moving toward remaining work rather than oscillating)
+    if (lv >= 5) {
+        var nearUncolored = 0;
+        for (var k = 0; k < 4; k++) {
+            var dk = DIRS[DIR_KEYS[k]];
+            var nr = st.pr + dk.dr, nc = st.pc + dk.dc;
+            if (!isValidPos(nr, nc)) continue;
+            var cube = exCubeAt(st, nr, nc);
+            if (cube && cube.state < st.tgt) nearUncolored++;
+        }
+        val += nearUncolored * 3;
     }
     return val;
 }
@@ -866,6 +905,16 @@ function expectimaxEval(dirKey) {
     var st = exCloneState();
     var nEnemies = st.enemies.length;
     var depth = nEnemies <= 1 ? 7 : nEnemies <= 3 ? 6 : 5;
+    // Increase search depth in endgame on cycling levels (lv>=5)
+    var lv = st.lv !== undefined ? st.lv : arcadeLevel();
+    if (lv >= 5 && nEnemies <= 1) {
+        var remaining = 0;
+        for (var i = 0; i < st.cubes.length; i++)
+            if (st.cubes[i].state < st.tgt) remaining++;
+        if (remaining <= 3 && nEnemies === 0) depth = 10;
+        else if (remaining <= 6) depth = 9;
+        else depth = 8;
+    }
     var child = exClone(st);
     if (!exPlayerMove(child, dirKey)) {
         return EX_DEATH + exLeafValue(st) * 0.0001;
@@ -873,4 +922,53 @@ function expectimaxEval(dirKey) {
     var pDeath = child.stepDeathProb || 0;
     var val = (1 - pDeath) * expectimax(child, depth - 1) + pDeath * EX_DEATH;
     return val + exLeafValue(st) * 0.0001;
+}
+
+// ─── Anti-oscillation and AI entry point ────────────────────────────────────
+var aiPosHistory = [];
+
+function aiPickBestDir() {
+    exMemoTable = {};
+    var tmpSt = exCloneState();
+
+    // Evaluate all directions
+    var scores = {};
+    var bestDir = null, bestVal = -Infinity;
+    for (var k = 0; k < 4; k++) {
+        if (!exCanMove(tmpSt, DIR_KEYS[k])) continue;
+        var val = expectimaxEval(DIR_KEYS[k]);
+        scores[DIR_KEYS[k]] = val;
+        if (val > bestVal) { bestVal = val; bestDir = DIR_KEYS[k]; }
+    }
+
+    // Anti-oscillation: detect bouncing between 2 positions
+    var lv = tmpSt.lv !== undefined ? tmpSt.lv : arcadeLevel();
+    if (lv >= 3 && aiPosHistory.length >= 4) {
+        var h = aiPosHistory;
+        var len = h.length;
+        // Check if last 4 positions alternate between 2 spots (A-B-A-B)
+        if (h[len-1] === h[len-3] && h[len-2] === h[len-4] && h[len-1] !== h[len-2]) {
+            // We're oscillating. Find which direction goes to the "other" position
+            // and penalize it, forcing the AI to try something different.
+            var otherPos = h[len-2]; // the position we keep bouncing to
+            for (var dk in scores) {
+                var d = DIRS[dk];
+                var nr = player.row + d.dr, nc = player.col + d.dc;
+                if (nr + ',' + nc === otherPos) {
+                    scores[dk] -= 1; // small penalty to break tie
+                }
+            }
+            // Re-pick best direction
+            bestDir = null; bestVal = -Infinity;
+            for (var dk in scores) {
+                if (scores[dk] > bestVal) { bestVal = scores[dk]; bestDir = dk; }
+            }
+        }
+    }
+
+    // Record position history (keep last 8)
+    aiPosHistory.push(player.row + ',' + player.col);
+    if (aiPosHistory.length > 8) aiPosHistory.shift();
+
+    return bestDir || 'DL';
 }
