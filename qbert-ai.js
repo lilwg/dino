@@ -723,30 +723,7 @@ function exPlayerMove(st, dirKey) {
     }
 
     st.pr = nr; st.pc = nc;
-
-    // Check death probability from enemy positions/clouds (per-step, not accumulated)
-    var pDeath = deathProb(st);
-    if (pDeath >= 1.0) { st.alive = false; return false; }
-    st.stepDeathProb = pDeath;
-
-    // Catch slick/greenball if overlapping (probabilistic via cloud)
-    for (var ei = st.enemies.length - 1; ei >= 0; ei--) {
-        var en = st.enemies[ei];
-        if (en.type !== 'slick' && en.type !== 'greenball') continue;
-        if (en.cloud) {
-            for (var j = 0; j < en.cloud.length; j++) {
-                if (en.cloud[j].row === nr && en.cloud[j].col === nc) {
-                    // Probabilistic catch — award expected points
-                    st.score += (en.type === 'slick' ? 300 : 100) * en.cloud[j].prob;
-                }
-            }
-        }
-        // If exact position matches (before cloud conversion), catch deterministically
-        if (!en.cloud && en.row === nr && en.col === nc) {
-            st.score += en.type === 'slick' ? 300 : 100;
-            st.enemies.splice(ei, 1);
-        }
-    }
+    st.stepDeathProb = 0;
 
     // Color cube
     var cube = exCubeAt(st, nr, nc);
@@ -758,16 +735,9 @@ function exPlayerMove(st, dirKey) {
         if (newC > oldC) st.score += (cube.state === st.tgt) ? 25 : 15;
     }
     if (st.cubesColored >= st.cubes.length * st.tgt) {
-        st.score += EX_WIN; st.enemies = []; return true;
+        st.score += EX_WIN; return true;
     }
-
-    exMoveEnemies(st);
-    // Check again after enemy moves — enemies may have landed on player
-    var pDeath2 = deathProb(st);
-    if (pDeath2 >= 1.0) { st.alive = false; return false; }
-    // Combine pre- and post-move death probs: P(survive both) = (1-p1)(1-p2)
-    st.stepDeathProb = 1 - (1 - st.stepDeathProb) * (1 - pDeath2);
-    return st.alive;
+    return true;
 }
 
 function exTourCost(st) {
@@ -825,136 +795,7 @@ function exLeafValue(st) {
     if (!st.alive) return EX_DEATH;
     if (st.cubesColored >= st.cubes.length * st.tgt) return EX_WIN;
     var tourCost = exTourCost(st);
-    var val = st.cubesColored * 100 - tourCost * 10;
-    // Penalize proximity to dangerous enemies, incentivize catching slick/greenball
-    for (var i = 0; i < st.enemies.length; i++) {
-        var e = st.enemies[i];
-        if (e.type === 'slick') {
-            // Slick reverts cubes — penalize its existence, reward proximity (catch it!)
-            val -= 80; // each living slick will revert ~3-4 cubes before falling off
-            if (e.cloud) {
-                for (var j = 0; j < e.cloud.length; j++) {
-                    var cp = e.cloud[j];
-                    var dist = exBfsDist(st.pr, st.pc, cp.row, cp.col);
-                    if (dist <= 1) val += 60 * cp.prob; // reward being close to catch it
-                    else if (dist <= 2) val += 30 * cp.prob;
-                }
-            }
-            continue;
-        }
-        if (e.type === 'greenball') {
-            // Greenball freezes enemies — reward proximity
-            if (e.cloud) {
-                for (var j = 0; j < e.cloud.length; j++) {
-                    var cp = e.cloud[j];
-                    var dist = exBfsDist(st.pr, st.pc, cp.row, cp.col);
-                    if (dist <= 1) val += 40 * cp.prob;
-                }
-            }
-            continue;
-        }
-        if (e.type === 'coily') {
-            // Coily is deterministic — exact position known
-            var dist = exBfsDist(st.pr, st.pc, e.row, e.col);
-            if (dist <= 1) val -= 500;
-            else if (dist <= 2) val -= 250;
-            else if (dist <= 3) val -= 120;
-            else if (dist <= 4) val -= 40;
-            // Lure bonus: reward moving toward a disc that would kill Coily
-            for (var di = 0; di < st.discs.length; di++) {
-                var disc = st.discs[di];
-                if (!disc.active) continue;
-                if (!coilyLured(e, disc)) continue;
-                // Disc activation position: edge of disc.row
-                var discR = disc.row;
-                var discC = disc.side === 0 ? 0 : discR;
-                var distToDisc = exBfsDist(st.pr, st.pc, discR, discC);
-                // Only lure aggressively when we have space from Coily
-                if (distToDisc === 0) val += 350; // at disc, about to lure!
-                else if (distToDisc === 1 && dist >= 3) val += 200;
-                else if (distToDisc <= 3 && dist >= 4) val += 80;
-                break; // only consider closest lurable disc
-            }
-        } else if (e.cloud) {
-            // Random enemy — expected penalty weighted by probability
-            for (var j = 0; j < e.cloud.length; j++) {
-                var cp = e.cloud[j];
-                var dist = exBfsDist(st.pr, st.pc, cp.row, cp.col);
-                if (dist <= 1) val -= 200 * cp.prob;
-                else if (dist <= 2) val -= 80 * cp.prob;
-                else if (dist <= 3) val -= 25 * cp.prob;
-            }
-            // Convergence penalty: enemy above player heading same direction = trap risk
-            // Eggs/redballs move DL/DR (increasing row). If player is at or below enemy
-            // row and near a corner, the enemy will chase us into a dead end.
-            if (e.type === 'egg' || e.type === 'redball') {
-                for (var j = 0; j < e.cloud.length; j++) {
-                    var cp = e.cloud[j];
-                    if (cp.row <= st.pr && Math.abs(cp.col - st.pc) <= 2) {
-                        // Player is below enemy with limited lateral space
-                        var lateralSpace = Math.min(st.pc, st.pr - st.pc);
-                        if (lateralSpace <= 1 && st.pr >= ROWS - 3) {
-                            val -= 80 * cp.prob;
-                        }
-                    }
-                }
-            }
-        } else {
-            var dist = exBfsDist(st.pr, st.pc, e.row, e.col);
-            if (dist <= 1) val -= 200;
-            else if (dist <= 2) val -= 80;
-        }
-    }
-    // Count escape routes — include disc exits
-    var escapes = 0;
-    for (var k = 0; k < 4; k++) {
-        var dk = DIRS[DIR_KEYS[k]];
-        if (isValidPos(st.pr + dk.dr, st.pc + dk.dc)) escapes++;
-    }
-    for (var di = 0; di < st.discs.length; di++) {
-        var disc = st.discs[di];
-        if (!disc.active) continue;
-        if (disc.side === 0 && st.pc === 0 && st.pr === disc.row) escapes++;
-        if (disc.side === 1 && st.pc === st.pr && st.pr === disc.row) escapes++;
-    }
-    if (escapes <= 1) val -= 150;
-    else if (escapes <= 2) val -= 40;
-    // Mild penalty for Ugg/Wrongway spawn corners (bottom edges, dead ends)
-    if (st.pr === ROWS - 1) {
-        if (st.pc === ROWS - 1) val -= 50; // Ugg spawn corner
-        if (st.pc === 0) val -= 50;        // Wrongway spawn corner
-    }
-    // On revert levels, penalize being surrounded by completed cubes (trap avoidance)
-    var lv = st.lv !== undefined ? st.lv : arcadeLevel();
-    if (lv >= 3) {
-        var completedNeighbors = 0;
-        for (var k = 0; k < 4; k++) {
-            var dk = DIRS[DIR_KEYS[k]];
-            var nr = st.pr + dk.dr, nc = st.pc + dk.dc;
-            if (!isValidPos(nr, nc)) continue;
-            var cube = exCubeAt(st, nr, nc);
-            if (cube && cube.state >= st.tgt) completedNeighbors++;
-        }
-        // Higher penalty on cycling levels where revert costs 2 hops
-        val -= completedNeighbors * (lv >= 5 ? 50 : 20);
-    }
-    // Penalize repeated board states (anti-oscillation).
-    // Only in endgame on revert levels where oscillation is a real problem.
-    // Penalty scales up as fewer cubes remain (oscillation is harder to escape).
-    if (lv >= 3) {
-        var remaining = 0;
-        for (var i = 0; i < st.cubes.length; i++)
-            if (st.cubes[i].state < st.tgt) remaining++;
-        if (remaining <= 8) {
-            var bh = boardHash(st);
-            var visits = aiBoardHistory[bh] || 0;
-            if (visits > 0) {
-                var scale = remaining <= 3 ? 3 : remaining <= 5 ? 2 : 1;
-                val -= visits * AI_REPEAT_PENALTY * scale;
-            }
-        }
-    }
-    return val;
+    return st.cubesColored * 100 - tourCost * 10;
 }
 
 function exCanMove(st, dirKey) {
