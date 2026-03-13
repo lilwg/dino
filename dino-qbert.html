@@ -346,13 +346,14 @@ function initRound() {
     aiTourIdx    = 0;
     aiBoardSig   = '';
     if (debugEnemies) {
-    // Debug mode: spawn one of every enemy type immediately
-    scheduleSpawn(30);                       // Coily egg
-    scheduleSpawn(60, 'redball');
-    scheduleSpawn(90, 'greenball');
-    scheduleSpawn(120, 'slick');
-    scheduleSpawn(150, 'ugg');
-    scheduleSpawn(180, 'wrongway');
+    // Debug mode: spawn all enemy types quickly, enemies move immediately
+    roundStarted = true;
+    scheduleSpawn(1);                        // Coily egg
+    scheduleSpawn(5, 'redball');
+    scheduleSpawn(10, 'greenball');
+    scheduleSpawn(15, 'slick');
+    scheduleSpawn(20, 'ugg');
+    scheduleSpawn(25, 'wrongway');
     } else if (enemiesEnabled) {
     // Spawn timers in frames (at 60fps) — arcade-accurate schedule
     scheduleSpawn(280);                                    // Coily egg (~4.7s) — always
@@ -477,7 +478,7 @@ function enemyJumpTo(e, nr, nc) {
 
 // ─── Player jump ──────────────────────────────────────────────────────────────
 function tryMove(dirKey) {
-    if (player.dead || player.jumping || gameOver || paused) return;
+    if (debugEnemies || player.dead || player.jumping || gameOver || paused) return;
     var d = DIRS[dirKey]; if (!d) return;
     roundStarted = true;
     var nr = player.row + d.dr, nc = player.col + d.dc;
@@ -1246,7 +1247,6 @@ function drawVizPath() {
 }
 
 function drawPlayer() {
-    if (debugEnemies) return;  // hide player in debug mode
     if (player.dead) {
         // Flash during death
         if (Math.floor(player.deathAnimTimer / 5) % 2 === 0) {
