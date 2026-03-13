@@ -794,8 +794,7 @@ var exMemoTable = {};
 function exLeafValue(st) {
     if (!st.alive) return EX_DEATH;
     if (st.cubesColored >= st.cubes.length * st.tgt) return EX_WIN;
-    var tourCost = exTourCost(st);
-    return st.cubesColored * 100 - tourCost * 10;
+    return -exTourCost(st);
 }
 
 function exCanMove(st, dirKey) {
