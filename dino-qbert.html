@@ -462,18 +462,8 @@ function enemyJumpTo(e, nr, nc) {
     e.jumping = true; e.jumpT = 0;
     e.jumpDur = 0.143 * speedMultiplier();  // refresh speed each hop
     e.jumpSX = e.px; e.jumpSY = e.py;
-    e.fromRow = e.row; e.fromCol = e.col;   // remember source for mid-air collision
     e.tx = dst.cx; e.ty = dst.cy;
     e.row = nr; e.col = nc;
-
-    // Mid-air crossing: if player is jumping from this enemy's destination
-    // to this enemy's source, they cross paths — kill.
-    if (e.type !== 'slick' && e.type !== 'greenball' &&
-        player.jumping && !player.dead &&
-        player.fromRow === nr && player.fromCol === nc &&
-        player.row === e.fromRow && player.col === e.fromCol) {
-        killPlayer();
-    }
 }
 
 // ─── Player jump ──────────────────────────────────────────────────────────────
@@ -511,28 +501,12 @@ function startPlayerJump(nr, nc) {
     player.jumpDur  = 0.111 * speedMultiplier();  // refresh speed each hop
     player.jumpSX   = player.px;
     player.jumpSY   = player.py;
-    player.fromRow  = player.row;                  // remember source for mid-air collision
-    player.fromCol  = player.col;
     player.tx       = dst.cx;
     player.ty       = dst.cy;
     player.row      = nr;
     player.col      = nc;
     player.spriteFrame = 0;
     player.frameTimer  = 0;
-
-    // Mid-air crossing: if a lethal enemy is currently jumping FROM where the
-    // player is heading TO where the player just left, they cross paths — kill.
-    for (var i = 0; i < enemies.length; i++) {
-        var e = enemies[i];
-        if (e.type === 'spawn-timer' || !e.jumping) continue;
-        if (e.type === 'slick' || e.type === 'greenball') continue;
-        // Enemy jumping from player's destination to player's source = crossing
-        if (e.fromRow === nr && e.fromCol === nc &&
-            e.row === player.fromRow && e.col === player.fromCol) {
-            killPlayer();
-            return;
-        }
-    }
 }
 
 function killPlayer() {
