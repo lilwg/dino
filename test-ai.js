@@ -52,19 +52,9 @@ function exCloneState() {
 
 // ─── computeAIMove (test-specific: no visualization) ─────────────────────────
 function computeAIMove() {
-    exMemoTable = {};
-    var tmpSt = exCloneState();
-    var bestDir = null, bestVal = -Infinity;
-    for (var k = 0; k < 4; k++) {
-        if (!exCanMove(tmpSt, DIR_KEYS[k])) continue;
-        var val = expectimaxEval(DIR_KEYS[k]);
-        if (val > bestVal) {
-            bestVal = val;
-            bestDir = DIR_KEYS[k];
-        }
-    }
+    var bestDir = aiPickBestDir();
     if (boardSig() !== aiBoardSig || aiTour.length === 0) buildTour();
-    return bestDir || 'DL';
+    return bestDir;
 }
 
 // ─── Game simulation ─────────────────────────────────────────────────────────
@@ -108,6 +98,7 @@ function initRound() {
     freezeTimer = 0;
     aiDetailPath = []; aiTourDots = [];
     aiTour = []; aiTourIdx = 0; aiBoardSig = '';
+    aiPosHistory = [];
 
     // Enemy spawn patterns per arcade manual round progression
     var lv = arcadeLevel();

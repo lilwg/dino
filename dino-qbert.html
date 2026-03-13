@@ -339,6 +339,7 @@ function initRound() {
     aiTourDots   = [];
     aiMoveTimer  = 0;
     aiTour       = [];
+    aiPosHistory = [];
     aiTourIdx    = 0;
     aiBoardSig   = '';
     // Spawn timers in frames (at 60fps)
@@ -605,10 +606,10 @@ function checkPlayerEnemyCollision() {
 // ─── Update enemies (real-time: each enemy moves on its own independent timer) ──
 function updateEnemies() {
     if (!roundStarted) return; // enemies frozen until first player move
-    // Tick spawn timers (frame-based)
+    // Tick spawn timers (frame-based, scaled by game speed)
     for (var i = enemies.length - 1; i >= 0; i--) {
         if (enemies[i].type === 'spawn-timer') {
-            enemies[i].timer--;
+            enemies[i].timer -= speedMultiplier();
             if (enemies[i].timer <= 0) {
                 var ft = enemies[i].forcedType;
                 enemies.splice(i, 1);
@@ -920,11 +921,29 @@ function computeAIMove() {
         if (!exCanMove(tmpSt, DIR_KEYS[k])) continue;
         var val = expectimaxEval(DIR_KEYS[k]);
         aiMoveScores[DIR_KEYS[k]] = val;
-        if (val > bestVal) {
-            bestVal = val;
-            bestDir = DIR_KEYS[k];
+        if (val > bestVal) { bestVal = val; bestDir = DIR_KEYS[k]; }
+    }
+    // Anti-oscillation: use shared logic to break ties
+    var lv = tmpSt.lv !== undefined ? tmpSt.lv : arcadeLevel();
+    if (lv >= 3 && aiPosHistory.length >= 4) {
+        var h = aiPosHistory, len = h.length;
+        if (h[len-1] === h[len-3] && h[len-2] === h[len-4] && h[len-1] !== h[len-2]) {
+            var adjusted = {};
+            for (var dk in aiMoveScores) adjusted[dk] = aiMoveScores[dk];
+            var otherPos = h[len-2];
+            for (var dk in adjusted) {
+                var d = DIRS[dk];
+                var nr = player.row + d.dr, nc = player.col + d.dc;
+                if (nr + ',' + nc === otherPos) adjusted[dk] -= 1;
+            }
+            bestDir = null; bestVal = -Infinity;
+            for (var dk in adjusted) {
+                if (adjusted[dk] > bestVal) { bestVal = adjusted[dk]; bestDir = dk; }
+            }
         }
     }
+    aiPosHistory.push(player.row + ',' + player.col);
+    if (aiPosHistory.length > 8) aiPosHistory.shift();
     aiBestDir = bestDir;
 
     // Build viz: tour to show remaining targets, BFS path for detail
