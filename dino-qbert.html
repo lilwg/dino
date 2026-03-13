@@ -1473,7 +1473,7 @@ function drawEnemy(e) {
 
     } else if (e.type === 'coily') {
         var sp = e.frame ? SPRITES.PTERO2 : SPRITES.PTERO1;
-        _drawSpriteOutlined(e.px, e.py, sp, 0.80, e.facing === 'L');
+        _drawSpriteOutlined(e.px, e.py, sp, 0.80, e.facing !== 'L');
 
     } else if (e.type === 'slick') {
         // Evil dino: color-inverted T-Rex
