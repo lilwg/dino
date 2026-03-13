@@ -88,6 +88,25 @@ function discCount() {
     return [7, 6, 6, 5][r]; // Level 5+
 }
 
+// Arcade-accurate enemy availability per round
+// Round 1-2 (1-1,1-2): Coily + Red Ball only
+// Round 3 (1-3): Coily + Ugg + Wrongway (no red balls)
+// Round 4 (1-4): Coily + Red Ball + Slick
+// Round 5 (2-1): Coily + Red Ball + Ugg + Wrongway
+// Round 6 (2-2): Coily + Ugg + Wrongway + Slick + Green Ball
+// Round 7 (2-3): Coily + Red Ball + Green Ball + Slick
+// Round 8+ (2-4+): All enemies
+function hasRedBall() {
+    if (round <= 2) return true;
+    if (round === 3) return false;  // 1-3: replaced by Ugg/Wrongway
+    if (round >= 8) return true;    // 2-4+: all enemies
+    var sub = ((round - 1) % 4) + 1;
+    return sub === 1 || sub === 3 || sub === 4; // odd sub-rounds + round 4
+}
+function hasUggWrongway() { return round >= 3; }
+function hasSlick() { return round >= 4; }
+function hasGreenBall() { return round >= 6; }
+
 function discConfig() {
     var count = discCount();
     var r = ((round - 1) % 4);

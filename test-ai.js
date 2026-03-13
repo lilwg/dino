@@ -122,20 +122,17 @@ function initRound() {
     aiBoardHistory = {}; aiLastPos = ''; aiStuckCount = 0; aiPosHistory = [];
     aiTourInit();
 
-    // Enemy spawn patterns per arcade manual round progression
+    // Arcade-accurate enemy spawn schedule
     var lv = arcadeLevel();
-    scheduleSpawn(8);              // Coily egg (always present)
-    scheduleSpawn(4, 'redball');   // Red ball (always present)
-    // Level 1 round 3+: Ugg & Wrongway appear
-    if (lv >= 1 && round >= 3) scheduleSpawn(12, 'ugg');
-    if (lv >= 1 && round >= 3) scheduleSpawn(14, 'wrongway');
-    // Level 2+: Slick/Sam appear (revert cubes)
-    if (lv >= 2) scheduleSpawn(15, 'slick');
-    // Level 3+: Green ball (freeze power-up)
-    if (lv >= 3) scheduleSpawn(10, 'greenball');
-    // Higher levels: more frequent and additional enemies
-    if (lv >= 3) scheduleSpawn(20, 'redball'); // second red ball
-    if (lv >= 4) scheduleSpawn(18, 'slick');   // second slick
+    scheduleSpawn(8);                                  // Coily egg (always present)
+    if (hasRedBall())     scheduleSpawn(4, 'redball');  // Red ball
+    if (hasUggWrongway()) scheduleSpawn(12, 'ugg');
+    if (hasUggWrongway()) scheduleSpawn(14, 'wrongway');
+    if (hasSlick())       scheduleSpawn(15, 'slick');
+    if (hasGreenBall())   scheduleSpawn(10, 'greenball');
+    // Higher levels: additional enemies
+    if (lv >= 3 && hasRedBall()) scheduleSpawn(20, 'redball'); // second red ball
+    if (lv >= 4 && hasSlick())   scheduleSpawn(18, 'slick');   // second slick
 }
 
 function scheduleSpawn(delay, forcedType) {
@@ -332,7 +329,7 @@ function moveEnemies() {
                 e.row = rbnr; e.col = rbnc;
             } else {
                 enemies.splice(i, 1);
-                scheduleSpawn(Math.max(5, 8 - Math.floor(round / 2)), 'redball');
+                if (hasRedBall()) scheduleSpawn(Math.max(5, 8 - Math.floor(round / 2)), 'redball');
                 continue;
             }
         } else if (e.type === 'greenball') {
@@ -343,7 +340,7 @@ function moveEnemies() {
                 e.row = gbnr; e.col = gbnc;
             } else {
                 enemies.splice(i, 1);
-                if (round >= 3) scheduleSpawn(12, 'greenball');
+                if (hasGreenBall()) scheduleSpawn(12, 'greenball');
                 continue;
             }
         } else if (e.type === 'slick') {
@@ -354,7 +351,7 @@ function moveEnemies() {
                 e.row = snr; e.col = snc;
             } else {
                 enemies.splice(i, 1);
-                if (round >= 4) scheduleSpawn(15, 'slick');
+                if (hasSlick()) scheduleSpawn(15, 'slick');
                 continue;
             }
         } else if (e.type === 'ugg') {
@@ -369,7 +366,7 @@ function moveEnemies() {
                 e.row = unr; e.col = unc;
             } else {
                 enemies.splice(i, 1);
-                if (round >= 3) scheduleSpawn(12, 'ugg');
+                if (hasUggWrongway()) scheduleSpawn(12, 'ugg');
                 continue;
             }
         } else if (e.type === 'wrongway') {
@@ -383,7 +380,7 @@ function moveEnemies() {
                 e.row = wnr; e.col = wnc;
             } else {
                 enemies.splice(i, 1);
-                if (round >= 3) scheduleSpawn(14, 'wrongway');
+                if (hasUggWrongway()) scheduleSpawn(14, 'wrongway');
                 continue;
             }
         }
@@ -399,7 +396,7 @@ function moveEnemies() {
             if (cube && cube.state > 0) cube.state--;
             if (e.row >= ROWS - 1) {
                 enemies.splice(i, 1);
-                if (round >= 4) scheduleSpawn(15, 'slick');
+                if (hasSlick()) scheduleSpawn(15, 'slick');
                 continue;
             }
         }
@@ -434,11 +431,11 @@ function simTurn() {
                 if (enemies[i].type === 'spawn-timer') kept.push(enemies[i]);
             enemies = kept;
             scheduleSpawn(7);
-            scheduleSpawn(5, 'redball');
-            if (round >= 4) scheduleSpawn(13, 'slick');
-            if (round >= 3) scheduleSpawn(10, 'greenball');
-            if (round >= 3) scheduleSpawn(12, 'ugg');
-            if (round >= 3) scheduleSpawn(14, 'wrongway');
+            if (hasRedBall())     scheduleSpawn(5, 'redball');
+            if (hasSlick())       scheduleSpawn(13, 'slick');
+            if (hasGreenBall())   scheduleSpawn(10, 'greenball');
+            if (hasUggWrongway()) scheduleSpawn(12, 'ugg');
+            if (hasUggWrongway()) scheduleSpawn(14, 'wrongway');
         }
         return null;
     }

@@ -345,13 +345,13 @@ function initRound() {
     aiTourIdx    = 0;
     aiBoardSig   = '';
     if (enemiesEnabled) {
-    // Spawn timers in frames (at 60fps)
-    scheduleSpawn(280);                          // Coily egg (~4.7s)
-    scheduleSpawn(140, 'redball');               // ~2.3s
-    if (round >= 4) scheduleSpawn(525, 'slick');   // ~8.75s
-    if (round >= 3) scheduleSpawn(350, 'greenball'); // ~5.8s
-    if (round >= 3) scheduleSpawn(420, 'ugg');       // ~7s
-    if (round >= 3) scheduleSpawn(490, 'wrongway');  // ~8.2s
+    // Spawn timers in frames (at 60fps) — arcade-accurate schedule
+    scheduleSpawn(280);                                    // Coily egg (~4.7s) — always
+    if (hasRedBall())    scheduleSpawn(140, 'redball');     // ~2.3s
+    if (hasSlick())      scheduleSpawn(525, 'slick');      // ~8.75s
+    if (hasGreenBall())  scheduleSpawn(350, 'greenball');   // ~5.8s
+    if (hasUggWrongway()) scheduleSpawn(420, 'ugg');        // ~7s
+    if (hasUggWrongway()) scheduleSpawn(490, 'wrongway');   // ~8.2s
     }
 }
 
@@ -691,7 +691,7 @@ function updateEnemies() {
                 enemyJumpTo(e, rbnr, rbnc);
             } else {
                 enemies.splice(i, 1);
-                scheduleSpawn(Math.max(175, 280 - Math.floor(round / 2) * 35), 'redball');
+                if (hasRedBall()) scheduleSpawn(Math.max(175, 280 - Math.floor(round / 2) * 35), 'redball');
             }
         } else if (e.type === 'greenball') {
             var gbdir = Math.random() < 0.5 ? 'DL' : 'DR';
@@ -701,7 +701,7 @@ function updateEnemies() {
                 enemyJumpTo(e, gbnr, gbnc);
             } else {
                 enemies.splice(i, 1);
-                if (round >= 3) scheduleSpawn(420, 'greenball');
+                if (hasGreenBall()) scheduleSpawn(420, 'greenball');
             }
         } else if (e.type === 'slick') {
             var sdir = Math.random() < 0.5 ? 'DL' : 'DR';
@@ -711,7 +711,7 @@ function updateEnemies() {
                 enemyJumpTo(e, snr, snc);
             } else {
                 enemies.splice(i, 1);
-                if (round >= 4) scheduleSpawn(525, 'slick');
+                if (hasSlick()) scheduleSpawn(525, 'slick');
             }
         } else if (e.type === 'ugg') {
             // Ugg moves upward: random UL or UR
@@ -722,7 +722,7 @@ function updateEnemies() {
                 enemyJumpTo(e, unr, unc);
             } else {
                 enemies.splice(i, 1);
-                if (round >= 3) scheduleSpawn(420, 'ugg');
+                if (hasUggWrongway()) scheduleSpawn(420, 'ugg');
             }
         } else if (e.type === 'wrongway') {
             // Wrongway moves upward: random UL or UR
@@ -733,7 +733,7 @@ function updateEnemies() {
                 enemyJumpTo(e, wnr, wnc);
             } else {
                 enemies.splice(i, 1);
-                if (round >= 3) scheduleSpawn(490, 'wrongway');
+                if (hasUggWrongway()) scheduleSpawn(490, 'wrongway');
             }
         }
     }
@@ -752,7 +752,7 @@ function onEnemyLand(e, idx) {
         // Check if slick reached bottom — remove it
         if (e.row >= ROWS - 1) {
             enemies.splice(idx, 1);
-            if (round >= 4) scheduleSpawn(525, 'slick');
+            if (hasSlick()) scheduleSpawn(525, 'slick');
         }
     } else if (e.type === 'greenball') {
         // Green ball is safe — player catches it for 100 points
@@ -838,12 +838,12 @@ function updatePlayer() {
             }
             enemies = kept;
             roundStarted = false; // wait for first move again after respawn
-            scheduleSpawn(245);                          // Coily egg (~4.1s)
-            scheduleSpawn(175, 'redball');               // ~2.9s
-            if (round >= 4) scheduleSpawn(455, 'slick');   // ~7.6s
-            if (round >= 3) scheduleSpawn(350, 'greenball'); // ~5.8s
-            if (round >= 3) scheduleSpawn(385, 'ugg');       // ~6.4s
-            if (round >= 3) scheduleSpawn(455, 'wrongway');  // ~7.6s
+            scheduleSpawn(245);                                    // Coily egg (~4.1s)
+            if (hasRedBall())    scheduleSpawn(175, 'redball');     // ~2.9s
+            if (hasSlick())      scheduleSpawn(455, 'slick');      // ~7.6s
+            if (hasGreenBall())  scheduleSpawn(350, 'greenball');   // ~5.8s
+            if (hasUggWrongway()) scheduleSpawn(385, 'ugg');        // ~6.4s
+            if (hasUggWrongway()) scheduleSpawn(455, 'wrongway');   // ~7.6s
         }
         return;
     }
