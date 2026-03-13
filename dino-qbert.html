@@ -1440,12 +1440,12 @@ function drawEnemy(e) {
         ctx.restore();
 
     } else if (e.type === 'ugg') {
-        // Ugg: cactus on right cube face — rotated CCW, offset to right face center
-        _drawRotatedCactus(e.px - TILE_W / 4, e.py + TILE_H / 4 + CUBE_DEPTH / 2, -Math.PI / 2, 0.75);
+        // Ugg: on right cube face — points right (π/2), offset to right face center
+        _drawRotatedCactus(e.px + TILE_W / 4, e.py + TILE_H / 4 + CUBE_DEPTH / 2, Math.PI / 2, 0.75);
 
     } else if (e.type === 'wrongway') {
-        // Wrongway: cactus on left cube face — rotated CW, offset to left face center
-        _drawRotatedCactus(e.px + TILE_W / 4, e.py + TILE_H / 4 + CUBE_DEPTH / 2, Math.PI / 2, 0.75);
+        // Wrongway: on left cube face — points left (-π/2), offset to left face center
+        _drawRotatedCactus(e.px - TILE_W / 4, e.py + TILE_H / 4 + CUBE_DEPTH / 2, -Math.PI / 2, 0.75);
     }
 }
 
