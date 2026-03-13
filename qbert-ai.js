@@ -1108,7 +1108,9 @@ function aiPickBestDir() {
 }
 var aiLastScores = {};
 
-// Safety check: never move onto a position occupied by a lethal enemy
+// Safety check: never move onto a position occupied by a lethal enemy,
+// and also check Coily's predicted next position (since Coily might move
+// onto us right after we land).
 function isSafeMove(dirKey) {
     var d = DIRS[dirKey];
     var nr = player.row + d.dr, nc = player.col + d.dc;
@@ -1116,7 +1118,62 @@ function isSafeMove(dirKey) {
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
         if (e.type === 'spawn-timer' || e.type === 'slick' || e.type === 'greenball') continue;
+        // Current enemy position
         if (e.row === nr && e.col === nc) return false;
+        // Coily's predicted next position (Coily chases toward our landing spot)
+        if (e.type === 'coily') {
+            var cp = predictCoilyNext(e.row, e.col, nr, nc);
+            if (cp.row === nr && cp.col === nc) return false;
+        }
     }
     return true;
+}
+
+// Evaluate whether using a disc to lure Coily off the edge is beneficial.
+// Returns the direction to move to reach a disc, or null if not worthwhile.
+function evalDiscLure() {
+    var coily = null;
+    for (var i = 0; i < enemies.length; i++) {
+        if (enemies[i].type === 'coily') { coily = enemies[i]; break; }
+    }
+    if (!coily) return null;
+
+    // Check each active disc
+    for (var di = 0; di < discs.length; di++) {
+        var disc = discs[di];
+        if (!disc.active) continue;
+
+        // Can we reach the disc position? Player must be on the disc's row,
+        // at the correct edge column
+        var discRow = disc.row;
+        var discCol = disc.side === 0 ? 0 : discRow;
+        var discDir = disc.side === 0 ? 'UL' : 'UR';
+
+        // Check if player is already at disc position
+        if (player.row === discRow && player.col === discCol) {
+            // Would Coily actually be lured off?
+            if (coilyLured(coily, disc)) {
+                return discDir;
+            }
+        }
+
+        // Check if we can reach the disc within 2 hops and Coily would be lured
+        var pathToDisc = bfsTo(player.row, player.col, discRow, discCol);
+        if (pathToDisc && pathToDisc.dist <= 2) {
+            // Simulate Coily chasing us to the disc position
+            var simCoilyR = coily.row, simCoilyC = coily.col;
+            for (var s = 0; s < pathToDisc.dist; s++) {
+                var cp = predictCoilyNext(simCoilyR, simCoilyC, discRow, discCol);
+                simCoilyR = cp.row; simCoilyC = cp.col;
+            }
+            var simCoily = { row: simCoilyR, col: simCoilyC };
+            if (coilyLured(simCoily, disc)) {
+                // Check if the path to disc is safe
+                var safe = true;
+                if (pathToDisc.path.length > 0 && !isSafeMove(pathToDisc.path[0])) safe = false;
+                if (safe) return pathToDisc.path[0];
+            }
+        }
+    }
+    return null;
 }
