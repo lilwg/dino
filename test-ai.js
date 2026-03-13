@@ -29,16 +29,29 @@ function exCloneState() {
     for (var i = 0; i < cubeStates.length; i++)
         cs[i] = { row: cubeStates[i].row, col: cubeStates[i].col, state: cubeStates[i].state };
     var ens = [];
+    // Only track enemies that matter for the search: Coily (deterministic),
+    // and the nearest 2 random lethal enemies. This prevents cloud explosion
+    // with many enemies while still modeling the most dangerous threats.
+    var lethalRandom = [];
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
         if (e.type === 'spawn-timer') continue;
-        var acc = e.accum !== undefined ? e.accum : 0;
-        var entry = { type: e.type, row: e.row, col: e.col, hops: e.hops || 0, accum: acc };
-        // Random enemies get a point cloud at their current position
-        if (e.type !== 'coily') {
-            entry.cloud = [{ row: e.row, col: e.col, prob: 1.0 }];
+        if (e.type === 'coily') {
+            ens.push({ type: e.type, row: e.row, col: e.col, hops: e.hops || 0, accum: e.accum || 0 });
+        } else if (e.type === 'slick' || e.type === 'greenball') {
+            // Safe enemies: skip to save search time
+            continue;
+        } else {
+            // Lethal enemies: track nearest ones (closer = more dangerous)
+            var d = exBfsDist(player.row, player.col, e.row, e.col);
+            lethalRandom.push({ e: e, dist: d });
         }
-        ens.push(entry);
+    }
+    lethalRandom.sort(function(a, b) { return a.dist - b.dist; });
+    for (var i = 0; i < Math.min(3, lethalRandom.length); i++) {
+        var e = lethalRandom[i].e;
+        ens.push({ type: e.type, row: e.row, col: e.col, hops: e.hops || 0, accum: e.accum || 0,
+                    cloud: [{ row: e.row, col: e.col, prob: 1.0 }] });
     }
     var colored = 0;
     for (var i = 0; i < cs.length; i++) colored += Math.min(cs[i].state, tgt);
@@ -106,7 +119,7 @@ function initRound() {
     freezeTimer = 0;
     aiDetailPath = []; aiTourDots = [];
     aiTour = []; aiTourIdx = 0; aiBoardSig = '';
-    aiBoardHistory = {}; aiLastPos = ''; aiStuckCount = 0;
+    aiBoardHistory = {}; aiLastPos = ''; aiStuckCount = 0; aiPosHistory = [];
     aiTourInit();
 
     // Enemy spawn patterns per arcade manual round progression
@@ -155,11 +168,12 @@ function spawnEnemy(forcedType) {
     }
 }
 
-function killPlayer() {
+function killPlayer(reason) {
     if (player.dead) return;
     player.dead = true;
     player.deathTimer = 3;
     lives--;
+    if (verbose) console.log('  KILL: ' + (reason || 'unknown') + ' at (' + player.row + ',' + player.col + ') lives=' + lives);
 }
 
 function useDisc(idx) {
@@ -200,7 +214,7 @@ function tryMove(dirKey) {
                 useDisc(di); return true;
             }
         }
-        killPlayer();
+        killPlayer('fell off edge to (' + nr + ',' + nc + ')');
         return false;
     }
 
@@ -224,7 +238,7 @@ function checkPlayerEnemyCollision() {
                 freezeTimer = 5; // Freeze all enemies for ~5 turns
                 enemies.splice(i, 1); i--;
             } else {
-                killPlayer(); return;
+                killPlayer('landed on ' + e.type + '@(' + e.row + ',' + e.col + ')'); return;
             }
         }
     }
@@ -375,7 +389,7 @@ function moveEnemies() {
                 freezeTimer = 5;
                 enemies.splice(i, 1);
             } else {
-                killPlayer();
+                killPlayer(e.type + ' moved onto @(' + e.row + ',' + e.col + ')');
             }
         }
     }
@@ -489,7 +503,7 @@ function runGame(maxRounds, verbose) {
     for (; round <= maxRounds; round++) {
         initRound();
         var moveNum = 0;
-        var maxTurns = 500;
+        var maxTurns = 200;
 
         if (verbose) {
             console.log('\n' + '='.repeat(50));
@@ -500,9 +514,11 @@ function runGame(maxRounds, verbose) {
         for (var turn = 0; turn < maxTurns; turn++) {
             var aiMove = simTurn();
 
-            if (lives < prevLives) {
-                totalDeaths += prevLives - lives;
-                if (verbose) console.log('  Turn ' + turn + ': DIED! Lives=' + lives);
+            if (lives !== prevLives) {
+                if (lives < prevLives) {
+                    totalDeaths += prevLives - lives;
+                    if (verbose) console.log('  Turn ' + turn + ': DIED! Lives=' + lives);
+                }
                 prevLives = lives;
             }
             if (lives <= 0) {
