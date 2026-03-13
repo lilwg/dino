@@ -25,13 +25,18 @@
                 <button class="si-btn" onclick="restartGame()">Restart</button>
                 <button class="si-btn" id="pause-btn" onclick="togglePause()">Pause</button>
                 <button class="si-btn" id="fs-btn" onclick="toggleFullscreen()">Fullscreen</button>
+                <button class="si-btn active" id="enemies-btn" onclick="toggleEnemies()">Enemies: On</button>
+                <label style="display:inline-flex;align-items:center;gap:4px;margin-left:8px;font-size:12px;color:#535353;">
+                    Speed <input type="range" id="speed-slider" min="0.25" max="2" step="0.25" value="0.25" style="width:80px;" oninput="setGameSpeed(parseFloat(this.value))">
+                    <span id="speed-label">1x</span>
+                </label>
             </div>
             <p class="si-help" style="text-align:center;">&uarr;/Q up-left &nbsp;|&nbsp; &rarr;/E up-right &nbsp;|&nbsp; &larr;/A down-left &nbsp;|&nbsp; &darr;/D down-right &nbsp;|&nbsp; R restart</p>
         </div>
 
         <h2 style="margin-top:16px;">How it works</h2>
-        <p class="si-prose">DinoQbert recreates the 1982 Gottlieb arcade original: hop-based movement, one jump per keypress with a 150ms arc animation, and the classic @!#?@! swear bubble on death. Coily spawns as an egg, bounces randomly down the pyramid, then hatches and chases the player. Slick hops down uncoloring cubes. Two teleport discs on each side let Q*bert escape and kill Coily for a bonus.</p>
-        <p class="si-prose">Tap <strong>Viz</strong> to reveal the AI&rsquo;s plan: a dashed line traces the BFS-shortest path to its next target, with faint dots marking the rest of its queued tour stops. The AI builds a greedy nearest-neighbour tour over all uncolored cubes, then uses BFS to navigate each leg while avoiding tiles adjacent to enemies. If Coily closes to within two hops, the AI abandons the tour and leaps for a disc to reset him.</p>
+        <p class="si-prose">DinoQbert recreates the 1982 Gottlieb arcade original: hop-based movement, one jump per keypress with a 9-frame arc animation matching the original arcade, and the classic @!#?@! swear bubble on death. Coily spawns as an egg, bounces randomly down the pyramid, then hatches and chases the player. Dark balls bounce down and kill on contact; light balls are safe to catch for 100 pts. Slick (round 4+) hops down uncoloring cubes. Ugg and Wrongway (round 3+) crawl upward from the bottom corners. Two transport discs at variable positions let Q*bert escape and lure Coily to his death.</p>
+        <p class="si-prose">Tap <strong>Viz</strong> to reveal the AI&rsquo;s plan: a dashed line traces the expected path, with faint dots marking uncolored cubes. The game uses <strong>turn-based logic</strong> matching the original arcade: player hops, then every enemy hops once, then collisions are checked. Every move is chosen by <strong>expectimax search</strong>&mdash;it enumerates every possible enemy outcome exactly. Coily is deterministic (greedy chase), so no branching needed; all other enemies fork DL/DR at p=0.5 each, giving 2<sup>N</sup> outcomes per step. Depth adapts to enemy count: 5 deep with 0&ndash;1 random enemies, 4 with 2, 3 with 3+.</p>
 
         <p style="margin-top:20px;"><a href="/" style="color:#0071e3;font-size:14px;text-decoration:none;">&larr; Back</a></p>
     </div>
@@ -39,6 +44,17 @@
 <script src="fs-toggle.js"></script>
 <script src="dino-sounds.js"></script>
 <script>
+// Globals shared with qbert-ai.js (must be declared before it loads)
+var round, player, enemies, cubeStates, discs;
+var aiTour, aiTourIdx, aiBoardSig;
+var exMemoTable, exCloneState;
+var gameSpeed = 0.25;  // global speed scale; displayed as 1x–8x (display = internal × 4)
+var enemiesEnabled = true;  // toggle via UI button
+var debugEnemies = false;   // ?debug URL param: spawn all enemies, hide player
+</script>
+<script src="qbert-ai.js?v=2"></script>
+<script>
+
 (function () {
 'use strict';
 
@@ -69,6 +85,7 @@ var MOON_PHASES  = [140, 120, 100, 60, 40, 20, 0];
 var spriteImg   = document.getElementById('offline-resources-1x');
 var spriteClean = null;   // white→transparent, for HUD icons
 var spriteDark  = null;   // white→black, for game sprites (black outline day, white at night)
+var spriteInverted = null; // dark→white (white dino on transparent bg)
 var outlineCache = {};    // key → white-silhouette canvas, for dino outline
 
 function buildSpriteVariants() {
@@ -88,6 +105,26 @@ function buildSpriteVariants() {
     }
     spriteClean = process(function(d, i) { d[i+3] = 0; });
     spriteDark  = process(function(d, i) { d[i]=0; d[i+1]=0; d[i+2]=0; });
+
+    // Build inverted sprite: white→transparent, dark→white
+    var ic = document.createElement('canvas');
+    ic.width = w; ic.height = h;
+    var ix = ic.getContext('2d');
+    ix.drawImage(spriteImg, 0, 0);
+    var id = ix.getImageData(0, 0, w, h);
+    for (var i = 0; i < id.data.length; i += 4) {
+        var r = id.data[i], g = id.data[i+1], b = id.data[i+2], a = id.data[i+3];
+        if (a < 10) continue; // already transparent
+        if (r > 200 && g > 200 && b > 200) {
+            // white pixel → transparent
+            id.data[i+3] = 0;
+        } else {
+            // dark pixel → white
+            id.data[i] = 255; id.data[i+1] = 255; id.data[i+2] = 255;
+        }
+    }
+    ix.putImageData(id, 0, 0);
+    spriteInverted = ic;
 }
 if (spriteImg.complete) buildSpriteVariants();
 else spriteImg.addEventListener('load', buildSpriteVariants);
@@ -146,8 +183,7 @@ function applyNight(c) {
     c.globalCompositeOperation = 'source-over';
 }
 
-// ─── Isometric pyramid ───────────────────────────────────────────────────────
-var ROWS    = 7;
+// ─── Isometric pyramid (ROWS, DIRS, DIR_KEYS etc. loaded from qbert-ai.js) ──
 var TILE_W  = 64, TILE_H = 32;          // diamond: 64×32 (hw=32, hh=16)
 var CUBE_DEPTH = TILE_W / 2;            // = 32; side face is 32×32 → equal area to top diamond ✓
 var ROW_STEP   = TILE_H / 2 + CUBE_DEPTH; // = 48; perfect interlocking: face bottom = next row's diamond top
@@ -191,59 +227,56 @@ var vizOn    = false;
 var paused   = false;
 var gameOver = false;
 var levelWon = false;
+var roundStarted = false; // true after first player move — enemies frozen until then
 
-var score, hiScore, lives, round;
+// Base enemy move intervals: idle frames BETWEEN hops (level 1 speed).
+// Total land-to-land = moveInterval + ceil(1/jumpDur).
+// Arcade measurements at 60fps: Q*bert=9f, Coily=12f, red ball=12f land-to-land.
+// With jumpDur giving ~7f animation, idle gap = total - 7.
+var BASE_ENEMY_INTERVALS = {
+    egg:        5,   // 5 idle + 7 anim = 12f (~0.20s) — same as coily
+    coily:      5,   // 5 idle + 7 anim = 12f (~0.20s)
+    redball:    5,   // 5 idle + 7 anim = 12f (~0.20s)
+    greenball:  8,   // 8 idle + 7 anim = 15f (~0.25s) — leisurely
+    slick:     10,   // 10 idle + 7 anim = 17f (~0.28s) — slow
+    ugg:        5,   // 5 idle + 7 anim = 12f (~0.20s) — side-crawlers
+    wrongway:   5    // 5 idle + 7 anim = 12f (~0.20s) — side-crawlers
+};
+
+// Effective enemy intervals for current level
+function enemyMoveInterval(type) {
+    return Math.round((BASE_ENEMY_INTERVALS[type] || 30) / speedMultiplier());
+}
+
+var score, hiScore, lives;
 var extraLifeGiven;
-var cubeStates;   // flat array indexed [row * ROWS + col] — only valid cols used
-var player;
-var enemies;
-var discs;
+// round, player, enemies, cubeStates, discs, aiTour, aiTourIdx, aiBoardSig
+// are globals (declared before IIFE) shared with qbert-ai.js
 var frameCount;
 var roundMsg;          // { text, timer }
 var swearBubble;       // { x, y, timer }
 var aiDetailPath = [];  // BFS steps to current tour target (valid Q*bert moves)
 var aiTourDots   = [];  // remaining tour centres — drawn as dots only (no lines)
 var aiMoveTimer  = 0;
-var aiTour       = [];
-var aiTourIdx    = 0;
-var aiBoardSig   = '';
+aiTour       = [];
+aiTourIdx    = 0;
+aiBoardSig   = '';
+var aiMoveScores = {};  // { UL: val, UR: val, DL: val, DR: val } — expectimax values per direction
+var aiBestDir    = null;
 var inputQueue  = [];
+var discRide    = null;  // { side, t, sx, sy, tx, ty } — player riding disc to top
 
-// Direction deltas: UL=up-left, UR=up-right, DL=down-left, DR=down-right
-var DIRS = {
-    UL: { dr: -1, dc: -1 },
-    UR: { dr: -1, dc:  0 },
-    DL: { dr: +1, dc:  0 },
-    DR: { dr: +1, dc: +1 }
-};
-var DIR_KEYS = ['UL', 'UR', 'DL', 'DR'];
-
-function isValidPos(row, col) {
-    return row >= 0 && row < ROWS && col >= 0 && col <= row;
-}
-
-// Flat cube lookup
-function cubeAt(row, col) {
-    if (!isValidPos(row, col)) return null;
-    for (var i = 0; i < cubeStates.length; i++) {
-        if (cubeStates[i].row === row && cubeStates[i].col === col) return cubeStates[i];
-    }
-    return null;
-}
-
-// Target state depends on round
-function targetState() { return round >= 5 ? 2 : 1; }
+// DIRS, DIR_KEYS, isValidPos, cubeAt, arcadeLevel, targetState, nextCubeState
+// loaded from qbert-ai.js
 
 function stompCube(row, col) {
     var cube = cubeAt(row, col);
     if (!cube) return;
     var tgt = targetState();
-    if (cube.state < tgt) {
-        cube.state++;
-        score += 25;
-        // Rounds 3-4: stepping on state=1 in one-stomp mode resets it (flip-flop — not implemented as flip here; round 3-4 are still 1-stomp but with different visuals)
-        // Only round 5+ uses 2-stomp; that's handled by targetState()
-        checkExtraLife();
+    var next = nextCubeState(cube.state);
+    if (next !== cube.state) {
+        cube.state = next;
+        if (cube.state <= tgt && cube.state > 0) { score += 25; checkExtraLife(); }
     }
 }
 
@@ -254,26 +287,45 @@ function checkExtraLife() {
     }
 }
 
-function allColored() {
-    var tgt = targetState();
-    for (var i = 0; i < cubeStates.length; i++) {
-        if (cubeStates[i].state < tgt) return false;
+// allColored, discConfig loaded from qbert-ai.js
+
+// Legacy helper: returns [leftRow, rightRow] for the first two discs
+function discRows() {
+    var cfg = discConfig();
+    var left = 3, right = 3;
+    for (var i = 0; i < cfg.length; i++) {
+        if (cfg[i].side === 0) { left = cfg[i].row; break; }
     }
-    return true;
+    for (var i = 0; i < cfg.length; i++) {
+        if (cfg[i].side === 1) { right = cfg[i].row; break; }
+    }
+    return [left, right];
 }
 
-// ─── Disc helpers ─────────────────────────────────────────────────────────────
-// Left disc: beside row 3, col -1 equivalent
-// Right disc: beside row 3, col 4 equivalent
-function discScreenPos(side) {
-    var ref = cubeXY(3, side === 0 ? 0 : 3);
-    if (side === 0) return { x: ref.cx - TILE_W - 20, y: ref.cy + TILE_H * 0.5 };
-    else            return { x: ref.cx + TILE_W + 20, y: ref.cy + TILE_H * 0.5 };
+function discScreenPos(disc) {
+    var row = disc.row;
+    var side = disc.side;
+    if (side === 0) {
+        var offRow = row - 1, offCol = -1;
+        return { cx: PYR_CX + (offCol - offRow / 2) * TILE_W, cy: PYR_TOP_Y + offRow * ROW_STEP,
+                 x: PYR_CX + (offCol - offRow / 2) * TILE_W, y: PYR_TOP_Y + offRow * ROW_STEP };
+    } else {
+        var offRow = row - 1, offCol = row;
+        return { cx: PYR_CX + (offCol - offRow / 2) * TILE_W, cy: PYR_TOP_Y + offRow * ROW_STEP,
+                 x: PYR_CX + (offCol - offRow / 2) * TILE_W, y: PYR_TOP_Y + offRow * ROW_STEP };
+    }
+}
+
+// Which row the player must be on to catch a disc
+function discCatchRow(side) {
+    var rows = discRows();
+    return rows[side];
 }
 
 // ─── Init level ───────────────────────────────────────────────────────────────
 function initRound() {
     levelWon = false;
+    roundStarted = false;
     cubeStates = [];
     for (var r = 0; r < ROWS; r++)
         for (var c = 0; c <= r; c++)
@@ -284,7 +336,7 @@ function initRound() {
         row: 0, col: 0,
         px: sp.cx, py: sp.cy,
         // jump state
-        jumping: false, jumpT: 0, jumpDur: 0.13,
+        jumping: false, jumpT: 0, jumpDur: 0.111 * speedMultiplier(),
         jumpSX: sp.cx, jumpSY: sp.cy,
         tx: sp.cx, ty: sp.cy,
         // sprite
@@ -294,29 +346,44 @@ function initRound() {
         deathAnimTimer: 0
     };
 
-    // Immediately color starting cube
-    stompCube(0, 0);
+    // In the arcade, Q*bert does NOT color (0,0) on spawn
 
-    discs = [
-        { side: 0, active: true },
-        { side: 1, active: true }
-    ];
+    var cfg = discConfig();
+    discs = [];
+    for (var i = 0; i < cfg.length; i++)
+        discs.push({ side: cfg[i].side, row: cfg[i].row, active: true });
 
     enemies    = [];
     frameCount = 0;
-    roundMsg   = { text: 'ROUND ' + round, timer: 90 };
+    roundMsg   = { text: 'LV ' + arcadeLevel() + ' ROUND ' + ((round - 1) % 4 + 1), timer: 90 };
     swearBubble = null;
+    discRide    = null;
     aiDetailPath = [];
     aiTourDots   = [];
     aiMoveTimer  = 0;
     aiTour       = [];
+    aiBoardHistory = {}; aiLastPos = ''; aiStuckCount = 0; aiPosHistory = [];
+    aiTourInit();
     aiTourIdx    = 0;
     aiBoardSig   = '';
-
-    // Schedule first Coily spawn after brief delay
-    scheduleSpawn(180);
-    // Rounds 3+ also have Slick
-    if (round >= 3) scheduleSpawn(300, 'slick');
+    if (debugEnemies) {
+    // Debug mode: spawn all enemy types quickly, enemies move immediately
+    roundStarted = true;
+    scheduleSpawn(1);                        // Coily egg
+    scheduleSpawn(5, 'redball');
+    scheduleSpawn(10, 'greenball');
+    scheduleSpawn(15, 'slick');
+    scheduleSpawn(20, 'ugg');
+    scheduleSpawn(25, 'wrongway');
+    } else if (enemiesEnabled) {
+    // Spawn timers in frames (at 60fps) — arcade-accurate schedule
+    scheduleSpawn(280);                                    // Coily egg (~4.7s) — always
+    if (hasRedBall())    scheduleSpawn(140, 'redball');     // ~2.3s
+    if (hasSlick())      scheduleSpawn(525, 'slick');      // ~8.75s
+    if (hasGreenBall())  scheduleSpawn(350, 'greenball');   // ~5.8s
+    if (hasUggWrongway()) scheduleSpawn(420, 'ugg');        // ~7s
+    if (hasUggWrongway()) scheduleSpawn(490, 'wrongway');   // ~8.2s
+    }
 }
 
 function scheduleSpawn(delay, forcedType) {
@@ -332,34 +399,90 @@ function spawnEnemy(forcedType) {
         for (var i = 0; i < enemies.length; i++) {
             if (enemies[i].type === 'coily' || enemies[i].type === 'egg') { hasCoily = true; break; }
         }
-        type = hasCoily ? 'slick' : 'egg';
+        type = hasCoily ? 'redball' : 'egg';
     }
 
-    var sp = cubeXY(0, 0);
-    var baseSpeed = Math.max(20, 50 - round * 3);
+    // Red balls and green balls spawn at row 1 (second row), matching arcade
+    // All enemies spawn at row 1 in arcade (egg, redball, greenball)
+    var spawnRow = 1;
+    var spawnCol = Math.floor(Math.random() * 2);
+    var sp = cubeXY(spawnRow, spawnCol);
 
     if (type === 'egg') {
+        // Arcade: egg spawns at row 1 (not the apex)
+        var eggCol = Math.floor(Math.random() * 2);
+        var eggPos = cubeXY(1, eggCol);
         enemies.push({
             type: 'egg',
-            row: 0, col: 0,
-            px: sp.cx, py: sp.cy,
-            jumping: false, jumpT: 0, jumpDur: 0.14,
-            jumpSX: sp.cx, jumpSY: sp.cy,
-            tx: sp.cx, ty: sp.cy,
+            row: 1, col: eggCol,
+            px: eggPos.cx, py: eggPos.cy,
+            jumping: false, jumpT: 0, jumpDur: 0.143 * speedMultiplier(),
+            jumpSX: eggPos.cx, jumpSY: eggPos.cy,
+            tx: eggPos.cx, ty: eggPos.cy,
             hops: 0,
             frame: 0, frameTimer: 0,
-            moveTimer: 0, moveDelay: baseSpeed + 10   // egg hops every ~500ms ~= 30 frames
+            moveTimer: 0, moveInterval: enemyMoveInterval('egg')
+        });
+    } else if (type === 'redball') {
+        enemies.push({
+            type: 'redball',
+            row: spawnRow, col: spawnCol,
+            px: sp.cx, py: sp.cy,
+            jumping: false, jumpT: 0, jumpDur: 0.143 * speedMultiplier(),
+            jumpSX: sp.cx, jumpSY: sp.cy,
+            tx: sp.cx, ty: sp.cy,
+            frame: 0, frameTimer: 0,
+            moveTimer: 0, moveInterval: enemyMoveInterval('redball')
+        });
+    } else if (type === 'greenball') {
+        enemies.push({
+            type: 'greenball',
+            row: spawnRow, col: spawnCol,
+            px: sp.cx, py: sp.cy,
+            jumping: false, jumpT: 0, jumpDur: 0.143 * speedMultiplier(),
+            jumpSX: sp.cx, jumpSY: sp.cy,
+            tx: sp.cx, ty: sp.cy,
+            frame: 0, frameTimer: 0,
+            moveTimer: 0, moveInterval: enemyMoveInterval('greenball')
         });
     } else if (type === 'slick') {
         enemies.push({
             type: 'slick',
-            row: 0, col: 0,
+            row: spawnRow, col: spawnCol,
             px: sp.cx, py: sp.cy,
-            jumping: false, jumpT: 0, jumpDur: 0.12,
+            jumping: false, jumpT: 0, jumpDur: 0.143 * speedMultiplier(),
             jumpSX: sp.cx, jumpSY: sp.cy,
             tx: sp.cx, ty: sp.cy,
             frame: 0, frameTimer: 0,
-            moveTimer: 0, moveDelay: baseSpeed + 18   // slick hops every ~700ms ~= 42 frames
+            moveTimer: 0, moveInterval: enemyMoveInterval('slick')
+        });
+    } else if (type === 'ugg') {
+        // Ugg spawns at bottom-right corner, moves upward
+        var uggRow = ROWS - 1, uggCol = ROWS - 1;
+        var usp = cubeXY(uggRow, uggCol);
+        enemies.push({
+            type: 'ugg',
+            row: uggRow, col: uggCol,
+            px: usp.cx, py: usp.cy,
+            jumping: false, jumpT: 0, jumpDur: 0.143 * speedMultiplier(),
+            jumpSX: usp.cx, jumpSY: usp.cy,
+            tx: usp.cx, ty: usp.cy,
+            frame: 0, frameTimer: 0,
+            moveTimer: 0, moveInterval: enemyMoveInterval('ugg')
+        });
+    } else if (type === 'wrongway') {
+        // Wrongway spawns at bottom-left corner, moves upward
+        var wwRow = ROWS - 1, wwCol = 0;
+        var wsp = cubeXY(wwRow, wwCol);
+        enemies.push({
+            type: 'wrongway',
+            row: wwRow, col: wwCol,
+            px: wsp.cx, py: wsp.cy,
+            jumping: false, jumpT: 0, jumpDur: 0.143 * speedMultiplier(),
+            jumpSX: wsp.cx, jumpSY: wsp.cy,
+            tx: wsp.cx, ty: wsp.cy,
+            frame: 0, frameTimer: 0,
+            moveTimer: 0, moveInterval: enemyMoveInterval('wrongway')
         });
     }
 }
@@ -368,26 +491,32 @@ function spawnEnemy(forcedType) {
 function enemyJumpTo(e, nr, nc) {
     var dst = cubeXY(nr, nc);
     e.jumping = true; e.jumpT = 0;
+    e.jumpDur = 0.143 * speedMultiplier();  // refresh speed each hop
     e.jumpSX = e.px; e.jumpSY = e.py;
+    // Face based on horizontal direction of jump
+    if (dst.cx < e.px) e.facing = 'L';
+    else if (dst.cx > e.px) e.facing = 'R';
     e.tx = dst.cx; e.ty = dst.cy;
     e.row = nr; e.col = nc;
 }
 
 // ─── Player jump ──────────────────────────────────────────────────────────────
 function tryMove(dirKey) {
-    if (player.dead || player.jumping || gameOver || paused) return;
+    if (debugEnemies || player.dead || player.jumping || gameOver || paused) return;
     var d = DIRS[dirKey]; if (!d) return;
+    roundStarted = true;
     var nr = player.row + d.dr, nc = player.col + d.dc;
 
     // Check disc catch on edge-jump
     if (!isValidPos(nr, nc)) {
-        // Left disc: jumping UL from col 0, or DL off left edge
-        if (dirKey === 'UL' && player.col === 0 && discs[0].active) {
-            useDisc(0); return;
-        }
-        // Right disc: jumping UR from col === row (right edge), or DR off right edge
-        if (dirKey === 'UR' && player.col === player.row && discs[1].active) {
-            useDisc(1); return;
+        for (var di = 0; di < discs.length; di++) {
+            if (!discs[di].active) continue;
+            if (discs[di].side === 0 && dirKey === 'UL' && player.col === 0 && player.row === discs[di].row) {
+                useDisc(di); return;
+            }
+            if (discs[di].side === 1 && dirKey === 'UR' && player.col === player.row && player.row === discs[di].row) {
+                useDisc(di); return;
+            }
         }
         // Fell off — death with swear bubble
         killPlayer();
@@ -395,14 +524,15 @@ function tryMove(dirKey) {
     }
 
     // Valid move — begin jump arc
-    startPlayerJump(nr, nc);
+    startPlayerJump(nr, nc, dirKey);
 }
 
-function startPlayerJump(nr, nc) {
+function startPlayerJump(nr, nc, dirKey) {
     DinoSounds.press();
     var dst = cubeXY(nr, nc);
     player.jumping  = true;
     player.jumpT    = 0;
+    player.jumpDur  = 0.111 * speedMultiplier();  // refresh speed each hop
     player.jumpSX   = player.px;
     player.jumpSY   = player.py;
     player.tx       = dst.cx;
@@ -411,10 +541,12 @@ function startPlayerJump(nr, nc) {
     player.col      = nc;
     player.spriteFrame = 0;
     player.frameTimer  = 0;
+    if (dirKey === 'UL' || dirKey === 'DL') player.facing = 'L';
+    else player.facing = 'R';
 }
 
 function killPlayer() {
-    if (player.dead) return;
+    if (debugEnemies || player.dead) return;
     player.dead = true;
     DinoSounds.hit();
     player.deathTimer = 100;  // frames of death state
@@ -427,33 +559,62 @@ function killPlayer() {
     }
 }
 
-function useDisc(side) {
-    discs[side].active = false;
+function useDisc(idx) {
+    var disc = discs[idx];
+    disc.active = false;
     score += 300;
     checkExtraLife();
 
-    // Kill any Coily on board
+    // Coily only dies if his greedy chase toward Q*bert's disc position
+    // would take him off the pyramid edge (he follows you off)
+    var discRow = disc.row;
+    var discSide = disc.side;
+    // Q*bert jumped off at this edge position:
+    var exitRow = discRow;
+    var exitCol = (discSide === 0) ? -1 : exitRow + 1; // off left or right edge
     var survived = [];
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
-        if (e.type === 'coily' || e.type === 'egg') {
-            score += 300; checkExtraLife();
+        if (e.type === 'coily') {
+            // Simulate Coily's greedy chase toward where Q*bert was
+            var bestDir = null, bestDist = Infinity;
+            for (var k = 0; k < DIR_KEYS.length; k++) {
+                var dk = DIRS[DIR_KEYS[k]];
+                var nr = e.row + dk.dr, nc = e.col + dk.dc;
+                // Coily considers moves including off-edge (chasing Q*bert off)
+                var dist = Math.abs(exitRow - 1 - nr) + Math.abs((discSide === 0 ? 0 : exitRow) - nc);
+                if (dist < bestDist) { bestDist = dist; bestDir = { nr: nr, nc: nc }; }
+            }
+            // If Coily's best move is off the pyramid, he falls to his death
+            if (bestDir && !isValidPos(bestDir.nr, bestDir.nc)) {
+                score += 500; checkExtraLife();
+            } else {
+                survived.push(e); // Coily survives — too far away to be lured
+            }
+        } else if (e.type === 'egg') {
+            survived.push(e); // eggs don't chase, they just bounce
         } else {
             survived.push(e);
         }
     }
     enemies = survived;
 
-    // Teleport player to top
-    var sp = cubeXY(0, 0);
-    player.row = 0; player.col = 0;
-    player.px = sp.cx; player.py = sp.cy;
-    player.tx = sp.cx; player.ty = sp.cy;
-    player.jumping = false;
-    stompCube(0, 0);
+    // Start disc ride animation: player flies from disc position to pyramid top
+    var dp = discScreenPos(disc);
+    var top = cubeXY(0, 0);
+    discRide = {
+        side: disc.side,
+        t: 0,
+        sx: dp.x, sy: dp.y,
+        tx: top.cx, ty: top.cy
+    };
+    // Move player to disc position immediately (visual only)
+    player.px = dp.x; player.py = dp.y;
+    player.jumping = true; // block input during ride
+    player.jumpT = 0;
 
-    // Schedule new Coily after delay
-    scheduleSpawn(180);
+    // Schedule new Coily after delay (frames)
+    scheduleSpawn(280);
 }
 
 // ─── Collision check ──────────────────────────────────────────────────────────
@@ -469,8 +630,13 @@ function checkPlayerEnemyCollision() {
                 score += 300; checkExtraLife();
                 enemies.splice(i, 1);
                 i--;
+            } else if (e.type === 'greenball') {
+                // Green ball is safe — catch for 100 points
+                score += 100; checkExtraLife();
+                enemies.splice(i, 1);
+                i--;
             } else {
-                // Coily/egg kills player
+                // Coily/egg/redball/ugg/wrongway kills player
                 killPlayer();
                 return;
             }
@@ -478,22 +644,25 @@ function checkPlayerEnemyCollision() {
     }
 }
 
-// ─── Update enemies ───────────────────────────────────────────────────────────
+// ─── Update enemies (real-time: each enemy moves on its own independent timer) ──
 function updateEnemies() {
+    if (!roundStarted) return; // enemies frozen until first player move
+    // Tick spawn timers (frame-based, scaled by game speed slider only)
+    var gs = (typeof gameSpeed !== 'undefined') ? gameSpeed : 1.0;
+    for (var i = enemies.length - 1; i >= 0; i--) {
+        if (enemies[i].type === 'spawn-timer') {
+            enemies[i].timer -= gs;
+            if (enemies[i].timer <= 0) {
+                var ft = enemies[i].forcedType;
+                enemies.splice(i, 1);
+                spawnEnemy(ft);
+            }
+        }
+    }
+
     for (var i = enemies.length - 1; i >= 0; i--) {
         var e = enemies[i];
-
-        // Spawn timers
-        if (e.type === 'spawn-timer') {
-            if (!paused) {
-                e.timer--;
-                if (e.timer <= 0) {
-                    enemies.splice(i, 1);
-                    spawnEnemy(e.forcedType);
-                }
-            }
-            continue;
-        }
+        if (e.type === 'spawn-timer') continue;
 
         // Sprite frame animation
         e.frameTimer = (e.frameTimer || 0) + 1;
@@ -505,42 +674,59 @@ function updateEnemies() {
             if (e.jumpT >= 1) {
                 e.jumpT = 1; e.jumping = false;
                 e.px = e.tx; e.py = e.ty;
+                if (e.falling) {
+                    // Finished fall-off animation — remove and schedule respawn
+                    var ft = e.type;
+                    enemies.splice(i, 1);
+                    if (debugEnemies) {
+                        // Fast respawn in debug mode
+                        var dft = (ft === 'egg' || ft === 'coily') ? null : ft;
+                        scheduleSpawn(30, dft);
+                    } else {
+                        if (ft === 'egg' || ft === 'coily') scheduleSpawn(280);
+                        else if (ft === 'redball' && hasRedBall()) scheduleSpawn(Math.max(175, 280 - Math.floor(round / 2) * 35), 'redball');
+                        else if (ft === 'greenball' && hasGreenBall()) scheduleSpawn(420, 'greenball');
+                        else if (ft === 'slick' && hasSlick()) scheduleSpawn(525, 'slick');
+                        else if (ft === 'ugg' && hasUggWrongway()) scheduleSpawn(420, 'ugg');
+                        else if (ft === 'wrongway' && hasUggWrongway()) scheduleSpawn(490, 'wrongway');
+                    }
+                    continue;
+                }
+                if (e.willHatch) {
+                    e.willHatch = false;
+                    e.type = 'coily';
+                    e.moveInterval = enemyMoveInterval('coily');
+                }
                 onEnemyLand(e, i);
             } else {
                 var arc = Math.sin(e.jumpT * Math.PI) * 16;
                 e.px = e.jumpSX + (e.tx - e.jumpSX) * e.jumpT;
                 e.py = e.jumpSY + (e.ty - e.jumpSY) * e.jumpT - arc;
             }
-            continue;
+            continue; // don't tick move timer while jumping
         }
 
-        // Move timer
+        // Independent move timer — tick each frame, hop when threshold reached
         e.moveTimer++;
-        if (e.moveTimer < e.moveDelay) continue;
+        if (e.moveTimer < e.moveInterval) continue;
         e.moveTimer = 0;
 
-        // Decide next hop
+        // Execute this enemy's move
         if (e.type === 'egg') {
-            // Random DL or DR
             var dir = Math.random() < 0.5 ? 'DL' : 'DR';
             var delta = DIRS[dir];
             var nr = e.row + delta.dr, nc = e.col + delta.dc;
             if (isValidPos(nr, nc)) {
                 e.hops++;
                 enemyJumpTo(e, nr, nc);
-                // Hatch after 6 hops or reaching row 6
                 if (e.hops >= 6 || nr >= ROWS - 1) {
-                    e.type = 'coily';
-                    e.moveDelay = Math.max(12, 35 - round * 2); // faster after hatch
+                    e.willHatch = true;  // hatch after landing
                 }
             } else {
-                // Egg fell off edge — hatch into coily at this position
-                e.type = 'coily';
-                e.moveDelay = Math.max(12, 35 - round * 2);
+                enemyJumpTo(e, nr, nc);
+                e.falling = true;
             }
-
         } else if (e.type === 'coily') {
-            // BFS-chase: pick hop that minimizes Manhattan distance to player
             var bestDir = null, bestDist = Infinity;
             for (var k = 0; k < DIR_KEYS.length; k++) {
                 var dk = DIRS[DIR_KEYS[k]];
@@ -552,24 +738,45 @@ function updateEnemies() {
             if (bestDir) {
                 enemyJumpTo(e, bestDir.nr, bestDir.nc);
             } else {
-                // Stuck at top corner — fall off
-                enemies.splice(i, 1);
-                scheduleSpawn(180);
+                // Coily trapped — jump off nearest edge
+                var fd = Math.random() < 0.5 ? DIRS['DL'] : DIRS['DR'];
+                enemyJumpTo(e, e.row + fd.dr, e.col + fd.dc);
+                e.falling = true;
             }
-
+        } else if (e.type === 'redball') {
+            var rbdir = Math.random() < 0.5 ? 'DL' : 'DR';
+            var rbdelta = DIRS[rbdir];
+            var rbnr = e.row + rbdelta.dr, rbnc = e.col + rbdelta.dc;
+            enemyJumpTo(e, rbnr, rbnc);
+            if (!isValidPos(rbnr, rbnc)) e.falling = true;
+        } else if (e.type === 'greenball') {
+            var gbdir = Math.random() < 0.5 ? 'DL' : 'DR';
+            var gbdelta = DIRS[gbdir];
+            var gbnr = e.row + gbdelta.dr, gbnc = e.col + gbdelta.dc;
+            enemyJumpTo(e, gbnr, gbnc);
+            if (!isValidPos(gbnr, gbnc)) e.falling = true;
         } else if (e.type === 'slick') {
-            // Random DL or DR
             var sdir = Math.random() < 0.5 ? 'DL' : 'DR';
             var sdelta = DIRS[sdir];
             var snr = e.row + sdelta.dr, snc = e.col + sdelta.dc;
-            if (isValidPos(snr, snc)) {
-                enemyJumpTo(e, snr, snc);
-            } else {
-                // Fell off pyramid — disappear
-                enemies.splice(i, 1);
-                // Reschedule slick for round 3+
-                if (round >= 3) scheduleSpawn(240, 'slick');
-            }
+            enemyJumpTo(e, snr, snc);
+            if (!isValidPos(snr, snc)) e.falling = true;
+        } else if (e.type === 'ugg') {
+            // Ugg spawns bottom-right, hops on right cube faces toward top-left
+            // Two moves: up (row-1,col-1) or left along same row (row,col-1)
+            var unr, unc;
+            if (Math.random() < 0.5) { unr = e.row - 1; unc = e.col - 1; } // up
+            else                     { unr = e.row;     unc = e.col - 1; } // left
+            enemyJumpTo(e, unr, unc);
+            if (!isValidPos(unr, unc)) e.falling = true;
+        } else if (e.type === 'wrongway') {
+            // Wrongway spawns bottom-left, hops on left cube faces toward top-right
+            // Two moves: up (row-1,col) or right along same row (row,col+1)
+            var wnr, wnc;
+            if (Math.random() < 0.5) { wnr = e.row - 1; wnc = e.col;     } // up
+            else                     { wnr = e.row;     wnc = e.col + 1; } // right
+            enemyJumpTo(e, wnr, wnc);
+            if (!isValidPos(wnr, wnc)) e.falling = true;
         }
     }
 }
@@ -584,13 +791,24 @@ function onEnemyLand(e, idx) {
             score += 300; checkExtraLife();
             enemies.splice(idx, 1);
         }
-        // Check if slick reached row 6 — remove it
-        if (e.row >= ROWS - 1) {
+    } else if (e.type === 'greenball') {
+        // Green ball is safe — player catches it for 100 points
+        if (!player.dead && !player.jumping && e.row === player.row && e.col === player.col) {
+            score += 100; checkExtraLife();
             enemies.splice(idx, 1);
-            if (round >= 3) scheduleSpawn(240, 'slick');
+        }
+    } else if (e.type === 'redball') {
+        // Red ball kills player on contact
+        if (!player.dead && !player.jumping && e.row === player.row && e.col === player.col) {
+            killPlayer();
         }
     } else if (e.type === 'coily' || e.type === 'egg') {
         // Check player collision
+        if (!player.dead && !player.jumping && e.row === player.row && e.col === player.col) {
+            killPlayer();
+        }
+    } else if (e.type === 'ugg' || e.type === 'wrongway') {
+        // Lethal side-crawlers kill on contact
         if (!player.dead && !player.jumping && e.row === player.row && e.col === player.col) {
             killPlayer();
         }
@@ -599,6 +817,44 @@ function onEnemyLand(e, idx) {
 
 // ─── Player update ────────────────────────────────────────────────────────────
 function updatePlayer() {
+    // Disc ride animation: disc swoops upward in an arc to the pyramid top
+    if (discRide) {
+        discRide.t += 0.018;  // ~56 frames (~0.9s) to complete
+        if (discRide.t >= 1) {
+            discRide.t = 1;
+            // Land at top
+            var top = cubeXY(0, 0);
+            player.row = 0; player.col = 0;
+            player.px = top.cx; player.py = top.cy;
+            player.tx = top.cx; player.ty = top.cy;
+            player.jumping = false;
+            stompCube(0, 0);
+            discRide = null;
+        } else {
+            var t = discRide.t;
+            // Two-phase animation like the arcade:
+            // Phase 1 (t<0.15): hover/pause on the disc briefly
+            // Phase 2 (t>=0.15): swoop upward in an arc to the top
+            if (t < 0.15) {
+                // Stay at disc position, slight bob
+                player.px = discRide.sx;
+                player.py = discRide.sy + Math.sin(t * 40) * 2;
+            } else {
+                var st = (t - 0.15) / 0.85; // 0..1 for the flight phase
+                var ease = 1 - (1 - st) * (1 - st); // ease-out
+                // Swing outward then curve to the top — arc sideways first
+                var side = discRide.side === 0 ? -1 : 1;
+                var arcOut = Math.sin(st * Math.PI) * 40 * side; // swing out then back
+                player.px = discRide.sx + (discRide.tx - discRide.sx) * ease + arcOut;
+                player.py = discRide.sy + (discRide.ty - discRide.sy) * ease;
+            }
+            // Animate sprite
+            player.frameTimer++;
+            if (player.frameTimer > 6) { player.frameTimer = 0; player.spriteFrame ^= 1; }
+        }
+        return;
+    }
+
     if (player.dead) {
         player.deathTimer--;
         player.deathAnimTimer++;
@@ -618,8 +874,13 @@ function updatePlayer() {
                 if (enemies[i].type === 'spawn-timer') kept.push(enemies[i]);
             }
             enemies = kept;
-            scheduleSpawn(150);
-            if (round >= 3) scheduleSpawn(280, 'slick');
+            roundStarted = false; // wait for first move again after respawn
+            scheduleSpawn(245);                                    // Coily egg (~4.1s)
+            if (hasRedBall())    scheduleSpawn(175, 'redball');     // ~2.9s
+            if (hasSlick())      scheduleSpawn(455, 'slick');      // ~7.6s
+            if (hasGreenBall())  scheduleSpawn(350, 'greenball');   // ~5.8s
+            if (hasUggWrongway()) scheduleSpawn(385, 'ugg');        // ~6.4s
+            if (hasUggWrongway()) scheduleSpawn(455, 'wrongway');   // ~7.6s
         }
         return;
     }
@@ -639,7 +900,7 @@ function updatePlayer() {
                 round++;
                 levelWon = true;
                 DinoSounds.reached();
-                roundMsg = { text: 'ROUND ' + round, timer: 110 };
+                roundMsg = { text: 'LV ' + arcadeLevel() + ' ROUND ' + ((round - 1) % 4 + 1), timer: 110 };
                 var savedRound = round;
                 setTimeout(function () {
                     if (round === savedRound) initRound();
@@ -655,98 +916,71 @@ function updatePlayer() {
     }
 }
 
-// ─── AI ──────────────────────────────────────────────────────────────────────
+// ─── AI (bfsTo, boardSig, dangerMaps, buildTour, expectimax etc. from qbert-ai.js) ──
 
-// BFS from (r1,c1) to (r2,c2); returns {dist, path} or null
-function bfsTo(r1, c1, r2, c2) {
-    if (r1 === r2 && c1 === c2) return { dist: 0, path: [] };
-    var visited = {}; visited[r1 + ',' + c1] = true;
-    var queue = [{ row: r1, col: c1, path: [] }];
-    while (queue.length > 0) {
-        var cur = queue.shift();
-        for (var k = 0; k < DIR_KEYS.length; k++) {
-            var dk = DIRS[DIR_KEYS[k]];
-            var nr = cur.row + dk.dr, nc = cur.col + dk.dc;
-            if (!isValidPos(nr, nc)) continue;
-            var key = nr + ',' + nc;
-            if (visited[key]) continue;
-            visited[key] = true;
-            var np = cur.path.concat([DIR_KEYS[k]]);
-            if (nr === r2 && nc === c2) return { dist: np.length, path: np };
-            queue.push({ row: nr, col: nc, path: np });
-        }
-    }
-    return null;
-}
-
-// Board state signature for change detection
-function boardSig() {
-    var s = '';
-    for (var i = 0; i < cubeStates.length; i++) s += cubeStates[i].state;
-    return s;
-}
-
-// Nearest-neighbour TSP tour over all uncolored tiles
-function buildTour() {
+exCloneState = function() {
     var tgt = targetState();
-    var remaining = [];
+    var cs = new Array(cubeStates.length);
     for (var i = 0; i < cubeStates.length; i++)
-        if (cubeStates[i].state < tgt)
-            remaining.push({ row: cubeStates[i].row, col: cubeStates[i].col });
-
-    var tour = [];
-    var cr = player.row, cc = player.col;
-    while (remaining.length > 0) {
-        var best = null, bestDist = Infinity, bestIdx = -1;
-        for (var i = 0; i < remaining.length; i++) {
-            var res = bfsTo(cr, cc, remaining[i].row, remaining[i].col);
-            if (res && res.dist < bestDist) {
-                bestDist = res.dist; best = remaining[i]; bestIdx = i;
-            }
-        }
-        if (!best) break;
-        tour.push(best);
-        remaining.splice(bestIdx, 1);
-        cr = best.row; cc = best.col;
-    }
-    aiTour    = tour;
-    aiTourIdx = 0;
-    aiBoardSig = boardSig();
-}
-
-function computeAIMove() {
-    var tgt = targetState();
-
-    // Danger map: enemy tiles + all adjacent tiles
-    var dangerSet = {};
+        cs[i] = { row: cubeStates[i].row, col: cubeStates[i].col, state: cubeStates[i].state };
+    var ens = [];
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
         if (e.type === 'spawn-timer') continue;
-        dangerSet[e.row + ',' + e.col] = true;
-        for (var k = 0; k < DIR_KEYS.length; k++) {
-            var dk = DIRS[DIR_KEYS[k]];
-            var nr = e.row + dk.dr, nc = e.col + dk.dc;
-            if (isValidPos(nr, nc)) dangerSet[nr + ',' + nc] = true;
+        // Convert real-time move timer to fractional accumulator for AI search
+        var rate = EX_MOVE_RATE[e.type] || 0.75;
+        var acc = (e.moveTimer !== undefined && e.moveInterval !== undefined)
+            ? (e.moveTimer / e.moveInterval) * rate : 0;
+        var entry = { type: e.type, row: e.row, col: e.col, hops: e.hops || 0, accum: acc };
+        // Random enemies get a point cloud at their current position
+        if (e.type !== 'coily') {
+            entry.cloud = [{ row: e.row, col: e.col, prob: 1.0 }];
         }
+        ens.push(entry);
     }
-
-    // Disc escape when Coily is close
-    var coilyDist = 999;
+    var colored = 0;
+    for (var i = 0; i < cs.length; i++) colored += Math.min(cs[i].state, tgt);
+    var ds = [];
+    for (var i = 0; i < discs.length; i++)
+        ds.push({ side: discs[i].side, row: discs[i].row, active: discs[i].active });
+    // Include imminent spawn timers for Ugg/Wrongway (dangerous spawn points)
+    // Include spawn timers that will fire within the next few player hops.
+    // Timer is in frames; convert to "AI steps until spawn" by dividing by
+    // frames-per-hop. Each hop ≈ ceil(1/jumpDur) + aiMoveDelay frames,
+    // and the timer ticks by gameSpeed each frame.
+    var sm = speedMultiplier();
+    var framesPerHop = Math.ceil(1 / (0.111 * sm)) + Math.max(1, Math.round(2 / sm));
+    var frameTickPerHop = framesPerHop * (typeof gameSpeed !== 'undefined' ? gameSpeed : 1.0);
+    var spawns = [];
     for (var i = 0; i < enemies.length; i++) {
-        if (enemies[i].type === 'coily') {
-            var d = Math.abs(enemies[i].row - player.row) + Math.abs(enemies[i].col - player.col);
-            if (d < coilyDist) coilyDist = d;
+        var e = enemies[i];
+        if (e.type !== 'spawn-timer') continue;
+        // Convert frame-based timer to AI steps
+        var stepsUntil = Math.ceil(e.timer / frameTickPerHop);
+        if (stepsUntil <= 3) {
+            spawns.push({ timer: stepsUntil, forcedType: e.forcedType || null });
         }
     }
-    if (coilyDist <= 2) {
-        if (discs[0].active && player.col === 0) return 'UL';
-        if (discs[1].active && player.col === player.row) return 'UR';
-    }
+    return { pr: player.row, pc: player.col, cubes: cs, enemies: ens,
+             alive: true, score: 0, cubesColored: colored, tgt: tgt,
+             discs: ds, lv: arcadeLevel(), spawns: spawns };
+};
 
-    // Replan tour whenever board state changes
+// exCubeAt, exClone, exMoveEnemies, exPlayerMove, bfsDistTable, exBfsDist,
+// exTourCost, exLeafValue, exCanMove, exCountStoch, exStateKey, exMemoTable,
+// expectimax, expectimaxEval loaded from qbert-ai.js
+
+function computeAIMove() {
+    var tgt = targetState();
+    var danger = buildDangerMaps();
+
+    // Use shared AI logic (includes anti-oscillation + repeat penalty)
+    var bestDir = aiPickBestDir();
+    aiMoveScores = aiLastScores;
+    aiBestDir = bestDir;
+
+    // Build viz: tour to show remaining targets, BFS path for detail
     if (boardSig() !== aiBoardSig || aiTour.length === 0) buildTour();
-
-    // Advance past targets already colored (e.g. by Slick's uncolor or our own stomps)
     while (aiTourIdx < aiTour.length) {
         var t = aiTour[aiTourIdx];
         var tc = cubeAt(t.row, t.col);
@@ -754,57 +988,31 @@ function computeAIMove() {
         aiTourIdx++;
     }
 
-    // Helper: try any safe valid move as a last resort (avoids AI freezing)
-    function fallbackMove() {
-        for (var fk = 0; fk < DIR_KEYS.length; fk++) {
-            var fd0 = DIRS[DIR_KEYS[fk]];
-            var fbr = player.row + fd0.dr, fbc = player.col + fd0.dc;
-            if (isValidPos(fbr, fbc) && !dangerSet[fbr + ',' + fbc]) return DIR_KEYS[fk];
-        }
-        return null;
-    }
-
-    if (aiTourIdx >= aiTour.length) {
-        aiDetailPath = []; aiTourDots = [];
-        return fallbackMove();
-    }
-
-    // BFS to the current tour target
-    var target = aiTour[aiTourIdx];
-    var res = bfsTo(player.row, player.col, target.row, target.col);
-    if (!res || res.path.length === 0) {
-        aiDetailPath = []; aiTourDots = [];
-        return fallbackMove();
-    }
-
-    // Build viz: BFS steps as connected detail path, remaining tour as dots only
     aiDetailPath = [];
-    var pr = player.row, pc = player.col;
-    for (var i = 0; i < res.path.length; i++) {
-        var dd = DIRS[res.path[i]];
-        pr += dd.dr; pc += dd.dc;
-        aiDetailPath.push({ row: pr, col: pc });
-    }
     aiTourDots = [];
-    for (var i = aiTourIdx + 1; i < aiTour.length; i++)
-        aiTourDots.push({ row: aiTour[i].row, col: aiTour[i].col });
-
-    // Take first step; dodge danger if possible
-    var firstDir = res.path[0];
-    var fd = DIRS[firstDir];
-    var fnr = player.row + fd.dr, fnc = player.col + fd.dc;
-    if (dangerSet[fnr + ',' + fnc]) {
-        for (var k = 0; k < DIR_KEYS.length; k++) {
-            if (DIR_KEYS[k] === firstDir) continue;
-            var ad = DIRS[DIR_KEYS[k]];
-            var anr = player.row + ad.dr, anc = player.col + ad.dc;
-            if (!isValidPos(anr, anc)) continue;
-            if (dangerSet[anr + ',' + anc]) continue;
-            return DIR_KEYS[k];
+    if (bestDir) {
+        var dd = DIRS[bestDir];
+        var nr = player.row + dd.dr, nc = player.col + dd.dc;
+        if (isValidPos(nr, nc)) {
+            aiDetailPath.push({ row: nr, col: nc });
+            if (aiTourIdx < aiTour.length) {
+                var target = aiTour[aiTourIdx];
+                var res = bfsTo(nr, nc, target.row, target.col);
+                if (res) {
+                    var pr = nr, pc = nc;
+                    for (var i = 0; i < res.path.length; i++) {
+                        var pd = DIRS[res.path[i]];
+                        pr += pd.dr; pc += pd.dc;
+                        aiDetailPath.push({ row: pr, col: pc });
+                    }
+                }
+            }
         }
+        for (var i = aiTourIdx; i < aiTour.length; i++)
+            aiTourDots.push({ row: aiTour[i].row, col: aiTour[i].col });
     }
 
-    return firstDir;
+    return bestDir || 'DL';
 }
 
 // ─── Update ───────────────────────────────────────────────────────────────────
@@ -827,12 +1035,34 @@ function update() {
     updatePlayer();
     updateEnemies();
 
-    // Accept input / AI
-    if (!player.jumping && !player.dead) {
+    // Per-frame collision: if player and any lethal enemy share a tile while
+    // both are stationary, kill the player (prevents "jumping through" enemies)
+    if (!player.dead && !player.jumping && !discRide) {
+        for (var i = 0; i < enemies.length; i++) {
+            var e = enemies[i];
+            if (e.type === 'spawn-timer' || e.jumping) continue;
+            if (e.row === player.row && e.col === player.col) {
+                if (e.type === 'slick') {
+                    score += 300; checkExtraLife();
+                    enemies.splice(i, 1);
+                    i--;
+                } else if (e.type === 'greenball') {
+                    score += 100; checkExtraLife();
+                    enemies.splice(i, 1);
+                    i--;
+                } else {
+                    killPlayer();
+                    break;
+                }
+            }
+        }
+    }
+
+    // Accept input / AI when player is ready (not jumping, not dead, not on disc)
+    if (!player.jumping && !player.dead && !discRide) {
         if (gameMode === 'rules') {
             aiMoveTimer++;
-            var aiDelay = Math.max(8, 22 - round * 2);
-            if (aiMoveTimer >= aiDelay) {
+            if (aiMoveTimer >= Math.max(1, Math.round(2 / speedMultiplier()))) {
                 aiMoveTimer = 0;
                 var dir = computeAIMove();
                 if (dir) tryMove(dir);
@@ -880,12 +1110,36 @@ function draw() {
     drawDiscs();
 
     // AI viz path (before inversion — color elements excluded from inversion)
-    if (vizOn && (aiDetailPath.length > 0 || aiTourDots.length > 0)) drawVizPath();
+    if (vizOn) drawVizPath();
+
+    // Shade enemy collision faces red (debug/viz mode)
+    if (debugEnemies || vizOn) drawEnemyCollisionFaces();
 
     // Enemies and player (before inversion so they invert with scene, like dino-runner)
     // White outline becomes black outline at night automatically
     for (var i = 0; i < enemies.length; i++) drawEnemy(enemies[i]);
     drawPlayer();
+
+    // Draw disc under player during disc ride
+    if (discRide) {
+        ctx.save();
+        ctx.translate(Math.round(player.px), Math.round(player.py));
+        // Outer disc
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 20, 10, 0, 0, Math.PI * 2);
+        ctx.fillStyle = '#d4d4d4'; ctx.fill();
+        ctx.strokeStyle = '#535353'; ctx.lineWidth = 1.5; ctx.stroke();
+        // Middle ring
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 13, 6, 0, 0, Math.PI * 2);
+        ctx.fillStyle = '#535353'; ctx.fill();
+        ctx.strokeStyle = '#1e1e1e'; ctx.lineWidth = 0.8; ctx.stroke();
+        // Inner dot
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 5, 2.5, 0, 0, Math.PI * 2);
+        ctx.fillStyle = '#1e1e1e'; ctx.fill();
+        ctx.restore();
+    }
 
     // Night inversion
     applyNight(ctx);
@@ -903,7 +1157,7 @@ function draw() {
 function drawDiscs() {
     for (var i = 0; i < discs.length; i++) {
         if (!discs[i].active) continue;
-        var p = discScreenPos(discs[i].side);
+        var p = discScreenPos(discs[i]);
         ctx.save();
         // Pulsing scale for visibility
         var pulse = 1 + Math.sin(frameCount * 0.12) * 0.06;
@@ -928,32 +1182,88 @@ function drawDiscs() {
 }
 
 function drawVizPath() {
-    if (aiDetailPath.length === 0 && aiTourDots.length === 0) return;
     ctx.save();
 
-    // Dashed line + large dots for the valid BFS path to the next target
-    if (aiDetailPath.length > 0) {
-        ctx.setLineDash([4, 4]);
-        ctx.strokeStyle = 'rgba(255,200,0,0.80)';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        var sp = cubeXY(player.row, player.col);
-        ctx.moveTo(sp.cx, sp.cy);
-        for (var i = 0; i < aiDetailPath.length; i++) {
-            var pt = cubeXY(aiDetailPath[i].row, aiDetailPath[i].col);
-            ctx.lineTo(pt.cx, pt.cy);
+    // Draw expectimax scores on adjacent cubes
+    var dirKeys = ['UL', 'UR', 'DL', 'DR'];
+    var hasScores = false;
+    var maxVal = -Infinity, minVal = Infinity;
+    for (var i = 0; i < 4; i++) {
+        var v = aiMoveScores[dirKeys[i]];
+        if (v !== undefined) {
+            hasScores = true;
+            if (v > maxVal) maxVal = v;
+            if (v < minVal) minVal = v;
         }
-        ctx.stroke();
-        ctx.setLineDash([]);
-        for (var i = 0; i < aiDetailPath.length; i++) {
-            var pt2 = cubeXY(aiDetailPath[i].row, aiDetailPath[i].col);
+    }
+    if (hasScores) {
+        var range = maxVal - minVal;
+        if (range < 1) range = 1;
+        for (var i = 0; i < 4; i++) {
+            var dk = dirKeys[i];
+            var v = aiMoveScores[dk];
+            if (v === undefined) continue;
+            var dd = DIRS[dk];
+            var nr = player.row + dd.dr, nc = player.col + dd.dc;
+            var isBest = (dk === aiBestDir);
+            var pt;
+            if (isValidPos(nr, nc)) {
+                pt = cubeXY(nr, nc);
+            } else {
+                // Disc position — draw off-pyramid
+                var pp = cubeXY(player.row, player.col);
+                pt = { cx: pp.cx + dd.dc * 50 - dd.dr * 30, cy: pp.cy + dd.dr * -30 };
+            }
+
+            // Color: green=best, red=worst, yellow=middle
+            var t = (v - minVal) / range; // 0=worst, 1=best
+            var r = Math.round(255 * (1 - t));
+            var g = Math.round(255 * t);
+            var alpha = isBest ? 0.85 : 0.50;
+
+            // Draw circle indicator
+            var radius = isBest ? 8 : 6;
             ctx.beginPath();
-            ctx.arc(pt2.cx, pt2.cy, 4, 0, Math.PI * 2);
-            ctx.fillStyle = 'rgba(255,200,0,0.90)'; ctx.fill();
+            ctx.arc(pt.cx, pt.cy, radius, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(' + r + ',' + g + ',0,' + alpha + ')';
+            ctx.fill();
+            if (isBest) {
+                ctx.lineWidth = 2;
+                ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+                ctx.stroke();
+            }
+
+            // Draw value text
+            var label = v >= 10000 ? 'WIN' : v <= -10000 ? 'DIE' : Math.round(v).toString();
+            ctx.font = '9px monospace';
+            ctx.textAlign = 'center';
+            ctx.fillStyle = isBest ? '#fff' : 'rgba(255,255,255,0.7)';
+            ctx.fillText(label, pt.cx, pt.cy - radius - 3);
+        }
+
+        // Draw arrow from player to best move
+        if (aiBestDir) {
+            var dd2 = DIRS[aiBestDir];
+            var nr2 = player.row + dd2.dr, nc2 = player.col + dd2.dc;
+            var from = cubeXY(player.row, player.col);
+            var to;
+            if (isValidPos(nr2, nc2)) {
+                to = cubeXY(nr2, nc2);
+            } else {
+                to = { cx: from.cx + dd2.dc * 50 - dd2.dr * 30, cy: from.cy + dd2.dr * -30 };
+            }
+            ctx.beginPath();
+            ctx.moveTo(from.cx, from.cy);
+            ctx.lineTo(to.cx, to.cy);
+            ctx.strokeStyle = 'rgba(0,255,0,0.7)';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([3, 3]);
+            ctx.stroke();
+            ctx.setLineDash([]);
         }
     }
 
-    // Small dots only (no connecting lines) for the rest of the tour
+    // Small dots for uncolored cubes in tour
     for (var j = 0; j < aiTourDots.length; j++) {
         var dp = cubeXY(aiTourDots[j].row, aiTourDots[j].col);
         ctx.beginPath();
@@ -965,11 +1275,12 @@ function drawVizPath() {
 }
 
 function drawPlayer() {
+    var flip = player.facing === 'L';
     if (player.dead) {
         // Flash during death
         if (Math.floor(player.deathAnimTimer / 5) % 2 === 0) {
             ctx.save(); ctx.globalAlpha = 0.45;
-            _drawTrex(player.px, player.py, SPRITES.TREX_IDLE, 0.72);
+            _drawTrex(player.px, player.py, SPRITES.TREX_IDLE, 0.72, flip);
             ctx.restore();
         }
         return;
@@ -977,15 +1288,17 @@ function drawPlayer() {
     var sp = player.jumping
         ? (player.spriteFrame ? SPRITES.TREX_RUN2 : SPRITES.TREX_RUN1)
         : SPRITES.TREX_IDLE;
-    _drawTrex(player.px, player.py, sp, 0.72);
+    _drawTrex(player.px, player.py, sp, 0.72, flip);
 }
 
-function _drawTrex(px, py, sp, sc) {
+function _drawTrex(px, py, sp, sc, flipH) {
     var src = spriteClean || spriteImg;
     if (!src) return;
     var dw = Math.round(sp.w * sc), dh = Math.round(sp.h * sc);
     var dx = Math.round(px - dw / 2);
     var dy = Math.round(py - dh - TILE_H / 2 + 2);
+
+    if (flipH) { ctx.save(); ctx.translate(Math.round(px), 0); ctx.scale(-1, 1); ctx.translate(-Math.round(px), 0); }
 
     // White outline: draw cached white silhouette at 4 cardinal offsets
     if (spriteClean) {
@@ -1008,6 +1321,129 @@ function _drawTrex(px, py, sp, sc) {
     }
 
     ctx.drawImage(src, sp.x, sp.y, sp.w, sp.h, dx, dy, dw, dh);
+    if (flipH) ctx.restore();
+}
+
+// Draw a sprite with white outline (same technique as _drawTrex)
+function _drawSpriteOutlined(px, py, sp, sc, flipH) {
+    var src = spriteClean || spriteImg;
+    if (!src) return;
+    var dw = Math.round(sp.w * sc), dh = Math.round(sp.h * sc);
+    var dx = Math.round(px - dw / 2);
+    var dy = Math.round(py - dh - TILE_H / 2);
+
+    if (flipH) { ctx.save(); ctx.translate(Math.round(px), 0); ctx.scale(-1, 1); ctx.translate(-Math.round(px), 0); }
+
+    if (spriteClean) {
+        var key = sp.x + ',' + sp.y + ',' + sc;
+        if (!outlineCache[key]) {
+            var tmp = document.createElement('canvas');
+            tmp.width = dw; tmp.height = dh;
+            var tc = tmp.getContext('2d');
+            tc.drawImage(spriteClean, sp.x, sp.y, sp.w, sp.h, 0, 0, dw, dh);
+            tc.globalCompositeOperation = 'source-in';
+            tc.fillStyle = '#ffffff';
+            tc.fillRect(0, 0, dw, dh);
+            outlineCache[key] = tmp;
+        }
+        var sil = outlineCache[key];
+        ctx.drawImage(sil, dx - 1, dy);
+        ctx.drawImage(sil, dx + 1, dy);
+        ctx.drawImage(sil, dx, dy - 1);
+        ctx.drawImage(sil, dx, dy + 1);
+    }
+
+    ctx.drawImage(src, sp.x, sp.y, sp.w, sp.h, dx, dy, dw, dh);
+    if (flipH) ctx.restore();
+}
+
+// Draw evil dino: color-inverted T-Rex
+function _drawEvilDino(px, py, sp, sc, flipH) {
+    if (!spriteInverted) return;
+    var dw = Math.round(sp.w * sc), dh = Math.round(sp.h * sc);
+    var dx = Math.round(px - dw / 2);
+    var dy = Math.round(py - dh - TILE_H / 2 + 2);
+
+    if (flipH) { ctx.save(); ctx.translate(Math.round(px), 0); ctx.scale(-1, 1); ctx.translate(-Math.round(px), 0); }
+
+    // Dark outline: black silhouette at cardinal offsets
+    var silKey = 'evilinv_sil_' + sp.x + ',' + sp.y + ',' + sc;
+    if (!outlineCache[silKey]) {
+        var tmp = document.createElement('canvas');
+        tmp.width = dw; tmp.height = dh;
+        var tc = tmp.getContext('2d');
+        tc.drawImage(spriteInverted, sp.x, sp.y, sp.w, sp.h, 0, 0, dw, dh);
+        tc.globalCompositeOperation = 'source-in';
+        tc.fillStyle = '#535353';
+        tc.fillRect(0, 0, dw, dh);
+        outlineCache[silKey] = tmp;
+    }
+    var darkSil = outlineCache[silKey];
+    ctx.drawImage(darkSil, dx - 1, dy);
+    ctx.drawImage(darkSil, dx + 1, dy);
+    ctx.drawImage(darkSil, dx, dy - 1);
+    ctx.drawImage(darkSil, dx, dy + 1);
+
+    // White body from inverted sprite
+    ctx.drawImage(spriteInverted, sp.x, sp.y, sp.w, sp.h, dx, dy, dw, dh);
+    if (flipH) ctx.restore();
+}
+
+// Shade the top face of each enemy's collision cube in red
+function drawEnemyCollisionFaces() {
+    var hw = TILE_W / 2, hh = TILE_H / 2;
+    for (var i = 0; i < enemies.length; i++) {
+        var e = enemies[i];
+        if (e.type === 'spawn-timer' || e.jumping) continue;
+        var pos = cubeXY(e.row, e.col);
+        var cx = pos.cx, cy = pos.cy;
+        ctx.save();
+        ctx.globalAlpha = 0.55;
+        ctx.beginPath();
+        ctx.moveTo(cx, cy - hh);
+        ctx.lineTo(cx + hw, cy);
+        ctx.lineTo(cx, cy + hh);
+        ctx.lineTo(cx - hw, cy);
+        ctx.closePath();
+        ctx.fillStyle = '#ff0000';
+        ctx.fill();
+        ctx.restore();
+    }
+}
+
+// Draw a cactus sprite rotated to sit on a cube side-face
+function _drawRotatedCactus(px, py, angle, sc) {
+    var src = spriteClean || spriteImg;
+    if (!src) return;
+    var sp = SPRITES.CACTUS_SM;
+    var dw = Math.round(sp.w * sc), dh = Math.round(sp.h * sc);
+    // Position: caller provides the side-face center
+    var cx = Math.round(px);
+    var cy = Math.round(py);
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(angle);
+    // White outline
+    if (spriteClean) {
+        var key = 'rotcact_' + angle.toFixed(2) + ',' + sc;
+        if (!outlineCache[key]) {
+            var tmp = document.createElement('canvas');
+            tmp.width = dw; tmp.height = dh;
+            var tc = tmp.getContext('2d');
+            tc.drawImage(spriteClean, sp.x, sp.y, sp.w, sp.h, 0, 0, dw, dh);
+            tc.globalCompositeOperation = 'source-in';
+            tc.fillStyle = '#ffffff';
+            tc.fillRect(0, 0, dw, dh);
+            outlineCache[key] = tmp;
+        }
+        var sil = outlineCache[key];
+        ctx.drawImage(sil, -dw / 2 - 1, -dh);
+        ctx.drawImage(sil, -dw / 2 + 1, -dh);
+        ctx.drawImage(sil, -dw / 2, -dh - 1);
+        ctx.drawImage(sil, -dw / 2, -dh + 1);
+    }
+    ctx.drawImage(src, sp.x, sp.y, sp.w, sp.h, -dw / 2, -dh, dw, dh);
+    ctx.restore();
 }
 
 function drawEnemy(e) {
@@ -1017,6 +1453,10 @@ function drawEnemy(e) {
         ctx.save();
         ctx.translate(Math.round(e.px), Math.round(e.py - TILE_H / 2 - 6));
         ctx.scale(1.25, 1.25);
+        // White outline for egg
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 9.5, 14.5, 0, 0, Math.PI * 2);
+        ctx.fillStyle = '#ffffff'; ctx.fill();
         // Egg body
         ctx.beginPath();
         ctx.ellipse(0, 0, 8, 13, 0, 0, Math.PI * 2);
@@ -1033,25 +1473,31 @@ function drawEnemy(e) {
 
     } else if (e.type === 'coily') {
         var sp = e.frame ? SPRITES.PTERO2 : SPRITES.PTERO1;
-        var sc = 0.80;
-        var src = spriteClean || spriteImg;
-        if (src) {
-            ctx.drawImage(src, sp.x, sp.y, sp.w, sp.h,
-                Math.round(e.px - sp.w * sc / 2),
-                Math.round(e.py - sp.h * sc - TILE_H / 2),
-                sp.w * sc, sp.h * sc);
-        }
+        _drawSpriteOutlined(e.px, e.py, sp, 0.80, e.facing !== 'L');
 
     } else if (e.type === 'slick') {
-        var sp2 = SPRITES.CACTUS_SM;
-        var sc2 = 0.80;
-        var src2 = spriteClean || spriteImg;
-        if (src2) {
-            ctx.drawImage(src2, sp2.x, sp2.y, sp2.w, sp2.h,
-                Math.round(e.px - sp2.w * sc2 / 2),
-                Math.round(e.py - sp2.h * sc2 - TILE_H / 2),
-                sp2.w * sc2, sp2.h * sc2);
-        }
+        // Evil dino: color-inverted T-Rex
+        var slSp = e.frame ? SPRITES.TREX_RUN2 : SPRITES.TREX_RUN1;
+        _drawEvilDino(e.px, e.py, slSp, 0.65, e.facing === 'L');
+
+    } else if (e.type === 'redball') {
+        // Dangerous cactus (dark, with white outline)
+        _drawSpriteOutlined(e.px, e.py, SPRITES.CACTUS_SM, 0.75, e.facing === 'L');
+
+    } else if (e.type === 'greenball') {
+        // Safe cactus (lighter, semi-transparent to look friendly)
+        ctx.save();
+        ctx.globalAlpha = 0.55;
+        _drawSpriteOutlined(e.px, e.py, SPRITES.CACTUS_SM, 0.75, e.facing === 'L');
+        ctx.restore();
+
+    } else if (e.type === 'ugg') {
+        // Ugg spawns bottom-right, moves left → on LEFT faces, above-right of collision
+        _drawRotatedCactus(e.px + TILE_W / 4, e.py - TILE_H / 4 - CUBE_DEPTH / 2, -Math.PI / 2, 0.75);
+
+    } else if (e.type === 'wrongway') {
+        // Wrongway spawns bottom-left, moves right → on RIGHT faces, above-left of collision
+        _drawRotatedCactus(e.px - TILE_W / 4, e.py - TILE_H / 4 - CUBE_DEPTH / 2, Math.PI / 2, 0.75);
     }
 }
 
@@ -1109,7 +1555,7 @@ function drawHUD() {
 
     // Round indicator center-top
     ctx.textAlign = 'center';
-    ctx.fillText('ROUND ' + round, CW / 2, 18);
+    ctx.fillText('LV ' + arcadeLevel() + '-' + ((round - 1) % 4 + 1), CW / 2, 18);
     ctx.textAlign = 'left';
 }
 
@@ -1161,7 +1607,11 @@ window.restartGame = function () {
     if (hiScore > 0) localStorage.setItem('dino-qbert-hi', hiScore);
     score   = 0;
     lives   = 3;
-    round   = 1;
+    // Check URL for ?l=N level skip (round = (level-1)*4 + 1)
+    var params = new URLSearchParams(window.location.search);
+    var startLevel = parseInt(params.get('l'));
+    round = (startLevel > 1 && startLevel <= 9) ? (startLevel - 1) * 4 + 1 : 1;
+    debugEnemies = params.has('debug');
     extraLifeGiven = false;
     gameOver  = false;
     paused    = false;
@@ -1179,7 +1629,10 @@ window.setMode = function (m) {
     gameMode = m;
     document.getElementById('human-btn').classList.toggle('active', m === 'off');
     document.getElementById('rules-btn').classList.toggle('active', m === 'rules');
-    if (m !== 'off') inputQueue = [];
+    if (m !== 'off') {
+        inputQueue = [];
+        if (!vizOn) toggleViz();  // auto-enable viz when AI activated
+    }
     aiMoveTimer = 0;
 };
 
@@ -1191,6 +1644,28 @@ window.toggleViz = function () {
 window.togglePause = function () {
     paused = !paused;
     document.getElementById('pause-btn').classList.toggle('active', paused);
+};
+
+window.toggleEnemies = function () {
+    enemiesEnabled = !enemiesEnabled;
+    var btn = document.getElementById('enemies-btn');
+    btn.textContent = 'Enemies: ' + (enemiesEnabled ? 'On' : 'Off');
+    btn.classList.toggle('active', enemiesEnabled);
+    restartGame();
+};
+
+window.setGameSpeed = function (v) {
+    gameSpeed = v;
+    document.getElementById('speed-label').textContent = (v * 4) + 'x';
+    // Update move intervals for existing enemies
+    for (var i = 0; i < enemies.length; i++) {
+        var e = enemies[i];
+        if (e.type !== 'spawn-timer' && e.moveInterval !== undefined) {
+            e.moveInterval = enemyMoveInterval(e.type);
+        }
+    }
+    // Update player jump speed
+    player.jumpDur = 0.111 * speedMultiplier();
 };
 
 // ─── Input ────────────────────────────────────────────────────────────────────
