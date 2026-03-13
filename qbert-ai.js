@@ -864,6 +864,12 @@ function exLeafValue(st) {
     if (!st.alive) return EX_DEATH;
     if (st.cubesColored >= st.cubes.length * st.tgt) return EX_WIN;
     var val = -exTourCost(st);
+    // Danger at leaf: simulate one more enemy step to detect imminent death.
+    // This extends the effective safety horizon without increasing full search depth.
+    var leafClone = exClone(st);
+    exMoveEnemies(leafClone);
+    var pDeath = deathProb(leafClone);
+    if (pDeath > 0) val = (1 - pDeath) * val + pDeath * EX_DEATH;
     return val;
 }
 
@@ -923,53 +929,11 @@ function expectimaxEval(dirKey) {
     }
     var child = exClone(st);
     if (!exPlayerMove(child, dirKey)) {
-        return EX_DEATH + exLeafValue(st) * 0.0001;
+        return EX_DEATH;
     }
     var pDeath = child.stepDeathProb || 0;
     var val = (1 - pDeath) * expectimax(child, depth - 1) + pDeath * EX_DEATH;
-    // Board-state repeat penalty
-    var bh = boardHash(child);
-    var visits = aiBoardHistory[bh] || 0;
-    if (visits > 0) val -= visits * AI_REPEAT_PENALTY;
-    // Position-history penalty: penalize revisiting recent positions
-    var posVisits = posVisitCount(child.pr, child.pc);
-    if (posVisits > 0) val -= posVisits * 80;
-    return val + exLeafValue(st) * 0.0001;
-}
-
-// ─── Board-state repetition tracking ─────────────────────────────────────────
-var aiBoardHistory = {};
-var AI_REPEAT_PENALTY = 300;
-var aiLastPos = '';
-var aiStuckCount = 0;
-// Track last N positions for oscillation detection
-var aiPosHistory = [];
-var AI_POS_HISTORY_LEN = 12;
-
-function boardHash(st) {
-    var h = st.pr + ',' + st.pc + '|';
-    for (var i = 0; i < st.cubes.length; i++) h += st.cubes[i].state;
-    return h;
-}
-
-function aiRecordState() {
-    var st = exCloneState();
-    var h = boardHash(st);
-    aiBoardHistory[h] = (aiBoardHistory[h] || 0) + 1;
-    // Track position history
-    var pos = st.pr + ',' + st.pc;
-    aiPosHistory.push(pos);
-    if (aiPosHistory.length > AI_POS_HISTORY_LEN) aiPosHistory.shift();
-}
-
-// Count how many times a position appears in recent history
-function posVisitCount(row, col) {
-    var pos = row + ',' + col;
-    var count = 0;
-    for (var i = 0; i < aiPosHistory.length; i++) {
-        if (aiPosHistory[i] === pos) count++;
-    }
-    return count;
+    return val;
 }
 
 // ─── Precomputed optimal tours from (0,0) ────────────────────────────────────
@@ -1063,20 +1027,32 @@ var aiResumePath = null;
 function aiPickBestDir() {
     var tmpSt = exCloneState();
 
-    // Phase 1: Follow precomputed tour when safe (no lethal enemy within 2 hops)
-    var nearestEnemyDist = 99;
+    // Phase 0: Check for disc lure opportunity (kill Coily + clear board)
+    var lureDir = evalDiscLure();
+    if (lureDir) return lureDir;
+
+    // Phase 1: Follow precomputed tour when safe
+    // Coily moves at 0.75 rate, so distance 3 = ~4 player hops to reach us.
+    // Eggs/redballs move randomly downward and are less threatening.
+    var nearestCoilyDist = 99, nearestOtherDist = 99;
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
         if (e.type === 'spawn-timer' || e.type === 'slick' || e.type === 'greenball') continue;
         var d = exBfsDist(player.row, player.col, e.row, e.col);
-        if (d < nearestEnemyDist) nearestEnemyDist = d;
+        if (e.type === 'coily') {
+            if (d < nearestCoilyDist) nearestCoilyDist = d;
+        } else {
+            if (d < nearestOtherDist) nearestOtherDist = d;
+        }
     }
+    // Coily is deterministic and fast — need 3+ distance. Others are random — 2 is fine.
+    var safeFromEnemies = nearestCoilyDist > 3 && nearestOtherDist > 2;
 
-    if (nearestEnemyDist > 2 && aiTourMoves && aiTourStep < aiTourMoves.length) {
+    if (safeFromEnemies && aiTourMoves && aiTourStep < aiTourMoves.length) {
         var tourDir = aiTourMoves[aiTourStep];
         var expectedPos = aiTourStep > 0 ? aiTourPositions[aiTourStep - 1] : { row: 0, col: 0 };
         var onTrack = (player.row === expectedPos.row && player.col === expectedPos.col);
-        if (onTrack && exCanMove(tmpSt, tourDir)) {
+        if (onTrack && exCanMove(tmpSt, tourDir) && isSafeMove(tourDir)) {
             aiTourStep++;
             aiResumePath = null;
             return tourDir;
@@ -1092,8 +1068,7 @@ function aiPickBestDir() {
         }
     }
 
-    // Phase 2: Expectimax search — trust the search to avoid lethal moves
-    aiRecordState();
+    // Phase 2: Expectimax search — only incentives are tour cost and survival
     exMemoTable = {};
 
     var bestDir = null, bestVal = -Infinity;
@@ -1103,10 +1078,8 @@ function aiPickBestDir() {
         if (val > bestVal) { bestVal = val; bestDir = DIR_KEYS[k]; }
     }
 
-    aiLastPos = player.row + ',' + player.col;
     return bestDir || 'DL';
 }
-var aiLastScores = {};
 
 // Safety check: never move onto a position occupied by a lethal enemy,
 // and also check Coily's predicted next position (since Coily might move

@@ -362,7 +362,6 @@ function initRound() {
     aiTourDots   = [];
     aiMoveTimer  = 0;
     aiTour       = [];
-    aiBoardHistory = {}; aiLastPos = ''; aiStuckCount = 0; aiPosHistory = [];
     aiTourInit();
     aiTourIdx    = 0;
     aiBoardSig   = '';
@@ -974,9 +973,8 @@ function computeAIMove() {
     var tgt = targetState();
     var danger = buildDangerMaps();
 
-    // Use shared AI logic (includes anti-oscillation + repeat penalty)
+    // Use shared AI logic
     var bestDir = aiPickBestDir();
-    aiMoveScores = aiLastScores;
     aiBestDir = bestDir;
 
     // Build viz: tour to show remaining targets, BFS path for detail
