@@ -998,6 +998,29 @@ function update() {
     updatePlayer();
     updateEnemies();
 
+    // Per-frame collision: if player and any lethal enemy share a tile while
+    // both are stationary, kill the player (prevents "jumping through" enemies)
+    if (!player.dead && !player.jumping && !discRide) {
+        for (var i = 0; i < enemies.length; i++) {
+            var e = enemies[i];
+            if (e.type === 'spawn-timer' || e.jumping) continue;
+            if (e.row === player.row && e.col === player.col) {
+                if (e.type === 'slick') {
+                    score += 300; checkExtraLife();
+                    enemies.splice(i, 1);
+                    i--;
+                } else if (e.type === 'greenball') {
+                    score += 100; checkExtraLife();
+                    enemies.splice(i, 1);
+                    i--;
+                } else {
+                    killPlayer();
+                    break;
+                }
+            }
+        }
+    }
+
     // Accept input / AI when player is ready (not jumping, not dead, not on disc)
     if (!player.jumping && !player.dead && !discRide) {
         if (gameMode === 'rules') {
