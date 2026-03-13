@@ -36,7 +36,7 @@
 
         <h2 style="margin-top:16px;">How it works</h2>
         <p class="si-prose">DinoQbert recreates the 1982 Gottlieb arcade original: hop-based movement, one jump per keypress with a 9-frame arc animation matching the original arcade, and the classic @!#?@! swear bubble on death. Coily spawns as an egg, bounces randomly down the pyramid, then hatches and chases the player. Dark balls bounce down and kill on contact; light balls are safe to catch for 100 pts. Slick (round 4+) hops down uncoloring cubes. Ugg and Wrongway (round 3+) crawl upward from the bottom corners. Two transport discs at variable positions let Q*bert escape and lure Coily to his death.</p>
-        <p class="si-prose">Tap <strong>Viz</strong> to reveal the AI&rsquo;s plan: a dashed line traces the expected path, with faint dots marking uncolored cubes. The game uses <strong>turn-based logic</strong> matching the original arcade: player hops, then every enemy hops once, then collisions are checked. Every move is chosen by <strong>expectimax search</strong>&mdash;it enumerates every possible enemy outcome exactly. Coily is deterministic (greedy chase), so no branching needed; all other enemies fork DL/DR at p=0.5 each, giving 2<sup>N</sup> outcomes per step. Depth adapts to enemy count: 5 deep with 0&ndash;1 random enemies, 4 with 2, 3 with 3+.</p>
+        <p class="si-prose">Tap <strong>Viz</strong> to reveal the AI&rsquo;s plan: a dashed line traces the expected path, with faint dots marking uncolored cubes. The game uses <strong>turn-based logic</strong> matching the original arcade: player hops, then every enemy hops once, then collisions are checked. Every move is chosen by <strong>safe search</strong>&mdash;it finds move sequences where the probability of death is zero at every step, then picks the path with the lowest tour cost (MST-based heuristic). When no safe path exists, it falls back to minimizing death probability. Iterative deepening with a time budget ensures the AI never slows down the game.</p>
 
         <p style="margin-top:20px;"><a href="/" style="color:#0071e3;font-size:14px;text-decoration:none;">&larr; Back</a></p>
     </div>
@@ -47,7 +47,7 @@
 // Globals shared with qbert-ai.js (must be declared before it loads)
 var round, player, enemies, cubeStates, discs;
 var aiTour, aiTourIdx, aiBoardSig;
-var exMemoTable, exCloneState;
+var exCloneState;
 var gameSpeed = 0.25;  // global speed scale; displayed as 1x–8x (display = internal × 4)
 var enemiesEnabled = true;  // toggle via UI button
 var debugEnemies = false;   // ?debug URL param: spawn all enemies, hide player
@@ -261,7 +261,7 @@ var aiMoveTimer  = 0;
 aiTour       = [];
 aiTourIdx    = 0;
 aiBoardSig   = '';
-var aiMoveScores = {};  // { UL: val, UR: val, DL: val, DR: val } — expectimax values per direction
+var aiMoveScores = {};  // { UL: val, UR: val, DL: val, DR: val } — search scores per direction
 var aiBestDir    = null;
 var inputQueue  = [];
 var discRide    = null;  // { side, t, sx, sy, tx, ty } — player riding disc to top
@@ -915,7 +915,7 @@ function updatePlayer() {
     }
 }
 
-// ─── AI (bfsTo, boardSig, dangerMaps, buildTour, expectimax etc. from qbert-ai.js) ──
+// ─── AI (bfsTo, boardSig, dangerMaps, safeSearch etc. from qbert-ai.js) ──
 
 exCloneState = function() {
     var tgt = targetState();
@@ -966,8 +966,7 @@ exCloneState = function() {
 };
 
 // exCubeAt, exClone, exMoveEnemies, exPlayerMove, bfsDistTable, exBfsDist,
-// exTourCost, exLeafValue, exCanMove, exCountStoch, exStateKey, exMemoTable,
-// expectimax, expectimaxEval loaded from qbert-ai.js
+// exTourCost, exCanMove, safeSearch, aiPickBestDir loaded from qbert-ai.js
 
 function computeAIMove() {
     var tgt = targetState();
@@ -1182,7 +1181,7 @@ function drawDiscs() {
 function drawVizPath() {
     ctx.save();
 
-    // Draw expectimax scores on adjacent cubes
+    // Draw search scores on adjacent cubes
     var dirKeys = ['UL', 'UR', 'DL', 'DR'];
     var hasScores = false;
     var maxVal = -Infinity, minVal = Infinity;

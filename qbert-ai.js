@@ -6,9 +6,9 @@
 //   aiTour, aiTourIdx, aiBoardSig
 //
 // Globals provided by this file:
-//   ROWS, DIRS, DIR_KEYS, EX_MOVE_RATE, EX_DEATH, EX_WIN, exMemoTable
-//   All AI/expectimax functions, BFS, tour planning, danger maps
-//   aiPickBestDir() — main entry point for choosing AI direction (with anti-oscillation)
+//   ROWS, DIRS, DIR_KEYS, EX_MOVE_RATE, EX_DEATH, EX_WIN
+//   All AI functions, BFS, tour planning, danger maps
+//   aiPickBestDir() — main entry point for choosing AI direction
 //   Board utility functions (isValidPos, arcadeLevel, targetState, etc.)
 //
 // exCloneState() must be defined by the including file (differs between game/test).
@@ -827,20 +827,16 @@ function exStateKey(st, depth) {
     return k;
 }
 
-var exMemoTable = {};
+// ─── Safe search ──────────────────────────────────────────────────────────────
+// Finds the move that minimizes tour cost while keeping P(death)=0 at every step.
+// Fallback: when no safe path exists, minimizes single-step death probability.
+//
+// safeSearch(state, depth) → minimum tour cost reachable via safe-only moves.
+//   Returns Infinity if no safe continuation exists.
+//
+// With no enemies, P(death)=0 always, so this degenerates into pure tour minimax.
 
-function exLeafValue(st) {
-    if (!st.alive) return EX_DEATH;
-    if (st.cubesColored >= st.cubes.length * st.tgt) return EX_WIN;
-    var val = -exTourCost(st);
-    // Danger at leaf: simulate one more enemy step to detect imminent death.
-    // This extends the effective safety horizon without increasing full search depth.
-    var leafClone = exClone(st);
-    exMoveEnemies(leafClone);
-    var pDeath = deathProb(leafClone);
-    if (pDeath > 0) val = (1 - pDeath) * val + pDeath * EX_DEATH;
-    return val;
-}
+var safeMemo = {};
 
 function exCanMove(st, dirKey) {
     var d = DIRS[dirKey];
@@ -855,54 +851,44 @@ function exCanMove(st, dirKey) {
     return false;
 }
 
-function expectimax(st, depth) {
-    if (!st.alive) return EX_DEATH;
-    if (st.cubesColored >= st.cubes.length * st.tgt) return EX_WIN + depth * 100;
-    if (depth === 0) return exLeafValue(st);
+function safeSearchKey(st, depth) {
+    var k = st.pr + ',' + st.pc + '|';
+    for (var i = 0; i < st.cubes.length; i++) k += st.cubes[i].state;
+    k += '|';
+    for (var i = 0; i < st.enemies.length; i++) {
+        var e = st.enemies[i];
+        if (e.cloud) {
+            k += e.type[0] + 'h' + (e.hops || 0) + 'a' + e.accum.toFixed(2) + ';';
+        } else {
+            k += e.type[0] + e.row + ',' + e.col + 'a' + e.accum.toFixed(2) + ';';
+        }
+    }
+    k += '|' + depth;
+    for (var i = 0; i < st.discs.length; i++) k += st.discs[i].active ? 1 : 0;
+    return k;
+}
 
-    var key = exStateKey(st, depth);
-    if (exMemoTable[key] !== undefined) return exMemoTable[key];
+function safeSearch(st, depth) {
+    if (!st.alive) return Infinity;
+    if (st.cubesColored >= st.cubes.length * st.tgt) return -1000 - depth; // win sooner = better
+    if (depth === 0) return exTourCost(st);
 
-    var bestVal = -Infinity;
+    var key = safeSearchKey(st, depth);
+    if (safeMemo[key] !== undefined) return safeMemo[key];
+
+    var bestCost = Infinity;
     for (var k = 0; k < 4; k++) {
         if (!exCanMove(st, DIR_KEYS[k])) continue;
         var child = exClone(st);
-        if (!exPlayerMove(child, DIR_KEYS[k])) {
-            bestVal = Math.max(bestVal, EX_DEATH);
-        } else {
-            // Blend survival/death using this step's deathProb from clouds
-            var pDeath = child.stepDeathProb || 0;
-            var survive = expectimax(child, depth - 1);
-            var val = (1 - pDeath) * survive + pDeath * EX_DEATH;
-            bestVal = Math.max(bestVal, val);
-        }
+        if (!exPlayerMove(child, DIR_KEYS[k])) continue; // died
+        var pDeath = child.stepDeathProb || 0;
+        if (pDeath > 0) continue; // unsafe — prune
+        var cost = safeSearch(child, depth - 1);
+        if (cost < bestCost) bestCost = cost;
     }
 
-    exMemoTable[key] = bestVal;
-    return bestVal;
-}
-
-function expectimaxEval(dirKey) {
-    var st = exCloneState();
-    var nEnemies = st.enemies.length;
-    // Search depth balanced for speed. Memoization keeps single-enemy fast.
-    var depth = nEnemies === 0 ? 9 : nEnemies <= 1 ? 7 : nEnemies <= 2 ? 5 : 4;
-    var lv = st.lv !== undefined ? st.lv : arcadeLevel();
-    // Endgame on cycling levels: deeper
-    if (lv >= 5) {
-        var remaining = 0;
-        for (var i = 0; i < st.cubes.length; i++)
-            if (st.cubes[i].state < st.tgt) remaining++;
-        if (remaining <= 3 && nEnemies === 0) depth = 12;
-        else if (remaining <= 6 && nEnemies <= 1) depth = 11;
-    }
-    var child = exClone(st);
-    if (!exPlayerMove(child, dirKey)) {
-        return EX_DEATH;
-    }
-    var pDeath = child.stepDeathProb || 0;
-    var val = (1 - pDeath) * expectimax(child, depth - 1) + pDeath * EX_DEATH;
-    return val;
+    safeMemo[key] = bestCost;
+    return bestCost;
 }
 
 // ─── Precomputed optimal tours from (0,0) ────────────────────────────────────
@@ -993,29 +979,7 @@ function predictCoilyNext(coilyR, coilyC, targetR, targetC) {
 
 var aiResumePath = null;
 
-// Shallow minimax on tour cost only (no enemy simulation).
-// Returns the minimum achievable tour cost in 'depth' more moves.
-var tourMinimaxMemo = {};
-function tourMinimax(st, depth) {
-    if (st.cubesColored >= st.cubes.length * st.tgt) return -1000;
-    if (depth === 0) return exTourCost(st);
-
-    var key = st.pr + ',' + st.pc + '|';
-    for (var i = 0; i < st.cubes.length; i++) key += st.cubes[i].state;
-    key += '|' + depth;
-    if (tourMinimaxMemo[key] !== undefined) return tourMinimaxMemo[key];
-
-    var bestCost = Infinity;
-    for (var k = 0; k < 4; k++) {
-        if (!exCanMove(st, DIR_KEYS[k])) continue;
-        var child = exClone(st);
-        if (!exPlayerMove(child, DIR_KEYS[k])) continue;
-        var cost = tourMinimax(child, depth - 1);
-        if (cost < bestCost) bestCost = cost;
-    }
-    tourMinimaxMemo[key] = bestCost;
-    return bestCost;
-}
+var AI_TIME_BUDGET = 100; // ms — max time for search before returning best-so-far
 
 function aiPickBestDir() {
     var tmpSt = exCloneState();
@@ -1025,8 +989,6 @@ function aiPickBestDir() {
     if (lureDir) return lureDir;
 
     // Phase 1: Follow precomputed tour when safe
-    // Coily moves at 0.75 rate, so distance 3 = ~4 player hops to reach us.
-    // Eggs/redballs move randomly downward and are less threatening.
     var nearestCoilyDist = 99, nearestOtherDist = 99;
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
@@ -1038,7 +1000,6 @@ function aiPickBestDir() {
             if (d < nearestOtherDist) nearestOtherDist = d;
         }
     }
-    // Coily is deterministic and fast — need 3+ distance. Others are random — 2 is fine.
     var safeFromEnemies = nearestCoilyDist > 3 && nearestOtherDist > 2;
 
     if (safeFromEnemies && aiTourMoves && aiTourStep < aiTourMoves.length) {
@@ -1050,7 +1011,6 @@ function aiPickBestDir() {
             aiResumePath = null;
             return tourDir;
         }
-        // Off track — try BFS resume
         if (!aiResumePath || aiResumePath.length === 0) {
             aiResumePath = findTourResumePath();
         }
@@ -1061,41 +1021,68 @@ function aiPickBestDir() {
         }
     }
 
-    // Phase 2: Pick the move that minimizes tour cost
-    // With no enemies, greedy 1-step is sufficient.
-    // With enemies, use expectimax for survival-aware search.
-    var hasLethalEnemy = false;
-    for (var i = 0; i < enemies.length; i++) {
-        var e = enemies[i];
-        if (e.type !== 'spawn-timer' && e.type !== 'slick' && e.type !== 'greenball') {
-            hasLethalEnemy = true; break;
-        }
+    // Phase 2: Safe search — find move with lowest tour cost among paths
+    // where P(death) = 0 at every step. Uses iterative deepening with time budget.
+    var startTime = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    var bestDir = null, bestCost = Infinity;
+    var maxDepth = 8;
+
+    // Compute 1-step tour costs for tiebreaking
+    var immediateCost = {};
+    for (var k = 0; k < 4; k++) {
+        if (!exCanMove(tmpSt, DIR_KEYS[k])) continue;
+        var child = exClone(tmpSt);
+        if (!exPlayerMove(child, DIR_KEYS[k])) continue;
+        immediateCost[DIR_KEYS[k]] = exTourCost(child);
     }
 
-    if (!hasLethalEnemy) {
-        // No danger — shallow minimax on tour cost (depth 3 breaks oscillation)
-        tourMinimaxMemo = {};
-        var bestDir = null, bestCost = Infinity;
+    for (var depth = 1; depth <= maxDepth; depth++) {
+        safeMemo = {};
+        var depthBestDir = null, depthBestCost = Infinity, depthBestImm = Infinity;
         for (var k = 0; k < 4; k++) {
             if (!exCanMove(tmpSt, DIR_KEYS[k])) continue;
             var child = exClone(tmpSt);
             if (!exPlayerMove(child, DIR_KEYS[k])) continue;
-            var cost = tourMinimax(child, 2); // 2 more levels after this move = depth 3 total
-            if (cost < bestCost) { bestCost = cost; bestDir = DIR_KEYS[k]; }
+            var pDeath = child.stepDeathProb || 0;
+            if (pDeath > 0) continue; // unsafe first move — skip
+            var cost = safeSearch(child, depth - 1);
+            var imm = immediateCost[DIR_KEYS[k]] || Infinity;
+            if (cost < depthBestCost || (cost === depthBestCost && imm < depthBestImm)) {
+                depthBestCost = cost; depthBestDir = DIR_KEYS[k]; depthBestImm = imm;
+            }
         }
-        return bestDir || 'DL';
+        // Update best result from this completed depth
+        if (depthBestDir !== null) {
+            bestDir = depthBestDir;
+            bestCost = depthBestCost;
+        }
+        // Check time budget
+        var elapsed = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - startTime;
+        if (elapsed > AI_TIME_BUDGET) break;
     }
 
-    // Enemies present — expectimax search
-    exMemoTable = {};
-    var bestDir = null, bestVal = -Infinity;
+    // If safe search found a move, use it
+    if (bestDir !== null) return bestDir;
+
+    // Fallback: no safe path exists — minimize single-step death probability
+    var bestFallbackDir = null, bestDeathProb = Infinity;
     for (var k = 0; k < 4; k++) {
         if (!exCanMove(tmpSt, DIR_KEYS[k])) continue;
-        var val = expectimaxEval(DIR_KEYS[k]);
-        if (val > bestVal) { bestVal = val; bestDir = DIR_KEYS[k]; }
+        var child = exClone(tmpSt);
+        if (!exPlayerMove(child, DIR_KEYS[k])) {
+            continue; // certain death (fell off or landed on enemy)
+        }
+        var pDeath = child.stepDeathProb || 0;
+        // Tiebreak on tour cost among equally dangerous moves
+        var tc = exTourCost(child);
+        if (pDeath < bestDeathProb || (pDeath === bestDeathProb && tc < bestCost)) {
+            bestDeathProb = pDeath;
+            bestCost = tc;
+            bestFallbackDir = DIR_KEYS[k];
+        }
     }
 
-    return bestDir || 'DL';
+    return bestFallbackDir || 'DL';
 }
 
 // Safety check: never move onto a position occupied by a lethal enemy,
