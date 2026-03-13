@@ -896,8 +896,8 @@ var PRECOMPUTED_TOURS = {
     2: ["DL","DL","UR","DL","DL","DL","UR","DL","DL","DL","UR","DL","UR","DR","UR","DL","UR","DR","UR","DL","UR","UL","UR","DL","UR","UR","DR","UL","DR","DL","DR","UL","DR","DR","UR","DL","UR","DR","UR","DL","UR","DR","UL","DR","UL","UL","UL","DR","UL","UL","UL","UL","DR","UL","DR","DR","DL","DR","DL","UR","DL","DL","UL","DR"],
     // lv3 (tgt=1, toggle 0→1→0): 36 moves (exact optimal via IDA*)
     3: ["DL","UR","DR","DL","DL","UL","DL","DL","UR","DL","DL","DL","UR","DR","UL","UR","UR","DR","DL","DR","UR","UR","DR","DL","UR","DR","UL","UR","UL","UR","DR","DR","DL","DR","UR","DR"],
-    // lv4 (tgt=2, revert 2→1): 68 moves
-    4: ["DL","DL","DL","DL","DL","DR","UL","DR","UR","UL","DR","UR","UL","UR","UR","UR","DR","UL","DR","DL","DL","UR","DL","DL","DR","UR","DL","UR","UR","UR","DL","UR","DR","DR","UL","DR","DR","DR","UL","DR","UL","DL","UR","DL","UL","UL","DR","UL","DL","DR","UL","DR","UL","DL","UR","DL","UL","DL","UR","DL","UL","UL","DR","UL","DL","DL","UR","DL"],
+    // lv4 (tgt=2, revert 2→1): 64 moves (SAT-optimal)
+    4: ["DR","UL","DR","UL","DR","DR","DR","DR","DR","DR","UL","DL","UL","UL","UL","DL","UL","DL","DR","DR","UL","DL","UL","DL","UL","DL","UR","DL","UR","UR","UR","UR","UR","DR","DR","DR","DR","DR","UR","DR","UL","UL","UL","UL","UL","DL","UL","DL","DR","DR","DL","DL","UL","DL","UL","UR","UR","DR","DR","DR","UR","DR","UL","DR"],
     // lv5+ (tgt=2, cycling 0→1→2→0): 77 moves
     5: ["DL","UR","DL","UR","DR","DR","UL","DR","DR","DR","UL","DR","DR","DL","UR","DL","UL","DL","UR","DL","UL","UR","DL","UR","UL","UL","DR","UL","DL","UL","DL","UR","DR","DR","DL","UL","DR","UL","UL","DL","DL","UR","DL","DL","UR","DL","UR","DR","UL","DR","UR","DR","UL","DR","UR","UR","DL","DR","UL","DR","UR","UR","DL","UR","DL","UR","UR","DR","UL","DR","UL","DR","DR","DR","UL","DR","UL"]
 };
