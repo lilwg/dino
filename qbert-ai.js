@@ -803,6 +803,21 @@ function exLeafValue(st) {
             if (dist <= 1) val -= 500;
             else if (dist <= 2) val -= 250;
             else if (dist <= 3) val -= 100;
+            // Lure bonus: reward moving toward a disc that would kill Coily
+            for (var di = 0; di < st.discs.length; di++) {
+                var disc = st.discs[di];
+                if (!disc.active) continue;
+                if (!coilyLured(e, disc)) continue;
+                // Disc activation position: edge of disc.row
+                var discR = disc.row;
+                var discC = disc.side === 0 ? 0 : discR;
+                var distToDisc = exBfsDist(st.pr, st.pc, discR, discC);
+                if (distToDisc === 0) val += 400; // at disc, about to lure!
+                else if (distToDisc === 1) val += 250;
+                else if (distToDisc <= 3) val += 120;
+                else if (distToDisc <= 5) val += 50;
+                break; // only consider closest lurable disc
+            }
         } else if (e.cloud) {
             // Random enemy — expected penalty weighted by probability
             for (var j = 0; j < e.cloud.length; j++) {
