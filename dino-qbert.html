@@ -493,6 +493,9 @@ function enemyJumpTo(e, nr, nc) {
     e.jumping = true; e.jumpT = 0;
     e.jumpDur = 0.143 * speedMultiplier();  // refresh speed each hop
     e.jumpSX = e.px; e.jumpSY = e.py;
+    // Face based on horizontal direction of jump
+    if (dst.cx < e.px) e.facing = 'L';
+    else if (dst.cx > e.px) e.facing = 'R';
     e.tx = dst.cx; e.ty = dst.cy;
     e.row = nr; e.col = nc;
 }
@@ -521,10 +524,10 @@ function tryMove(dirKey) {
     }
 
     // Valid move — begin jump arc
-    startPlayerJump(nr, nc);
+    startPlayerJump(nr, nc, dirKey);
 }
 
-function startPlayerJump(nr, nc) {
+function startPlayerJump(nr, nc, dirKey) {
     DinoSounds.press();
     var dst = cubeXY(nr, nc);
     player.jumping  = true;
@@ -538,6 +541,8 @@ function startPlayerJump(nr, nc) {
     player.col      = nc;
     player.spriteFrame = 0;
     player.frameTimer  = 0;
+    if (dirKey === 'UL' || dirKey === 'DL') player.facing = 'L';
+    else player.facing = 'R';
 }
 
 function killPlayer() {
@@ -1270,11 +1275,12 @@ function drawVizPath() {
 }
 
 function drawPlayer() {
+    var flip = player.facing === 'L';
     if (player.dead) {
         // Flash during death
         if (Math.floor(player.deathAnimTimer / 5) % 2 === 0) {
             ctx.save(); ctx.globalAlpha = 0.45;
-            _drawTrex(player.px, player.py, SPRITES.TREX_IDLE, 0.72);
+            _drawTrex(player.px, player.py, SPRITES.TREX_IDLE, 0.72, flip);
             ctx.restore();
         }
         return;
@@ -1282,15 +1288,17 @@ function drawPlayer() {
     var sp = player.jumping
         ? (player.spriteFrame ? SPRITES.TREX_RUN2 : SPRITES.TREX_RUN1)
         : SPRITES.TREX_IDLE;
-    _drawTrex(player.px, player.py, sp, 0.72);
+    _drawTrex(player.px, player.py, sp, 0.72, flip);
 }
 
-function _drawTrex(px, py, sp, sc) {
+function _drawTrex(px, py, sp, sc, flipH) {
     var src = spriteClean || spriteImg;
     if (!src) return;
     var dw = Math.round(sp.w * sc), dh = Math.round(sp.h * sc);
     var dx = Math.round(px - dw / 2);
     var dy = Math.round(py - dh - TILE_H / 2 + 2);
+
+    if (flipH) { ctx.save(); ctx.translate(Math.round(px), 0); ctx.scale(-1, 1); ctx.translate(-Math.round(px), 0); }
 
     // White outline: draw cached white silhouette at 4 cardinal offsets
     if (spriteClean) {
@@ -1313,15 +1321,18 @@ function _drawTrex(px, py, sp, sc) {
     }
 
     ctx.drawImage(src, sp.x, sp.y, sp.w, sp.h, dx, dy, dw, dh);
+    if (flipH) ctx.restore();
 }
 
 // Draw a sprite with white outline (same technique as _drawTrex)
-function _drawSpriteOutlined(px, py, sp, sc) {
+function _drawSpriteOutlined(px, py, sp, sc, flipH) {
     var src = spriteClean || spriteImg;
     if (!src) return;
     var dw = Math.round(sp.w * sc), dh = Math.round(sp.h * sc);
     var dx = Math.round(px - dw / 2);
     var dy = Math.round(py - dh - TILE_H / 2);
+
+    if (flipH) { ctx.save(); ctx.translate(Math.round(px), 0); ctx.scale(-1, 1); ctx.translate(-Math.round(px), 0); }
 
     if (spriteClean) {
         var key = sp.x + ',' + sp.y + ',' + sc;
@@ -1343,14 +1354,17 @@ function _drawSpriteOutlined(px, py, sp, sc) {
     }
 
     ctx.drawImage(src, sp.x, sp.y, sp.w, sp.h, dx, dy, dw, dh);
+    if (flipH) ctx.restore();
 }
 
-// Draw evil dino: color-inverted T-Rex, horizontally flipped
-function _drawEvilDino(px, py, sp, sc) {
+// Draw evil dino: color-inverted T-Rex
+function _drawEvilDino(px, py, sp, sc, flipH) {
     if (!spriteInverted) return;
     var dw = Math.round(sp.w * sc), dh = Math.round(sp.h * sc);
     var dx = Math.round(px - dw / 2);
     var dy = Math.round(py - dh - TILE_H / 2 + 2);
+
+    if (flipH) { ctx.save(); ctx.translate(Math.round(px), 0); ctx.scale(-1, 1); ctx.translate(-Math.round(px), 0); }
 
     // Dark outline: black silhouette at cardinal offsets
     var silKey = 'evilinv_sil_' + sp.x + ',' + sp.y + ',' + sc;
@@ -1372,6 +1386,7 @@ function _drawEvilDino(px, py, sp, sc) {
 
     // White body from inverted sprite
     ctx.drawImage(spriteInverted, sp.x, sp.y, sp.w, sp.h, dx, dy, dw, dh);
+    if (flipH) ctx.restore();
 }
 
 // Shade the top face of each enemy's collision cube in red
@@ -1458,12 +1473,12 @@ function drawEnemy(e) {
 
     } else if (e.type === 'coily') {
         var sp = e.frame ? SPRITES.PTERO2 : SPRITES.PTERO1;
-        _drawSpriteOutlined(e.px, e.py, sp, 0.80);
+        _drawSpriteOutlined(e.px, e.py, sp, 0.80, e.facing === 'L');
 
     } else if (e.type === 'slick') {
-        // Evil dino: same T-Rex pixels, horizontally mirrored
+        // Evil dino: color-inverted T-Rex
         var slSp = e.frame ? SPRITES.TREX_RUN2 : SPRITES.TREX_RUN1;
-        _drawEvilDino(e.px, e.py, slSp, 0.65);
+        _drawEvilDino(e.px, e.py, slSp, 0.65, e.facing === 'L');
 
     } else if (e.type === 'redball') {
         // Dangerous cactus (dark, with white outline)
