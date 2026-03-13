@@ -723,10 +723,11 @@ function updateEnemies() {
                 if (hasSlick()) scheduleSpawn(525, 'slick');
             }
         } else if (e.type === 'ugg') {
-            // Ugg moves upward: random UL or UR
-            var udir = Math.random() < 0.5 ? 'UL' : 'UR';
-            var udelta = DIRS[udir];
-            var unr = e.row + udelta.dr, unc = e.col + udelta.dc;
+            // Ugg spawns bottom-right, hops on right cube faces toward top-left
+            // Two moves: up (row-1,col-1) or left along same row (row,col-1)
+            var unr, unc;
+            if (Math.random() < 0.5) { unr = e.row - 1; unc = e.col - 1; } // up
+            else                     { unr = e.row;     unc = e.col - 1; } // left
             if (isValidPos(unr, unc)) {
                 enemyJumpTo(e, unr, unc);
             } else {
@@ -734,10 +735,11 @@ function updateEnemies() {
                 if (hasUggWrongway()) scheduleSpawn(420, 'ugg');
             }
         } else if (e.type === 'wrongway') {
-            // Wrongway moves upward: random UL or UR
-            var wdir = Math.random() < 0.5 ? 'UL' : 'UR';
-            var wdelta = DIRS[wdir];
-            var wnr = e.row + wdelta.dr, wnc = e.col + wdelta.dc;
+            // Wrongway spawns bottom-left, hops on left cube faces toward top-right
+            // Two moves: up (row-1,col) or right along same row (row,col+1)
+            var wnr, wnc;
+            if (Math.random() < 0.5) { wnr = e.row - 1; wnc = e.col;     } // up
+            else                     { wnr = e.row;     wnc = e.col + 1; } // right
             if (isValidPos(wnr, wnc)) {
                 enemyJumpTo(e, wnr, wnc);
             } else {
