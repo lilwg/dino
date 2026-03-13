@@ -1352,12 +1352,6 @@ function _drawEvilDino(px, py, sp, sc) {
     var dx = Math.round(px - dw / 2);
     var dy = Math.round(py - dh - TILE_H / 2 + 2);
 
-    ctx.save();
-    // Flip horizontally around px
-    ctx.translate(Math.round(px), 0);
-    ctx.scale(-1, 1);
-    ctx.translate(-Math.round(px), 0);
-
     // Dark outline: black silhouette at cardinal offsets
     var silKey = 'evilinv_sil_' + sp.x + ',' + sp.y + ',' + sc;
     if (!outlineCache[silKey]) {
@@ -1378,8 +1372,6 @@ function _drawEvilDino(px, py, sp, sc) {
 
     // White body from inverted sprite
     ctx.drawImage(spriteInverted, sp.x, sp.y, sp.w, sp.h, dx, dy, dw, dh);
-
-    ctx.restore();
 }
 
 // Shade the top face of each enemy's collision cube in red
@@ -1471,7 +1463,7 @@ function drawEnemy(e) {
     } else if (e.type === 'slick') {
         // Evil dino: same T-Rex pixels, horizontally mirrored
         var slSp = e.frame ? SPRITES.TREX_RUN2 : SPRITES.TREX_RUN1;
-        _drawEvilDino(e.px, e.py, slSp, 0.75);
+        _drawEvilDino(e.px, e.py, slSp, 0.65);
 
     } else if (e.type === 'redball') {
         // Dangerous cactus (dark, with white outline)
