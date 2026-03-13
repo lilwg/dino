@@ -515,7 +515,7 @@ function enemySummary() {
 
 // ─── Run simulation ──────────────────────────────────────────────────────────
 function runGame(maxRounds, verbose) {
-    round = 1;
+    round = startRound;
     score = 0;
     lives = 3;
     extraLifeGiven = 0;
@@ -593,7 +593,14 @@ function runGame(maxRounds, verbose) {
 var verbose = process.argv.includes('-v') || process.argv.includes('--verbose');
 var noEnemies = process.argv.includes('--no-enemies');
 var numRounds = 5;
+var startRound = 1;
 for (var i = 2; i < process.argv.length; i++) {
+    if (process.argv[i] === '--start-round' && i + 1 < process.argv.length) {
+        startRound = parseInt(process.argv[++i]) || 1;
+    }
+}
+for (var i = 2; i < process.argv.length; i++) {
+    if (process.argv[i] === '--start-round') { i++; continue; }
     var n = parseInt(process.argv[i]);
     if (!isNaN(n) && n > 0) { numRounds = n; break; }
 }
@@ -602,8 +609,8 @@ if (noEnemies) {
     PRECOMPUTED_TOURS = {};
 }
 
-console.log('Running ' + numRounds + ' rounds' + (verbose ? ' (verbose)' : '') + '...\n');
-var result = runGame(numRounds, verbose);
+console.log('Running ' + numRounds + ' rounds from round ' + startRound + (verbose ? ' (verbose)' : '') + '...\n');
+var result = runGame(startRound + numRounds - 1, verbose);
 console.log('\nFinal: rounds=' + result.rounds + ' score=' + result.score + ' deaths=' + result.deaths);
 if (astarStats.solved + astarStats.fallbacks > 0) {
     console.log('A* stats: solved=' + astarStats.solved + ' fallbacks=' + astarStats.fallbacks +
