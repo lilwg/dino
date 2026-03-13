@@ -1324,16 +1324,48 @@ function _drawSpriteOutlined(px, py, sp, sc) {
     ctx.drawImage(src, sp.x, sp.y, sp.w, sp.h, dx, dy, dw, dh);
 }
 
-// Draw evil dino: same T-Rex sprite, horizontally flipped
+// Draw evil dino: color-inverted T-Rex, horizontally flipped
 function _drawEvilDino(px, py, sp, sc) {
-    var src = spriteClean || spriteImg;
-    if (!src) return;
+    if (!spriteDark) return;
+    var dw = Math.round(sp.w * sc), dh = Math.round(sp.h * sc);
+    var dx = Math.round(px - dw / 2);
+    var dy = Math.round(py - dh - TILE_H / 2 + 2);
+
     ctx.save();
     // Flip horizontally around px
     ctx.translate(Math.round(px), 0);
     ctx.scale(-1, 1);
     ctx.translate(-Math.round(px), 0);
-    _drawTrex(px, py, sp, sc);
+
+    // Dark outline at cardinal offsets
+    var silKey = 'evilsil_' + sp.x + ',' + sp.y + ',' + sc;
+    if (!outlineCache[silKey]) {
+        var tmp = document.createElement('canvas');
+        tmp.width = dw; tmp.height = dh;
+        var tc = tmp.getContext('2d');
+        tc.drawImage(spriteDark, sp.x, sp.y, sp.w, sp.h, 0, 0, dw, dh);
+        outlineCache[silKey] = tmp;
+    }
+    var darkSil = outlineCache[silKey];
+    ctx.drawImage(darkSil, dx - 1, dy);
+    ctx.drawImage(darkSil, dx + 1, dy);
+    ctx.drawImage(darkSil, dx, dy - 1);
+    ctx.drawImage(darkSil, dx, dy + 1);
+
+    // White body
+    var bodyKey = 'evilbody_' + sp.x + ',' + sp.y + ',' + sc;
+    if (!outlineCache[bodyKey]) {
+        var tmp2 = document.createElement('canvas');
+        tmp2.width = dw; tmp2.height = dh;
+        var tc2 = tmp2.getContext('2d');
+        tc2.drawImage(spriteDark, sp.x, sp.y, sp.w, sp.h, 0, 0, dw, dh);
+        tc2.globalCompositeOperation = 'source-in';
+        tc2.fillStyle = '#ffffff';
+        tc2.fillRect(0, 0, dw, dh);
+        outlineCache[bodyKey] = tmp2;
+    }
+    ctx.drawImage(outlineCache[bodyKey], dx, dy);
+
     ctx.restore();
 }
 
@@ -1426,7 +1458,7 @@ function drawEnemy(e) {
     } else if (e.type === 'slick') {
         // Evil dino: same T-Rex pixels, horizontally mirrored
         var slSp = e.frame ? SPRITES.TREX_RUN2 : SPRITES.TREX_RUN1;
-        _drawEvilDino(e.px, e.py, slSp, 0.72);
+        _drawEvilDino(e.px, e.py, slSp, 0.75);
 
     } else if (e.type === 'redball') {
         // Dangerous cactus (dark, with white outline)
