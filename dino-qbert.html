@@ -652,12 +652,18 @@ function updateEnemies() {
                     // Finished fall-off animation — remove and schedule respawn
                     var ft = e.type;
                     enemies.splice(i, 1);
-                    if (ft === 'egg' || ft === 'coily') scheduleSpawn(280);
-                    else if (ft === 'redball' && hasRedBall()) scheduleSpawn(Math.max(175, 280 - Math.floor(round / 2) * 35), 'redball');
-                    else if (ft === 'greenball' && hasGreenBall()) scheduleSpawn(420, 'greenball');
-                    else if (ft === 'slick' && hasSlick()) scheduleSpawn(525, 'slick');
-                    else if (ft === 'ugg' && hasUggWrongway()) scheduleSpawn(420, 'ugg');
-                    else if (ft === 'wrongway' && hasUggWrongway()) scheduleSpawn(490, 'wrongway');
+                    if (debugEnemies) {
+                        // Fast respawn in debug mode
+                        var dft = (ft === 'egg' || ft === 'coily') ? null : ft;
+                        scheduleSpawn(30, dft);
+                    } else {
+                        if (ft === 'egg' || ft === 'coily') scheduleSpawn(280);
+                        else if (ft === 'redball' && hasRedBall()) scheduleSpawn(Math.max(175, 280 - Math.floor(round / 2) * 35), 'redball');
+                        else if (ft === 'greenball' && hasGreenBall()) scheduleSpawn(420, 'greenball');
+                        else if (ft === 'slick' && hasSlick()) scheduleSpawn(525, 'slick');
+                        else if (ft === 'ugg' && hasUggWrongway()) scheduleSpawn(420, 'ugg');
+                        else if (ft === 'wrongway' && hasUggWrongway()) scheduleSpawn(490, 'wrongway');
+                    }
                     continue;
                 }
                 if (e.willHatch) {
