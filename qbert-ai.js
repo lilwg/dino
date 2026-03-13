@@ -721,9 +721,7 @@ function exTourCost(st) {
     var base = greedyTourCost(posToIdx[st.pr * ROWS + st.pc], needs, lv >= 3, lv);
     // On cycling levels (lv>=5), add isolation penalty: each remaining cube
     // surrounded by completed cubes will require crossing (reverting) to reach.
-    // This makes the heuristic more realistic about the true cost.
     if (lv >= 5) {
-        var isolationCost = 0;
         for (var i = 0; i < POS_COUNT; i++) {
             if (!(needs & (1 << i))) continue;
             var r = idxToPos[i][0], c = idxToPos[i][1];
@@ -733,13 +731,11 @@ function exTourCost(st) {
                 var nr = r + dk.dr, nc = c + dk.dc;
                 if (!isValidPos(nr, nc)) continue;
                 totalAdj++;
-                var idx = posToIdx[nr * ROWS + nc];
-                if (!(needs & (1 << idx))) completedAdj++;
+                var nidx = posToIdx[nr * ROWS + nc];
+                if (!(needs & (1 << nidx))) completedAdj++;
             }
-            // Each completed neighbor that must be crossed = revert damage
-            if (totalAdj > 0) isolationCost += completedAdj * 2;
+            if (totalAdj > 0) base += completedAdj * 2;
         }
-        base += isolationCost;
     }
     return base;
 }
@@ -939,6 +935,12 @@ function expectimaxEval(dirKey) {
     }
     var pDeath = child.stepDeathProb || 0;
     var val = (1 - pDeath) * expectimax(child, depth - 1) + pDeath * EX_DEATH;
+    // Apply repeat penalty to the immediate next state (first move matters most)
+    if (lv >= 3) {
+        var bh = boardHash(child);
+        var visits = aiBoardHistory[bh] || 0;
+        if (visits > 0) val -= visits * AI_REPEAT_PENALTY;
+    }
     return val + exLeafValue(st) * 0.0001;
 }
 
@@ -947,6 +949,8 @@ function expectimaxEval(dirKey) {
 // States that have been visited before get penalized in exLeafValue.
 var aiBoardHistory = {};
 var AI_REPEAT_PENALTY = 120;
+var aiLastPos = '';  // last position for oscillation detection
+var aiStuckCount = 0; // turns spent at same remaining count
 
 function boardHash(st) {
     var h = st.pr + ',' + st.pc + '|';
@@ -966,11 +970,36 @@ function aiPickBestDir() {
 
     exMemoTable = {};
     var tmpSt = exCloneState();
+    var lv = tmpSt.lv !== undefined ? tmpSt.lv : arcadeLevel();
+    var curPos = tmpSt.pr + ',' + tmpSt.pc;
+
+    // Detect if stuck: same position as 2 turns ago = bouncing
+    var blocked = '';
+    if (lv >= 3 && aiLastPos !== '') {
+        var bh = boardHash(tmpSt);
+        var visits = aiBoardHistory[bh] || 0;
+        if (visits >= 3) {
+            // This exact board state has been seen 3+ times — block returning
+            blocked = aiLastPos;
+        }
+    }
+
     var bestDir = null, bestVal = -Infinity;
+    var fallbackDir = null, fallbackVal = -Infinity;
     for (var k = 0; k < 4; k++) {
         if (!exCanMove(tmpSt, DIR_KEYS[k])) continue;
         var val = expectimaxEval(DIR_KEYS[k]);
+        // Track fallback (best of all moves)
+        if (val > fallbackVal) { fallbackVal = val; fallbackDir = DIR_KEYS[k]; }
+        // Skip blocked direction (the position we keep returning to)
+        if (blocked !== '') {
+            var d = DIRS[DIR_KEYS[k]];
+            var nr = tmpSt.pr + d.dr, nc = tmpSt.pc + d.dc;
+            if (nr + ',' + nc === blocked) continue;
+        }
         if (val > bestVal) { bestVal = val; bestDir = DIR_KEYS[k]; }
     }
-    return bestDir || 'DL';
+
+    aiLastPos = curPos;
+    return bestDir || fallbackDir || 'DL';
 }
