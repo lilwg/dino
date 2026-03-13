@@ -808,10 +808,10 @@ function exLeafValue(st) {
                 var discR = disc.row;
                 var discC = disc.side === 0 ? 0 : discR;
                 var distToDisc = exBfsDist(st.pr, st.pc, discR, discC);
-                if (distToDisc === 0) val += 400; // at disc, about to lure!
-                else if (distToDisc === 1) val += 250;
-                else if (distToDisc <= 3) val += 120;
-                else if (distToDisc <= 5) val += 50;
+                // Only lure aggressively when we have space from Coily
+                if (distToDisc === 0) val += 350; // at disc, about to lure!
+                else if (distToDisc === 1 && dist >= 3) val += 200;
+                else if (distToDisc <= 3 && dist >= 4) val += 80;
                 break; // only consider closest lurable disc
             }
         } else if (e.cloud) {
@@ -986,9 +986,11 @@ function aiPickBestDir() {
 
     var bestDir = null, bestVal = -Infinity;
     var fallbackDir = null, fallbackVal = -Infinity;
+    var scores = {};
     for (var k = 0; k < 4; k++) {
         if (!exCanMove(tmpSt, DIR_KEYS[k])) continue;
         var val = expectimaxEval(DIR_KEYS[k]);
+        scores[DIR_KEYS[k]] = val;
         // Track fallback (best of all moves)
         if (val > fallbackVal) { fallbackVal = val; fallbackDir = DIR_KEYS[k]; }
         // Skip blocked direction (the position we keep returning to)
@@ -1001,5 +1003,7 @@ function aiPickBestDir() {
     }
 
     aiLastPos = curPos;
+    aiLastScores = scores;
     return bestDir || fallbackDir || 'DL';
 }
+var aiLastScores = {};

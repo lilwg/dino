@@ -606,10 +606,11 @@ function checkPlayerEnemyCollision() {
 // ─── Update enemies (real-time: each enemy moves on its own independent timer) ──
 function updateEnemies() {
     if (!roundStarted) return; // enemies frozen until first player move
-    // Tick spawn timers (frame-based, scaled by game speed)
+    // Tick spawn timers (frame-based, scaled by game speed slider only)
+    var gs = (typeof gameSpeed !== 'undefined') ? gameSpeed : 1.0;
     for (var i = enemies.length - 1; i >= 0; i--) {
         if (enemies[i].type === 'spawn-timer') {
-            enemies[i].timer -= speedMultiplier();
+            enemies[i].timer -= gs;
             if (enemies[i].timer <= 0) {
                 var ft = enemies[i].forcedType;
                 enemies.splice(i, 1);
@@ -913,18 +914,9 @@ function computeAIMove() {
     var tgt = targetState();
     var danger = buildDangerMaps();
 
-    // Record state for repetition penalty, then evaluate moves
-    aiRecordState();
-    exMemoTable = {};
-    var tmpSt = exCloneState();
-    var bestDir = null, bestVal = -Infinity;
-    aiMoveScores = {};
-    for (var k = 0; k < 4; k++) {
-        if (!exCanMove(tmpSt, DIR_KEYS[k])) continue;
-        var val = expectimaxEval(DIR_KEYS[k]);
-        aiMoveScores[DIR_KEYS[k]] = val;
-        if (val > bestVal) { bestVal = val; bestDir = DIR_KEYS[k]; }
-    }
+    // Use shared AI logic (includes anti-oscillation + repeat penalty)
+    var bestDir = aiPickBestDir();
+    aiMoveScores = aiLastScores;
     aiBestDir = bestDir;
 
     // Build viz: tour to show remaining targets, BFS path for detail
