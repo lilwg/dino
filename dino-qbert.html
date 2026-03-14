@@ -1656,10 +1656,15 @@ function loop(timestamp) {
     // Cap delta to avoid spiral of death (e.g. tab was backgrounded)
     if (delta > 200) delta = 200;
     accumulator += delta;
-    while (accumulator >= SIM_DT) {
+    // Max 4 ticks per frame to prevent death spiral if update() is slow
+    var ticks = 0;
+    while (accumulator >= SIM_DT && ticks < 4) {
         update();
         accumulator -= SIM_DT;
+        ticks++;
     }
+    // If we hit the cap, discard remaining accumulator to prevent buildup
+    if (ticks >= 4 && accumulator > SIM_DT) accumulator = 0;
     draw();
     requestAnimationFrame(loop);
 }
