@@ -1599,11 +1599,11 @@ function drawEnemy(e) {
 
     } else if (e.type === 'ugg') {
         // Ugg spawns bottom-right, moves left → clings to RIGHT faces of cubes
-        _drawRotatedCactus(e.px + TILE_W / 4, e.py - TILE_H / 4 - CUBE_DEPTH / 2, Math.PI / 2, 0.75);
+        _drawRotatedCactus(e.px - TILE_W / 4, e.py - TILE_H / 4 - CUBE_DEPTH / 2, -Math.PI / 2, 0.75);
 
     } else if (e.type === 'wrongway') {
         // Wrongway spawns bottom-left, moves right → clings to LEFT faces of cubes
-        _drawRotatedCactus(e.px - TILE_W / 4, e.py - TILE_H / 4 - CUBE_DEPTH / 2, -Math.PI / 2, 0.75);
+        _drawRotatedCactus(e.px + TILE_W / 4, e.py - TILE_H / 4 - CUBE_DEPTH / 2, Math.PI / 2, 0.75);
     }
 }
 
