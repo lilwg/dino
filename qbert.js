@@ -685,12 +685,30 @@ function simDeepClone(gs) {
 // Returns true if player survived, false if died.
 function simStep(gs, dir) {
     if (dir === 'STAY') {
-        // Stand still for one hop's worth of frames
-        var hopFrames = Math.ceil(1.0 / gs.player.jumpDur);
-        for (var f = 0; f < hopFrames; f++) {
+        // Advance enemies until the nearest Coily completes its current jump
+        // and starts its next one. This models waiting for the right moment.
+        var coilyLanded = false;
+        var maxWait = Math.ceil(1.0 / (gs.player.jumpDur || 0.028)) + 8;
+        for (var f = 0; f < maxWait; f++) {
+            // Check if any Coily just landed this frame
+            var anyCoilyJumping = false;
+            for (var ei = 0; ei < gs.enemies.length; ei++) {
+                if (gs.enemies[ei].type === 'coily' && gs.enemies[ei].jumping) anyCoilyJumping = true;
+            }
             simUpdateEnemies(gs);
             simCheckCollision(gs);
             if (!gs.alive || gs.levelWon) return gs.alive;
+            // Stop after Coily lands and has started its next jump
+            if (anyCoilyJumping) {
+                var nowJumping = false;
+                for (var ei2 = 0; ei2 < gs.enemies.length; ei2++) {
+                    if (gs.enemies[ei2].type === 'coily') {
+                        if (!gs.enemies[ei2].jumping) coilyLanded = true;
+                        if (gs.enemies[ei2].jumping && coilyLanded) { nowJumping = true; break; }
+                    }
+                }
+                if (nowJumping) break; // Coily landed then started new jump — good stopping point
+            }
         }
         return true;
     }

@@ -377,10 +377,14 @@ function isSafeMove(dirKey) {
         var e = enemies[i];
         if (e.type === 'spawn-timer' || e.type === 'slick' || e.type === 'greenball') continue;
         var pos = enemyEffectivePos(e);
-        if (pos.row === nr && pos.col === nc) return false;
         if (e.type === 'coily') {
-            var cp = predictCoilyNext(pos.row, pos.col, nr, nc);
+            // Coily mid-jump landing tile is dangerous
+            if (e.destRow != null && e.destRow === nr && e.destCol === nc) return false;
+            // Check where Coily goes next (chases player's current pos)
+            var cp = predictCoilyNext(pos.row, pos.col, player.row, player.col);
             if (cp.row === nr && cp.col === nc) return false;
+        } else {
+            if (pos.row === nr && pos.col === nc) return false;
         }
     }
     return true;
@@ -548,21 +552,31 @@ function mcPickGreedy(gs) {
             return dir;
         }
         var score = 0;
-        // Avoid enemies
+        // Avoid enemies — but Coily is deterministic so we can exploit
+        // apex immunity: jumping TO a standing Coily's tile is safe (they swap)
         var danger = false;
         for (var ei = 0; ei < gs.enemies.length; ei++) {
             var e = gs.enemies[ei];
             if (e.type === 'spawn-timer' || e.type === 'slick' || e.type === 'greenball') continue;
-            var er = e.row, ec = e.col;
-            if (e.destRow != null) { er = e.destRow; ec = e.destCol; }
-            if (er === nr && ec === nc) { danger = true; break; }
-            // Check enemy's possible next moves
             if (e.type === 'coily') {
-                var cp = predictCoilyNext(er, ec, nr, nc);
+                if (e.destRow != null) {
+                    // Coily mid-jump: landing tile is dangerous
+                    if (e.destRow === nr && e.destCol === nc) { danger = true; break; }
+                }
+                // Coily standing or mid-jump: check where it goes NEXT
+                // Coily chases player's CURRENT pos (source), not destination
+                var cer = e.destRow != null ? e.destRow : e.row;
+                var cec = e.destCol != null ? e.destCol : e.col;
+                var cp = predictCoilyNext(cer, cec, gs.player.row, gs.player.col);
                 if (cp.row === nr && cp.col === nc) { danger = true; break; }
-            } else if (e.type === 'egg' || e.type === 'redball') {
-                if (isValidPos(er + 1, ec) && er + 1 === nr && ec === nc) danger = true;
-                if (isValidPos(er + 1, ec + 1) && er + 1 === nr && ec + 1 === nc) danger = true;
+            } else {
+                var er = e.row, ec = e.col;
+                if (e.destRow != null) { er = e.destRow; ec = e.destCol; }
+                if (er === nr && ec === nc) { danger = true; break; }
+                if (e.type === 'egg' || e.type === 'redball') {
+                    if (isValidPos(er + 1, ec) && er + 1 === nr && ec === nc) danger = true;
+                    if (isValidPos(er + 1, ec + 1) && er + 1 === nr && ec + 1 === nc) danger = true;
+                }
             }
         }
         if (danger) score -= 100;
