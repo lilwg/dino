@@ -328,6 +328,7 @@ function initRound() {
     levelWon = false;
     roundStarted = false;
     hops = 0;
+    dayTimer = 0; inverted = false;  // reset night per round — punishment for dawdling
     cubeStates = [];
     for (var r = 0; r < ROWS; r++)
         for (var c = 0; c <= r; c++)
