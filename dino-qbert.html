@@ -560,6 +560,9 @@ function startPlayerJump(nr, nc, dirKey) {
 function killPlayer() {
     if (debugEnemies || player.dead) return;
     player.dead = true;
+    player.pendingDeath = false;
+    player.pendingCatch = null;
+    player.jumping = false;
     DinoSounds.hit();
     player.deathTimer = 100;  // frames of death state
     player.deathAnimTimer = 0;
@@ -623,21 +626,17 @@ function checkPlayerEnemyCollision() {
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
         if (e.type === 'spawn-timer') continue;
-        // Check logical grid position even if enemy is mid-jump — in the arcade,
-        // collision is based on destination cube, not animation state.
+        if (e.jumping) continue; // wait until enemy lands
         if (e.row === player.row && e.col === player.col) {
             if (e.type === 'slick') {
-                // Player destroys slick on landing
                 score += 300; checkExtraLife();
                 enemies.splice(i, 1);
                 i--;
             } else if (e.type === 'greenball') {
-                // Green ball is safe — catch for 100 points
                 score += 100; checkExtraLife();
                 enemies.splice(i, 1);
                 i--;
             } else {
-                // Coily/egg/redball/ugg/wrongway kills player
                 killPlayer();
                 return;
             }
@@ -786,25 +785,36 @@ function updateEnemies() {
 }
 
 function onEnemyLand(e, idx) {
-    // Collision based on logical grid position (row/col), matching arcade behavior.
-    // Both player and enemy row/col are set to their destination at jump start,
-    // so matching row/col means they're heading to / on the same cube.
     if (e.type === 'slick') {
         var cube = cubeAt(e.row, e.col);
         if (cube && cube.state > 0) cube.state--;
         if (!player.dead && e.row === player.row && e.col === player.col) {
-            score += 300; checkExtraLife();
-            enemies.splice(idx, 1);
+            if (player.jumping) {
+                // Player heading to same cube — defer until player lands
+                player.pendingCatch = { type: 'slick', idx: idx };
+            } else {
+                score += 300; checkExtraLife();
+                enemies.splice(idx, 1);
+            }
         }
     } else if (e.type === 'greenball') {
         if (!player.dead && e.row === player.row && e.col === player.col) {
-            score += 100; checkExtraLife();
-            enemies.splice(idx, 1);
+            if (player.jumping) {
+                player.pendingCatch = { type: 'greenball', idx: idx };
+            } else {
+                score += 100; checkExtraLife();
+                enemies.splice(idx, 1);
+            }
         }
     } else if (e.type === 'redball' || e.type === 'coily' || e.type === 'egg' ||
                e.type === 'ugg' || e.type === 'wrongway') {
         if (!player.dead && e.row === player.row && e.col === player.col) {
-            killPlayer();
+            if (player.jumping) {
+                // Player heading to same cube — kill on landing
+                player.pendingDeath = true;
+            } else {
+                killPlayer();
+            }
         }
     }
 }
@@ -868,6 +878,8 @@ function updatePlayer() {
         if (player.deathTimer <= 0 && !gameOver) {
             // Respawn
             player.dead = false;
+            player.pendingDeath = false;
+            player.pendingCatch = null;
             swearBubble = null;
             var sp = cubeXY(0, 0);
             player.row = 0; player.col = 0;
@@ -900,6 +912,27 @@ function updatePlayer() {
             hops++;
             // Color cube on landing
             stompCube(player.row, player.col);
+            // Resolve pending death (enemy landed on our destination mid-jump)
+            if (player.pendingDeath) {
+                player.pendingDeath = false;
+                killPlayer();
+            }
+            // Resolve pending catch (slick/greenball landed on our destination)
+            if (!player.dead && player.pendingCatch) {
+                var pc = player.pendingCatch;
+                player.pendingCatch = null;
+                if (pc.type === 'slick') { score += 300; checkExtraLife(); }
+                else if (pc.type === 'greenball') { score += 100; checkExtraLife(); }
+                // Remove enemy by finding it (index may have shifted)
+                for (var ei = 0; ei < enemies.length; ei++) {
+                    var ee = enemies[ei];
+                    if ((ee.type === 'slick' || ee.type === 'greenball') &&
+                        ee.row === player.row && ee.col === player.col) {
+                        enemies.splice(ei, 1);
+                        break;
+                    }
+                }
+            }
             // Check enemy collision on landing
             checkPlayerEnemyCollision();
             // Check round complete
@@ -1050,13 +1083,12 @@ function update() {
     updatePlayer();
     updateEnemies();
 
-    // Per-frame collision: kill the player if they share a tile with a lethal
-    // enemy. Check both stationary and jumping enemies — in the arcade, collision
-    // happens based on logical grid position, not animation state.
+    // Per-frame collision: both player and enemy must be stationary (landed).
+    // Mid-jump collisions are deferred via pendingDeath so animations finish.
     if (!player.dead && !player.jumping && !discRide) {
         for (var i = 0; i < enemies.length; i++) {
             var e = enemies[i];
-            if (e.type === 'spawn-timer') continue;
+            if (e.type === 'spawn-timer' || e.jumping) continue;
             if (e.row === player.row && e.col === player.col) {
                 if (e.type === 'slick') {
                     score += 300; checkExtraLife();
