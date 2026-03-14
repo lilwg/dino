@@ -198,27 +198,37 @@ function cubeXY(row, col) {
 
 function drawCube(c, cx, cy, state) {
     var hw = TILE_W / 2, hh = TILE_H / 2;
-    // [top, left, right] colours per state
-    var cols = [
-        ['#ebebeb', '#d4d4d4', '#bcbcbc'],  // state 0: uncolored (near-white)
-        ['#b8b8b8', '#989898', '#787878'],  // state 1: colored (medium-light)
-        ['#787878', '#585858', '#404040']   // state 2: fully colored (medium-dark)
-    ][state] || ['#ebebeb', '#d4d4d4', '#bcbcbc'];
+    // Arcade-accurate: only the TOP face changes color per state.
+    // Left and right side faces stay constant dark shades.
+    var lv = arcadeLevel();
+    // Per-level top-face color palettes [state0, state1, state2]
+    var topColors;
+    if (lv <= 2) {
+        topColors = ['#d48830', '#3060d0', '#30b030'];   // orange → blue → green
+    } else if (lv <= 4) {
+        topColors = ['#d0d0d0', '#6868a8', '#d04840'];   // light gray → purple → red
+    } else if (lv <= 6) {
+        topColors = ['#c8b848', '#3878c8', '#48c078'];   // yellow → blue → green
+    } else {
+        topColors = ['#d0a848', '#50b0d0', '#d06040'];   // tan → cyan → orange-red
+    }
+    var topCol = topColors[state] || topColors[0];
+    // Side faces: constant dark brown (arcade-authentic)
+    var leftCol  = '#684820';
+    var rightCol = '#503818';
+    var stroke   = '#382810';
 
-    // Stroke blends with each state's face tone
-    var stroke = state === 0 ? '#cccccc' : state === 1 ? '#888888' : '#535353';
-
-    function face(pts, fi) {
+    function face(pts, col) {
         c.beginPath();
         c.moveTo(pts[0], pts[1]);
         for (var i = 2; i < pts.length; i += 2) c.lineTo(pts[i], pts[i + 1]);
         c.closePath();
-        c.fillStyle = cols[fi]; c.fill();
+        c.fillStyle = col; c.fill();
         c.strokeStyle = stroke; c.lineWidth = 0.5; c.stroke();
     }
-    face([cx, cy-hh, cx+hw, cy, cx, cy+hh, cx-hw, cy], 0);                              // top
-    face([cx-hw, cy, cx, cy+hh, cx, cy+hh+CUBE_DEPTH, cx-hw, cy+CUBE_DEPTH], 1);        // left
-    face([cx+hw, cy, cx, cy+hh, cx, cy+hh+CUBE_DEPTH, cx+hw, cy+CUBE_DEPTH], 2);        // right
+    face([cx, cy-hh, cx+hw, cy, cx, cy+hh, cx-hw, cy], topCol);                              // top
+    face([cx-hw, cy, cx, cy+hh, cx, cy+hh+CUBE_DEPTH, cx-hw, cy+CUBE_DEPTH], leftCol);       // left
+    face([cx+hw, cy, cx, cy+hh, cx, cy+hh+CUBE_DEPTH, cx+hw, cy+CUBE_DEPTH], rightCol);      // right
 }
 
 // ─── Game state ───────────────────────────────────────────────────────────────
@@ -232,16 +242,17 @@ var roundStarted = false; // true after first player move — enemies frozen unt
 
 // Base enemy move intervals: idle frames BETWEEN hops (level 1 speed).
 // Total land-to-land = moveInterval + ceil(1/jumpDur).
-// Arcade measurements at 60fps: Q*bert=9f, Coily=12f, red ball=12f land-to-land.
-// With jumpDur giving ~7f animation, idle gap = total - 7.
+// Video analysis at 30fps: Q*bert=15f(0.50s), Coily≈15-16f(0.50-0.53s),
+// red ball≈16f(0.53s). At 60fps: Q*bert=30f, Coily=32f, red ball=32f.
+// With jumpDur 0.143 giving ~7f animation, idle gap = total - 7.
 var BASE_ENEMY_INTERVALS = {
-    egg:        5,   // 5 idle + 7 anim = 12f (~0.20s) — same as coily
-    coily:      5,   // 5 idle + 7 anim = 12f (~0.20s)
-    redball:    5,   // 5 idle + 7 anim = 12f (~0.20s)
-    greenball:  8,   // 8 idle + 7 anim = 15f (~0.25s) — leisurely
-    slick:     10,   // 10 idle + 7 anim = 17f (~0.28s) — slow
-    ugg:        5,   // 5 idle + 7 anim = 12f (~0.20s) — side-crawlers
-    wrongway:   5    // 5 idle + 7 anim = 12f (~0.20s) — side-crawlers
+    egg:       25,   // 25 idle + 7 anim = 32f (~0.53s) — same as coily
+    coily:     25,   // 25 idle + 7 anim = 32f (~0.53s)
+    redball:   25,   // 25 idle + 7 anim = 32f (~0.53s)
+    greenball: 33,   // 33 idle + 7 anim = 40f (~0.67s) — leisurely
+    slick:     43,   // 43 idle + 7 anim = 50f (~0.83s) — slow
+    ugg:       25,   // 25 idle + 7 anim = 32f (~0.53s) — side-crawlers
+    wrongway:  25    // 25 idle + 7 anim = 32f (~0.53s) — side-crawlers
 };
 
 // Effective enemy intervals for current level
@@ -380,13 +391,14 @@ function initRound() {
     scheduleSpawn(20, 'ugg');
     scheduleSpawn(25, 'wrongway');
     } else if (enemiesEnabled) {
-    // Spawn timers in frames (at 60fps) — arcade-accurate schedule
-    scheduleSpawn(280);                                    // Coily egg (~4.7s) — always
-    if (hasRedBall())    scheduleSpawn(140, 'redball');     // ~2.3s
-    if (hasSlick())      scheduleSpawn(525, 'slick');      // ~8.75s
-    if (hasGreenBall())  scheduleSpawn(350, 'greenball');   // ~5.8s
-    if (hasUggWrongway()) scheduleSpawn(420, 'ugg');        // ~7s
-    if (hasUggWrongway()) scheduleSpawn(490, 'wrongway');   // ~8.2s
+    // Spawn timers in frames (at 60fps) — arcade-accurate from video analysis.
+    // Video: egg at ~3s after first move, first red ball at ~6s, then every ~3s.
+    scheduleSpawn(180);                                    // Coily egg (~3s) — always
+    if (hasRedBall())    scheduleSpawn(360, 'redball');     // ~6s
+    if (hasSlick())      scheduleSpawn(900, 'slick');      // ~15s
+    if (hasGreenBall())  scheduleSpawn(540, 'greenball');   // ~9s
+    if (hasUggWrongway()) scheduleSpawn(720, 'ugg');        // ~12s
+    if (hasUggWrongway()) scheduleSpawn(840, 'wrongway');   // ~14s
     }
 }
 
@@ -678,12 +690,12 @@ function updateEnemies() {
                         var dft = (ft === 'egg' || ft === 'coily') ? null : ft;
                         scheduleSpawn(30, dft);
                     } else {
-                        if (ft === 'egg' || ft === 'coily') scheduleSpawn(280);
-                        else if (ft === 'redball' && hasRedBall()) scheduleSpawn(Math.max(175, 280 - Math.floor(round / 2) * 35), 'redball');
-                        else if (ft === 'greenball' && hasGreenBall()) scheduleSpawn(420, 'greenball');
-                        else if (ft === 'slick' && hasSlick()) scheduleSpawn(525, 'slick');
-                        else if (ft === 'ugg' && hasUggWrongway()) scheduleSpawn(420, 'ugg');
-                        else if (ft === 'wrongway' && hasUggWrongway()) scheduleSpawn(490, 'wrongway');
+                        if (ft === 'egg' || ft === 'coily') scheduleSpawn(180);
+                        else if (ft === 'redball' && hasRedBall()) scheduleSpawn(Math.max(120, 180 - Math.floor(round / 2) * 10), 'redball');
+                        else if (ft === 'greenball' && hasGreenBall()) scheduleSpawn(540, 'greenball');
+                        else if (ft === 'slick' && hasSlick()) scheduleSpawn(720, 'slick');
+                        else if (ft === 'ugg' && hasUggWrongway()) scheduleSpawn(600, 'ugg');
+                        else if (ft === 'wrongway' && hasUggWrongway()) scheduleSpawn(660, 'wrongway');
                     }
                     continue;
                 }
@@ -814,7 +826,7 @@ function onEnemyLand(e, idx) {
 function updatePlayer() {
     // Disc ride animation: disc swoops upward in an arc to the pyramid top
     if (discRide) {
-        discRide.t += 0.018;  // ~56 frames (~0.9s) to complete
+        discRide.t += 0.0083;  // ~120 frames (~2.0s) to complete — arcade-accurate
         if (discRide.t >= 1) {
             discRide.t = 1;
             // Land at top
@@ -828,20 +840,24 @@ function updatePlayer() {
         } else {
             var t = discRide.t;
             // Two-phase animation like the arcade:
-            // Phase 1 (t<0.15): hover/pause on the disc briefly
-            // Phase 2 (t>=0.15): swoop upward in an arc to the top
-            if (t < 0.15) {
-                // Stay at disc position, slight bob
+            // Phase 1 (t<0.25): hover/pause on the disc (~0.5s)
+            // Phase 2 (t>=0.25): lift off and arc to pyramid top (~1.5s)
+            if (t < 0.25) {
+                // Stay at disc position, gentle bob
                 player.px = discRide.sx;
-                player.py = discRide.sy + Math.sin(t * 40) * 2;
+                player.py = discRide.sy + Math.sin(t * 25) * 2;
             } else {
-                var st = (t - 0.15) / 0.85; // 0..1 for the flight phase
-                var ease = 1 - (1 - st) * (1 - st); // ease-out
-                // Swing outward then curve to the top — arc sideways first
+                var st = (t - 0.25) / 0.75; // 0..1 for the flight phase
+                // Arcade path: lift straight up first, then curve inward to top
                 var side = discRide.side === 0 ? -1 : 1;
-                var arcOut = Math.sin(st * Math.PI) * 40 * side; // swing out then back
+                // Ease-in-out for smooth acceleration/deceleration
+                var ease = st < 0.5 ? 2 * st * st : 1 - 2 * (1 - st) * (1 - st);
+                // Arc outward slightly during lift, then sweep in
+                var arcOut = Math.sin(st * Math.PI) * 30 * side;
                 player.px = discRide.sx + (discRide.tx - discRide.sx) * ease + arcOut;
-                player.py = discRide.sy + (discRide.ty - discRide.sy) * ease;
+                // Rise quickly at first (lift off), then level out toward top
+                var vertEase = 1 - (1 - st) * (1 - st) * (1 - st); // cubic ease-out
+                player.py = discRide.sy + (discRide.ty - discRide.sy) * vertEase;
             }
             // Animate sprite
             player.frameTimer++;
@@ -870,12 +886,12 @@ function updatePlayer() {
             }
             enemies = kept;
             roundStarted = false; // wait for first move again after respawn
-            scheduleSpawn(245);                                    // Coily egg (~4.1s)
-            if (hasRedBall())    scheduleSpawn(175, 'redball');     // ~2.9s
-            if (hasSlick())      scheduleSpawn(455, 'slick');      // ~7.6s
-            if (hasGreenBall())  scheduleSpawn(350, 'greenball');   // ~5.8s
-            if (hasUggWrongway()) scheduleSpawn(385, 'ugg');        // ~6.4s
-            if (hasUggWrongway()) scheduleSpawn(455, 'wrongway');   // ~7.6s
+            scheduleSpawn(180);                                    // Coily egg (~3s)
+            if (hasRedBall())    scheduleSpawn(300, 'redball');     // ~5s
+            if (hasSlick())      scheduleSpawn(720, 'slick');      // ~12s
+            if (hasGreenBall())  scheduleSpawn(480, 'greenball');   // ~8s
+            if (hasUggWrongway()) scheduleSpawn(540, 'ugg');        // ~9s
+            if (hasUggWrongway()) scheduleSpawn(720, 'wrongway');   // ~12s
         }
         return;
     }
@@ -945,7 +961,7 @@ exCloneState = function() {
     // frames-per-hop. Each hop ≈ ceil(1/jumpDur) + aiMoveDelay frames,
     // and the timer ticks by gameSpeed each frame.
     var sm = speedMultiplier();
-    var framesPerHop = Math.ceil(1 / (0.111 * sm)) + Math.max(1, Math.round(2 / sm));
+    var framesPerHop = Math.ceil(1 / (0.111 * sm)) + Math.max(1, Math.round(20 / sm));
     var frameTickPerHop = framesPerHop * (typeof gameSpeed !== 'undefined' ? gameSpeed : 1.0);
     var spawns = [];
     for (var i = 0; i < enemies.length; i++) {
@@ -1065,7 +1081,7 @@ function update() {
     if (!player.jumping && !player.dead && !discRide) {
         if (gameMode === 'rules') {
             aiMoveTimer++;
-            if (aiMoveTimer >= Math.max(1, Math.round(2 / speedMultiplier()))) {
+            if (aiMoveTimer >= Math.max(1, Math.round(20 / speedMultiplier()))) {
                 aiMoveTimer = 0;
                 var dir = computeAIMove();
                 if (dir) tryMove(dir);
@@ -1125,24 +1141,30 @@ function draw() {
     for (var i = 0; i < enemies.length; i++) drawEnemy(enemies[i]);
     drawPlayer();
 
-    // Draw disc under player during disc ride
+    // Draw spinning disc under player during disc ride
     if (discRide) {
         ctx.save();
-        ctx.translate(Math.round(player.px), Math.round(player.py));
-        // Outer disc
+        ctx.translate(Math.round(player.px), Math.round(player.py + 8));
+        var spinAngle = frameCount * 0.15;  // spin faster during ride
+        var segColors = ['#e03030', '#e08020', '#e0e030', '#30c030', '#3060e0', '#a030d0'];
+        var nSegs = segColors.length;
+        for (var s = 0; s < nSegs; s++) {
+            var a0 = spinAngle + (s / nSegs) * Math.PI * 2;
+            var a1 = spinAngle + ((s + 1) / nSegs) * Math.PI * 2;
+            ctx.beginPath();
+            ctx.ellipse(0, 0, 18, 9, 0, a0, a1);
+            ctx.lineTo(0, 0);
+            ctx.closePath();
+            ctx.fillStyle = segColors[s];
+            ctx.fill();
+        }
         ctx.beginPath();
-        ctx.ellipse(0, 0, 20, 10, 0, 0, Math.PI * 2);
-        ctx.fillStyle = '#d4d4d4'; ctx.fill();
-        ctx.strokeStyle = '#535353'; ctx.lineWidth = 1.5; ctx.stroke();
-        // Middle ring
-        ctx.beginPath();
-        ctx.ellipse(0, 0, 13, 6, 0, 0, Math.PI * 2);
-        ctx.fillStyle = '#535353'; ctx.fill();
-        ctx.strokeStyle = '#1e1e1e'; ctx.lineWidth = 0.8; ctx.stroke();
-        // Inner dot
+        ctx.ellipse(0, 0, 18, 9, 0, 0, Math.PI * 2);
+        ctx.strokeStyle = '#382810'; ctx.lineWidth = 1.5; ctx.stroke();
         ctx.beginPath();
         ctx.ellipse(0, 0, 5, 2.5, 0, 0, Math.PI * 2);
-        ctx.fillStyle = '#1e1e1e'; ctx.fill();
+        ctx.fillStyle = '#f0e060'; ctx.fill();
+        ctx.strokeStyle = '#806020'; ctx.lineWidth = 0.8; ctx.stroke();
         ctx.restore();
     }
 
@@ -1160,28 +1182,35 @@ function draw() {
 }
 
 function drawDiscs() {
+    // Arcade-style spinning rainbow disc: colored segments rotate
+    var spinAngle = frameCount * 0.10;  // rotation speed
+    var segColors = ['#e03030', '#e08020', '#e0e030', '#30c030', '#3060e0', '#a030d0'];
     for (var i = 0; i < discs.length; i++) {
         if (!discs[i].active) continue;
         var p = discScreenPos(discs[i]);
         ctx.save();
-        // Pulsing scale for visibility
-        var pulse = 1 + Math.sin(frameCount * 0.12) * 0.06;
         ctx.translate(p.x, p.y);
-        ctx.scale(pulse, pulse);
-        // Outer disc
+        // Draw spinning colored segments (elliptical to look 3D)
+        var nSegs = segColors.length;
+        for (var s = 0; s < nSegs; s++) {
+            var a0 = spinAngle + (s / nSegs) * Math.PI * 2;
+            var a1 = spinAngle + ((s + 1) / nSegs) * Math.PI * 2;
+            ctx.beginPath();
+            ctx.ellipse(0, 0, 18, 9, 0, a0, a1);
+            ctx.lineTo(0, 0);
+            ctx.closePath();
+            ctx.fillStyle = segColors[s];
+            ctx.fill();
+        }
+        // Outer ring stroke
         ctx.beginPath();
-        ctx.ellipse(0, 0, 20, 10, 0, 0, Math.PI * 2);
-        ctx.fillStyle = '#d4d4d4'; ctx.fill();
-        ctx.strokeStyle = '#535353'; ctx.lineWidth = 1.5; ctx.stroke();
-        // Middle ring
-        ctx.beginPath();
-        ctx.ellipse(0, 0, 13, 6, 0, 0, Math.PI * 2);
-        ctx.fillStyle = '#535353'; ctx.fill();
-        ctx.strokeStyle = '#1e1e1e'; ctx.lineWidth = 0.8; ctx.stroke();
-        // Inner dot
+        ctx.ellipse(0, 0, 18, 9, 0, 0, Math.PI * 2);
+        ctx.strokeStyle = '#382810'; ctx.lineWidth = 1.5; ctx.stroke();
+        // Inner hub
         ctx.beginPath();
         ctx.ellipse(0, 0, 5, 2.5, 0, 0, Math.PI * 2);
-        ctx.fillStyle = '#1e1e1e'; ctx.fill();
+        ctx.fillStyle = '#f0e060'; ctx.fill();
+        ctx.strokeStyle = '#806020'; ctx.lineWidth = 0.8; ctx.stroke();
         ctx.restore();
     }
 }

@@ -18,17 +18,17 @@ var ROWS = 7;
 var DIRS = { UL: {dr:-1, dc:-1}, UR: {dr:-1, dc:0}, DL: {dr:1, dc:0}, DR: {dr:1, dc:1} };
 var DIR_KEYS = ['UL', 'UR', 'DL', 'DR'];
 
-// Arcade frame-accurate speeds: each player hop (9f), enemies accumulate
-// 9/enemy_frames toward their next move. Enemy moves when accumulator >= 1.0.
-// Q*bert=9f, Coily=12f, red ball=12f → ratio 9/12=0.75 per player hop.
+// Arcade frame-accurate speeds from video analysis:
+// Q*bert=30f (0.50s), enemies=32f (0.53s) per hop at 60fps level 1.
+// Ratio = player_frames / enemy_frames = how much enemy advances per player hop.
 var EX_MOVE_RATE = {
-    egg:       9 / 12,   // 0.75 — moves 3 times per 4 player hops
-    coily:     9 / 12,   // 0.75
-    redball:   9 / 12,   // 0.75
-    ugg:       9 / 12,   // 0.75
-    wrongway:  9 / 12,   // 0.75
-    greenball: 9 / 15,   // 0.60
-    slick:     9 / 17    // 0.53
+    egg:       30 / 32,   // 0.94 — nearly same speed as Q*bert
+    coily:     30 / 32,   // 0.94
+    redball:   30 / 32,   // 0.94
+    ugg:       30 / 32,   // 0.94
+    wrongway:  30 / 32,   // 0.94
+    greenball: 30 / 40,   // 0.75 — leisurely
+    slick:     30 / 50    // 0.60 — slow
 };
 
 var EX_DEATH = -50000;
