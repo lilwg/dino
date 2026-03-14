@@ -205,13 +205,13 @@ function drawCube(c, cx, cy, state) {
     // Per-level top-face color palettes [state0, state1, state2]
     var topColors;
     if (lv <= 2) {
-        topColors = ['#d48830', '#3060d0', '#30b030'];   // orange → blue → green
+        topColors = ['#ffffff', '#3060d0', '#30b030'];   // white → blue → green
     } else if (lv <= 4) {
-        topColors = ['#d0d0d0', '#6868a8', '#d04840'];   // light gray → purple → red
+        topColors = ['#ffffff', '#6868a8', '#d04840'];   // white → purple → red
     } else if (lv <= 6) {
-        topColors = ['#c8b848', '#3878c8', '#48c078'];   // yellow → blue → green
+        topColors = ['#ffffff', '#3878c8', '#48c078'];   // white → blue → green
     } else {
-        topColors = ['#d0a848', '#50b0d0', '#d06040'];   // tan → cyan → orange-red
+        topColors = ['#ffffff', '#50b0d0', '#d06040'];   // white → cyan → orange-red
     }
     var topCol = topColors[state] || topColors[0];
     // Side faces: constant greyscale
