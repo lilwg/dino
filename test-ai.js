@@ -9,15 +9,15 @@ var astarStats = { solved: 0, fallbacks: 0, totalNodes: 0, cacheHits: 0 };
 eval(require('fs').readFileSync(__dirname + '/qbert-ai.js', 'utf8'));
 
 // ─── Simulation constants ────────────────────────────────────────────────────
-// Arcade frame-accurate from video: Q*bert=15f, enemies=16f per hop at 60fps
+// Arcade frame-accurate from video + stopwatch: Q*bert=35f, enemies=33f at 60fps
 var SIM_MOVE_RATE = {
-    egg:       15 / 16,   // 0.94
-    coily:     15 / 16,   // 0.94
-    redball:   15 / 16,   // 0.94
-    greenball: 15 / 20,   // 0.75
-    slick:     15 / 25,   // 0.60
-    ugg:       15 / 16,   // 0.94
-    wrongway:  15 / 16    // 0.94
+    egg:       35 / 33,   // 1.06
+    coily:     35 / 33,   // 1.06
+    redball:   35 / 33,   // 1.06
+    greenball: 35 / 40,   // 0.88
+    slick:     35 / 50,   // 0.70
+    ugg:       35 / 33,   // 1.06
+    wrongway:  35 / 33    // 1.06
 };
 
 var lives, extraLifeGiven, levelWon, turnCount, freezeTimer;
