@@ -465,7 +465,7 @@ function spawnEnemy(forcedType) {
         });
     } else if (type === 'ugg') {
         // Ugg spawns at bottom-right corner, moves upward
-        var uggRow = ROWS - 1, uggCol = ROWS - 1;
+        var uggRow = 3, uggCol = 2;
         var usp = cubeXY(uggRow, uggCol);
         enemies.push({
             type: 'ugg',
@@ -475,7 +475,7 @@ function spawnEnemy(forcedType) {
             jumpSX: usp.cx, jumpSY: usp.cy,
             tx: usp.cx, ty: usp.cy,
             frame: 0, frameTimer: 0,
-            moveTimer: 0, moveInterval: enemyMoveInterval('ugg')
+            moveTimer: 0, moveInterval: 999999
         });
     } else if (type === 'wrongway') {
         // Wrongway spawns at bottom-left corner, moves upward
