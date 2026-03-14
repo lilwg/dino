@@ -822,35 +822,6 @@ function exTourCost(st) {
     return mstTourCost(posToIdx[st.pr * ROWS + st.pc], st.cubes, st.tgt, lv);
 }
 
-function exStateKey(st, depth) {
-    var k = st.pr + ',' + st.pc + '|';
-    for (var i = 0; i < st.cubes.length; i++) k += st.cubes[i].state;
-    k += '|';
-    for (var i = 0; i < st.enemies.length; i++) {
-        var e = st.enemies[i];
-        if (e.cloud) {
-            // Cloud enemies: position is deterministic from type+hops+accum
-            k += e.type[0] + 'h' + (e.hops || 0) + 'a' + e.accum.toFixed(2) + ';';
-        } else {
-            // Deterministic enemies (Coily): exact position matters
-            k += e.type[0] + e.row + ',' + e.col + 'a' + e.accum.toFixed(2) + ';';
-        }
-    }
-    k += '|' + depth + '|';
-    for (var i = 0; i < st.discs.length; i++) k += st.discs[i].active ? 1 : 0;
-    return k;
-}
-
-// ─── Safe search ──────────────────────────────────────────────────────────────
-// Finds the move that minimizes tour cost while keeping P(death)=0 at every step.
-// Fallback: when no safe path exists, minimizes single-step death probability.
-//
-// safeSearch(state, depth) → minimum tour cost reachable via safe-only moves.
-//   Returns Infinity if no safe continuation exists.
-//
-// With no enemies, P(death)=0 always, so this degenerates into pure tour minimax.
-
-var safeMemo = {};
 
 function exCanMove(st, dirKey) {
     if (dirKey === 'STAY') return true;
@@ -866,7 +837,7 @@ function exCanMove(st, dirKey) {
     return false;
 }
 
-function safeSearchKey(st, depth) {
+function searchStateKey(st, depth) {
     var k = st.pr + ',' + st.pc + '|';
     for (var i = 0; i < st.cubes.length; i++) k += st.cubes[i].state;
     k += '|';
@@ -883,150 +854,11 @@ function safeSearchKey(st, depth) {
     return k;
 }
 
-function safeSearch(st, depth) {
-    if (!st.alive) return Infinity;
-    if (st.cubesColored >= st.cubes.length * st.tgt) return -1000 - depth; // win sooner = better
-    if (depth === 0) return exTourCost(st);
-
-    var key = safeSearchKey(st, depth);
-    if (safeMemo[key] !== undefined) return safeMemo[key];
-
-    var dirs = st.enemies.length > 0 ? DIR_KEYS_WITH_STAY : DIR_KEYS;
-    var bestCost = Infinity;
-    for (var k = 0; k < dirs.length; k++) {
-        if (!exCanMove(st, dirs[k])) continue;
-        var child = exClone(st);
-        if (!exPlayerMove(child, dirs[k])) continue; // died
-        var pDeath = child.stepDeathProb || 0;
-        if (pDeath > 0) continue; // unsafe — prune
-        var cost = safeSearch(child, depth - 1);
-        // Penalize STAY slightly so we prefer progress when equally safe
-        if (dirs[k] === 'STAY') cost += 0.5;
-        if (cost < bestCost) bestCost = cost;
-    }
-
-    safeMemo[key] = bestCost;
-    return bestCost;
-}
-
-// ─── Recursive survival search (fallback when no safe path exists) ───────────
-// Maximizes P(survive) over N steps = ∏ (1 - stepDeathProb_i).
-// Among paths with equal survival, picks lowest tour cost.
-//
-// Returns { pSurvive: number, tourCost: number } where pSurvive is the
-// probability of surviving from this state through `depth` more steps
-// (relative, not absolute — multiply by caller's pSurvive to get absolute).
-
-var survivalMemo = {};
-
-function survivalSearch(st, depth) {
-    if (!st.alive) return { pSurvive: 0, tourCost: Infinity };
-    if (st.cubesColored >= st.cubes.length * st.tgt) {
-        return { pSurvive: 1, tourCost: -1000 - depth }; // win — perfect survival from here
-    }
-    if (depth === 0) {
-        return { pSurvive: 1, tourCost: exTourCost(st) }; // leaf — survived to here
-    }
-
-    var key = safeSearchKey(st, depth);
-    if (survivalMemo[key] !== undefined) return survivalMemo[key];
-
-    var bestSurv = 0, bestTC = Infinity;
-
-    var dirs = st.enemies.length > 0 ? DIR_KEYS_WITH_STAY : DIR_KEYS;
-    for (var k = 0; k < dirs.length; k++) {
-        if (!exCanMove(st, dirs[k])) continue;
-        var child = exClone(st);
-        if (!exPlayerMove(child, dirs[k])) continue; // certain death
-        var stepSurvive = 1 - (child.stepDeathProb || 0);
-        if (stepSurvive <= 0) continue;
-
-        var sub = survivalSearch(child, depth - 1);
-        // Total survival from this state through this move = stepSurvive × sub.pSurvive
-        var totalSurv = stepSurvive * sub.pSurvive;
-
-        if (totalSurv > bestSurv + 1e-9 ||
-            (Math.abs(totalSurv - bestSurv) < 1e-9 && sub.tourCost < bestTC)) {
-            bestSurv = totalSurv;
-            bestTC = sub.tourCost;
-        }
-    }
-
-    var result = { pSurvive: bestSurv, tourCost: bestTC };
-    survivalMemo[key] = result;
-    return result;
-}
-
-// ─── Precomputed optimal tours from (0,0) ────────────────────────────────────
-// Computed offline via beam search. These are optimal (or near-optimal) move
-// sequences for clearing all 28 cubes with no enemies present.
-var PRECOMPUTED_TOURS = {
-    // lv1 (tgt=1, simple): 32 moves
-    1: ["DL","UR","DR","DR","DR","DR","DR","DR","UL","DL","UL","DL","UL","UR","UL","UL","DL","UL","DL","DL","DL","DL","UR","DR","UR","UR","DR","UR","DL","DL","UR","DR"],
-    // lv2 (tgt=2, no revert): 64 moves
-    2: ["DL","DL","UR","DL","DL","DL","UR","DL","DL","DL","UR","DL","UR","DR","UR","DL","UR","DR","UR","DL","UR","UL","UR","DL","UR","UR","DR","UL","DR","DL","DR","UL","DR","DR","UR","DL","UR","DR","UR","DL","UR","DR","UL","DR","UL","UL","UL","DR","UL","UL","UL","UL","DR","UL","DR","DR","DL","DR","DL","UR","DL","DL","UL","DR"],
-    // lv3 (tgt=1, toggle 0→1→0): 36 moves (exact optimal via IDA*)
-    3: ["DL","UR","DR","DL","DL","UL","DL","DL","UR","DL","DL","DL","UR","DR","UL","UR","UR","DR","DL","DR","UR","UR","DR","DL","UR","DR","UL","UR","UL","UR","DR","DR","DL","DR","UR","DR"],
-    // lv4 (tgt=2, revert 2→1): 64 moves (SAT-optimal)
-    4: ["DR","UL","DR","UL","DR","DR","DR","DR","DR","DR","UL","DL","UL","UL","UL","DL","UL","DL","DR","DR","UL","DL","UL","DL","UL","DL","UR","DL","UR","UR","UR","UR","UR","DR","DR","DR","DR","DR","UR","DR","UL","UL","UL","UL","UL","DL","UL","DL","DR","DR","DL","DL","UL","DL","UL","UR","UR","DR","DR","DR","UR","DR","UL","DR"],
-    // lv5+ (tgt=2, cycling 0→1→2→0): 71 moves (SAT-optimal)
-    5: ["DL","DL","DR","DL","DL","DR","UL","DR","UR","DR","UR","UR","DR","DL","UR","UL","UL","UL","DR","DR","UR","DR","DR","DR","UL","DR","UL","DL","UR","DL","UR","UL","UL","UL","UL","UL","DR","UL","DL","DL","DL","DL","DL","DL","UR","DR","UL","DR","UL","DL","UR","UR","UR","DR","DR","DR","UR","UL","UL","UR","DR","DR","DL","UR","UL","UR","DL","DL","DR","DR","UL"]
-};
-var aiTourMoves = null;  // current tour move sequence (directions)
-var aiTourStep = 0;      // current position in tour
-var aiTourPositions = null; // tour as positions for resumption
-
-// Convert direction sequence to position sequence starting from (0,0)
-function tourToPositions(dirs) {
-    var positions = [];
-    var r = 0, c = 0;
-    for (var i = 0; i < dirs.length; i++) {
-        var d = DIRS[dirs[i]];
-        r += d.dr; c += d.dc;
-        positions.push({ row: r, col: c });
-    }
-    return positions;
-}
-
-function aiTourInit() {
-    var lv = arcadeLevel();
-    var tour;
-    if (lv >= 5) tour = PRECOMPUTED_TOURS[5];
-    else if (lv === 4) tour = PRECOMPUTED_TOURS[4];
-    else if (lv === 3) tour = PRECOMPUTED_TOURS[3];
-    else if (lv === 2) tour = PRECOMPUTED_TOURS[2];
-    else tour = PRECOMPUTED_TOURS[1];
-    aiTourMoves = tour || null;
-    aiTourPositions = tour ? tourToPositions(tour) : null;
-    aiTourStep = 0;
-}
-
-function aiTourNext() {
-    if (!aiTourMoves || aiTourStep >= aiTourMoves.length) return null;
-    return aiTourMoves[aiTourStep++];
-}
-
-// Find the next uncolored position in the precomputed tour, starting from current tour step.
-// Returns the BFS path (as direction keys) from current player position, or null.
-function findTourResumePath() {
-    if (!aiTourPositions) return null;
-    var tgt = targetState();
-    // Find the next uncolored cube in the precomputed tour order
-    for (var i = aiTourStep; i < aiTourPositions.length; i++) {
-        var tp = aiTourPositions[i];
-        var cube = cubeAt(tp.row, tp.col);
-        if (cube && cube.state < tgt) {
-            // Found next target — BFS to it
-            var res = bfsTo(player.row, player.col, tp.row, tp.col);
-            if (res) {
-                aiTourStep = i; // align tour step
-                return res.path;
-            }
-        }
-    }
-    // All remaining tour positions are colored — tour is complete
-    return null;
-}
+// Stubs for precomputed tours — no longer used, Dijkstra handles all levels.
+// Keep function signatures since they're called from initRound/computeAIMove.
+function aiTourInit() {}
+function aiTourNext() { return null; }
+function findTourResumePath() { return null; }
 
 // Predict where Coily will move given it chases toward (targetR, targetC)
 function predictCoilyNext(coilyR, coilyC, targetR, targetC) {
@@ -1043,22 +875,88 @@ function predictCoilyNext(coilyR, coilyC, targetR, targetC) {
     return { row: coilyR + dd.dr, col: coilyC + dd.dc };
 }
 
-var aiResumePath = null;
 
-var AI_TIME_BUDGET = 8; // ms — must fit within a single 16.7ms frame to avoid death spiral
+// ─── Two-mode AI ──────────────────────────────────────────────────────────────
+// Mode 1 (no Coily): Pure tour planning. Random enemies (redballs, eggs, ugg,
+//   wrongway) walk randomly — just avoid their DL/DR children (the 2 squares
+//   they might land on next). No deep search needed.
+// Mode 2 (Coily alive): Coily chases deterministically and needs multi-step
+//   lookahead to avoid traps. Uses iterative-deepening search with memoization.
+// Green ball freeze: treat as Mode 1 regardless (enemies can't move).
 
-// ─── Dynamic tour planner for cycling levels ─────────────────────────────────
-// On cycling levels (lv3+), cube states cycle: stepping on a completed cube
-// reverts it. A depth-limited search can't plan the 56+ move sequences needed
-// to clear the board without creating reverts. Instead, we use a greedy
-// nearest-unfinished-cube strategy with weighted BFS that penalizes crossing
-// completed cubes. This produces an efficient path that naturally avoids reverts.
-//
-// The search is still used when enemies are present (for tactical safety).
+// Build set of positions that are "below" a lethal random walker.
+// Each random walker goes DL or DR with 50% probability each turn.
+// Standing in either of those squares = coin-flip death. Avoid them.
+function buildDangerSet() {
+    var danger = {};
+    for (var i = 0; i < enemies.length; i++) {
+        var e = enemies[i];
+        if (e.type === 'spawn-timer' || e.type === 'slick' || e.type === 'greenball') continue;
+        if (e.type === 'coily') continue; // handled by Mode 2 search
+        // Current position is dangerous
+        danger[e.row + ',' + e.col] = true;
+        // DL/DR children for top-down walkers (egg, redball)
+        if (e.type === 'egg' || e.type === 'redball') {
+            var dl = (e.row + 1) + ',' + e.col;
+            var dr = (e.row + 1) + ',' + (e.col + 1);
+            if (isValidPos(e.row + 1, e.col)) danger[dl] = true;
+            if (isValidPos(e.row + 1, e.col + 1)) danger[dr] = true;
+        }
+        // Ugg: moves UL (row-1,col-1) or Left (row,col-1)
+        if (e.type === 'ugg') {
+            if (isValidPos(e.row - 1, e.col - 1)) danger[(e.row-1) + ',' + (e.col-1)] = true;
+            if (isValidPos(e.row, e.col - 1)) danger[e.row + ',' + (e.col-1)] = true;
+        }
+        // Wrongway: moves UR (row-1,col) or Right (row,col+1)
+        if (e.type === 'wrongway') {
+            if (isValidPos(e.row - 1, e.col)) danger[(e.row-1) + ',' + e.col] = true;
+            if (isValidPos(e.row, e.col + 1)) danger[e.row + ',' + (e.col+1)] = true;
+        }
+    }
+    return danger;
+}
+
+// Mode 1: pure tour planning with random-walker avoidance.
+// Dijkstra picks the best first move toward nearest unfinished cube.
+// If that move lands on a dangerous square, try alternatives.
+function mode1Pick(st, dangerSet) {
+    var tourDir = dynamicTourMove(st);
+    if (tourDir !== null) {
+        var d = DIRS[tourDir];
+        var nr = st.pr + d.dr, nc = st.pc + d.dc;
+        if (!dangerSet[nr + ',' + nc]) return tourDir;
+    }
+
+    // Dijkstra's pick is dangerous (or no unfinished cubes).
+    // Compare all directions by MST tour cost, preferring safe squares.
+    var bestDir = null, bestCost = Infinity;
+    var bestUnsafeDir = null, bestUnsafeCost = Infinity;
+
+    for (var k = 0; k < DIR_KEYS.length; k++) {
+        if (!exCanMove(st, DIR_KEYS[k])) continue;
+        var child = exClone(st);
+        if (!exPlayerMove(child, DIR_KEYS[k])) continue;
+        var tc = exTourCost(child);
+        var d = DIRS[DIR_KEYS[k]];
+        var nr = st.pr + d.dr, nc = st.pc + d.dc;
+
+        if (dangerSet[nr + ',' + nc]) {
+            if (tc < bestUnsafeCost) { bestUnsafeCost = tc; bestUnsafeDir = DIR_KEYS[k]; }
+        } else {
+            if (tc < bestCost) { bestCost = tc; bestDir = DIR_KEYS[k]; }
+        }
+    }
+
+    return bestDir || bestUnsafeDir || 'DL';
+}
+
+// ─── Dijkstra tour planner ────────────────────────────────────────────────────
+// Nearest-unfinished-cube via weighted BFS (Dijkstra). Works on all levels.
+// On cycling levels, penalizes crossing completed cubes to avoid reverts.
+// On simple levels, penalty=0 so it's just shortest-path to nearest target.
 
 function dynamicTourMove(st) {
     var lv = st.lv !== undefined ? st.lv : arcadeLevel();
-    if (revertPenalty(lv) === 0) return null; // only for cycling levels
 
     // Build completed mask for weighted BFS
     var tgt = st.tgt;
@@ -1142,101 +1040,122 @@ function dynamicTourMove(st) {
 }
 
 
-function aiPickBestDir() {
-    var tmpSt = exCloneState();
+// ─── Unified search for Mode 2 (Coily active) ────────────────────────────────
+// Maximizes P(survive), tiebreaks on tour cost. Combines old safe+survival
+// into one: safe paths (pSurvive=1) naturally win, but we gracefully handle
+// situations where no safe path exists without needing a separate fallback.
+var searchMemo = {};
 
-    // Phase 1: Dynamic tour for cycling levels (lv3+) without enemies.
-    // A depth-limited search can't plan the 56+ move sequences needed on cycling
-    // levels without oscillating. Use a greedy nearest-unfinished-cube planner
-    // with weighted BFS that penalizes crossing completed cubes instead.
-    // When enemies are present, the search handles both safety and path planning.
-    if (tmpSt.enemies.length === 0) {
-        var tourDir = dynamicTourMove(tmpSt);
-        if (tourDir !== null) return tourDir;
+function unifiedSearch(st, depth) {
+    if (!st.alive) return { pSurvive: 0, tourCost: Infinity };
+    if (st.cubesColored >= st.cubes.length * st.tgt) {
+        return { pSurvive: 1, tourCost: -1000 - depth };
+    }
+    if (depth === 0) {
+        return { pSurvive: 1, tourCost: exTourCost(st) };
     }
 
-    // Phase 2: Safe search — find move with lowest tour cost among paths
-    // where P(death) = 0 at every step. Uses iterative deepening with time budget.
+    var key = searchStateKey(st, depth);
+    if (searchMemo[key] !== undefined) return searchMemo[key];
+
+    var dirs = DIR_KEYS_WITH_STAY;
+    var bestSurv = 0, bestTC = Infinity;
+
+    for (var k = 0; k < dirs.length; k++) {
+        if (!exCanMove(st, dirs[k])) continue;
+        var child = exClone(st);
+        if (!exPlayerMove(child, dirs[k])) continue;
+        var stepSurvive = 1 - (child.stepDeathProb || 0);
+        if (stepSurvive <= 0) continue;
+
+        var sub = unifiedSearch(child, depth - 1);
+        var totalSurv = stepSurvive * sub.pSurvive;
+        var tc = sub.tourCost;
+        if (dirs[k] === 'STAY') tc += 0.5;
+
+        if (totalSurv > bestSurv + 1e-9 ||
+            (Math.abs(totalSurv - bestSurv) < 1e-9 && tc < bestTC)) {
+            bestSurv = totalSurv;
+            bestTC = tc;
+        }
+    }
+
+    var result = { pSurvive: bestSurv, tourCost: bestTC };
+    searchMemo[key] = result;
+    return result;
+}
+
+var AI_TIME_BUDGET = 8; // ms — must fit within a single 16.7ms frame
+
+// Mode 2: Coily evasion with iterative-deepening search.
+// First checks disc lure opportunity (kill Coily = best outcome).
+// Then runs unified search to find the move that maximizes survival
+// while making tour progress.
+function mode2Pick(st) {
+    // Check disc lure first — killing Coily is always the priority
+    var lureDir = evalDiscLure();
+    if (lureDir) return lureDir;
+
     var startTime = typeof performance !== 'undefined' ? performance.now() : Date.now();
-    var bestDir = null, bestCost = Infinity;
-    var maxDepth = 8;
+    var bestDir = null, bestSurv = -1, bestTC = Infinity;
 
-    // Compute 1-step tour costs for tiebreaking
-    var hasEnemies = tmpSt.enemies.length > 0;
-    var searchDirs = hasEnemies ? DIR_KEYS_WITH_STAY : DIR_KEYS;
-    var immediateCost = {};
-    for (var k = 0; k < searchDirs.length; k++) {
-        if (!exCanMove(tmpSt, searchDirs[k])) continue;
-        var child = exClone(tmpSt);
-        if (!exPlayerMove(child, searchDirs[k])) continue;
-        immediateCost[searchDirs[k]] = exTourCost(child);
-    }
-
-    for (var depth = 1; depth <= maxDepth; depth++) {
-        safeMemo = {};
-        var depthBestDir = null, depthBestCost = Infinity, depthBestImm = Infinity;
-        for (var k = 0; k < searchDirs.length; k++) {
-            if (!exCanMove(tmpSt, searchDirs[k])) continue;
-            var child = exClone(tmpSt);
-            if (!exPlayerMove(child, searchDirs[k])) continue;
-            var pDeath = child.stepDeathProb || 0;
-            if (pDeath > 0) continue; // unsafe first move — skip
-            var cost = safeSearch(child, depth - 1);
-            // Penalize STAY so we prefer progress when equally safe
-            if (searchDirs[k] === 'STAY') cost += 0.5;
-            var imm = immediateCost[searchDirs[k]] || Infinity;
-            if (cost < depthBestCost || (cost === depthBestCost && imm < depthBestImm)) {
-                depthBestCost = cost; depthBestDir = searchDirs[k]; depthBestImm = imm;
-            }
-        }
-        // Update best result from this completed depth
-        if (depthBestDir !== null) {
-            bestDir = depthBestDir;
-            bestCost = depthBestCost;
-        }
-        // Check time budget
-        var elapsed = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - startTime;
-        if (elapsed > AI_TIME_BUDGET) break;
-    }
-
-    // If safe search found a move, use it
-    if (bestDir !== null) return bestDir;
-
-    // Fallback: no fully safe path — maximize recursive survival probability,
-    // tiebreaking on tour cost. Uses iterative deepening with remaining time budget.
-    var bestFallbackDir = null, bestSurv = -1, bestFallbackTC = Infinity;
-    var fallbackMaxDepth = 6;
-
-    for (var depth = 1; depth <= fallbackMaxDepth; depth++) {
-        survivalMemo = {};
+    for (var depth = 1; depth <= 8; depth++) {
+        searchMemo = {};
         var depthBestDir = null, depthBestSurv = -1, depthBestTC = Infinity;
-        for (var k = 0; k < searchDirs.length; k++) {
-            if (!exCanMove(tmpSt, searchDirs[k])) continue;
-            var child = exClone(tmpSt);
-            if (!exPlayerMove(child, searchDirs[k])) continue; // certain death
+
+        for (var k = 0; k < DIR_KEYS_WITH_STAY.length; k++) {
+            if (!exCanMove(st, DIR_KEYS_WITH_STAY[k])) continue;
+            var child = exClone(st);
+            if (!exPlayerMove(child, DIR_KEYS_WITH_STAY[k])) continue;
             var stepSurvive = 1 - (child.stepDeathProb || 0);
             if (stepSurvive <= 0) continue;
 
-            var sub = survivalSearch(child, depth - 1);
+            var sub = unifiedSearch(child, depth - 1);
             var totalSurv = stepSurvive * sub.pSurvive;
+            var tc = sub.tourCost;
+            if (DIR_KEYS_WITH_STAY[k] === 'STAY') tc += 0.5;
 
             if (totalSurv > depthBestSurv + 1e-9 ||
-                (Math.abs(totalSurv - depthBestSurv) < 1e-9 && sub.tourCost < depthBestTC)) {
+                (Math.abs(totalSurv - depthBestSurv) < 1e-9 && tc < depthBestTC)) {
                 depthBestSurv = totalSurv;
-                depthBestTC = sub.tourCost;
-                depthBestDir = searchDirs[k];
+                depthBestTC = tc;
+                depthBestDir = DIR_KEYS_WITH_STAY[k];
             }
         }
+
         if (depthBestDir !== null) {
-            bestFallbackDir = depthBestDir;
+            bestDir = depthBestDir;
             bestSurv = depthBestSurv;
-            bestFallbackTC = depthBestTC;
+            bestTC = depthBestTC;
         }
+
         var elapsed = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - startTime;
         if (elapsed > AI_TIME_BUDGET) break;
     }
 
-    return bestFallbackDir || 'DL';
+    return bestDir || 'DL';
+}
+
+function aiPickBestDir() {
+    // Check if Coily is alive
+    var coilyActive = false;
+    var frozen = false;
+    for (var i = 0; i < enemies.length; i++) {
+        if (enemies[i].type === 'coily') coilyActive = true;
+    }
+    // Check for freeze (green ball) — if frozen, enemies can't move, pure Mode 1
+    if (typeof freezeTimer !== 'undefined' && freezeTimer > 0) frozen = true;
+
+    var st = exCloneState();
+
+    if (!coilyActive || frozen) {
+        // Mode 1: no Coily (or frozen) — pure tour planning + avoid random walkers
+        var dangerSet = buildDangerSet();
+        return mode1Pick(st, dangerSet);
+    } else {
+        // Mode 2: Coily active — multi-step search for evasion + progress
+        return mode2Pick(st);
+    }
 }
 
 // Safety check: never move onto a position occupied by a lethal enemy,
