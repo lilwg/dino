@@ -523,30 +523,31 @@ function tryMove(dirKey) {
     if (!isValidPos(nr, nc)) {
         for (var di = 0; di < discs.length; di++) {
             if (!discs[di].active) continue;
+            var discMatch = false, dpPos, face;
             if (discs[di].side === 0 && dirKey === 'UL' && player.col === 0 && player.row === discs[di].row) {
-                // Jump toward disc, trigger useDisc on landing
-                var dp = discScreenPos(discs[di]);
-                DinoSounds.press();
-                player.jumping = true; player.jumpT = 0;
-                player.jumpDur = 0.028 * speedMultiplier();
-                player.jumpSX = player.px; player.jumpSY = player.py;
-                player.tx = dp.x; player.ty = dp.y;
-                player.row = nr; player.col = nc;
-                player.spriteFrame = 0; player.frameTimer = 0;
-                player.facing = 'L';
-                player.pendingDisc = di;
-                return;
+                discMatch = true; dpPos = discScreenPos(discs[di]); face = 'L';
+            } else if (discs[di].side === 1 && dirKey === 'UR' && player.col === player.row && player.row === discs[di].row) {
+                discMatch = true; dpPos = discScreenPos(discs[di]); face = 'R';
             }
-            if (discs[di].side === 1 && dirKey === 'UR' && player.col === player.row && player.row === discs[di].row) {
-                var dp2 = discScreenPos(discs[di]);
+            if (discMatch) {
+                // Lure Coily toward the disc edge immediately
+                var lureR = discs[di].row;
+                var lureC = (discs[di].side === 0) ? -1 : discs[di].row + 1;
+                for (var ei = 0; ei < enemies.length; ei++) {
+                    if (enemies[ei].type === 'coily') {
+                        enemies[ei].lureRow = lureR;
+                        enemies[ei].lureCol = lureC;
+                    }
+                }
+                // Jump toward disc, trigger useDisc on landing
                 DinoSounds.press();
                 player.jumping = true; player.jumpT = 0;
                 player.jumpDur = 0.028 * speedMultiplier();
                 player.jumpSX = player.px; player.jumpSY = player.py;
-                player.tx = dp2.x; player.ty = dp2.y;
+                player.tx = dpPos.x; player.ty = dpPos.y;
                 player.row = nr; player.col = nc;
                 player.spriteFrame = 0; player.frameTimer = 0;
-                player.facing = 'R';
+                player.facing = face;
                 player.pendingDisc = di;
                 return;
             }
@@ -602,16 +603,7 @@ function useDisc(idx) {
     score += 300;
     checkExtraLife();
 
-    // Mark all Coilys with a lure target — they'll chase toward the disc edge
-    // position until the player lands at the apex after the ride
-    var lureRow = disc.row;
-    var lureCol = (disc.side === 0) ? -1 : disc.row + 1;
-    for (var i = 0; i < enemies.length; i++) {
-        if (enemies[i].type === 'coily') {
-            enemies[i].lureRow = lureRow;
-            enemies[i].lureCol = lureCol;
-        }
-    }
+    // Coily lure is already set at disc-jump start (in tryMove)
 
     // Start disc ride animation: player flies from disc position to pyramid top
     var dp = discScreenPos(disc);
