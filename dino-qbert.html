@@ -1739,7 +1739,7 @@ window.restartGame = function () {
     score   = 0;
     lives   = 3;
     // Check URL for ?l=N level skip (round = (level-1)*4 + 1)
-    var params = new URLSearchParams(window.location.search);
+    var params = new URLSearchParams(window.location.search.toLowerCase());
     var startLevel = parseInt(params.get('l'));
     round = (startLevel > 1 && startLevel <= 9) ? (startLevel - 1) * 4 + 1 : 1;
     debugEnemies = params.has('debug');
