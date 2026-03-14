@@ -568,39 +568,30 @@ function useDisc(idx) {
     score += 300;
     checkExtraLife();
 
-    // Coily only dies if his greedy chase toward Q*bert's disc position
-    // would take him off the pyramid edge (he follows you off)
+    // Coily chases Q*bert toward the disc exit and jumps off the pyramid
     var discRow = disc.row;
     var discSide = disc.side;
-    // Q*bert jumped off at this edge position:
     var exitRow = discRow;
     var exitCol = (discSide === 0) ? -1 : exitRow + 1; // off left or right edge
-    var survived = [];
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
         if (e.type === 'coily') {
-            // Simulate Coily's greedy chase toward where Q*bert was
+            // Greedy chase toward disc exit — allows off-edge moves
             var bestDir = null, bestDist = Infinity;
             for (var k = 0; k < DIR_KEYS.length; k++) {
                 var dk = DIRS[DIR_KEYS[k]];
                 var nr = e.row + dk.dr, nc = e.col + dk.dc;
-                // Coily considers moves including off-edge (chasing Q*bert off)
                 var dist = Math.abs(exitRow - 1 - nr) + Math.abs((discSide === 0 ? 0 : exitRow) - nc);
                 if (dist < bestDist) { bestDist = dist; bestDir = { nr: nr, nc: nc }; }
             }
-            // If Coily's best move is off the pyramid, he falls to his death
             if (bestDir && !isValidPos(bestDir.nr, bestDir.nc)) {
-                score += 500; checkExtraLife();
-            } else {
-                survived.push(e); // Coily survives — too far away to be lured
+                // Coily jumps off the edge — animate the fall
+                enemyJumpTo(e, bestDir.nr, bestDir.nc);
+                e.falling = true;
+                e.luredOff = true;  // award points when fall animation finishes
             }
-        } else if (e.type === 'egg') {
-            survived.push(e); // eggs don't chase, they just bounce
-        } else {
-            survived.push(e);
         }
     }
-    enemies = survived;
 
     // Start disc ride animation: player flies from disc position to pyramid top
     var dp = discScreenPos(disc);
@@ -615,9 +606,6 @@ function useDisc(idx) {
     player.px = dp.x; player.py = dp.y;
     player.jumping = true; // block input during ride
     player.jumpT = 0;
-
-    // Schedule new Coily after delay (frames)
-    scheduleSpawn(280);
 }
 
 // ─── Collision check ──────────────────────────────────────────────────────────
@@ -679,6 +667,9 @@ function updateEnemies() {
                 e.px = e.tx; e.py = e.ty;
                 if (e.falling) {
                     // Finished fall-off animation — remove and schedule respawn
+                    if (e.luredOff) {
+                        score += 500; checkExtraLife();
+                    }
                     var ft = e.type;
                     enemies.splice(i, 1);
                     if (debugEnemies) {
