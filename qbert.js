@@ -394,24 +394,14 @@ function simUpdatePlayer(gs) {
     }
     if (!gs.player.jumping) return null;
 
-    var prevT = gs.player.jumpT;
     gs.player.jumpT += gs.player.jumpDur;
-    // Position commit at apex
-    if (prevT < 0.5 && gs.player.jumpT >= 0.5 && gs.player.destRow != null) {
+    if (gs.player.jumpT >= 1) {
+        gs.player.jumpT = 1;
+        gs.player.jumping = false;
         gs.player.row = gs.player.destRow;
         gs.player.col = gs.player.destCol;
         gs.player.destRow = null;
         gs.player.destCol = null;
-    }
-    if (gs.player.jumpT >= 1) {
-        gs.player.jumpT = 1;
-        gs.player.jumping = false;
-        if (gs.player.destRow != null) {
-            gs.player.row = gs.player.destRow;
-            gs.player.col = gs.player.destCol;
-            gs.player.destRow = null;
-            gs.player.destCol = null;
-        }
         return 'landed';
     }
     return null;
@@ -440,16 +430,11 @@ function simUpdateEnemies(gs) {
 
         // Jump animation
         if (e.jumping) {
-            var prevT = e.jumpT;
             e.jumpT += e.jumpDur;
-            // Position commit at apex
-            if (prevT < 0.5 && e.jumpT >= 0.5 && e.destRow != null) {
-                e.row = e.destRow; e.col = e.destCol;
-                e.destRow = null; e.destCol = null;
-            }
             if (e.jumpT >= 1) {
                 e.jumpT = 1; e.jumping = false;
-                if (e.destRow != null) { e.row = e.destRow; e.col = e.destCol; e.destRow = null; e.destCol = null; }
+                e.row = e.destRow; e.col = e.destCol;
+                e.destRow = null; e.destCol = null;
                 // Fell off
                 if (e.falling) {
                     var ft = e.type;
@@ -540,24 +525,13 @@ function simUpdateEnemies(gs) {
     }
 }
 
-// Get effective position (destination if mid-jump pre-apex, else current)
-function effectivePos(entity) {
-    if (entity.destRow != null && entity.destCol != null)
-        return { row: entity.destRow, col: entity.destCol };
-    return { row: entity.row, col: entity.col };
-}
-
 // Per-frame collision check: same tile = death (or catch for slick/greenball)
-// Uses effective positions so mid-jump entities collide at their destination,
-// not their source tile (prevents false kills when leaving a cube).
 function simCheckCollision(gs) {
     if (gs.player.dead) return;
-    var pp = effectivePos(gs.player);
     for (var i = 0; i < gs.enemies.length; i++) {
         var e = gs.enemies[i];
         if (e.type === 'spawn-timer') continue;
-        var ep = effectivePos(e);
-        if (ep.row === pp.row && ep.col === pp.col) {
+        if (e.row === gs.player.row && e.col === gs.player.col) {
             if (e.type === 'slick') {
                 gs.score += 300;
                 gs.enemies.splice(i, 1); i--;
