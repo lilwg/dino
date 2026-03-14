@@ -950,8 +950,8 @@ var PRECOMPUTED_TOURS = {
     3: ["DL","UR","DR","DL","DL","UL","DL","DL","UR","DL","DL","DL","UR","DR","UL","UR","UR","DR","DL","DR","UR","UR","DR","DL","UR","DR","UL","UR","UL","UR","DR","DR","DL","DR","UR","DR"],
     // lv4 (tgt=2, revert 2→1): 64 moves (SAT-optimal)
     4: ["DR","UL","DR","UL","DR","DR","DR","DR","DR","DR","UL","DL","UL","UL","UL","DL","UL","DL","DR","DR","UL","DL","UL","DL","UL","DL","UR","DL","UR","UR","UR","UR","UR","DR","DR","DR","DR","DR","UR","DR","UL","UL","UL","UL","UL","DL","UL","DL","DR","DR","DL","DL","UL","DL","UL","UR","UR","DR","DR","DR","UR","DR","UL","DR"],
-    // lv5+ (tgt=2, cycling 0→1→2→0): 77 moves
-    5: ["DL","UR","DL","UR","DR","DR","UL","DR","DR","DR","UL","DR","DR","DL","UR","DL","UL","DL","UR","DL","UL","UR","DL","UR","UL","UL","DR","UL","DL","UL","DL","UR","DR","DR","DL","UL","DR","UL","UL","DL","DL","UR","DL","DL","UR","DL","UR","DR","UL","DR","UR","DR","UL","DR","UR","UR","DL","DR","UL","DR","UR","UR","DL","UR","DL","UR","UR","DR","UL","DR","UL","DR","DR","DR","UL","DR","UL"]
+    // lv5+ (tgt=2, cycling 0→1→2→0): 71 moves (SAT-optimal)
+    5: ["DL","DL","DR","DL","DL","DR","UL","DR","UR","DR","UR","UR","DR","DL","UR","UL","UL","UL","DR","DR","UR","DR","DR","DR","UL","DR","UL","DL","UR","DL","UR","UL","UL","UL","UL","UL","DR","UL","DL","DL","DL","DL","DL","DL","UR","DR","UL","DR","UL","DL","UR","UR","UR","DR","DR","DR","UR","UL","UL","UR","DR","DR","DL","UR","UL","UR","DL","DL","DR","DR","UL"]
 };
 var aiTourMoves = null;  // current tour move sequence (directions)
 var aiTourStep = 0;      // current position in tour
