@@ -214,10 +214,10 @@ function drawCube(c, cx, cy, state) {
         topColors = ['#d0a848', '#50b0d0', '#d06040'];   // tan → cyan → orange-red
     }
     var topCol = topColors[state] || topColors[0];
-    // Side faces: constant dark brown (arcade-authentic)
-    var leftCol  = '#684820';
-    var rightCol = '#503818';
-    var stroke   = '#382810';
+    // Side faces: constant greyscale
+    var leftCol  = '#585858';
+    var rightCol = '#404040';
+    var stroke   = '#282828';
 
     function face(pts, col) {
         c.beginPath();
