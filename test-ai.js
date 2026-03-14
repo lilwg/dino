@@ -30,7 +30,7 @@ function enemyMoveInterval(type) {
 var lives, extraLifeGiven, levelWon, turnCount, freezeTimer;
 var frameCount;
 
-// ─── exCloneState (frame-based: converts moveTimer to accum) ─────────────────
+// ─── exCloneState (frame-accurate: computes commitFrame per enemy) ───────────
 function exCloneState() {
     var tgt = targetState();
     var cs = new Array(cubeStates.length);
@@ -38,36 +38,52 @@ function exCloneState() {
         cs[i] = { row: cubeStates[i].row, col: cubeStates[i].col, state: cubeStates[i].state };
     var ens = [];
     var lethalRandom = [];
+    var sm = speedMultiplier();
+    var jumpDur = ENEMY_JUMP_DUR * sm;
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
         if (e.type === 'spawn-timer') continue;
-        // Convert frame-based timer to fractional accumulator for AI search.
-        // If enemy is mid-jump, set accum=0 (it just started a hop cycle,
-        // won't commit next position for a full cycle).
-        var acc;
+        // Compute commitFrame: frames until enemy commits to NEXT position.
+        // This is the key for frame-accurate collision detection.
+        var cf;
         if (e.jumping) {
-            acc = 0;
+            if (e.jumpT < 0.5) {
+                // Pre-apex: will commit current jump destination soon
+                // But effective pos already points there, so "next commit"
+                // is the FOLLOWING hop: finish this jump + idle + next apex
+                cf = Math.ceil((1.0 - e.jumpT) / jumpDur)
+                   + exEnemyIdle(e.type, sm) + exEnemyApex(sm);
+            } else {
+                // Post-apex: position already committed. Next commit is:
+                // finish this jump + idle + next apex
+                cf = Math.ceil((1.0 - e.jumpT) / jumpDur)
+                   + exEnemyIdle(e.type, sm) + exEnemyApex(sm);
+            }
         } else {
-            acc = (e.moveTimer !== undefined && e.moveInterval !== undefined)
-                ? (e.moveTimer / e.moveInterval) : 0;
+            // Idle: frames until jump starts + frames to apex
+            var mi = e.moveInterval || exEnemyIdle(e.type, sm);
+            var mt = e.moveTimer || 0;
+            cf = (mi - mt) + exEnemyApex(sm);
         }
-        // Use effective position (destination if mid-jump)
+        // Use effective position (destination if mid-jump pre-apex)
         var pos = enemyEffectivePos(e);
         var er = pos.row, ec = pos.col;
         if (e.type === 'coily') {
-            ens.push({ type: e.type, row: er, col: ec, hops: e.hops || 0, accum: acc });
+            ens.push({ type: e.type, row: er, col: ec, hops: e.hops || 0,
+                       commitFrame: cf, accum: cf / exPlayerHop(sm) });
         } else if (e.type === 'slick' || e.type === 'greenball') {
             continue; // safe enemies — skip
         } else {
             var d = exBfsDist(player.row, player.col, er, ec);
-            lethalRandom.push({ e: e, dist: d, acc: acc, er: er, ec: ec });
+            lethalRandom.push({ e: e, dist: d, cf: cf, er: er, ec: ec });
         }
     }
     lethalRandom.sort(function(a, b) { return a.dist - b.dist; });
-    for (var i = 0; i < Math.min(3, lethalRandom.length); i++) {
+    for (var i = 0; i < Math.min(5, lethalRandom.length); i++) {
         var lr = lethalRandom[i];
         ens.push({ type: lr.e.type, row: lr.er, col: lr.ec,
-                   hops: lr.e.hops || 0, accum: lr.acc,
+                   hops: lr.e.hops || 0,
+                   commitFrame: lr.cf, accum: lr.cf / exPlayerHop(sm),
                    cloud: [{ row: lr.er, col: lr.ec, prob: 1.0 }] });
     }
     var colored = 0;
@@ -76,8 +92,7 @@ function exCloneState() {
     for (var i = 0; i < discs.length; i++)
         ds.push({ side: discs[i].side, row: discs[i].row, active: discs[i].active });
     // Include imminent spawn timers
-    var sm = speedMultiplier();
-    var framesPerHop = Math.ceil(1 / (PLAYER_JUMP_DUR * sm));
+    var framesPerHop = exPlayerHop(sm);
     var spawns = [];
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
@@ -90,7 +105,7 @@ function exCloneState() {
     }
     return { pr: player.row, pc: player.col, cubes: cs, enemies: ens,
              alive: true, score: 0, cubesColored: colored, tgt: tgt,
-             discs: ds, lv: arcadeLevel(), spawns: spawns };
+             discs: ds, lv: arcadeLevel(), spawns: spawns, sm: sm };
 }
 
 // Override AI time budget — node can afford deeper search than a 16ms frame
@@ -211,12 +226,16 @@ function spawnEnemy(forcedType) {
     }
 }
 
+var deathLog = [];
 function killPlayer(reason) {
     if (player.dead) return;
     player.dead = true;
     player.deathTimer = 90; // ~1.5s at 60fps (matches HTML)
     lives--;
-    if (verbose) console.log('  KILL: ' + (reason || 'unknown') + ' at (' + player.row + ',' + player.col + ') lives=' + lives);
+    var hasCoily = false;
+    for (var di = 0; di < enemies.length; di++) if (enemies[di].type === 'coily') { hasCoily = true; break; }
+    deathLog.push({ reason: reason || 'unknown', row: player.row, col: player.col, round: round, mode: hasCoily ? 2 : 1 });
+    if (verbose) console.log('  KILL: ' + (reason || 'unknown') + ' at (' + player.row + ',' + player.col + ') lives=' + lives + ' mode=' + (hasCoily ? 2 : 1));
 }
 
 function useDisc(idx) {
@@ -701,6 +720,18 @@ for (var i = 2; i < process.argv.length; i++) {
 console.log('Running ' + numRounds + ' rounds from round ' + startRound + (verbose ? ' (verbose)' : '') + '...\n');
 var result = runGame(startRound + numRounds - 1, verbose);
 console.log('\nFinal: rounds=' + result.rounds + ' score=' + result.score + ' deaths=' + result.deaths);
+// Death summary
+if (deathLog.length > 0) {
+    var byType = {}, byRow = {};
+    for (var di = 0; di < deathLog.length; di++) {
+        var dl = deathLog[di];
+        var t = dl.reason.split(' ')[0]; // first word = type
+        byType[t] = (byType[t] || 0) + 1;
+        byRow[dl.row] = (byRow[dl.row] || 0) + 1;
+    }
+    console.log('Deaths by cause: ' + JSON.stringify(byType));
+    console.log('Deaths by row: ' + JSON.stringify(byRow));
+}
 if (astarStats.solved + astarStats.fallbacks > 0) {
     console.log('A* stats: solved=' + astarStats.solved + ' fallbacks=' + astarStats.fallbacks +
         ' avgNodes=' + Math.round(astarStats.totalNodes / (astarStats.solved + astarStats.fallbacks)) +

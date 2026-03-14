@@ -19,18 +19,39 @@ var DIRS = { UL: {dr:-1, dc:-1}, UR: {dr:-1, dc:0}, DL: {dr:1, dc:0}, DR: {dr:1,
 var DIR_KEYS = ['UL', 'UR', 'DL', 'DR'];
 var DIR_KEYS_WITH_STAY = ['UL', 'UR', 'DL', 'DR', 'STAY'];
 
-// Player hop = 36f (0.60s), enemy hop ≈ 37f (idle + jump) at 1x level 1.
-// No AI idle delay — AI moves instantly on landing (like holding joystick).
-// Ratio ≈ 1.0 for fast enemies: they complete one hop per player hop.
-// Frame-accurate: player jump = 1/0.028 ≈ 36f, enemy idle(4) + jump(33) = 37f.
+// ─── Frame-accurate timing ──────────────────────────────────────────────────
+// Player jump: jumpT += 0.028*sm per frame → hop = ceil(1/0.028/sm) frames
+// Enemy jump:  jumpT += 0.030*sm per frame → hop = ceil(1/0.030/sm) frames
+// Enemy idle:  BASE_ENEMY_INTERVALS[type] / sm frames between hops
+// Apex (position commit) at jumpT = 0.5 → apex = ceil(0.5/jumpDur) frames
+var EX_PLAYER_JUMP_DUR = 0.028;
+var EX_ENEMY_JUMP_DUR  = 0.030;
+var EX_ENEMY_IDLE = {
+    egg: 4, coily: 4, redball: 4, greenball: 12, slick: 20, ugg: 4, wrongway: 4
+};
+
+// Compute frame counts for a given speed multiplier
+function exPlayerApex(sm) { return Math.ceil(0.5 / (EX_PLAYER_JUMP_DUR * (sm || 1))); }
+function exPlayerHop(sm)  { return Math.ceil(1.0 / (EX_PLAYER_JUMP_DUR * (sm || 1))); }
+function exEnemyApex(sm)  { return Math.ceil(0.5 / (EX_ENEMY_JUMP_DUR * (sm || 1))); }
+function exEnemyHop(sm)   { return Math.ceil(1.0 / (EX_ENEMY_JUMP_DUR * (sm || 1))); }
+function exEnemyIdle(type, sm) {
+    return Math.round((EX_ENEMY_IDLE[type] || 30) / (sm || 1));
+}
+// Full cycle: idle + full jump animation
+function exEnemyCycle(type, sm) {
+    return exEnemyIdle(type, sm) + exEnemyHop(sm);
+}
+
+// Legacy rate (still used by exMoveEnemies for cloud expansion at deeper search depths)
 var EX_MOVE_RATE = {
-    egg:       1.0,       // fast — moves once per player hop
-    coily:     1.0,       // fast — moves once per player hop
-    redball:   1.0,       // fast — moves once per player hop
-    ugg:       1.0,       // fast — moves once per player hop
-    wrongway:  1.0,       // fast — moves once per player hop
-    greenball: 36 / 46,   // 0.78 — leisurely
-    slick:     36 / 54    // 0.67 — slow
+    egg:       1.0,
+    coily:     1.0,
+    redball:   1.0,
+    ugg:       1.0,
+    wrongway:  1.0,
+    greenball: 36 / 46,
+    slick:     36 / 54
 };
 
 var EX_DEATH = -50000;
@@ -612,32 +633,40 @@ function exMoveEnemies(st) {
                 var ft = st.spawns[si].forcedType;
                 st.spawns.splice(si, 1);
                 // Add spawned enemy to the state
+                var spSm = st.sm || 1;
+                var spCf = exEnemyIdle(ft || 'egg', spSm) + exEnemyApex(spSm);
                 if (ft === 'ugg') {
-                    st.enemies.push({ type: 'ugg', row: ROWS-1, col: ROWS-1, accum: 0,
+                    st.enemies.push({ type: 'ugg', row: ROWS-1, col: ROWS-1, accum: 0, commitFrame: spCf,
                         cloud: [{ row: ROWS-1, col: ROWS-1, prob: 1.0 }] });
                 } else if (ft === 'wrongway') {
-                    st.enemies.push({ type: 'wrongway', row: ROWS-1, col: 0, accum: 0,
+                    st.enemies.push({ type: 'wrongway', row: ROWS-1, col: 0, accum: 0, commitFrame: spCf,
                         cloud: [{ row: ROWS-1, col: 0, prob: 1.0 }] });
                 } else if (ft === 'egg' || !ft) {
-                    // Arcade: egg spawns at row 1 (not apex)
-                    st.enemies.push({ type: 'egg', row: 1, col: 0, hops: 0, accum: 0,
+                    st.enemies.push({ type: 'egg', row: 1, col: 0, hops: 0, accum: 0, commitFrame: spCf,
                         cloud: [{ row: 1, col: 0, prob: 0.5 }, { row: 1, col: 1, prob: 0.5 }] });
                 } else if (ft === 'redball') {
-                    // Redball spawns at row 1 — model as cloud over both columns
-                    st.enemies.push({ type: 'redball', row: 1, col: 0, accum: 0,
+                    st.enemies.push({ type: 'redball', row: 1, col: 0, accum: 0, commitFrame: spCf,
                         cloud: [{ row: 1, col: 0, prob: 0.5 }, { row: 1, col: 1, prob: 0.5 }] });
                 } else if (ft === 'greenball') {
-                    st.enemies.push({ type: 'greenball', row: 1, col: 0, accum: 0,
+                    st.enemies.push({ type: 'greenball', row: 1, col: 0, accum: 0, commitFrame: spCf,
                         cloud: [{ row: 1, col: 0, prob: 0.5 }, { row: 1, col: 1, prob: 0.5 }] });
                 }
             }
         }
     }
+    var moveSm = st.sm || 1;
     for (var i = st.enemies.length - 1; i >= 0; i--) {
         var e = st.enemies[i];
         e.accum += EX_MOVE_RATE[e.type] || 0.75;
+        // Advance commitFrame by one player hop
+        if (e.commitFrame !== undefined) {
+            e.commitFrame -= exPlayerHop(moveSm);
+            if (e.commitFrame < 0) e.commitFrame = 0;
+        }
         if (e.accum < 1.0) continue;
         e.accum -= 1.0;
+        // After moving, reset commitFrame to a full cycle
+        e.commitFrame = exEnemyCycle(e.type, moveSm);
 
         if (e.type === 'coily') {
             var bestDir = null, bestDist = Infinity;
@@ -1095,6 +1124,7 @@ function unifiedSearch(st, depth) {
         }
         if (neighbors <= 1) tc += 8;       // corner: 1 exit — very bad
         else if (neighbors === 2) tc += 3;  // edge: 2 exits — somewhat bad
+
         return { pSurvive: 1, tourCost: tc };
     }
 
