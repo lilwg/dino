@@ -437,6 +437,16 @@ function simUpdateEnemies(gs) {
                 e.destRow = null; e.destCol = null;
                 // Fell off
                 if (e.falling) {
+                    // Coily lured off by disc: 500 points, clear all enemies, respawn
+                    if (e.type === 'coily' && e.lureRow != null) {
+                        gs.score += 500;
+                        var spawnTimers = [];
+                        for (var j = 0; j < gs.enemies.length; j++)
+                            if (gs.enemies[j].type === 'spawn-timer') spawnTimers.push(gs.enemies[j]);
+                        gs.enemies = spawnTimers;
+                        simScheduleSpawn(gs, 180);
+                        break; // enemies array replaced, exit loop
+                    }
                     var ft = e.type;
                     gs.enemies.splice(i, 1);
                     simScheduleEnemyRespawn(gs, ft);
@@ -488,17 +498,21 @@ function simUpdateEnemies(gs) {
         } else if (e.type === 'coily') {
             var bestDir = null, bestDist = Infinity;
             // Coily chases player (or lure target if set)
-            var targetR = (e.lureRow != null) ? e.lureRow : gs.player.row;
-            var targetC = (e.lureCol != null) ? e.lureCol : gs.player.col;
+            var hasLure = e.lureRow != null;
+            var targetR = hasLure ? e.lureRow : gs.player.row;
+            var targetC = hasLure ? e.lureCol : gs.player.col;
+            // When lured and on the disc's row, allow jumping off the edge
+            var canExit = hasLure && e.row === e.lureRow;
             for (var k = 0; k < 4; k++) {
                 var dk = DIRS[DIR_KEYS[k]];
                 var enr = e.row + dk.dr, enc = e.col + dk.dc;
-                if (!isValidPos(enr, enc)) continue;
+                if (!canExit && !isValidPos(enr, enc)) continue;
                 var dist = Math.abs(targetR - enr) + Math.abs(targetC - enc);
                 if (dist < bestDist) { bestDist = dist; bestDir = { nr: enr, nc: enc }; }
             }
             if (bestDir) {
                 simEnemyJumpTo(e, bestDir.nr, bestDir.nc, gs.sm);
+                if (!isValidPos(bestDir.nr, bestDir.nc)) e.falling = true;
             } else {
                 simEnemyJumpTo(e, e.row, e.col, gs.sm);
                 e.falling = true;
@@ -562,59 +576,25 @@ function simCheckCollision(gs) {
     }
 }
 
-// Use a disc (player escapes to top, potentially kills Coily)
+// Use a disc (player rides to top, Coily chases the disc position)
+// Player stays at disc position (off-grid) during the ride — caller
+// must move player to (0,0) and stomp when the ride finishes.
 function simUseDisc(gs, idx) {
     var disc = gs.discs[idx];
     disc.active = false;
-    var coilyDied = false;
-    var kept = [];
+    // Set lure on Coily — it will chase toward the disc exit and fall off naturally
+    var lureRow = disc.row;
+    var lureCol = disc.side === 0 ? -1 : disc.row + 1;
     for (var i = 0; i < gs.enemies.length; i++) {
-        var e = gs.enemies[i];
-        if (e.type === 'coily') {
-            // Simulate Coily chasing toward the disc exit over multiple hops
-            var lureRow = disc.row;
-            var lureCol = disc.side === 0 ? -1 : disc.row + 1;
-            var cr = e.row, cc = e.col;
-            var fellOff = false;
-            for (var hop = 0; hop < 20; hop++) {
-                var bestDir = null, bestDist = Infinity;
-                for (var k = 0; k < DIR_KEYS.length; k++) {
-                    var dk = DIRS[DIR_KEYS[k]];
-                    var nr = cr + dk.dr, nc = cc + dk.dc;
-                    var dist = Math.abs(lureRow - nr) + Math.abs(lureCol - nc);
-                    if (dist < bestDist) { bestDist = dist; bestDir = { nr: nr, nc: nc }; }
-                }
-                if (!bestDir) break;
-                if (!isValidPos(bestDir.nr, bestDir.nc)) { fellOff = true; break; }
-                cr = bestDir.nr; cc = bestDir.nc;
-            }
-            if (fellOff) {
-                gs.score += 500;
-                coilyDied = true;
-            } else {
-                kept.push(e);
-            }
-        } else if (e.type === 'spawn-timer') {
-            kept.push(e);
-        } else {
-            kept.push(e);
+        if (gs.enemies[i].type === 'coily') {
+            gs.enemies[i].lureRow = lureRow;
+            gs.enemies[i].lureCol = lureCol;
         }
     }
-    if (coilyDied) {
-        // When Coily dies, all non-spawn-timer enemies are cleared
-        var spawnTimers = [];
-        for (var i = 0; i < kept.length; i++)
-            if (kept[i].type === 'spawn-timer') spawnTimers.push(kept[i]);
-        gs.enemies = spawnTimers;
-        // Schedule Coily respawn (new egg after delay)
-        simScheduleSpawn(gs, 180);
-    } else {
-        gs.enemies = kept;
-    }
-    gs.player.row = 0;
-    gs.player.col = 0;
+    // Player is at the disc position (off-grid, immune from collisions)
+    gs.player.row = disc.row;
+    gs.player.col = lureCol;
     gs.player.jumping = false;
-    simStompCube(gs, 0, 0);
 }
 
 // Try to move the player in a direction. Returns true if move started.
@@ -716,13 +696,26 @@ function simStep(gs, dir) {
     // Try to move
     if (!simTryMove(gs, dir)) return gs.alive;
     // If disc was used (instant teleport), simulate idle frames for enemies
+    // Enough frames for Coily to chase the lure to the edge (~7 hops × 4 frames)
     if (!gs.player.jumping) {
-        var hopFrames = Math.ceil(1.0 / (PLAYER_JUMP_DUR * gs.sm));
+        var hopFrames = 30;
         for (var f = 0; f < hopFrames; f++) {
             simUpdateEnemies(gs);
-            simCheckCollision(gs);
+            // Player is off-grid on disc, no collision check needed
             if (!gs.alive || gs.levelWon) return gs.alive;
         }
+        // Player lands at apex
+        gs.player.row = 0;
+        gs.player.col = 0;
+        simStompCube(gs, 0, 0);
+        if (simAllColored(gs)) {
+            gs.score += roundCompletionBonus(gs.round);
+            gs.score += unusedDiscBonus(gs.discs);
+            gs.levelWon = true;
+            return true;
+        }
+        // Check collision at apex after landing
+        simCheckCollision(gs);
         return gs.alive;
     }
 
