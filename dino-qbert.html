@@ -1550,13 +1550,14 @@ function drawSwearBubble() {
 function drawHUD() {
     ctx.font = '600 13px "Courier New",monospace';
     ctx.fillStyle = '#535353';
-    ctx.textAlign = 'left';
-    ctx.fillText(padScore(score), 10, 18);
-    ctx.fillText('HI ' + padScore(Math.max(score, hiScore)), 10, 34);
-    var best = bestHops['' + arcadeLevel()];
-    ctx.fillText('HOPS ' + hops + (best ? '  BEST ' + best : ''), 10, 50);
 
-    // Lives as small T-Rex sprites at top-right
+    // Top-left: high score + best hops
+    ctx.textAlign = 'left';
+    ctx.fillText('HI ' + padScore(Math.max(score, hiScore)), 10, 18);
+    var best = bestHops['' + arcadeLevel()];
+    ctx.fillText('BEST ' + (best ? best : '\u221E'), 10, 34);
+
+    // Top-right: lives, then score + hops below
     for (var i = 0; i < lives; i++) {
         if (spriteClean) {
             var sp = SPRITES.TREX_IDLE;
@@ -1566,6 +1567,9 @@ function drawHUD() {
                 sp.w * sc, sp.h * sc);
         }
     }
+    ctx.textAlign = 'right';
+    ctx.fillText(padScore(score), CW - 10, 34);
+    ctx.fillText('HOPS ' + hops, CW - 10, 50);
 
     // Round indicator center-top
     ctx.textAlign = 'center';
