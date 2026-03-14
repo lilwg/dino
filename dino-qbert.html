@@ -262,6 +262,7 @@ var aiBestDir    = null;
 var inputQueue  = [];
 var heldDir     = null;  // direction currently held by player
 var discRide    = null;  // { side, t, sx, sy, tx, ty } — player riding disc to top
+var fallingCoily = null; // visual-only Coily falling off edge during disc ride
 
 // DIRS, DIR_KEYS, isValidPos, cubeAt, allColored, arcadeLevel, targetState,
 // nextCubeState, discConfig, bfsTo, boardSig, etc. loaded from qbert.js
@@ -391,6 +392,7 @@ function updateDiscRide() {
             }
         }
         discRide = null;
+        fallingCoily = null;
     } else {
         var t = discRide.t;
         if (t < 0.25) {
@@ -433,6 +435,7 @@ function initRound() {
     roundMsg   = { text: 'LV ' + arcadeLevel() + ' ROUND ' + ((round - 1) % 4 + 1), timer: 90 };
     swearBubble = null;
     discRide    = null;
+    fallingCoily = null;
     aiDetailPath = [];
     aiTourDots   = [];
     aiTour       = [];
@@ -585,10 +588,46 @@ function update() {
             player.px = player.jumpTX; player.py = player.jumpTY;
             var pd = player.pendingDisc;
             player.pendingDisc = null;
+            // Save Coily's position before simTryMove removes it
+            var savedCoily = null;
+            for (var ci = 0; ci < gs.enemies.length; ci++) {
+                if (gs.enemies[ci].type === 'coily') {
+                    var ce = gs.enemies[ci];
+                    savedCoily = { row: ce.row, col: ce.col, px: ce.px, py: ce.py, facing: ce.facing || 'L', frame: ce.frame || 0 };
+                    break;
+                }
+            }
             var result = simTryMove(gs, pd.dirKey);
             enemies = gs.enemies;
             score += gs.score; gs.score = 0;
             checkExtraLife();
+            // If Coily was killed, create falling visual
+            if (savedCoily) {
+                var coilyStillAlive = false;
+                for (var ci = 0; ci < gs.enemies.length; ci++)
+                    if (gs.enemies[ci].type === 'coily') { coilyStillAlive = true; break; }
+                if (!coilyStillAlive) {
+                    // Compute Coily's jump destination (off-edge)
+                    var lureCol = (pd.side === 0) ? -1 : pd.row + 1;
+                    var bestDir = null, bestDist = Infinity;
+                    for (var k = 0; k < DIR_KEYS.length; k++) {
+                        var dk = DIRS[DIR_KEYS[k]];
+                        var nr = savedCoily.row + dk.dr, nc = savedCoily.col + dk.dc;
+                        var dist = Math.abs(pd.row - nr) + Math.abs(lureCol - nc);
+                        if (dist < bestDist) { bestDist = dist; bestDir = { nr: nr, nc: nc }; }
+                    }
+                    if (bestDir) {
+                        var src = cubeXY(savedCoily.row, savedCoily.col);
+                        var dst = cubeXY(bestDir.nr, bestDir.nc);
+                        fallingCoily = {
+                            type: 'coily', px: src.cx, py: src.cy,
+                            srcX: src.cx, srcY: src.cy, dstX: dst.cx, dstY: dst.cy,
+                            facing: dst.cx < src.cx ? 'L' : 'R', frame: 0, frameTimer: 0,
+                            jumpT: 0, falling: false, fallVY: 0
+                        };
+                    }
+                }
+            }
             startDiscRide(pd.side, pd.row);
             // Check level complete
             if (simAllColored(gs)) {
@@ -622,6 +661,29 @@ function update() {
             simUpdateEnemies(gs);
             enemies = gs.enemies;
             freezeTimer = gs.freezeTimer;
+        }
+        // Animate falling Coily (jump arc then gravity fall)
+        if (fallingCoily) {
+            var fc = fallingCoily;
+            fc.frameTimer = (fc.frameTimer || 0) + 1;
+            if (fc.frameTimer > 8) { fc.frameTimer = 0; fc.frame = (fc.frame || 0) ^ 1; }
+            if (!fc.falling) {
+                fc.jumpT += 0.04;
+                if (fc.jumpT >= 1) {
+                    fc.jumpT = 1;
+                    fc.falling = true;
+                    fc.px = fc.dstX;
+                    fc.py = fc.dstY;
+                    fc.fallVY = 0;
+                } else {
+                    fc.px = fc.srcX + (fc.dstX - fc.srcX) * fc.jumpT;
+                    fc.py = fc.srcY + (fc.dstY - fc.srcY) * fc.jumpT - Math.sin(fc.jumpT * Math.PI) * 16;
+                }
+            } else {
+                fc.fallVY += 0.5;
+                fc.py += fc.fallVY;
+                if (fc.py > 800) fallingCoily = null; // off screen
+            }
         }
         syncVisuals();
         return;
@@ -774,6 +836,7 @@ function draw() {
     // Enemies and player (before inversion so they invert with scene, like dino-runner)
     // White outline becomes black outline at night automatically
     for (var i = 0; i < enemies.length; i++) drawEnemy(enemies[i]);
+    if (fallingCoily) drawEnemy(fallingCoily);
     drawPlayer();
 
     // Draw spinning disc under player during disc ride
