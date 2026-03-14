@@ -891,6 +891,53 @@ function safeSearch(st, depth) {
     return bestCost;
 }
 
+// ─── Recursive survival search (fallback when no safe path exists) ───────────
+// Maximizes P(survive) over N steps = ∏ (1 - stepDeathProb_i).
+// Among paths with equal survival, picks lowest tour cost.
+//
+// Returns { pSurvive: number, tourCost: number } where pSurvive is the
+// probability of surviving from this state through `depth` more steps
+// (relative, not absolute — multiply by caller's pSurvive to get absolute).
+
+var survivalMemo = {};
+
+function survivalSearch(st, depth) {
+    if (!st.alive) return { pSurvive: 0, tourCost: Infinity };
+    if (st.cubesColored >= st.cubes.length * st.tgt) {
+        return { pSurvive: 1, tourCost: -1000 - depth }; // win — perfect survival from here
+    }
+    if (depth === 0) {
+        return { pSurvive: 1, tourCost: exTourCost(st) }; // leaf — survived to here
+    }
+
+    var key = safeSearchKey(st, depth);
+    if (survivalMemo[key] !== undefined) return survivalMemo[key];
+
+    var bestSurv = 0, bestTC = Infinity;
+
+    for (var k = 0; k < 4; k++) {
+        if (!exCanMove(st, DIR_KEYS[k])) continue;
+        var child = exClone(st);
+        if (!exPlayerMove(child, DIR_KEYS[k])) continue; // certain death
+        var stepSurvive = 1 - (child.stepDeathProb || 0);
+        if (stepSurvive <= 0) continue;
+
+        var sub = survivalSearch(child, depth - 1);
+        // Total survival from this state through this move = stepSurvive × sub.pSurvive
+        var totalSurv = stepSurvive * sub.pSurvive;
+
+        if (totalSurv > bestSurv + 1e-9 ||
+            (Math.abs(totalSurv - bestSurv) < 1e-9 && sub.tourCost < bestTC)) {
+            bestSurv = totalSurv;
+            bestTC = sub.tourCost;
+        }
+    }
+
+    var result = { pSurvive: bestSurv, tourCost: bestTC };
+    survivalMemo[key] = result;
+    return result;
+}
+
 // ─── Precomputed optimal tours from (0,0) ────────────────────────────────────
 // Computed offline via beam search. These are optimal (or near-optimal) move
 // sequences for clearing all 28 cubes with no enemies present.
@@ -984,42 +1031,8 @@ var AI_TIME_BUDGET = 100; // ms — max time for search before returning best-so
 function aiPickBestDir() {
     var tmpSt = exCloneState();
 
-    // Phase 0: Check for disc lure opportunity (kill Coily + clear board)
-    var lureDir = evalDiscLure();
-    if (lureDir) return lureDir;
-
-    // Phase 1: Follow precomputed tour when safe
-    var nearestCoilyDist = 99, nearestOtherDist = 99;
-    for (var i = 0; i < enemies.length; i++) {
-        var e = enemies[i];
-        if (e.type === 'spawn-timer' || e.type === 'slick' || e.type === 'greenball') continue;
-        var d = exBfsDist(player.row, player.col, e.row, e.col);
-        if (e.type === 'coily') {
-            if (d < nearestCoilyDist) nearestCoilyDist = d;
-        } else {
-            if (d < nearestOtherDist) nearestOtherDist = d;
-        }
-    }
-    var safeFromEnemies = nearestCoilyDist > 3 && nearestOtherDist > 2;
-
-    if (safeFromEnemies && aiTourMoves && aiTourStep < aiTourMoves.length) {
-        var tourDir = aiTourMoves[aiTourStep];
-        var expectedPos = aiTourStep > 0 ? aiTourPositions[aiTourStep - 1] : { row: 0, col: 0 };
-        var onTrack = (player.row === expectedPos.row && player.col === expectedPos.col);
-        if (onTrack && exCanMove(tmpSt, tourDir) && isSafeMove(tourDir)) {
-            aiTourStep++;
-            aiResumePath = null;
-            return tourDir;
-        }
-        if (!aiResumePath || aiResumePath.length === 0) {
-            aiResumePath = findTourResumePath();
-        }
-        if (aiResumePath && aiResumePath.length > 0) {
-            var nextDir = aiResumePath.shift();
-            if (exCanMove(tmpSt, nextDir) && isSafeMove(nextDir)) return nextDir;
-            aiResumePath = null;
-        }
-    }
+    // Phase 0 (disc lure) and Phase 1 (precomputed tour) disabled —
+    // safe search handles everything uniformly.
 
     // Phase 2: Safe search — find move with lowest tour cost among paths
     // where P(death) = 0 at every step. Uses iterative deepening with time budget.
@@ -1064,22 +1077,38 @@ function aiPickBestDir() {
     // If safe search found a move, use it
     if (bestDir !== null) return bestDir;
 
-    // Fallback: no safe path exists — minimize single-step death probability
-    var bestFallbackDir = null, bestDeathProb = Infinity;
-    for (var k = 0; k < 4; k++) {
-        if (!exCanMove(tmpSt, DIR_KEYS[k])) continue;
-        var child = exClone(tmpSt);
-        if (!exPlayerMove(child, DIR_KEYS[k])) {
-            continue; // certain death (fell off or landed on enemy)
+    // Fallback: no fully safe path — maximize recursive survival probability,
+    // tiebreaking on tour cost. Uses iterative deepening with remaining time budget.
+    var bestFallbackDir = null, bestSurv = -1, bestFallbackTC = Infinity;
+    var fallbackMaxDepth = 6;
+
+    for (var depth = 1; depth <= fallbackMaxDepth; depth++) {
+        survivalMemo = {};
+        var depthBestDir = null, depthBestSurv = -1, depthBestTC = Infinity;
+        for (var k = 0; k < 4; k++) {
+            if (!exCanMove(tmpSt, DIR_KEYS[k])) continue;
+            var child = exClone(tmpSt);
+            if (!exPlayerMove(child, DIR_KEYS[k])) continue; // certain death
+            var stepSurvive = 1 - (child.stepDeathProb || 0);
+            if (stepSurvive <= 0) continue;
+
+            var sub = survivalSearch(child, depth - 1);
+            var totalSurv = stepSurvive * sub.pSurvive;
+
+            if (totalSurv > depthBestSurv + 1e-9 ||
+                (Math.abs(totalSurv - depthBestSurv) < 1e-9 && sub.tourCost < depthBestTC)) {
+                depthBestSurv = totalSurv;
+                depthBestTC = sub.tourCost;
+                depthBestDir = DIR_KEYS[k];
+            }
         }
-        var pDeath = child.stepDeathProb || 0;
-        // Tiebreak on tour cost among equally dangerous moves
-        var tc = exTourCost(child);
-        if (pDeath < bestDeathProb || (pDeath === bestDeathProb && tc < bestCost)) {
-            bestDeathProb = pDeath;
-            bestCost = tc;
-            bestFallbackDir = DIR_KEYS[k];
+        if (depthBestDir !== null) {
+            bestFallbackDir = depthBestDir;
+            bestSurv = depthBestSurv;
+            bestFallbackTC = depthBestTC;
         }
+        var elapsed = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - startTime;
+        if (elapsed > AI_TIME_BUDGET) break;
     }
 
     return bestFallbackDir || 'DL';
