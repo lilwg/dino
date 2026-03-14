@@ -248,7 +248,7 @@ function enemyMoveInterval(type) {
     return Math.round((BASE_ENEMY_INTERVALS[type] || 30) / speedMultiplier());
 }
 
-var score, hiScore, lives;
+var score, hiScore, lives, hops;
 var extraLifeGiven;
 // round, player, enemies, cubeStates, discs, aiTour, aiTourIdx, aiBoardSig
 // are globals (declared before IIFE) shared with qbert-ai.js
@@ -889,6 +889,7 @@ function updatePlayer() {
         if (player.jumpT >= 1) {
             player.jumpT = 1; player.jumping = false;
             player.px = player.tx; player.py = player.ty;
+            hops++;
             // Color cube on landing
             stompCube(player.row, player.col);
             // Check enemy collision on landing
@@ -1538,6 +1539,7 @@ function drawHUD() {
     ctx.fillStyle = '#535353';
     ctx.textAlign = 'left';
     ctx.fillText('HI ' + padScore(Math.max(score, hiScore)), 10, 18);
+    ctx.fillText('HOPS ' + hops, 10, 34);
 
     // Lives as small T-Rex sprites at top-right
     for (var i = 0; i < lives; i++) {
@@ -1603,6 +1605,7 @@ window.restartGame = function () {
     hiScore = Math.max(hiScore || 0, score || 0);
     if (hiScore > 0) localStorage.setItem('dino-qbert-hi', hiScore);
     score   = 0;
+    hops    = 0;
     lives   = 3;
     // Check URL for ?l=N level skip (round = (level-1)*4 + 1)
     var params = new URLSearchParams(window.location.search);
