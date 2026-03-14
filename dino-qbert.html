@@ -199,10 +199,10 @@ function cubeXY(row, col) {
 
 // Per-level top-face color palettes [state0, state1, state2] — hoisted for perf
 var CUBE_TOP_COLORS = [
-    ['#b8b8b8', '#3060d0', '#30b030'],   // lv 1-2: grey → blue → green
-    ['#b8b8b8', '#6868a8', '#d04840'],   // lv 3-4: grey → purple → red
-    ['#b8b8b8', '#3878c8', '#48c078'],   // lv 5-6: grey → blue → green
-    ['#b8b8b8', '#50b0d0', '#d06040']    // lv 7+:  grey → cyan → orange-red
+    ['#ebebeb', '#3060d0', '#30b030'],   // lv 1-2: grey → blue → green
+    ['#ebebeb', '#6868a8', '#d04840'],   // lv 3-4: grey → purple → red
+    ['#ebebeb', '#3878c8', '#48c078'],   // lv 5-6: grey → blue → green
+    ['#ebebeb', '#50b0d0', '#d06040']    // lv 7+:  grey → cyan → orange-red
 ];
 
 function drawCube(c, cx, cy, state) {
@@ -210,9 +210,9 @@ function drawCube(c, cx, cy, state) {
     var lv = arcadeLevel();
     var palIdx = lv <= 2 ? 0 : lv <= 4 ? 1 : lv <= 6 ? 2 : 3;
     var topCol   = CUBE_TOP_COLORS[palIdx][state] || CUBE_TOP_COLORS[palIdx][0];
-    var leftCol  = '#484848';
-    var rightCol = '#333333';
-    var stroke   = '#222222';
+    var leftCol  = '#d4d4d4';
+    var rightCol = '#bcbcbc';
+    var stroke   = '#535353';
 
     function face(pts, col) {
         c.beginPath();
