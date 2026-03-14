@@ -27,7 +27,7 @@
                 <button class="si-btn" id="fs-btn" onclick="toggleFullscreen()">Fullscreen</button>
                 <button class="si-btn active" id="enemies-btn" onclick="toggleEnemies()">Enemies: On</button>
                 <label style="display:inline-flex;align-items:center;gap:4px;margin-left:8px;font-size:12px;color:#535353;">
-                    Speed <input type="range" id="speed-slider" min="0.25" max="2" step="0.25" value="0.25" style="width:80px;" oninput="setGameSpeed(parseFloat(this.value))">
+                    Speed <input type="range" id="speed-slider" min="1" max="8" step="1" value="1" style="width:80px;" oninput="setGameSpeed(parseFloat(this.value))">
                     <span id="speed-label">1x</span>
                 </label>
             </div>
@@ -35,7 +35,7 @@
         </div>
 
         <h2 style="margin-top:16px;">How it works</h2>
-        <p class="si-prose">DinoQbert recreates the 1982 Gottlieb arcade original: hop-based movement, one jump per keypress with a 9-frame arc animation matching the original arcade, and the classic @!#?@! swear bubble on death. Coily spawns as an egg, bounces randomly down the pyramid, then hatches and chases the player. Dark balls bounce down and kill on contact; light balls are safe to catch for 100 pts. Slick (round 4+) hops down uncoloring cubes. Ugg and Wrongway (round 3+) crawl upward from the bottom corners. Two transport discs at variable positions let Q*bert escape and lure Coily to his death.</p>
+        <p class="si-prose">DinoQbert recreates the 1982 Gottlieb arcade original: hop-based movement, one jump per keypress with arcade-matched hop timing (~0.67s per hop), and the classic @!#?@! swear bubble on death. Coily spawns as an egg, bounces randomly down the pyramid, then hatches and chases the player. Dark balls bounce down and kill on contact; light balls are safe to catch for 100 pts. Slick (round 4+) hops down uncoloring cubes. Ugg and Wrongway (round 3+) crawl upward from the bottom corners. Two transport discs at variable positions let Q*bert escape and lure Coily to his death.</p>
         <p class="si-prose">Tap <strong>Viz</strong> to reveal the AI&rsquo;s plan: a dashed line traces the expected path, with faint dots marking uncolored cubes. The game uses <strong>turn-based logic</strong> matching the original arcade: player hops, then every enemy hops once, then collisions are checked. Every move is chosen by <strong>safe search</strong>&mdash;it finds move sequences where the probability of death is zero at every step, then picks the path with the lowest tour cost (MST-based heuristic). When no safe path exists, it falls back to minimizing death probability. Iterative deepening with a time budget ensures the AI never slows down the game.</p>
 
         <p style="margin-top:20px;"><a href="/" style="color:#0071e3;font-size:14px;text-decoration:none;">&larr; Back</a></p>
@@ -48,7 +48,7 @@
 var round, player, enemies, cubeStates, discs;
 var aiTour, aiTourIdx, aiBoardSig;
 var exCloneState;
-var gameSpeed = 0.25;  // global speed scale; displayed as 1x–8x (display = internal × 4)
+var gameSpeed = 1.0;  // global speed scale: 1.0 = normal arcade speed ("1x")
 var enemiesEnabled = true;  // toggle via UI button
 var debugEnemies = false;   // ?debug URL param: spawn all enemies, hide player
 </script>
@@ -240,18 +240,17 @@ var levelWon = false;
 var levelWonTimer = 0;
 var roundStarted = false; // true after first player move — enemies frozen until then
 
-// Base enemy move intervals: idle frames BETWEEN hops (level 1 speed).
-// Total land-to-land = moveInterval/sm + ceil(1/(jumpDur*sm)).
-// At gameSpeed=0.25 (displayed "1x"): sm=0.25, so interval/0.25 = 4*interval.
-// Enemy anim: ceil(1/(0.121*0.25)) = 33f. With interval=1: idle=4f. Total=37f=0.62s.
+// Idle frames between enemy hops at level 1, 1x speed.
+// Total hop time = idle + ceil(1/jumpDur) frames.
+// At 1x: enemy jumpDur=0.030 → anim=34f. With idle=4: total=38f=0.63s.
 var BASE_ENEMY_INTERVALS = {
-    egg:        1,   // 4 idle + 33 anim = 37f (~0.62s) at 1x
-    coily:      1,   // 4 idle + 33 anim = 37f (~0.62s)
-    redball:    1,   // 4 idle + 33 anim = 37f (~0.62s)
-    greenball:  3,   // 12 idle + 33 anim = 45f (~0.75s) — leisurely
-    slick:      5,   // 20 idle + 33 anim = 53f (~0.88s) — slow
-    ugg:        1,   // 4 idle + 33 anim = 37f (~0.62s) — side-crawlers
-    wrongway:   1    // 4 idle + 33 anim = 37f (~0.62s) — side-crawlers
+    egg:        4,   // 4 idle + 34 anim = 38f (0.63s)
+    coily:      4,   // 4 idle + 34 anim = 38f (0.63s)
+    redball:    4,   // 4 idle + 34 anim = 38f (0.63s)
+    greenball: 12,   // 12 idle + 34 anim = 46f (0.77s) — leisurely
+    slick:     20,   // 20 idle + 34 anim = 54f (0.90s) — slow
+    ugg:        4,   // 4 idle + 34 anim = 38f (0.63s) — side-crawlers
+    wrongway:   4    // 4 idle + 34 anim = 38f (0.63s) — side-crawlers
 };
 
 // Effective enemy intervals for current level
@@ -351,7 +350,7 @@ function initRound() {
         row: 0, col: 0,
         px: sp.cx, py: sp.cy,
         // jump state
-        jumping: false, jumpT: 0, jumpDur: 0.114 * speedMultiplier(),
+        jumping: false, jumpT: 0, jumpDur: 0.028 * speedMultiplier(),
         jumpSX: sp.cx, jumpSY: sp.cy,
         tx: sp.cx, ty: sp.cy,
         // sprite
@@ -431,7 +430,7 @@ function spawnEnemy(forcedType) {
             type: 'egg',
             row: 1, col: eggCol,
             px: eggPos.cx, py: eggPos.cy,
-            jumping: false, jumpT: 0, jumpDur: 0.121 * speedMultiplier(),
+            jumping: false, jumpT: 0, jumpDur: 0.030 * speedMultiplier(),
             jumpSX: eggPos.cx, jumpSY: eggPos.cy,
             tx: eggPos.cx, ty: eggPos.cy,
             hops: 0,
@@ -443,7 +442,7 @@ function spawnEnemy(forcedType) {
             type: 'redball',
             row: spawnRow, col: spawnCol,
             px: sp.cx, py: sp.cy,
-            jumping: false, jumpT: 0, jumpDur: 0.121 * speedMultiplier(),
+            jumping: false, jumpT: 0, jumpDur: 0.030 * speedMultiplier(),
             jumpSX: sp.cx, jumpSY: sp.cy,
             tx: sp.cx, ty: sp.cy,
             frame: 0, frameTimer: 0,
@@ -454,7 +453,7 @@ function spawnEnemy(forcedType) {
             type: 'greenball',
             row: spawnRow, col: spawnCol,
             px: sp.cx, py: sp.cy,
-            jumping: false, jumpT: 0, jumpDur: 0.121 * speedMultiplier(),
+            jumping: false, jumpT: 0, jumpDur: 0.030 * speedMultiplier(),
             jumpSX: sp.cx, jumpSY: sp.cy,
             tx: sp.cx, ty: sp.cy,
             frame: 0, frameTimer: 0,
@@ -465,7 +464,7 @@ function spawnEnemy(forcedType) {
             type: 'slick',
             row: spawnRow, col: spawnCol,
             px: sp.cx, py: sp.cy,
-            jumping: false, jumpT: 0, jumpDur: 0.121 * speedMultiplier(),
+            jumping: false, jumpT: 0, jumpDur: 0.030 * speedMultiplier(),
             jumpSX: sp.cx, jumpSY: sp.cy,
             tx: sp.cx, ty: sp.cy,
             frame: 0, frameTimer: 0,
@@ -479,7 +478,7 @@ function spawnEnemy(forcedType) {
             type: 'ugg',
             row: uggRow, col: uggCol,
             px: usp.cx, py: usp.cy,
-            jumping: false, jumpT: 0, jumpDur: 0.121 * speedMultiplier(),
+            jumping: false, jumpT: 0, jumpDur: 0.030 * speedMultiplier(),
             jumpSX: usp.cx, jumpSY: usp.cy,
             tx: usp.cx, ty: usp.cy,
             frame: 0, frameTimer: 0,
@@ -493,7 +492,7 @@ function spawnEnemy(forcedType) {
             type: 'wrongway',
             row: wwRow, col: wwCol,
             px: wsp.cx, py: wsp.cy,
-            jumping: false, jumpT: 0, jumpDur: 0.121 * speedMultiplier(),
+            jumping: false, jumpT: 0, jumpDur: 0.030 * speedMultiplier(),
             jumpSX: wsp.cx, jumpSY: wsp.cy,
             tx: wsp.cx, ty: wsp.cy,
             frame: 0, frameTimer: 0,
@@ -506,7 +505,7 @@ function spawnEnemy(forcedType) {
 function enemyJumpTo(e, nr, nc) {
     var dst = cubeXY(nr, nc);
     e.jumping = true; e.jumpT = 0;
-    e.jumpDur = 0.121 * speedMultiplier();  // refresh speed each hop
+    e.jumpDur = 0.030 * speedMultiplier();  // refresh speed each hop
     e.jumpSX = e.px; e.jumpSY = e.py;
     // Face based on horizontal direction of jump
     if (dst.cx < e.px) e.facing = 'L';
@@ -547,7 +546,7 @@ function startPlayerJump(nr, nc, dirKey) {
     var dst = cubeXY(nr, nc);
     player.jumping  = true;
     player.jumpT    = 0;
-    player.jumpDur  = 0.114 * speedMultiplier();  // refresh speed each hop
+    player.jumpDur  = 0.028 * speedMultiplier();  // refresh speed each hop
     player.jumpSX   = player.px;
     player.jumpSY   = player.py;
     player.tx       = dst.cx;
@@ -969,7 +968,7 @@ exCloneState = function() {
     // frames-per-hop. Each hop ≈ ceil(1/jumpDur) + aiMoveDelay frames,
     // and the timer ticks by gameSpeed each frame.
     var sm = speedMultiplier();
-    var framesPerHop = Math.ceil(1 / (0.114 * sm)) + Math.max(1, Math.round(1 / sm));
+    var framesPerHop = Math.ceil(1 / (0.028 * sm)) + Math.max(1, Math.round(4 / sm));
     var frameTickPerHop = framesPerHop * (typeof gameSpeed !== 'undefined' ? gameSpeed : 1.0);
     var spawns = [];
     for (var i = 0; i < enemies.length; i++) {
@@ -1089,7 +1088,7 @@ function update() {
     if (!player.jumping && !player.dead && !discRide) {
         if (gameMode === 'rules') {
             aiMoveTimer++;
-            if (aiMoveTimer >= Math.max(1, Math.round(1 / speedMultiplier()))) {
+            if (aiMoveTimer >= Math.max(1, Math.round(4 / speedMultiplier()))) {
                 aiMoveTimer = 0;
                 var dir = computeAIMove();
                 if (dir) tryMove(dir);
@@ -1727,7 +1726,7 @@ window.toggleEnemies = function () {
 
 window.setGameSpeed = function (v) {
     gameSpeed = v;
-    document.getElementById('speed-label').textContent = (v * 4) + 'x';
+    document.getElementById('speed-label').textContent = v + 'x';
     // Update move intervals for existing enemies
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
@@ -1736,7 +1735,7 @@ window.setGameSpeed = function (v) {
         }
     }
     // Update player jump speed
-    player.jumpDur = 0.114 * speedMultiplier();
+    player.jumpDur = 0.028 * speedMultiplier();
 };
 
 // ─── Input ────────────────────────────────────────────────────────────────────

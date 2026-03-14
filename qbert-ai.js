@@ -18,16 +18,16 @@ var ROWS = 7;
 var DIRS = { UL: {dr:-1, dc:-1}, UR: {dr:-1, dc:0}, DL: {dr:1, dc:0}, DR: {dr:1, dc:1} };
 var DIR_KEYS = ['UL', 'UR', 'DL', 'DR'];
 
-// At gameSpeed=0.25 ("1x"): player=39f (0.65s), enemies=37f (0.62s).
-// Ratio = player_frames / enemy_frames = how much enemy advances per player hop.
+// Player hop = 40f (0.67s), enemy hop = 38f (0.63s) at 1x level 1.
+// Ratio = player_frames / enemy_frames = how far enemy advances per player hop.
 var EX_MOVE_RATE = {
-    egg:       39 / 37,   // 1.05 — slightly faster than Q*bert
-    coily:     39 / 37,   // 1.05
-    redball:   39 / 37,   // 1.05
-    ugg:       39 / 37,   // 1.05
-    wrongway:  39 / 37,   // 1.05
-    greenball: 39 / 45,   // 0.87 — leisurely
-    slick:     39 / 53    // 0.74 — slow
+    egg:       40 / 38,   // 1.05 — slightly faster than player
+    coily:     40 / 38,   // 1.05
+    redball:   40 / 38,   // 1.05
+    ugg:       40 / 38,   // 1.05
+    wrongway:  40 / 38,   // 1.05
+    greenball: 40 / 46,   // 0.87 — leisurely
+    slick:     40 / 54    // 0.74 — slow
 };
 
 var EX_DEATH = -50000;
@@ -70,10 +70,15 @@ function allColored() {
     return true;
 }
 
-function speedMultiplier() {
+// Level-based speed progression (no gameSpeed factor).
+function levelSpeed() {
     var lv = arcadeLevel();
+    return Math.min(2.0, 1.0 + (lv - 1) * 0.2);
+}
+// Combined speed: level progression × user speed slider.
+function speedMultiplier() {
     var gs = (typeof gameSpeed !== 'undefined') ? gameSpeed : 1.0;
-    return Math.min(2.0, 1.0 + (lv - 1) * 0.2) * gs;
+    return levelSpeed() * gs;
 }
 
 // Disc counts per level/round from original arcade manual
@@ -191,7 +196,7 @@ function buildDangerMaps() {
             // Timer units differ: frames in HTML game, turns in test harness.
             // Estimate frames-per-hop to normalize.
             var sm = speedMultiplier();
-            var fph = Math.ceil(1 / (0.111 * sm)) + Math.max(1, Math.round(2 / sm));
+            var fph = Math.ceil(1 / (0.028 * sm)) + Math.max(1, Math.round(4 / sm));
             var gs = (typeof gameSpeed !== 'undefined') ? gameSpeed : 1.0;
             var tickPerHop = fph * gs;
             // If timer > 100, it's frame-based (HTML); otherwise turn-based (test)
