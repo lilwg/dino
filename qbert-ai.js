@@ -1026,7 +1026,7 @@ function predictCoilyNext(coilyR, coilyC, targetR, targetC) {
 
 var aiResumePath = null;
 
-var AI_TIME_BUDGET = 100; // ms — max time for search before returning best-so-far
+var AI_TIME_BUDGET = 8; // ms — must fit within a single 16.7ms frame to avoid death spiral
 
 // ─── Dynamic tour planner for cycling levels ─────────────────────────────────
 // On cycling levels (lv3+), cube states cycle: stepping on a completed cube
