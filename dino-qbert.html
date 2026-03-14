@@ -505,6 +505,7 @@ function enemyJumpTo(e, nr, nc) {
     e.jumping = true; e.jumpT = 0;
     e.jumpDur = 0.030 * speedMultiplier();  // refresh speed each hop
     e.jumpSX = e.px; e.jumpSY = e.py;
+    e.fromRow = e.row; e.fromCol = e.col;  // source cube for half-phase collision
     // Face based on horizontal direction of jump
     if (dst.cx < e.px) e.facing = 'L';
     else if (dst.cx > e.px) e.facing = 'R';
@@ -625,13 +626,22 @@ function useDisc(idx) {
 }
 
 // ─── Collision check ──────────────────────────────────────────────────────────
+// Half-phase model: during the first half of a jump, an entity is still on its
+// source cube.  At the apex (jumpT >= 0.5) it logically moves to the destination.
+function effectivePos(entity) {
+    if (entity.jumping && entity.jumpT < 0.5 && entity.fromRow != null) {
+        return { row: entity.fromRow, col: entity.fromCol };
+    }
+    return { row: entity.row, col: entity.col };
+}
+
 function checkPlayerEnemyCollision() {
     if (player.dead || player.jumping) return;
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
         if (e.type === 'spawn-timer') continue;
-        if (e.jumping) continue; // wait until enemy lands
-        if (e.row === player.row && e.col === player.col) {
+        var ep = effectivePos(e);
+        if (ep.row === player.row && ep.col === player.col) {
             if (e.type === 'slick') {
                 score += 300; checkExtraLife();
                 enemies.splice(i, 1);
@@ -802,17 +812,13 @@ function updateEnemies() {
 
 function onEnemyLand(e, idx) {
     if (player.dead) return;
-    // Match against player's current cube, OR their source cube if still
-    // in the early part of a jump (< 50% through — visually still there)
-    var onCurrent = (e.row === player.row && e.col === player.col);
-    var onSource  = (player.jumping && player.jumpT < 0.5 &&
-                     player.fromRow != null &&
-                     e.row === player.fromRow && e.col === player.fromCol);
+    var pp = effectivePos(player);
+    var hit = (e.row === pp.row && e.col === pp.col);
     if (e.type === 'slick') {
         var cube = cubeAt(e.row, e.col);
         if (cube && cube.state > 0) cube.state--;
-        if (onCurrent || onSource) {
-            if (player.jumping && !onSource) {
+        if (hit) {
+            if (player.jumping) {
                 player.pendingCatch = { type: 'slick', idx: idx };
             } else {
                 score += 300; checkExtraLife();
@@ -820,8 +826,8 @@ function onEnemyLand(e, idx) {
             }
         }
     } else if (e.type === 'greenball') {
-        if (onCurrent || onSource) {
-            if (player.jumping && !onSource) {
+        if (hit) {
+            if (player.jumping) {
                 player.pendingCatch = { type: 'greenball', idx: idx };
             } else {
                 score += 100; checkExtraLife();
@@ -830,8 +836,8 @@ function onEnemyLand(e, idx) {
         }
     } else if (e.type === 'redball' || e.type === 'coily' || e.type === 'egg' ||
                e.type === 'ugg' || e.type === 'wrongway') {
-        if (onCurrent || onSource) {
-            if (player.jumping && !onSource) {
+        if (hit) {
+            if (player.jumping) {
                 player.pendingDeath = true;
             } else {
                 killPlayer();
@@ -1121,17 +1127,14 @@ function update() {
     updateEnemies();
 
     // Per-frame collision: check when player is on a cube (or just left one).
-    // Also catches cases where a stationary enemy sits on the player's source
-    // cube while the player is in the early part of a jump.
+    // Per-frame collision using half-phase positions for both player and enemies.
     if (!player.dead && !discRide) {
+        var pp = effectivePos(player);
         for (var i = 0; i < enemies.length; i++) {
             var e = enemies[i];
-            if (e.type === 'spawn-timer' || e.jumping) continue;
-            var onCurrent = (!player.jumping && e.row === player.row && e.col === player.col);
-            var onSource  = (player.jumping && player.jumpT < 0.5 &&
-                             player.fromRow != null &&
-                             e.row === player.fromRow && e.col === player.fromCol);
-            if (onCurrent || onSource) {
+            if (e.type === 'spawn-timer') continue;
+            var ep = effectivePos(e);
+            if (ep.row === pp.row && ep.col === pp.col) {
                 if (e.type === 'slick') {
                     score += 300; checkExtraLife();
                     enemies.splice(i, 1);
@@ -1499,8 +1502,9 @@ function drawEnemyCollisionFaces() {
     var hw = TILE_W / 2, hh = TILE_H / 2;
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
-        if (e.type === 'spawn-timer' || e.jumping) continue;
-        var pos = cubeXY(e.row, e.col);
+        if (e.type === 'spawn-timer') continue;
+        var ep = effectivePos(e);
+        var pos = cubeXY(ep.row, ep.col);
         var cx = pos.cx, cy = pos.cy;
         ctx.save();
         ctx.globalAlpha = 0.55;
