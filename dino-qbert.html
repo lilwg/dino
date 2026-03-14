@@ -602,30 +602,9 @@ function useDisc(idx) {
     score += 300;
     checkExtraLife();
 
-    // Coily chases Q*bert toward the disc exit and jumps off the pyramid
-    var discRow = disc.row;
-    var discSide = disc.side;
-    var exitRow = discRow;
-    var exitCol = (discSide === 0) ? -1 : exitRow + 1; // off left or right edge
-    for (var i = 0; i < enemies.length; i++) {
-        var e = enemies[i];
-        if (e.type === 'coily') {
-            // Greedy chase toward disc exit — allows off-edge moves
-            var bestDir = null, bestDist = Infinity;
-            for (var k = 0; k < DIR_KEYS.length; k++) {
-                var dk = DIRS[DIR_KEYS[k]];
-                var nr = e.row + dk.dr, nc = e.col + dk.dc;
-                var dist = Math.abs(exitRow - 1 - nr) + Math.abs((discSide === 0 ? 0 : exitRow) - nc);
-                if (dist < bestDist) { bestDist = dist; bestDir = { nr: nr, nc: nc }; }
-            }
-            if (bestDir && !isValidPos(bestDir.nr, bestDir.nc)) {
-                // Coily jumps off the edge — animate the fall
-                enemyJumpTo(e, bestDir.nr, bestDir.nc);
-                e.falling = true;
-                e.luredOff = true;  // award points when fall animation finishes
-            }
-        }
-    }
+    // Lure target: Coily will chase toward the disc's edge during the ride
+    var lureRow = disc.row;
+    var lureCol = (disc.side === 0) ? -1 : disc.row + 1;
 
     // Start disc ride animation: player flies from disc position to pyramid top
     var dp = discScreenPos(disc);
@@ -634,7 +613,8 @@ function useDisc(idx) {
         side: disc.side,
         t: 0,
         sx: dp.x, sy: dp.y,
-        tx: top.cx, ty: top.cy
+        tx: top.cx, ty: top.cy,
+        lureRow: lureRow, lureCol: lureCol
     };
     // Player is already at disc position from the jump animation
     player.px = dp.x; player.py = dp.y;
@@ -750,18 +730,28 @@ function updateEnemies() {
                 e.falling = true;
             }
         } else if (e.type === 'coily') {
-            // During disc ride, Coily's lure is already handled by useDisc()
-            if (discRide) continue;
+            // During disc ride, chase the disc exit point instead of the player
+            var chaseRow = player.row, chaseCol = player.col;
+            if (discRide) {
+                // Target the disc exit — off-edge position Coily should jump toward
+                chaseRow = discRide.lureRow != null ? discRide.lureRow : player.row;
+                chaseCol = discRide.lureCol != null ? discRide.lureCol : player.col;
+            }
             var bestDir = null, bestDist = Infinity;
             for (var k = 0; k < DIR_KEYS.length; k++) {
                 var dk = DIRS[DIR_KEYS[k]];
                 var enr = e.row + dk.dr, enc = e.col + dk.dc;
-                if (!isValidPos(enr, enc)) continue;
-                var dist = Math.abs(player.row - enr) + Math.abs(player.col - enc);
+                // During disc ride, allow off-edge moves so Coily falls off
+                if (!discRide && !isValidPos(enr, enc)) continue;
+                var dist = Math.abs(chaseRow - enr) + Math.abs(chaseCol - enc);
                 if (dist < bestDist) { bestDist = dist; bestDir = { nr: enr, nc: enc }; }
             }
             if (bestDir) {
                 enemyJumpTo(e, bestDir.nr, bestDir.nc);
+                if (!isValidPos(bestDir.nr, bestDir.nc)) {
+                    e.falling = true;
+                    e.luredOff = true;
+                }
             } else {
                 // Coily trapped — jump off nearest edge
                 var fd = Math.random() < 0.5 ? DIRS['DL'] : DIRS['DR'];
