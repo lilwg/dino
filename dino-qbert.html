@@ -505,12 +505,11 @@ function enemyJumpTo(e, nr, nc) {
     e.jumping = true; e.jumpT = 0;
     e.jumpDur = 0.030 * speedMultiplier();  // refresh speed each hop
     e.jumpSX = e.px; e.jumpSY = e.py;
-    e.fromRow = e.row; e.fromCol = e.col;  // source cube for half-phase collision
     // Face based on horizontal direction of jump
     if (dst.cx < e.px) e.facing = 'L';
     else if (dst.cx > e.px) e.facing = 'R';
     e.tx = dst.cx; e.ty = dst.cy;
-    e.row = nr; e.col = nc;
+    e.destRow = nr; e.destCol = nc;  // row/col update deferred to apex
 }
 
 // ─── Player jump ──────────────────────────────────────────────────────────────
@@ -549,8 +548,7 @@ function tryMove(dirKey) {
                 player.jumpDur = 0.028 * speedMultiplier();
                 player.jumpSX = player.px; player.jumpSY = player.py;
                 player.tx = dpPos.x; player.ty = dpPos.y;
-                player.fromRow = player.row; player.fromCol = player.col;
-                player.row = nr; player.col = nc;
+                player.destRow = nr; player.destCol = nc;
                 player.spriteFrame = 0; player.frameTimer = 0;
                 player.facing = face;
                 player.pendingDisc = di;
@@ -576,10 +574,8 @@ function startPlayerJump(nr, nc, dirKey) {
     player.jumpSY   = player.py;
     player.tx       = dst.cx;
     player.ty       = dst.cy;
-    player.fromRow  = player.row;  // remember source cube for collision
-    player.fromCol  = player.col;
-    player.row      = nr;
-    player.col      = nc;
+    player.destRow  = nr;  // row/col update deferred to apex
+    player.destCol  = nc;
     player.spriteFrame = 0;
     player.frameTimer  = 0;
     if (dirKey === 'UL' || dirKey === 'DL') player.facing = 'L';
@@ -626,22 +622,12 @@ function useDisc(idx) {
 }
 
 // ─── Collision check ──────────────────────────────────────────────────────────
-// Half-phase model: during the first half of a jump, an entity is still on its
-// source cube.  At the apex (jumpT >= 0.5) it logically moves to the destination.
-function effectivePos(entity) {
-    if (entity.jumping && entity.jumpT < 0.5 && entity.fromRow != null) {
-        return { row: entity.fromRow, col: entity.fromCol };
-    }
-    return { row: entity.row, col: entity.col };
-}
-
 function checkPlayerEnemyCollision() {
     if (player.dead || player.jumping) return;
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
         if (e.type === 'spawn-timer') continue;
-        var ep = effectivePos(e);
-        if (ep.row === player.row && ep.col === player.col) {
+        if (e.row === player.row && e.col === player.col) {
             if (e.type === 'slick') {
                 score += 300; checkExtraLife();
                 enemies.splice(i, 1);
@@ -684,9 +670,17 @@ function updateEnemies() {
 
         // Jump arc interpolation
         if (e.jumping) {
+            var prevT = e.jumpT;
             e.jumpT += e.jumpDur;
+            // At the apex, commit to the destination cube
+            if (prevT < 0.5 && e.jumpT >= 0.5 && e.destRow != null) {
+                e.row = e.destRow; e.col = e.destCol;
+                e.destRow = null; e.destCol = null;
+            }
             if (e.jumpT >= 1) {
                 e.jumpT = 1; e.jumping = false;
+                // Ensure position is committed (in case apex was skipped)
+                if (e.destRow != null) { e.row = e.destRow; e.col = e.destCol; e.destRow = null; e.destCol = null; }
                 e.px = e.tx; e.py = e.ty;
                 if (e.falling) {
                     // Finished fall-off animation — remove and schedule respawn
@@ -812,8 +806,7 @@ function updateEnemies() {
 
 function onEnemyLand(e, idx) {
     if (player.dead) return;
-    var pp = effectivePos(player);
-    var hit = (e.row === pp.row && e.col === pp.col);
+    var hit = (e.row === player.row && e.col === player.col);
     if (e.type === 'slick') {
         var cube = cubeAt(e.row, e.col);
         if (cube && cube.state > 0) cube.state--;
@@ -941,9 +934,16 @@ function updatePlayer() {
     }
 
     if (player.jumping) {
+        var prevPT = player.jumpT;
         player.jumpT += player.jumpDur;
+        // At the apex, commit to the destination cube
+        if (prevPT < 0.5 && player.jumpT >= 0.5 && player.destRow != null) {
+            player.row = player.destRow; player.col = player.destCol;
+            player.destRow = null; player.destCol = null;
+        }
         if (player.jumpT >= 1) {
             player.jumpT = 1; player.jumping = false;
+            if (player.destRow != null) { player.row = player.destRow; player.col = player.destCol; player.destRow = null; player.destCol = null; }
             player.px = player.tx; player.py = player.ty;
             // Disc catch — player just landed on the disc, start the ride
             if (player.pendingDisc != null) {
@@ -1126,15 +1126,13 @@ function update() {
     updatePlayer();
     updateEnemies();
 
-    // Per-frame collision: check when player is on a cube (or just left one).
-    // Per-frame collision using half-phase positions for both player and enemies.
+    // Per-frame collision: same-cube check using row/col directly.
+    // Position updates are deferred to jump apex, so this just works.
     if (!player.dead && !discRide) {
-        var pp = effectivePos(player);
         for (var i = 0; i < enemies.length; i++) {
             var e = enemies[i];
             if (e.type === 'spawn-timer') continue;
-            var ep = effectivePos(e);
-            if (ep.row === pp.row && ep.col === pp.col) {
+            if (e.row === player.row && e.col === player.col) {
                 if (e.type === 'slick') {
                     score += 300; checkExtraLife();
                     enemies.splice(i, 1);
@@ -1503,8 +1501,7 @@ function drawEnemyCollisionFaces() {
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
         if (e.type === 'spawn-timer') continue;
-        var ep = effectivePos(e);
-        var pos = cubeXY(ep.row, ep.col);
+        var pos = cubeXY(e.row, e.col);
         var cx = pos.cx, cy = pos.cy;
         ctx.save();
         ctx.globalAlpha = 0.55;
