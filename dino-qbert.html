@@ -1014,33 +1014,38 @@ exCloneState = function() {
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
         if (e.type === 'spawn-timer') continue;
-        // Convert frame-based timer to fractional accumulator for AI search.
-        // If enemy is mid-jump, set accum=0 (just started a hop cycle).
-        var acc;
+        // Frame-accurate: compute commitFrame (frames until enemy commits next pos)
+        var sm = speedMultiplier();
+        var jumpDur = 0.030 * sm;
+        var cf;
         if (e.jumping) {
-            acc = 0;
+            // Mid-jump: next commit is after this jump finishes + idle + apex
+            cf = Math.ceil((1.0 - (e.jumpT || 0)) / jumpDur)
+               + exEnemyIdle(e.type, sm) + exEnemyApex(sm);
         } else {
-            acc = (e.moveTimer !== undefined && e.moveInterval !== undefined)
-                ? (e.moveTimer / e.moveInterval) : 0;
+            var mi = e.moveInterval || exEnemyIdle(e.type, sm);
+            var mt = e.moveTimer || 0;
+            cf = (mi - mt) + exEnemyApex(sm);
         }
         // Use effective position: if enemy is mid-jump (pre-apex), use destination
         var pos = enemyEffectivePos(e);
         var er = pos.row, ec = pos.col;
         if (e.type === 'coily') {
-            ens.push({ type: e.type, row: er, col: ec, hops: e.hops || 0, accum: acc });
+            ens.push({ type: e.type, row: er, col: ec, hops: e.hops || 0,
+                       commitFrame: cf, accum: cf / exPlayerHop(sm) });
         } else if (e.type === 'slick' || e.type === 'greenball') {
             continue; // safe enemies — skip
         } else {
-            // Lethal random: track nearest ones
             var d = exBfsDist(player.row, player.col, er, ec);
-            lethalRandom.push({ e: e, dist: d, acc: acc, er: er, ec: ec });
+            lethalRandom.push({ e: e, dist: d, cf: cf, er: er, ec: ec });
         }
     }
     lethalRandom.sort(function(a, b) { return a.dist - b.dist; });
-    for (var i = 0; i < Math.min(3, lethalRandom.length); i++) {
+    for (var i = 0; i < Math.min(5, lethalRandom.length); i++) {
         var lr = lethalRandom[i];
         ens.push({ type: lr.e.type, row: lr.er, col: lr.ec,
-                   hops: lr.e.hops || 0, accum: lr.acc,
+                   hops: lr.e.hops || 0,
+                   commitFrame: lr.cf, accum: lr.cf / exPlayerHop(sm),
                    cloud: [{ row: lr.er, col: lr.ec, prob: 1.0 }] });
     }
     var colored = 0;
@@ -1068,7 +1073,8 @@ exCloneState = function() {
     }
     return { pr: player.row, pc: player.col, cubes: cs, enemies: ens,
              alive: true, score: 0, cubesColored: colored, tgt: tgt,
-             discs: ds, lv: arcadeLevel(), spawns: spawns };
+             discs: ds, lv: arcadeLevel(), spawns: spawns,
+             sm: speedMultiplier() };
 };
 
 // exCubeAt, exClone, exMoveEnemies, exPlayerMove, bfsDistTable, exBfsDist,
