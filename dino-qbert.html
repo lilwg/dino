@@ -780,6 +780,7 @@ function updateEnemies() {
             enemyJumpTo(e, snr, snc);
             if (!isValidPos(snr, snc)) e.falling = true;
         } else if (e.type === 'ugg') {
+            if (debugEnemies) continue; // frozen for position tuning
             // Ugg spawns bottom-right, hops on right cube faces toward top-left
             // Two moves: up (row-1,col-1) or left along same row (row,col-1)
             var unr, unc;
