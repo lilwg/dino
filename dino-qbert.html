@@ -840,6 +840,13 @@ function updatePlayer() {
             player.tx = top.cx; player.ty = top.cy;
             player.jumping = false;
             stompCube(0, 0);
+            // Clear Coily lure so it resumes chasing the player
+            for (var ci = 0; ci < enemies.length; ci++) {
+                if (enemies[ci].type === 'coily') {
+                    enemies[ci].lureRow = null;
+                    enemies[ci].lureCol = null;
+                }
+            }
             discRide = null;
         } else {
             var t = discRide.t;
