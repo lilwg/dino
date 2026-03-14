@@ -372,7 +372,7 @@ function startDiscRide(discSide, discRow) {
     for (var ei = 0; ei < enemies.length; ei++) {
         if (enemies[ei].type === 'coily') {
             enemies[ei].lureRow = discRow;
-            enemies[ei].lureCol = (discSide === 0) ? 0 : discRow;
+            enemies[ei].lureCol = (discSide === 0) ? -1 : discRow + 1;
             enemies[ei].lureDir = (discSide === 0) ? 'UL' : 'UR';
         }
     }
