@@ -623,7 +623,8 @@ function checkPlayerEnemyCollision() {
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
         if (e.type === 'spawn-timer') continue;
-        if (e.jumping) continue;
+        // Check logical grid position even if enemy is mid-jump — in the arcade,
+        // collision is based on destination cube, not animation state.
         if (e.row === player.row && e.col === player.col) {
             if (e.type === 'slick') {
                 // Player destroys slick on landing
@@ -785,34 +786,24 @@ function updateEnemies() {
 }
 
 function onEnemyLand(e, idx) {
+    // Collision based on logical grid position (row/col), matching arcade behavior.
+    // Both player and enemy row/col are set to their destination at jump start,
+    // so matching row/col means they're heading to / on the same cube.
     if (e.type === 'slick') {
-        // Uncolor the cube slick lands on
         var cube = cubeAt(e.row, e.col);
         if (cube && cube.state > 0) cube.state--;
-        // If player is already on same square, player destroys slick
-        if (!player.dead && !player.jumping && e.row === player.row && e.col === player.col) {
+        if (!player.dead && e.row === player.row && e.col === player.col) {
             score += 300; checkExtraLife();
             enemies.splice(idx, 1);
         }
     } else if (e.type === 'greenball') {
-        // Green ball is safe — player catches it for 100 points
-        if (!player.dead && !player.jumping && e.row === player.row && e.col === player.col) {
+        if (!player.dead && e.row === player.row && e.col === player.col) {
             score += 100; checkExtraLife();
             enemies.splice(idx, 1);
         }
-    } else if (e.type === 'redball') {
-        // Red ball kills player on contact
-        if (!player.dead && !player.jumping && e.row === player.row && e.col === player.col) {
-            killPlayer();
-        }
-    } else if (e.type === 'coily' || e.type === 'egg') {
-        // Check player collision
-        if (!player.dead && !player.jumping && e.row === player.row && e.col === player.col) {
-            killPlayer();
-        }
-    } else if (e.type === 'ugg' || e.type === 'wrongway') {
-        // Lethal side-crawlers kill on contact
-        if (!player.dead && !player.jumping && e.row === player.row && e.col === player.col) {
+    } else if (e.type === 'redball' || e.type === 'coily' || e.type === 'egg' ||
+               e.type === 'ugg' || e.type === 'wrongway') {
+        if (!player.dead && e.row === player.row && e.col === player.col) {
             killPlayer();
         }
     }
@@ -1059,12 +1050,13 @@ function update() {
     updatePlayer();
     updateEnemies();
 
-    // Per-frame collision: if player and any lethal enemy share a tile while
-    // both are stationary, kill the player (prevents "jumping through" enemies)
+    // Per-frame collision: kill the player if they share a tile with a lethal
+    // enemy. Check both stationary and jumping enemies — in the arcade, collision
+    // happens based on logical grid position, not animation state.
     if (!player.dead && !player.jumping && !discRide) {
         for (var i = 0; i < enemies.length; i++) {
             var e = enemies[i];
-            if (e.type === 'spawn-timer' || e.jumping) continue;
+            if (e.type === 'spawn-timer') continue;
             if (e.row === player.row && e.col === player.col) {
                 if (e.type === 'slick') {
                     score += 300; checkExtraLife();
