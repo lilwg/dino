@@ -250,6 +250,7 @@ function enemyMoveInterval(type) {
 }
 
 var score, hiScore, lives, hops;
+var bestHops = {};  // best (minimum) hops per arcade level, persisted
 var extraLifeGiven;
 // round, player, enemies, cubeStates, discs, aiTour, aiTourIdx, aiBoardSig
 // are globals (declared before IIFE) shared with qbert-ai.js
@@ -900,6 +901,11 @@ function updatePlayer() {
             // Check round complete
             if (!player.dead && allColored()) {
                 score += 1000; checkExtraLife();
+                var lvKey = '' + arcadeLevel();
+                if (!bestHops[lvKey] || hops < bestHops[lvKey]) {
+                    bestHops[lvKey] = hops;
+                    localStorage.setItem('dino-qbert-best-hops', JSON.stringify(bestHops));
+                }
                 levelWon = true;
                 levelWonTimer = 30; // ~0.5s at 60fps
                 DinoSounds.reached();
@@ -1545,8 +1551,10 @@ function drawHUD() {
     ctx.font = '600 13px "Courier New",monospace';
     ctx.fillStyle = '#535353';
     ctx.textAlign = 'left';
-    ctx.fillText('HI ' + padScore(Math.max(score, hiScore)), 10, 18);
-    ctx.fillText('HOPS ' + hops, 10, 34);
+    ctx.fillText(padScore(score), 10, 18);
+    ctx.fillText('HI ' + padScore(Math.max(score, hiScore)), 10, 34);
+    var best = bestHops['' + arcadeLevel()];
+    ctx.fillText('HOPS ' + hops + (best ? '  BEST ' + best : ''), 10, 50);
 
     // Lives as small T-Rex sprites at top-right
     for (var i = 0; i < lives; i++) {
@@ -1675,6 +1683,7 @@ window.setGameSpeed = function (v) {
 };
 
 // ─── Input ────────────────────────────────────────────────────────────────────
+var keysHeld = {};
 document.addEventListener('keydown', function (e) {
     if (e.key === 'r' || e.key === 'R') { restartGame(); return; }
     if (e.key === 'p' || e.key === 'P') { togglePause(); return; }
@@ -1682,6 +1691,8 @@ document.addEventListener('keydown', function (e) {
     if (gameMode !== 'off') return;
     var prevent = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'q', 'Q', 'w', 'W', 'e', 'E', 'a', 'A', 's', 'S', 'd', 'D', ' '];
     if (prevent.indexOf(e.key) !== -1) e.preventDefault();
+    if (e.repeat || keysHeld[e.key]) return;
+    keysHeld[e.key] = true;
     var dir = null;
     if (e.key === 'ArrowUp'    || e.key === 'q' || e.key === 'Q') dir = 'UL'; // up-left
     if (e.key === 'ArrowRight' || e.key === 'w' || e.key === 'W' || e.key === 'e' || e.key === 'E') dir = 'UR'; // up-right
@@ -1689,9 +1700,13 @@ document.addEventListener('keydown', function (e) {
     if (e.key === 'ArrowDown'  || e.key === 's' || e.key === 'S' || e.key === 'd' || e.key === 'D') dir = 'DR'; // down-right
     if (dir) inputQueue.push(dir);
 });
+document.addEventListener('keyup', function (e) {
+    delete keysHeld[e.key];
+});
 
 // ─── Start ────────────────────────────────────────────────────────────────────
 hiScore = parseInt(localStorage.getItem('dino-qbert-hi')) || 0;
+try { bestHops = JSON.parse(localStorage.getItem('dino-qbert-best-hops')) || {}; } catch(e) { bestHops = {}; }
 restartGame();
 requestAnimationFrame(loop);
 
