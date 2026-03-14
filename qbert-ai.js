@@ -452,10 +452,13 @@ function mode1Pick(gs, dangerSet) {
             var alive = simStep(child, DIR_KEYS[k]);
             if (alive) { survived++; totalTC += simTourCost(child); }
         }
-        if (survived === 0) continue;
+        if (survived === 0) { aiMoveScores[DIR_KEYS[k]] = -10000; continue; }
         var tc = totalTC / survived;
         var d = DIRS[DIR_KEYS[k]];
         var nr = gs.player.row + d.dr, nc = gs.player.col + d.dc;
+
+        // Export for viz: negative tour cost (lower cost = higher score)
+        aiMoveScores[DIR_KEYS[k]] = dangerSet[nr + ',' + nc] ? (-tc - 100) : -tc;
 
         if (dangerSet[nr + ',' + nc]) {
             if (tc < bestUnsafeCost) { bestUnsafeCost = tc; bestUnsafeDir = DIR_KEYS[k]; }
@@ -518,6 +521,9 @@ function mode2Pick(gs) {
 
         var survRate = survived / MC_SAMPLES;
         var avgTC = survived > 0 ? totalTC / survived : Infinity;
+
+        // Export for viz: survival rate (0-1), negative avgTC so higher=better
+        aiMoveScores[dir] = survRate >= 1 ? (10000 - avgTC) : (survRate * 100 - 100);
 
         if (survRate > bestSurv + 1e-9 ||
             (Math.abs(survRate - bestSurv) < 1e-9 && avgTC < bestTC)) {
@@ -603,6 +609,9 @@ function mcPickGreedy(gs) {
 }
 
 // ─── Main entry point ────────────────────────────────────────────────────────
+var aiMoveScores = {};  // exported per-direction scores for viz
+var aiMode = 0;         // 0 = no AI, 1 = tour+danger, 2 = Monte Carlo
+
 function aiPickBestDir() {
     var coilyActive = false;
     var frozen = false;
@@ -612,11 +621,14 @@ function aiPickBestDir() {
     if (typeof freezeTimer !== 'undefined' && freezeTimer > 0) frozen = true;
 
     var gs = simCloneGameState();
+    aiMoveScores = {};
 
     if (!coilyActive || frozen) {
+        aiMode = 1;
         var dangerSet = buildDangerSet();
         return mode1Pick(gs, dangerSet);
     } else {
+        aiMode = 2;
         return mode2Pick(gs);
     }
 }

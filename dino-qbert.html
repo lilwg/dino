@@ -36,7 +36,7 @@
 
         <h2 style="margin-top:16px;">How it works</h2>
         <p class="si-prose">DinoQbert recreates the 1982 Gottlieb arcade original: hop-based movement, one jump per keypress with arcade-matched hop timing (~0.67s per hop), and the classic @!#?@! swear bubble on death. Coily spawns as an egg, bounces randomly down the pyramid, then hatches and chases the player. Dark balls bounce down and kill on contact; light balls are safe to catch for 100 pts. Slick (round 4+) hops down uncoloring cubes. Ugg and Wrongway (round 3+) crawl upward from the bottom corners. Two transport discs at variable positions let Q*bert escape and lure Coily to his death.</p>
-        <p class="si-prose">Tap <strong>Viz</strong> to reveal the AI&rsquo;s plan: a dashed line traces the expected path, with faint dots marking uncolored cubes. The game uses <strong>turn-based logic</strong> matching the original arcade: player hops, then every enemy hops once, then collisions are checked. Every move is chosen by <strong>safe search</strong>&mdash;it finds move sequences where the probability of death is zero at every step, then picks the path with the lowest tour cost (MST-based heuristic). When no safe path exists, it falls back to minimizing death probability. Iterative deepening with a time budget ensures the AI never slows down the game.</p>
+        <p class="si-prose">Tap <strong>Viz</strong> to see the AI&rsquo;s decision-making: colored dots show scored directions (green=best, red=worst), a dashed arrow points to the chosen move, and faint dots mark uncolored cubes. The AI has two modes. <strong>Mode 1</strong> (no Coily): Dijkstra tour planning picks the nearest unfinished cube while avoiding a danger set built from enemy positions and predicted paths. <strong>Mode 2</strong> (Coily active): Monte Carlo search runs 24 forward simulations per direction, 6 hops deep, using a greedy rollout policy that exploits Coily&rsquo;s deterministic chase. It picks the move with the highest survival rate, breaking ties by tour cost (MST heuristic). Coily always chases the player&rsquo;s source tile during a jump, so jumping <em>toward</em> a standing Coily is safe&mdash;they swap tiles at apex. The AI also evaluates disc lures to kill Coily when he&rsquo;ll chase off the edge.</p>
 
         <p style="margin-top:20px;"><a href="/" style="color:#0071e3;font-size:14px;text-decoration:none;">&larr; Back</a></p>
     </div>
@@ -197,24 +197,19 @@ function cubeXY(row, col) {
     };
 }
 
+// Per-level top-face color palettes [state0, state1, state2] — hoisted for perf
+var CUBE_TOP_COLORS = [
+    ['#d48830', '#3060d0', '#30b030'],   // lv 1-2: orange → blue → green
+    ['#d0d0d0', '#6868a8', '#d04840'],   // lv 3-4: light gray → purple → red
+    ['#c8b848', '#3878c8', '#48c078'],   // lv 5-6: yellow → blue → green
+    ['#d0a848', '#50b0d0', '#d06040']    // lv 7+:  tan → cyan → orange-red
+];
+
 function drawCube(c, cx, cy, state) {
     var hw = TILE_W / 2, hh = TILE_H / 2;
-    // Arcade-accurate: only the TOP face changes color per state.
-    // Left and right side faces stay constant dark shades.
     var lv = arcadeLevel();
-    // Per-level top-face color palettes [state0, state1, state2]
-    var topColors;
-    if (lv <= 2) {
-        topColors = ['#ffffff', '#3060d0', '#30b030'];   // white → blue → green
-    } else if (lv <= 4) {
-        topColors = ['#ffffff', '#6868a8', '#d04840'];   // white → purple → red
-    } else if (lv <= 6) {
-        topColors = ['#ffffff', '#3878c8', '#48c078'];   // white → blue → green
-    } else {
-        topColors = ['#ffffff', '#50b0d0', '#d06040'];   // white → cyan → orange-red
-    }
-    var topCol = topColors[state] || topColors[0];
-    // Side faces: constant greyscale
+    var palIdx = lv <= 2 ? 0 : lv <= 4 ? 1 : lv <= 6 ? 2 : 3;
+    var topCol   = CUBE_TOP_COLORS[palIdx][state] || CUBE_TOP_COLORS[palIdx][0];
     var leftCol  = '#585858';
     var rightCol = '#404040';
     var stroke   = '#282828';
@@ -257,7 +252,7 @@ var aiTourDots   = [];  // remaining tour centres — drawn as dots only (no lin
 aiTour       = [];
 aiTourIdx    = 0;
 aiBoardSig   = '';
-var aiMoveScores = {};  // { UL: val, UR: val, DL: val, DR: val } — search scores per direction
+// aiMoveScores and aiMode are declared in qbert-ai.js
 var aiBestDir    = null;
 var inputQueue  = [];
 var heldDir     = null;  // direction currently held by player
@@ -847,12 +842,20 @@ function drawDiscs() {
 function drawVizPath() {
     ctx.save();
 
+    // Draw mode label
+    if (typeof aiMode !== 'undefined' && aiMode > 0) {
+        ctx.font = '10px monospace';
+        ctx.textAlign = 'left';
+        ctx.fillStyle = aiMode === 2 ? 'rgba(255,100,100,0.8)' : 'rgba(100,200,255,0.8)';
+        ctx.fillText(aiMode === 2 ? 'MC' : 'TOUR', 8, 14);
+    }
+
     // Draw search scores on adjacent cubes
-    var dirKeys = ['UL', 'UR', 'DL', 'DR'];
+    // DIR_KEYS_WITH_STAY from qbert.js
     var hasScores = false;
     var maxVal = -Infinity, minVal = Infinity;
-    for (var i = 0; i < 4; i++) {
-        var v = aiMoveScores[dirKeys[i]];
+    for (var i = 0; i < DIR_KEYS_WITH_STAY.length; i++) {
+        var v = aiMoveScores[DIR_KEYS_WITH_STAY[i]];
         if (v !== undefined) {
             hasScores = true;
             if (v > maxVal) maxVal = v;
@@ -862,33 +865,38 @@ function drawVizPath() {
     if (hasScores) {
         var range = maxVal - minVal;
         if (range < 1) range = 1;
-        for (var i = 0; i < 4; i++) {
-            var dk = dirKeys[i];
+        for (var i = 0; i < DIR_KEYS_WITH_STAY.length; i++) {
+            var dk = DIR_KEYS_WITH_STAY[i];
             var v = aiMoveScores[dk];
             if (v === undefined) continue;
-            var dd = DIRS[dk];
-            var nr = player.row + dd.dr, nc = player.col + dd.dc;
             var isBest = (dk === aiBestDir);
             var pt;
-            if (isValidPos(nr, nc)) {
-                pt = cubeXY(nr, nc);
+            if (dk === 'STAY') {
+                // Draw STAY score on the player's current cube
+                pt = cubeXY(player.row, player.col);
+                pt = { cx: pt.cx, cy: pt.cy + 14 };
             } else {
-                // Disc position — draw off-pyramid
-                var pp = cubeXY(player.row, player.col);
-                pt = { cx: pp.cx + dd.dc * 50 - dd.dr * 30, cy: pp.cy + dd.dr * -30 };
+                var dd = DIRS[dk];
+                var nr = player.row + dd.dr, nc = player.col + dd.dc;
+                if (isValidPos(nr, nc)) {
+                    pt = cubeXY(nr, nc);
+                } else {
+                    var pp = cubeXY(player.row, player.col);
+                    pt = { cx: pp.cx + dd.dc * 50 - dd.dr * 30, cy: pp.cy + dd.dr * -30 };
+                }
             }
 
             // Color: green=best, red=worst, yellow=middle
             var t = (v - minVal) / range; // 0=worst, 1=best
-            var r = Math.round(255 * (1 - t));
-            var g = Math.round(255 * t);
+            var r2 = Math.round(255 * (1 - t));
+            var g2 = Math.round(255 * t);
             var alpha = isBest ? 0.85 : 0.50;
 
             // Draw circle indicator
             var radius = isBest ? 8 : 6;
             ctx.beginPath();
             ctx.arc(pt.cx, pt.cy, radius, 0, Math.PI * 2);
-            ctx.fillStyle = 'rgba(' + r + ',' + g + ',0,' + alpha + ')';
+            ctx.fillStyle = 'rgba(' + r2 + ',' + g2 + ',0,' + alpha + ')';
             ctx.fill();
             if (isBest) {
                 ctx.lineWidth = 2;
@@ -896,8 +904,16 @@ function drawVizPath() {
                 ctx.stroke();
             }
 
-            // Draw value text
-            var label = v >= 10000 ? 'WIN' : v <= -10000 ? 'DIE' : Math.round(v).toString();
+            // Draw value text — show survival % in MC mode, tour cost in mode 1
+            var label;
+            if (v <= -10000) label = 'DIE';
+            else if (v >= 9000) label = 'WIN';
+            else if (aiMode === 2) {
+                if (v >= 0) label = '100%';
+                else label = Math.max(0, Math.round(v + 100)) + '%';
+            } else {
+                label = Math.round(-v).toString();
+            }
             ctx.font = '9px monospace';
             ctx.textAlign = 'center';
             ctx.fillStyle = isBest ? '#fff' : 'rgba(255,255,255,0.7)';
@@ -905,7 +921,7 @@ function drawVizPath() {
         }
 
         // Draw arrow from player to best move
-        if (aiBestDir) {
+        if (aiBestDir && aiBestDir !== 'STAY') {
             var dd2 = DIRS[aiBestDir];
             var nr2 = player.row + dd2.dr, nc2 = player.col + dd2.dc;
             var from = cubeXY(player.row, player.col);
