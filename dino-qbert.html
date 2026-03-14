@@ -1603,7 +1603,7 @@ function drawEnemy(e) {
 
     } else if (e.type === 'wrongway') {
         // Wrongway on left face of cube above collision face
-        _drawRotatedCactus(e.px - TILE_W / 4, e.py - TILE_H / 4, -Math.PI / 2, 0.75);
+        _drawRotatedCactus(e.px + TILE_W / 4, e.py - TILE_H / 4, -Math.PI / 2, 0.75);
     }
 }
 
