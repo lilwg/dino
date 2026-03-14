@@ -848,16 +848,25 @@ function updatePlayer() {
                 player.py = discRide.sy + Math.sin(t * 25) * 2;
             } else {
                 var st = (t - 0.25) / 0.75; // 0..1 for the flight phase
-                // Arcade path: lift straight up first, then curve inward to top
+                // Arcade path: disc rises ABOVE the pyramid top, then descends to land
                 var side = discRide.side === 0 ? -1 : 1;
-                // Ease-in-out for smooth acceleration/deceleration
-                var ease = st < 0.5 ? 2 * st * st : 1 - 2 * (1 - st) * (1 - st);
-                // Arc outward slightly during lift, then sweep in
-                var arcOut = Math.sin(st * Math.PI) * 30 * side;
-                player.px = discRide.sx + (discRide.tx - discRide.sx) * ease + arcOut;
-                // Rise quickly at first (lift off), then level out toward top
-                var vertEase = 1 - (1 - st) * (1 - st) * (1 - st); // cubic ease-out
-                player.py = discRide.sy + (discRide.ty - discRide.sy) * vertEase;
+                // Horizontal: ease-in-out from disc position to top cube
+                var hEase = st < 0.5 ? 2 * st * st : 1 - 2 * (1 - st) * (1 - st);
+                player.px = discRide.sx + (discRide.tx - discRide.sx) * hEase;
+                // Vertical: rise above the top, then come back down
+                // Peak height = 60px above the target (top of pyramid)
+                var peakY = discRide.ty - 60;
+                if (st < 0.7) {
+                    // Rising phase: go from start to peak
+                    var riseT = st / 0.7;
+                    var rEase = 1 - (1 - riseT) * (1 - riseT); // ease-out rise
+                    player.py = discRide.sy + (peakY - discRide.sy) * rEase;
+                } else {
+                    // Descending phase: come back down from peak to target
+                    var descT = (st - 0.7) / 0.3;
+                    var dEase = descT * descT; // ease-in descent
+                    player.py = peakY + (discRide.ty - peakY) * dEase;
+                }
             }
             // Animate sprite
             player.frameTimer++;
