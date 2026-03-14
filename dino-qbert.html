@@ -1008,6 +1008,9 @@ exCloneState = function() {
     for (var i = 0; i < cubeStates.length; i++)
         cs[i] = { row: cubeStates[i].row, col: cubeStates[i].col, state: cubeStates[i].state };
     var ens = [];
+    // Only track enemies that matter for the search: Coily (deterministic),
+    // and the nearest 3 random lethal enemies. Skip safe enemies (slick, greenball).
+    var lethalRandom = [];
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
         if (e.type === 'spawn-timer') continue;
@@ -1015,12 +1018,22 @@ exCloneState = function() {
         var rate = EX_MOVE_RATE[e.type] || 0.75;
         var acc = (e.moveTimer !== undefined && e.moveInterval !== undefined)
             ? (e.moveTimer / e.moveInterval) * rate : 0;
-        var entry = { type: e.type, row: e.row, col: e.col, hops: e.hops || 0, accum: acc };
-        // Random enemies get a point cloud at their current position
-        if (e.type !== 'coily') {
-            entry.cloud = [{ row: e.row, col: e.col, prob: 1.0 }];
+        if (e.type === 'coily') {
+            ens.push({ type: e.type, row: e.row, col: e.col, hops: e.hops || 0, accum: acc });
+        } else if (e.type === 'slick' || e.type === 'greenball') {
+            continue; // safe enemies — skip
+        } else {
+            // Lethal random: track nearest ones
+            var d = exBfsDist(player.row, player.col, e.row, e.col);
+            lethalRandom.push({ e: e, dist: d, acc: acc });
         }
-        ens.push(entry);
+    }
+    lethalRandom.sort(function(a, b) { return a.dist - b.dist; });
+    for (var i = 0; i < Math.min(3, lethalRandom.length); i++) {
+        var lr = lethalRandom[i];
+        ens.push({ type: lr.e.type, row: lr.e.row, col: lr.e.col,
+                   hops: lr.e.hops || 0, accum: lr.acc,
+                   cloud: [{ row: lr.e.row, col: lr.e.col, prob: 1.0 }] });
     }
     var colored = 0;
     for (var i = 0; i < cs.length; i++) colored += Math.min(cs[i].state, tgt);

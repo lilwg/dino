@@ -1148,14 +1148,39 @@ function aiPickBestDir() {
 
     var st = exCloneState();
 
+    var dir;
     if (!coilyActive || frozen) {
         // Mode 1: no Coily (or frozen) — pure tour planning + avoid random walkers
         var dangerSet = buildDangerSet();
-        return mode1Pick(st, dangerSet);
+        dir = mode1Pick(st, dangerSet);
     } else {
         // Mode 2: Coily active — multi-step search for evasion + progress
-        return mode2Pick(st);
+        dir = mode2Pick(st);
     }
+
+    // Hard safety: never walk directly onto Coily or into Coily's predicted
+    // next position. The search should handle this, but concurrent jump
+    // animations in the HTML game can cause timing mismatches where the search
+    // sees stale enemy positions. This is a cheap safety net.
+    if (dir && dir !== 'STAY' && !isSafeMove(dir)) {
+        // Try all other directions, pick the safe one with best tour cost
+        var safeFallback = null, safeCost = Infinity;
+        for (var k = 0; k < DIR_KEYS.length; k++) {
+            if (DIR_KEYS[k] === dir) continue;
+            if (!isSafeMove(DIR_KEYS[k])) continue;
+            var d = DIRS[DIR_KEYS[k]];
+            var nr = player.row + d.dr, nc = player.col + d.dc;
+            if (!isValidPos(nr, nc)) continue;
+            var child = exClone(st);
+            child.pr = nr; child.pc = nc;
+            var tc = exTourCost(child);
+            if (tc < safeCost) { safeFallback = DIR_KEYS[k]; safeCost = tc; }
+        }
+        if (safeFallback) dir = safeFallback;
+        else dir = 'STAY'; // no safe move — wait
+    }
+
+    return dir;
 }
 
 // Safety check: never move onto a position occupied by a lethal enemy,
