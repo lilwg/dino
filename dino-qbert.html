@@ -601,31 +601,37 @@ function update() {
             enemies = gs.enemies;
             score += gs.score; gs.score = 0;
             checkExtraLife();
-            // If Coily was killed, create falling visual
+            // If Coily was killed, build hop path to edge and create falling visual
             if (savedCoily) {
                 var coilyStillAlive = false;
                 for (var ci = 0; ci < gs.enemies.length; ci++)
                     if (gs.enemies[ci].type === 'coily') { coilyStillAlive = true; break; }
                 if (!coilyStillAlive) {
-                    // Compute Coily's jump destination (off-edge)
+                    var lureRow = pd.row;
                     var lureCol = (pd.side === 0) ? -1 : pd.row + 1;
-                    var bestDir = null, bestDist = Infinity;
-                    for (var k = 0; k < DIR_KEYS.length; k++) {
-                        var dk = DIRS[DIR_KEYS[k]];
-                        var nr = savedCoily.row + dk.dr, nc = savedCoily.col + dk.dc;
-                        var dist = Math.abs(pd.row - nr) + Math.abs(lureCol - nc);
-                        if (dist < bestDist) { bestDist = dist; bestDir = { nr: nr, nc: nc }; }
+                    // Build hop path: chase toward lure until jumping off-grid
+                    var hops = [{ row: savedCoily.row, col: savedCoily.col }];
+                    var cr = savedCoily.row, cc = savedCoily.col;
+                    for (var step = 0; step < 20; step++) {
+                        var bestDir = null, bestDist = Infinity;
+                        for (var k = 0; k < DIR_KEYS.length; k++) {
+                            var dk = DIRS[DIR_KEYS[k]];
+                            var nr = cr + dk.dr, nc = cc + dk.dc;
+                            var dist = Math.abs(lureRow - nr) + Math.abs(lureCol - nc);
+                            if (dist < bestDist) { bestDist = dist; bestDir = { nr: nr, nc: nc }; }
+                        }
+                        if (!bestDir) break;
+                        hops.push({ row: bestDir.nr, col: bestDir.nc });
+                        if (!isValidPos(bestDir.nr, bestDir.nc)) break; // final hop off edge
+                        cr = bestDir.nr; cc = bestDir.nc;
                     }
-                    if (bestDir) {
-                        var src = cubeXY(savedCoily.row, savedCoily.col);
-                        var dst = cubeXY(bestDir.nr, bestDir.nc);
-                        fallingCoily = {
-                            type: 'coily', px: src.cx, py: src.cy,
-                            srcX: src.cx, srcY: src.cy, dstX: dst.cx, dstY: dst.cy,
-                            facing: dst.cx < src.cx ? 'L' : 'R', frame: 0, frameTimer: 0,
-                            jumpT: 0, falling: false, fallVY: 0
-                        };
-                    }
+                    var startPos = cubeXY(hops[0].row, hops[0].col);
+                    fallingCoily = {
+                        type: 'coily', px: startPos.cx, py: startPos.cy,
+                        hops: hops, hopIdx: 0, jumpT: 0,
+                        facing: 'L', frame: 0, frameTimer: 0,
+                        falling: false, fallVY: 0
+                    };
                 }
             }
             startDiscRide(pd.side, pd.row);
@@ -662,27 +668,33 @@ function update() {
             enemies = gs.enemies;
             freezeTimer = gs.freezeTimer;
         }
-        // Animate falling Coily (jump arc then gravity fall)
+        // Animate falling Coily (multi-hop chase then gravity fall off edge)
         if (fallingCoily) {
             var fc = fallingCoily;
             fc.frameTimer = (fc.frameTimer || 0) + 1;
             if (fc.frameTimer > 8) { fc.frameTimer = 0; fc.frame = (fc.frame || 0) ^ 1; }
             if (!fc.falling) {
-                fc.jumpT += 0.04;
+                fc.jumpT += 0.05;
+                var srcPos = cubeXY(fc.hops[fc.hopIdx].row, fc.hops[fc.hopIdx].col);
+                var dstPos = cubeXY(fc.hops[fc.hopIdx + 1].row, fc.hops[fc.hopIdx + 1].col);
+                fc.facing = dstPos.cx < srcPos.cx ? 'L' : 'R';
                 if (fc.jumpT >= 1) {
-                    fc.jumpT = 1;
-                    fc.falling = true;
-                    fc.px = fc.dstX;
-                    fc.py = fc.dstY;
-                    fc.fallVY = 0;
+                    fc.hopIdx++;
+                    fc.jumpT = 0;
+                    fc.px = dstPos.cx; fc.py = dstPos.cy;
+                    // Last hop landed off-grid: start falling
+                    if (fc.hopIdx >= fc.hops.length - 1) {
+                        fc.falling = true;
+                        fc.fallVY = -2;
+                    }
                 } else {
-                    fc.px = fc.srcX + (fc.dstX - fc.srcX) * fc.jumpT;
-                    fc.py = fc.srcY + (fc.dstY - fc.srcY) * fc.jumpT - Math.sin(fc.jumpT * Math.PI) * 16;
+                    fc.px = srcPos.cx + (dstPos.cx - srcPos.cx) * fc.jumpT;
+                    fc.py = srcPos.cy + (dstPos.cy - srcPos.cy) * fc.jumpT - Math.sin(fc.jumpT * Math.PI) * 16;
                 }
             } else {
                 fc.fallVY += 0.5;
                 fc.py += fc.fallVY;
-                if (fc.py > 800) fallingCoily = null; // off screen
+                if (fc.py > 800) fallingCoily = null;
             }
         }
         syncVisuals();
