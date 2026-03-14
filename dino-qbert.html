@@ -662,7 +662,7 @@ function update() {
         freezeTimer = gs.freezeTimer;
         enemies = gs.enemies; // array may change from spawns/removals
 
-        // Per-frame collision check (same code as AI uses)
+        // Per-frame collision check
         simCheckCollision(gs);
         if (!gs.alive) {
             gs.alive = true;
@@ -1064,9 +1064,7 @@ function drawEnemyCollisionFaces() {
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
         if (e.type === 'spawn-timer') continue;
-        // Use effective position (destination if mid-jump) to match collision logic
-        var ep = effectivePos(e);
-        var pos = cubeXY(ep.row, ep.col);
+        var pos = cubeXY(e.row, e.col);
         var cx = pos.cx, cy = pos.cy;
         ctx.save();
         ctx.globalAlpha = 0.55;
