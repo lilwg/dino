@@ -1064,7 +1064,9 @@ function drawEnemyCollisionFaces() {
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
         if (e.type === 'spawn-timer') continue;
-        var pos = cubeXY(e.row, e.col);
+        // Use effective position (destination if mid-jump) to match collision logic
+        var ep = effectivePos(e);
+        var pos = cubeXY(ep.row, ep.col);
         var cx = pos.cx, cy = pos.cy;
         ctx.save();
         ctx.globalAlpha = 0.55;
