@@ -970,7 +970,7 @@ exCloneState = function() {
     // frames-per-hop. Each hop ≈ ceil(1/jumpDur) + aiMoveDelay frames,
     // and the timer ticks by gameSpeed each frame.
     var sm = speedMultiplier();
-    var framesPerHop = Math.ceil(1 / (0.111 * sm)) + Math.max(1, Math.round(5 / sm));
+    var framesPerHop = Math.ceil(1 / (0.111 * sm)) + Math.max(1, Math.round(2 / sm));
     var frameTickPerHop = framesPerHop * (typeof gameSpeed !== 'undefined' ? gameSpeed : 1.0);
     var spawns = [];
     for (var i = 0; i < enemies.length; i++) {
@@ -1090,7 +1090,7 @@ function update() {
     if (!player.jumping && !player.dead && !discRide) {
         if (gameMode === 'rules') {
             aiMoveTimer++;
-            if (aiMoveTimer >= Math.max(1, Math.round(5 / speedMultiplier()))) {
+            if (aiMoveTimer >= Math.max(1, Math.round(2 / speedMultiplier()))) {
                 aiMoveTimer = 0;
                 var dir = computeAIMove();
                 if (dir) tryMove(dir);
