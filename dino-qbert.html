@@ -227,6 +227,7 @@ var vizOn    = false;
 var paused   = false;
 var gameOver = false;
 var levelWon = false;
+var levelWonTimer = 0;
 var roundStarted = false; // true after first player move — enemies frozen until then
 
 // Base enemy move intervals: idle frames BETWEEN hops (level 1 speed).
@@ -899,15 +900,8 @@ function updatePlayer() {
             if (!player.dead && allColored()) {
                 score += 1000; checkExtraLife();
                 levelWon = true;
+                levelWonTimer = 30; // ~0.5s at 60fps
                 DinoSounds.reached();
-                var savedRound = round;
-                setTimeout(function () {
-                    if (round === savedRound) {
-                        round++;
-                        roundMsg = { text: 'LV ' + arcadeLevel() + ' ROUND ' + ((round - 1) % 4 + 1), timer: 30 };
-                        initRound();
-                    }
-                }, 500);
             }
         } else {
             var arc = Math.sin(player.jumpT * Math.PI) * 26;
@@ -1031,7 +1025,16 @@ function update() {
         if (roundMsg.timer <= 0) roundMsg = null;
     }
 
-    if (levelWon) return;   // freeze enemies / player / AI during level-complete delay
+    if (levelWon) {
+        // freeze enemies / player / AI during level-complete delay
+        levelWonTimer--;
+        if (levelWonTimer <= 0) {
+            round++;
+            roundMsg = { text: 'LV ' + arcadeLevel() + ' ROUND ' + ((round - 1) % 4 + 1), timer: 30 };
+            initRound();
+        }
+        return;
+    }
 
     updatePlayer();
     updateEnemies();
