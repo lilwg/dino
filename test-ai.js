@@ -9,15 +9,15 @@ var astarStats = { solved: 0, fallbacks: 0, totalNodes: 0, cacheHits: 0 };
 eval(require('fs').readFileSync(__dirname + '/qbert-ai.js', 'utf8'));
 
 // ─── Simulation constants ────────────────────────────────────────────────────
-// Player=40f, enemy=38f per hop at 1x level 1
+// Player=36f, enemy=38f per hop at 1x level 1 (no AI idle delay)
 var SIM_MOVE_RATE = {
-    egg:       40 / 38,   // 1.05
-    coily:     40 / 38,   // 1.05
-    redball:   40 / 38,   // 1.05
-    greenball: 40 / 46,   // 0.87
-    slick:     40 / 54,   // 0.74
-    ugg:       40 / 38,   // 1.05
-    wrongway:  40 / 38    // 1.05
+    egg:       36 / 38,   // 0.95
+    coily:     36 / 38,   // 0.95
+    redball:   36 / 38,   // 0.95
+    greenball: 36 / 46,   // 0.78
+    slick:     36 / 54,   // 0.67
+    ugg:       36 / 38,   // 0.95
+    wrongway:  36 / 38    // 0.95
 };
 
 var lives, extraLifeGiven, levelWon, turnCount, freezeTimer;
