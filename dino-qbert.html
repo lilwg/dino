@@ -524,10 +524,31 @@ function tryMove(dirKey) {
         for (var di = 0; di < discs.length; di++) {
             if (!discs[di].active) continue;
             if (discs[di].side === 0 && dirKey === 'UL' && player.col === 0 && player.row === discs[di].row) {
-                useDisc(di); return;
+                // Jump toward disc, trigger useDisc on landing
+                var dp = discScreenPos(discs[di]);
+                DinoSounds.press();
+                player.jumping = true; player.jumpT = 0;
+                player.jumpDur = 0.028 * speedMultiplier();
+                player.jumpSX = player.px; player.jumpSY = player.py;
+                player.tx = dp.x; player.ty = dp.y;
+                player.row = nr; player.col = nc;
+                player.spriteFrame = 0; player.frameTimer = 0;
+                player.facing = 'L';
+                player.pendingDisc = di;
+                return;
             }
             if (discs[di].side === 1 && dirKey === 'UR' && player.col === player.row && player.row === discs[di].row) {
-                useDisc(di); return;
+                var dp2 = discScreenPos(discs[di]);
+                DinoSounds.press();
+                player.jumping = true; player.jumpT = 0;
+                player.jumpDur = 0.028 * speedMultiplier();
+                player.jumpSX = player.px; player.jumpSY = player.py;
+                player.tx = dp2.x; player.ty = dp2.y;
+                player.row = nr; player.col = nc;
+                player.spriteFrame = 0; player.frameTimer = 0;
+                player.facing = 'R';
+                player.pendingDisc = di;
+                return;
             }
         }
         // Fell off — death with swear bubble
@@ -562,6 +583,7 @@ function killPlayer() {
     player.dead = true;
     player.pendingDeath = false;
     player.pendingCatch = null;
+    player.pendingDisc = null;
     player.jumping = false;
     DinoSounds.hit();
     player.deathTimer = 100;  // frames of death state
@@ -614,10 +636,8 @@ function useDisc(idx) {
         sx: dp.x, sy: dp.y,
         tx: top.cx, ty: top.cy
     };
-    // Move player to disc position immediately (visual only)
+    // Player is already at disc position from the jump animation
     player.px = dp.x; player.py = dp.y;
-    player.jumping = true; // block input during ride
-    player.jumpT = 0;
 }
 
 // ─── Collision check ──────────────────────────────────────────────────────────
@@ -880,6 +900,7 @@ function updatePlayer() {
             player.dead = false;
             player.pendingDeath = false;
             player.pendingCatch = null;
+            player.pendingDisc = null;
             swearBubble = null;
             var sp = cubeXY(0, 0);
             player.row = 0; player.col = 0;
@@ -909,6 +930,13 @@ function updatePlayer() {
         if (player.jumpT >= 1) {
             player.jumpT = 1; player.jumping = false;
             player.px = player.tx; player.py = player.ty;
+            // Disc catch — player just landed on the disc, start the ride
+            if (player.pendingDisc != null) {
+                var pdi = player.pendingDisc;
+                player.pendingDisc = null;
+                useDisc(pdi);
+                return;
+            }
             hops++;
             // Color cube on landing
             stompCube(player.row, player.col);
