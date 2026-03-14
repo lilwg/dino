@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Q*bert AI test harness — turn-based simulation
+// Q*bert AI test harness — frame-based simulation (matches HTML game)
 // Loads shared AI from qbert-ai.js, adds game simulation on top.
 
 // ─── Load shared AI module ───────────────────────────────────────────────────
@@ -8,68 +8,93 @@ var aiTour, aiTourIdx, aiBoardSig, aiDetailPath, aiTourDots;
 var astarStats = { solved: 0, fallbacks: 0, totalNodes: 0, cacheHits: 0 };
 eval(require('fs').readFileSync(__dirname + '/qbert-ai.js', 'utf8'));
 
-// ─── Simulation constants ────────────────────────────────────────────────────
-// Player=36f, enemy=38f per hop at 1x level 1 (no AI idle delay)
-var SIM_MOVE_RATE = {
-    egg:       36 / 38,   // 0.95
-    coily:     36 / 38,   // 0.95
-    redball:   36 / 38,   // 0.95
-    greenball: 36 / 46,   // 0.78
-    slick:     36 / 54,   // 0.67
-    ugg:       36 / 38,   // 0.95
-    wrongway:  36 / 38    // 0.95
+// ─── Frame-based timing constants (match HTML game exactly) ─────────────────
+// These are the same BASE_ENEMY_INTERVALS from dino-qbert.html
+var BASE_ENEMY_INTERVALS = {
+    egg:        4,   // 4 idle frames between hops
+    coily:      4,
+    redball:    4,
+    greenball: 12,
+    slick:     20,
+    ugg:        4,
+    wrongway:   4
 };
 
-var lives, extraLifeGiven, levelWon, turnCount, freezeTimer;
+var PLAYER_JUMP_DUR = 0.028;  // jumpT increment per frame (player)
+var ENEMY_JUMP_DUR  = 0.030;  // jumpT increment per frame (enemy)
 
-// ─── exCloneState (test-specific: uses accum directly) ───────────────────────
+function enemyMoveInterval(type) {
+    return Math.round((BASE_ENEMY_INTERVALS[type] || 30) / speedMultiplier());
+}
+
+var lives, extraLifeGiven, levelWon, turnCount, freezeTimer;
+var frameCount;
+
+// ─── exCloneState (frame-based: converts moveTimer to accum) ─────────────────
 function exCloneState() {
     var tgt = targetState();
     var cs = new Array(cubeStates.length);
     for (var i = 0; i < cubeStates.length; i++)
         cs[i] = { row: cubeStates[i].row, col: cubeStates[i].col, state: cubeStates[i].state };
     var ens = [];
-    // Only track enemies that matter for the search: Coily (deterministic),
-    // and the nearest 2 random lethal enemies. This prevents cloud explosion
-    // with many enemies while still modeling the most dangerous threats.
     var lethalRandom = [];
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
         if (e.type === 'spawn-timer') continue;
-        if (e.type === 'coily') {
-            ens.push({ type: e.type, row: e.row, col: e.col, hops: e.hops || 0, accum: e.accum || 0 });
-        } else if (e.type === 'slick' || e.type === 'greenball') {
-            // Safe enemies: skip to save search time
-            continue;
+        // Convert frame-based timer to fractional accumulator for AI search.
+        // If enemy is mid-jump, set accum=0 (it just started a hop cycle,
+        // won't commit next position for a full cycle).
+        var acc;
+        if (e.jumping) {
+            acc = 0;
         } else {
-            // Lethal enemies: track nearest ones (closer = more dangerous)
-            var d = exBfsDist(player.row, player.col, e.row, e.col);
-            lethalRandom.push({ e: e, dist: d });
+            acc = (e.moveTimer !== undefined && e.moveInterval !== undefined)
+                ? (e.moveTimer / e.moveInterval) : 0;
+        }
+        // Use effective position (destination if mid-jump)
+        var pos = enemyEffectivePos(e);
+        var er = pos.row, ec = pos.col;
+        if (e.type === 'coily') {
+            ens.push({ type: e.type, row: er, col: ec, hops: e.hops || 0, accum: acc });
+        } else if (e.type === 'slick' || e.type === 'greenball') {
+            continue; // safe enemies — skip
+        } else {
+            var d = exBfsDist(player.row, player.col, er, ec);
+            lethalRandom.push({ e: e, dist: d, acc: acc, er: er, ec: ec });
         }
     }
     lethalRandom.sort(function(a, b) { return a.dist - b.dist; });
     for (var i = 0; i < Math.min(3, lethalRandom.length); i++) {
-        var e = lethalRandom[i].e;
-        ens.push({ type: e.type, row: e.row, col: e.col, hops: e.hops || 0, accum: e.accum || 0,
-                    cloud: [{ row: e.row, col: e.col, prob: 1.0 }] });
+        var lr = lethalRandom[i];
+        ens.push({ type: lr.e.type, row: lr.er, col: lr.ec,
+                   hops: lr.e.hops || 0, accum: lr.acc,
+                   cloud: [{ row: lr.er, col: lr.ec, prob: 1.0 }] });
     }
     var colored = 0;
     for (var i = 0; i < cs.length; i++) colored += Math.min(cs[i].state, tgt);
     var ds = [];
     for (var i = 0; i < discs.length; i++)
         ds.push({ side: discs[i].side, row: discs[i].row, active: discs[i].active });
-    // Include imminent spawn timers for Ugg/Wrongway (dangerous spawn points)
+    // Include imminent spawn timers
+    var sm = speedMultiplier();
+    var framesPerHop = Math.ceil(1 / (PLAYER_JUMP_DUR * sm));
     var spawns = [];
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
-        if (e.type === 'spawn-timer' && e.timer <= 3) {
-            spawns.push({ timer: e.timer, forcedType: e.forcedType || null });
+        if (e.type === 'spawn-timer') {
+            var stepsUntil = Math.ceil(e.timer / framesPerHop);
+            if (stepsUntil <= 3) {
+                spawns.push({ timer: stepsUntil, forcedType: e.forcedType || null });
+            }
         }
     }
     return { pr: player.row, pc: player.col, cubes: cs, enemies: ens,
              alive: true, score: 0, cubesColored: colored, tgt: tgt,
              discs: ds, lv: arcadeLevel(), spawns: spawns };
 }
+
+// Override AI time budget — node can afford deeper search than a 16ms frame
+AI_TIME_BUDGET = 50;
 
 // ─── computeAIMove (test-specific: no visualization) ─────────────────────────
 function computeAIMove() {
@@ -78,9 +103,8 @@ function computeAIMove() {
     return bestDir;
 }
 
-// ─── Game simulation ─────────────────────────────────────────────────────────
+// ─── Game simulation (frame-based, matching HTML) ───────────────────────────
 function checkExtraLife() {
-    // First extra life at 8000, then every 14000 after that
     var nextThreshold = extraLifeGiven ? (8000 + extraLifeGiven * 14000) : 8000;
     if (score >= nextThreshold) {
         extraLifeGiven = (extraLifeGiven || 0) + 1;
@@ -107,8 +131,12 @@ function initRound() {
         for (var c = 0; c <= r; c++)
             cubeStates.push({ row: r, col: c, state: 0 });
 
-    player = { row: 0, col: 0, dead: false, deathTimer: 0 };
-    // In the arcade, Q*bert does NOT color (0,0) on spawn
+    player = {
+        row: 0, col: 0, dead: false, deathTimer: 0,
+        jumping: false, jumpT: 0,
+        jumpDur: PLAYER_JUMP_DUR * speedMultiplier(),
+        destRow: null, destCol: null
+    };
 
     var dc = discConfig();
     discs = [];
@@ -116,23 +144,23 @@ function initRound() {
         discs.push({ side: dc[i].side, row: dc[i].row, active: true });
     enemies = [];
     turnCount = 0;
+    frameCount = 0;
     freezeTimer = 0;
     aiDetailPath = []; aiTourDots = [];
     aiTour = []; aiTourIdx = 0; aiBoardSig = '';
     aiTourInit();
 
-    // Arcade-accurate enemy spawn schedule
+    // Arcade-accurate enemy spawn schedule (frame-based, same as HTML)
     if (!noEnemies) {
         var lv = arcadeLevel();
-        scheduleSpawn(8);                                  // Coily egg (always present)
-        if (hasRedBall())     scheduleSpawn(4, 'redball');  // Red ball
-        if (hasUggWrongway()) scheduleSpawn(12, 'ugg');
-        if (hasUggWrongway()) scheduleSpawn(14, 'wrongway');
-        if (hasSlick())       scheduleSpawn(15, 'slick');
-        if (hasGreenBall())   scheduleSpawn(10, 'greenball');
-        // Higher levels: additional enemies
-        if (lv >= 3 && hasRedBall()) scheduleSpawn(20, 'redball'); // second red ball
-        if (lv >= 4 && hasSlick())   scheduleSpawn(18, 'slick');   // second slick
+        scheduleSpawn(180);                                    // Coily egg (~3s)
+        if (hasRedBall())     scheduleSpawn(300, 'redball');    // ~5s
+        if (hasSlick())       scheduleSpawn(900, 'slick');      // ~15s
+        if (hasGreenBall())   scheduleSpawn(540, 'greenball');   // ~9s
+        if (hasUggWrongway()) scheduleSpawn(660, 'ugg');        // ~11s
+        if (hasUggWrongway()) scheduleSpawn(780, 'wrongway');   // ~13s
+        if (lv >= 3 && hasRedBall()) scheduleSpawn(600, 'redball');
+        if (lv >= 4 && hasSlick())   scheduleSpawn(1080, 'slick');
     }
 }
 
@@ -148,29 +176,45 @@ function spawnEnemy(forcedType) {
             if (enemies[i].type === 'coily' || enemies[i].type === 'egg') { hasCoily = true; break; }
         type = hasCoily ? 'redball' : 'egg';
     }
+    var sm = speedMultiplier();
+    var spawnCol = Math.floor(Math.random() * 2);
     if (type === 'egg') {
-        var spawnCol = Math.floor(Math.random() * 2);
-        enemies.push({ type: 'egg', row: 1, col: spawnCol, hops: 0, accum: 0 });
+        enemies.push({ type: 'egg', row: 1, col: spawnCol, hops: 0,
+            jumping: false, jumpT: 0, jumpDur: ENEMY_JUMP_DUR * sm,
+            moveTimer: 0, moveInterval: enemyMoveInterval('egg'),
+            destRow: null, destCol: null });
     } else if (type === 'redball') {
-        var spawnCol = Math.floor(Math.random() * 2);
-        enemies.push({ type: 'redball', row: 1, col: spawnCol, accum: 0 });
+        enemies.push({ type: 'redball', row: 1, col: spawnCol,
+            jumping: false, jumpT: 0, jumpDur: ENEMY_JUMP_DUR * sm,
+            moveTimer: 0, moveInterval: enemyMoveInterval('redball'),
+            destRow: null, destCol: null });
     } else if (type === 'greenball') {
-        var spawnCol = Math.floor(Math.random() * 2);
-        enemies.push({ type: 'greenball', row: 1, col: spawnCol, accum: 0 });
+        enemies.push({ type: 'greenball', row: 1, col: spawnCol,
+            jumping: false, jumpT: 0, jumpDur: ENEMY_JUMP_DUR * sm,
+            moveTimer: 0, moveInterval: enemyMoveInterval('greenball'),
+            destRow: null, destCol: null });
     } else if (type === 'slick') {
-        var spawnCol = Math.floor(Math.random() * 2);
-        enemies.push({ type: 'slick', row: 1, col: spawnCol, accum: 0 });
+        enemies.push({ type: 'slick', row: 1, col: spawnCol,
+            jumping: false, jumpT: 0, jumpDur: ENEMY_JUMP_DUR * sm,
+            moveTimer: 0, moveInterval: enemyMoveInterval('slick'),
+            destRow: null, destCol: null });
     } else if (type === 'ugg') {
-        enemies.push({ type: 'ugg', row: ROWS - 1, col: ROWS - 1, accum: 0 });
+        enemies.push({ type: 'ugg', row: ROWS - 1, col: ROWS - 1,
+            jumping: false, jumpT: 0, jumpDur: ENEMY_JUMP_DUR * sm,
+            moveTimer: 0, moveInterval: enemyMoveInterval('ugg'),
+            destRow: null, destCol: null });
     } else if (type === 'wrongway') {
-        enemies.push({ type: 'wrongway', row: ROWS - 1, col: 0, accum: 0 });
+        enemies.push({ type: 'wrongway', row: ROWS - 1, col: 0,
+            jumping: false, jumpT: 0, jumpDur: ENEMY_JUMP_DUR * sm,
+            moveTimer: 0, moveInterval: enemyMoveInterval('wrongway'),
+            destRow: null, destCol: null });
     }
 }
 
 function killPlayer(reason) {
     if (player.dead) return;
     player.dead = true;
-    player.deathTimer = 3;
+    player.deathTimer = 90; // ~1.5s at 60fps (matches HTML)
     lives--;
     if (verbose) console.log('  KILL: ' + (reason || 'unknown') + ' at (' + player.row + ',' + player.col + ') lives=' + lives);
 }
@@ -178,11 +222,8 @@ function killPlayer(reason) {
 function useDisc(idx) {
     var disc = discs[idx];
     disc.active = false;
-    // Arcade: Coily only dies if his greedy chase toward Q*bert's disc position
-    // would take him off the pyramid edge (he follows you off)
     var exitRow = disc.row;
     var discSide = disc.side;
-    var exitCol = (discSide === 0) ? -1 : exitRow + 1;
     var coilyDied = false;
     var survived = [];
     for (var i = 0; i < enemies.length; i++) {
@@ -207,7 +248,6 @@ function useDisc(idx) {
             survived.push(e);
         }
     }
-    // Arcade: when Coily dies, all other enemies are also cleared
     if (coilyDied) {
         var kept = [];
         for (var i = 0; i < survived.length; i++)
@@ -217,12 +257,14 @@ function useDisc(idx) {
         enemies = survived;
     }
     player.row = 0; player.col = 0;
+    player.jumping = false;
     stompCube(0, 0);
-    if (!noEnemies) scheduleSpawn(8);
+    // Disc ride takes ~83 frames in HTML; simulate as instant but schedule respawn
+    if (!noEnemies) scheduleSpawn(180);
 }
 
 function tryMove(dirKey) {
-    if (player.dead) return false;
+    if (player.dead || player.jumping) return false;
     var d = DIRS[dirKey]; if (!d) return false;
     var nr = player.row + d.dr, nc = player.col + d.dc;
 
@@ -240,10 +282,25 @@ function tryMove(dirKey) {
         return false;
     }
 
-    player.row = nr; player.col = nc;
-    stompCube(nr, nc);
+    // Start jump animation
+    player.jumping = true;
+    player.jumpT = 0;
+    player.jumpDur = PLAYER_JUMP_DUR * speedMultiplier();
+    player.destRow = nr;
+    player.destCol = nc;
+    return true;
+}
+
+// Called when player lands (jump complete)
+function onPlayerLand() {
+    stompCube(player.row, player.col);
     checkPlayerEnemyCollision();
-    return !player.dead;
+    if (!player.dead && allColored()) {
+        score += roundCompletionBonus();
+        score += unusedDiscBonus();
+        checkExtraLife();
+        levelWon = true;
+    }
 }
 
 function checkPlayerEnemyCollision() {
@@ -257,7 +314,7 @@ function checkPlayerEnemyCollision() {
                 enemies.splice(i, 1); i--;
             } else if (e.type === 'greenball') {
                 score += 100; checkExtraLife();
-                freezeTimer = 5; // Freeze all enemies for ~5 turns
+                freezeTimer = 300; // ~5s at 60fps (matches HTML's 5 * ~60 frames)
                 enemies.splice(i, 1); i--;
             } else {
                 killPlayer('landed on ' + e.type + '@(' + e.row + ',' + e.col + ')'); return;
@@ -266,8 +323,9 @@ function checkPlayerEnemyCollision() {
     }
 }
 
-function moveEnemies() {
-    // Tick spawn timers (spawns still happen during freeze)
+// ─── Frame-based enemy update (matches HTML's updateEnemies) ────────────────
+function updateEnemies() {
+    // Tick spawn timers (always tick, even during freeze)
     for (var i = enemies.length - 1; i >= 0; i--) {
         if (enemies[i].type === 'spawn-timer') {
             enemies[i].timer--;
@@ -282,29 +340,84 @@ function moveEnemies() {
     // Green ball freeze: enemies don't move while frozen
     if (freezeTimer > 0) { freezeTimer--; return; }
 
-    // Tick countdown and move enemies whose countdown reaches 0
     for (var i = enemies.length - 1; i >= 0; i--) {
         var e = enemies[i];
         if (e.type === 'spawn-timer') continue;
 
-        e.accum = (e.accum || 0) + (SIM_MOVE_RATE[e.type] || 0.75);
-        if (e.accum < 1.0) continue;
-        e.accum -= 1.0;
+        // Jump animation
+        if (e.jumping) {
+            var prevT = e.jumpT;
+            e.jumpT += e.jumpDur;
+            // At apex, commit position
+            if (prevT < 0.5 && e.jumpT >= 0.5 && e.destRow != null) {
+                e.row = e.destRow; e.col = e.destCol;
+                e.destRow = null; e.destCol = null;
+            }
+            if (e.jumpT >= 1) {
+                e.jumpT = 1; e.jumping = false;
+                if (e.destRow != null) { e.row = e.destRow; e.col = e.destCol; e.destRow = null; e.destCol = null; }
+                if (e.falling) {
+                    var ft = e.type;
+                    enemies.splice(i, 1);
+                    if (ft === 'egg' || ft === 'coily') { if (!noEnemies) scheduleSpawn(180); }
+                    else if (ft === 'redball' && hasRedBall()) scheduleSpawn(Math.max(120, 240 - Math.floor(round / 2) * 15), 'redball');
+                    else if (ft === 'greenball' && hasGreenBall()) scheduleSpawn(540, 'greenball');
+                    else if (ft === 'slick' && hasSlick()) scheduleSpawn(720, 'slick');
+                    else if (ft === 'ugg' && hasUggWrongway()) scheduleSpawn(540, 'ugg');
+                    else if (ft === 'wrongway' && hasUggWrongway()) scheduleSpawn(600, 'wrongway');
+                    continue;
+                }
+                if (e.willHatch) {
+                    e.willHatch = false;
+                    e.type = 'coily';
+                    e.moveInterval = enemyMoveInterval('coily');
+                }
+                // On-land effects
+                if (e.type === 'slick') {
+                    var cube = cubeAt(e.row, e.col);
+                    if (cube && cube.state > 0) cube.state--;
+                    if (e.row >= ROWS - 1) {
+                        enemies.splice(i, 1);
+                        if (hasSlick()) scheduleSpawn(720, 'slick');
+                        continue;
+                    }
+                }
+                // Post-land collision
+                if (!player.dead && e.row === player.row && e.col === player.col) {
+                    if (e.type === 'slick') {
+                        score += 300; checkExtraLife();
+                        enemies.splice(i, 1);
+                    } else if (e.type === 'greenball') {
+                        score += 100; checkExtraLife();
+                        freezeTimer = 300;
+                        enemies.splice(i, 1);
+                    } else {
+                        killPlayer(e.type + ' moved onto @(' + e.row + ',' + e.col + ')');
+                    }
+                }
+            }
+            continue; // don't tick move timer while jumping
+        }
 
+        // Idle: tick move timer
+        e.moveTimer++;
+        if (e.moveTimer < e.moveInterval) continue;
+        e.moveTimer = 0;
+
+        // Execute enemy move
         if (e.type === 'egg') {
             var dir = Math.random() < 0.5 ? 'DL' : 'DR';
             var delta = DIRS[dir];
             var nr = e.row + delta.dr, nc = e.col + delta.dc;
             if (isValidPos(nr, nc)) {
                 e.hops++;
-                e.row = nr; e.col = nc;
-                // Arcade: egg only hatches into Coily when it reaches the bottom row
-                if (nr >= ROWS - 1) e.type = 'coily';
+                enemyJumpTo(e, nr, nc);
+                if (e.hops >= 6 || nr >= ROWS - 1) {
+                    e.willHatch = true;
+                }
             } else {
-                // Fell off the edge — remove and respawn
-                enemies.splice(i, 1); i--;
-                scheduleSpawn(8);
-                continue;
+                enemyJumpTo(e, nr, nc);
+                e.falling = true;
             }
         } else if (e.type === 'coily') {
             var bestDir = null, bestDist = Infinity;
@@ -316,187 +429,167 @@ function moveEnemies() {
                 if (dist < bestDist) { bestDist = dist; bestDir = { nr: enr, nc: enc }; }
             }
             if (bestDir) {
-                e.row = bestDir.nr; e.col = bestDir.nc;
+                enemyJumpTo(e, bestDir.nr, bestDir.nc);
             } else {
-                enemies.splice(i, 1);
-                scheduleSpawn(8);
-                continue;
+                enemyJumpTo(e, e.row, e.col);
+                e.falling = true;
             }
         } else if (e.type === 'redball') {
-            var rbdir = Math.random() < 0.5 ? 'DL' : 'DR';
-            var rbdelta = DIRS[rbdir];
-            var rbnr = e.row + rbdelta.dr, rbnc = e.col + rbdelta.dc;
-            if (isValidPos(rbnr, rbnc)) {
-                e.row = rbnr; e.col = rbnc;
+            var dir = Math.random() < 0.5 ? 'DL' : 'DR';
+            var delta = DIRS[dir];
+            var nr = e.row + delta.dr, nc = e.col + delta.dc;
+            if (isValidPos(nr, nc)) {
+                enemyJumpTo(e, nr, nc);
             } else {
-                enemies.splice(i, 1);
-                if (hasRedBall()) scheduleSpawn(Math.max(5, 8 - Math.floor(round / 2)), 'redball');
-                continue;
+                enemyJumpTo(e, nr, nc);
+                e.falling = true;
             }
         } else if (e.type === 'greenball') {
-            var gbdir = Math.random() < 0.5 ? 'DL' : 'DR';
-            var gbdelta = DIRS[gbdir];
-            var gbnr = e.row + gbdelta.dr, gbnc = e.col + gbdelta.dc;
-            if (isValidPos(gbnr, gbnc)) {
-                e.row = gbnr; e.col = gbnc;
+            var dir = Math.random() < 0.5 ? 'DL' : 'DR';
+            var delta = DIRS[dir];
+            var nr = e.row + delta.dr, nc = e.col + delta.dc;
+            if (isValidPos(nr, nc)) {
+                enemyJumpTo(e, nr, nc);
             } else {
-                enemies.splice(i, 1);
-                if (hasGreenBall()) scheduleSpawn(12, 'greenball');
-                continue;
+                enemyJumpTo(e, nr, nc);
+                e.falling = true;
             }
         } else if (e.type === 'slick') {
-            var sdir = Math.random() < 0.5 ? 'DL' : 'DR';
-            var sdelta = DIRS[sdir];
-            var snr = e.row + sdelta.dr, snc = e.col + sdelta.dc;
-            if (isValidPos(snr, snc)) {
-                e.row = snr; e.col = snc;
+            var dir = Math.random() < 0.5 ? 'DL' : 'DR';
+            var delta = DIRS[dir];
+            var nr = e.row + delta.dr, nc = e.col + delta.dc;
+            if (isValidPos(nr, nc)) {
+                enemyJumpTo(e, nr, nc);
             } else {
-                enemies.splice(i, 1);
-                if (hasSlick()) scheduleSpawn(15, 'slick');
-                continue;
+                enemyJumpTo(e, nr, nc);
+                e.falling = true;
             }
         } else if (e.type === 'ugg') {
-            // Arcade: Ugg spawns bottom-right, moves toward top-left.
-            // Can move UL (row-1,col-1) or stay same row move left (row,col-1)
-            // In pyramid terms: UL goes up-left, "left" means row stays, col decreases
             var udir = Math.random() < 0.5;
             var unr, unc;
-            if (udir) { unr = e.row - 1; unc = e.col - 1; } // UL (up and left)
-            else      { unr = e.row;     unc = e.col - 1; }  // Left (same row)
+            if (udir) { unr = e.row - 1; unc = e.col - 1; }
+            else      { unr = e.row;     unc = e.col - 1; }
             if (isValidPos(unr, unc)) {
-                e.row = unr; e.col = unc;
+                enemyJumpTo(e, unr, unc);
             } else {
-                enemies.splice(i, 1);
-                if (hasUggWrongway()) scheduleSpawn(12, 'ugg');
-                continue;
+                enemyJumpTo(e, unr, unc);
+                e.falling = true;
             }
         } else if (e.type === 'wrongway') {
-            // Arcade: Wrongway spawns bottom-left, moves toward top-right.
-            // Can move UR (row-1,col) or stay same row move right (row,col+1)
             var wdir = Math.random() < 0.5;
             var wnr, wnc;
-            if (wdir) { wnr = e.row - 1; wnc = e.col;     } // UR (up and right)
-            else      { wnr = e.row;     wnc = e.col + 1;  } // Right (same row)
+            if (wdir) { wnr = e.row - 1; wnc = e.col;     }
+            else      { wnr = e.row;     wnc = e.col + 1;  }
             if (isValidPos(wnr, wnc)) {
-                e.row = wnr; e.col = wnc;
+                enemyJumpTo(e, wnr, wnc);
             } else {
-                enemies.splice(i, 1);
-                if (hasUggWrongway()) scheduleSpawn(14, 'wrongway');
-                continue;
-            }
-        }
-    }
-
-    // Apply slick effects and check collisions after all moves
-    for (var i = enemies.length - 1; i >= 0; i--) {
-        var e = enemies[i];
-        if (e.type === 'spawn-timer') continue;
-
-        if (e.type === 'slick') {
-            var cube = cubeAt(e.row, e.col);
-            if (cube && cube.state > 0) cube.state--;
-            if (e.row >= ROWS - 1) {
-                enemies.splice(i, 1);
-                if (hasSlick()) scheduleSpawn(15, 'slick');
-                continue;
-            }
-        }
-
-        if (!player.dead && e.row === player.row && e.col === player.col) {
-            if (e.type === 'slick') {
-                score += 300; checkExtraLife();
-                enemies.splice(i, 1);
-            } else if (e.type === 'greenball') {
-                score += 100; checkExtraLife();
-                freezeTimer = 5;
-                enemies.splice(i, 1);
-            } else {
-                killPlayer(e.type + ' moved onto @(' + e.row + ',' + e.col + ')');
+                enemyJumpTo(e, wnr, wnc);
+                e.falling = true;
             }
         }
     }
 }
 
-function simTurn() {
-    turnCount++;
-    if (levelWon) return null;
+function enemyJumpTo(e, nr, nc) {
+    e.jumping = true;
+    e.jumpT = 0;
+    e.jumpDur = ENEMY_JUMP_DUR * speedMultiplier();
+    e.destRow = nr; e.destCol = nc;
+}
 
+// ─── Frame-based player update ──────────────────────────────────────────────
+function updatePlayer() {
     if (player.dead) {
         player.deathTimer--;
         if (player.deathTimer <= 0 && lives > 0) {
             player.dead = false;
             player.row = 0; player.col = 0;
+            player.jumping = false;
             stompCube(0, 0);
             var kept = [];
             for (var i = 0; i < enemies.length; i++)
                 if (enemies[i].type === 'spawn-timer') kept.push(enemies[i]);
             enemies = kept;
             if (!noEnemies) {
-                scheduleSpawn(7);
-                if (hasRedBall())     scheduleSpawn(5, 'redball');
-                if (hasSlick())       scheduleSpawn(13, 'slick');
-                if (hasGreenBall())   scheduleSpawn(10, 'greenball');
-                if (hasUggWrongway()) scheduleSpawn(12, 'ugg');
-                if (hasUggWrongway()) scheduleSpawn(14, 'wrongway');
+                scheduleSpawn(180);                                   // Coily egg
+                if (hasRedBall())     scheduleSpawn(240, 'redball');
+                if (hasSlick())       scheduleSpawn(720, 'slick');
+                if (hasGreenBall())   scheduleSpawn(480, 'greenball');
+                if (hasUggWrongway()) scheduleSpawn(540, 'ugg');
+                if (hasUggWrongway()) scheduleSpawn(660, 'wrongway');
             }
         }
-        return null;
+        return;
     }
 
-    var dir = computeAIMove();
-    if (!dir) return null;
-
-    if (!tryMove(dir)) return dir;
-
-    if (!player.dead && allColored()) {
-        score += roundCompletionBonus();
-        score += unusedDiscBonus();
-        checkExtraLife();
-        levelWon = true;
-        return dir;
+    if (player.jumping) {
+        var prevT = player.jumpT;
+        player.jumpT += player.jumpDur;
+        // At apex, commit position
+        if (prevT < 0.5 && player.jumpT >= 0.5 && player.destRow != null) {
+            player.row = player.destRow;
+            player.col = player.destCol;
+            player.destRow = null;
+            player.destCol = null;
+        }
+        if (player.jumpT >= 1) {
+            player.jumpT = 1;
+            player.jumping = false;
+            if (player.destRow != null) {
+                player.row = player.destRow;
+                player.col = player.destCol;
+                player.destRow = null;
+                player.destCol = null;
+            }
+            onPlayerLand();
+        }
     }
-
-    if (!player.dead) moveEnemies();
-
-    return dir;
 }
 
-// ─── Visualization ───────────────────────────────────────────────────────────
-function drawBoard() {
-    var tgt = targetState();
-    var grid = {};
-    for (var i = 0; i < cubeStates.length; i++) {
-        var c = cubeStates[i];
-        grid[c.row + ',' + c.col] = c.state >= tgt ? '#' : '.';
-    }
+// ─── Per-frame collision check (same as HTML) ───────────────────────────────
+function checkFrameCollision() {
+    if (player.dead) return;
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
         if (e.type === 'spawn-timer') continue;
-        var k = e.row + ',' + e.col;
-        if (e.type === 'coily') grid[k] = 'C';
-        else if (e.type === 'egg') grid[k] = 'E';
-        else if (e.type === 'redball') grid[k] = 'R';
-        else if (e.type === 'greenball') grid[k] = 'G';
-        else if (e.type === 'slick') grid[k] = 'S';
-        else if (e.type === 'ugg') grid[k] = 'U';
-        else if (e.type === 'wrongway') grid[k] = 'W';
-    }
-    grid[player.row + ',' + player.col] = '@';
-
-    var lines = [];
-    for (var r = 0; r < ROWS; r++) {
-        var pad = '';
-        for (var p = 0; p < ROWS - 1 - r; p++) pad += ' ';
-        var row = '';
-        for (var c = 0; c <= r; c++) {
-            var ch = grid[r + ',' + c] || '?';
-            row += ch + ' ';
+        if (e.row === player.row && e.col === player.col) {
+            if (e.type === 'slick') {
+                score += 300; checkExtraLife();
+                enemies.splice(i, 1); i--;
+            } else if (e.type === 'greenball') {
+                score += 100; checkExtraLife();
+                freezeTimer = 300;
+                enemies.splice(i, 1); i--;
+            } else {
+                killPlayer(e.type + ' collision @(' + e.row + ',' + e.col + ')');
+                return;
+            }
         }
-        lines.push(pad + row.trim());
     }
-    return lines.join('\n');
 }
 
+// ─── Main simulation frame (matches HTML's update()) ────────────────────────
+function simFrame() {
+    if (levelWon) return null;
+    frameCount++;
+
+    updatePlayer();
+    updateEnemies();
+    checkFrameCollision();
+
+    // AI input: when player is ready (not jumping, not dead)
+    if (!player.jumping && !player.dead && !levelWon) {
+        var dir = computeAIMove();
+        if (dir && dir !== 'STAY') {
+            tryMove(dir);
+            return dir;
+        }
+        return dir === 'STAY' ? 'STAY' : null;
+    }
+    return null;
+}
+
+// ─── Visualization ───────────────────────────────────────────────────────────
 function countRemaining() {
     var tgt = targetState();
     var n = 0;
@@ -527,7 +620,7 @@ function runGame(maxRounds, verbose) {
     for (; round <= maxRounds; round++) {
         initRound();
         var moveNum = 0;
-        var maxTurns = 200;
+        var maxFrames = 200 * 60; // ~200 seconds at 60fps
 
         if (verbose) {
             console.log('\n' + '='.repeat(50));
@@ -535,13 +628,12 @@ function runGame(maxRounds, verbose) {
             console.log('='.repeat(50));
         }
 
-        for (var turn = 0; turn < maxTurns; turn++) {
-            var aiMove = simTurn();
+        for (var frame = 0; frame < maxFrames; frame++) {
+            var aiMove = simFrame();
 
             if (lives !== prevLives) {
                 if (lives < prevLives) {
                     totalDeaths += prevLives - lives;
-                    if (verbose) console.log('  Turn ' + turn + ': DIED! Lives=' + lives);
                 }
                 prevLives = lives;
             }
@@ -550,7 +642,7 @@ function runGame(maxRounds, verbose) {
                 return { rounds: round, score: score, deaths: totalDeaths };
             }
 
-            if (aiMove) {
+            if (aiMove && aiMove !== 'STAY') {
                 moveNum++;
                 if (verbose) {
                     var remaining = countRemaining();
@@ -567,7 +659,6 @@ function runGame(maxRounds, verbose) {
                         ' -> (' + player.row + ',' + player.col + ')  left=' + remaining +
                         '  h=' + tc +
                         (enemies.length > 0 ? '  enemies: ' + enemySummary() : '') + extra);
-                    if (noEnemies && moveNum % 10 === 0) console.log(drawBoard());
                 }
             }
 
@@ -581,8 +672,8 @@ function runGame(maxRounds, verbose) {
             }
         }
 
-        if (!levelWon && turn >= maxTurns) {
-            console.log('  Round ' + round + ' TIMEOUT after ' + maxTurns + ' turns');
+        if (!levelWon && frame >= maxFrames) {
+            console.log('  Round ' + round + ' TIMEOUT after ' + maxFrames + ' frames');
         }
 
         if (levelWon) { round--; }
@@ -606,7 +697,6 @@ for (var i = 2; i < process.argv.length; i++) {
     var n = parseInt(process.argv[i]);
     if (!isNaN(n) && n > 0) { numRounds = n; break; }
 }
-// (precomputed tours removed — Dijkstra handles all levels)
 
 console.log('Running ' + numRounds + ' rounds from round ' + startRound + (verbose ? ' (verbose)' : '') + '...\n');
 var result = runGame(startRound + numRounds - 1, verbose);
