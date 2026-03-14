@@ -293,15 +293,22 @@ function syncVisuals() {
     // Player position (skip during disc ride — handled separately)
     if (!discRide) {
         if (player.jumping) {
-            var srcR = player.jumpSrcRow != null ? player.jumpSrcRow : player.row;
-            var srcC = player.jumpSrcCol != null ? player.jumpSrcCol : player.col;
-            var dstR = player.destRow != null ? player.destRow : player.row;
-            var dstC = player.destCol != null ? player.destCol : player.col;
-            var src = cubeXY(srcR, srcC);
-            var dst = cubeXY(dstR, dstC);
-            var t = player.jumpT;
-            player.px = src.cx + (dst.cx - src.cx) * t;
-            player.py = src.cy + (dst.cy - src.cy) * t - Math.sin(t * Math.PI) * 26;
+            if (player.pendingDisc) {
+                // Jumping toward disc — use pixel coordinates (not row-based)
+                var t = player.jumpT;
+                player.px = player.jumpSX + (player.jumpTX - player.jumpSX) * t;
+                player.py = player.jumpSY + (player.jumpTY - player.jumpSY) * t - Math.sin(t * Math.PI) * 26;
+            } else {
+                var srcR = player.jumpSrcRow != null ? player.jumpSrcRow : player.row;
+                var srcC = player.jumpSrcCol != null ? player.jumpSrcCol : player.col;
+                var dstR = player.destRow != null ? player.destRow : player.row;
+                var dstC = player.destCol != null ? player.destCol : player.col;
+                var src = cubeXY(srcR, srcC);
+                var dst = cubeXY(dstR, dstC);
+                var t = player.jumpT;
+                player.px = src.cx + (dst.cx - src.cx) * t;
+                player.py = src.cy + (dst.cy - src.cy) * t - Math.sin(t * Math.PI) * 26;
+            }
             // Animate sprite
             player.frameTimer = (player.frameTimer || 0) + 1;
             if (player.frameTimer > 6) { player.frameTimer = 0; player.spriteFrame = (player.spriteFrame || 0) ^ 1; }
@@ -356,9 +363,11 @@ function startDiscRide(discSide, discRow) {
     discRide = {
         side: discSide,
         t: 0,
-        sx: player.px, sy: player.py,
+        sx: dp.x, sy: dp.y,
         tx: top.cx, ty: top.cy
     };
+    // Snap player to disc position (matches old useDisc behavior)
+    player.px = dp.x; player.py = dp.y;
     // Set Coily lure for visual chase animation
     for (var ei = 0; ei < enemies.length; ei++) {
         if (enemies[ei].type === 'coily') {
@@ -437,6 +446,7 @@ function initRound() {
     player.spriteFrame = 0; player.frameTimer = 0;
     player.facing = 'R';
     player.deathAnimTimer = 0;
+    player.pendingDisc = null;
 
     if (debugEnemies) {
         roundStarted = true;
@@ -471,28 +481,16 @@ function tryMove(dirKey) {
             var isLeft = (disc.side === 0 && dirKey === 'UL' && player.col === 0 && player.row === disc.row);
             var isRight = (disc.side === 1 && dirKey === 'UR' && player.col === player.row && player.row === disc.row);
             if (isLeft || isRight) {
-                // Disc move — use simulation
+                // Phase 1: Jump toward disc position (visual only)
                 DinoSounds.press();
-                var savedSide = disc.side, savedRow = disc.row;
-                var result = simTryMove(gs, dirKey); // returns 'disc', updates gs
-                enemies = gs.enemies; // array may have changed (Coily killed)
-                score += gs.score; gs.score = 0;
-                checkExtraLife();
-                startDiscRide(savedSide, savedRow);
-                // Check level complete (stomped 0,0 via simUseDisc)
-                if (simAllColored(gs)) {
-                    score += roundCompletionBonus();
-                    score += unusedDiscBonus(gs.discs);
-                    checkExtraLife();
-                    levelWon = true;
-                    levelWonTimer = 30;
-                    DinoSounds.reached();
-                    var lvKey = '' + arcadeLevel();
-                    if (!bestHops[lvKey] || hops < bestHops[lvKey]) {
-                        bestHops[lvKey] = hops;
-                        localStorage.setItem('dino-qbert-best-hops', JSON.stringify(bestHops));
-                    }
-                }
+                var dpPos = discScreenPos(disc);
+                player.jumping = true; player.jumpT = 0;
+                player.jumpDur = 0.028 * (typeof speedMultiplier === 'function' ? speedMultiplier() : gs.sm);
+                player.jumpSX = player.px; player.jumpSY = player.py;
+                player.jumpTX = dpPos.x; player.jumpTY = dpPos.y;
+                player.spriteFrame = 0; player.frameTimer = 0;
+                // Store pending disc info — sim + ride starts on landing
+                player.pendingDisc = { side: disc.side, row: disc.row, dirKey: dirKey };
                 return;
             }
         }
@@ -575,6 +573,45 @@ function update() {
             roundMsg = { text: 'LV ' + arcadeLevel() + ' ROUND ' + ((round - 1) % 4 + 1), timer: 30 };
             initRound();
         }
+        return;
+    }
+
+    // Phase 1 of disc: player jumping toward disc (visual-only jump)
+    if (player.pendingDisc && player.jumping) {
+        player.jumpT += player.jumpDur;
+        if (player.jumpT >= 1) {
+            // Landed on disc — run simulation + start disc ride (phase 2)
+            player.jumpT = 1; player.jumping = false;
+            player.px = player.jumpTX; player.py = player.jumpTY;
+            var pd = player.pendingDisc;
+            player.pendingDisc = null;
+            var result = simTryMove(gs, pd.dirKey);
+            enemies = gs.enemies;
+            score += gs.score; gs.score = 0;
+            checkExtraLife();
+            startDiscRide(pd.side, pd.row);
+            // Check level complete
+            if (simAllColored(gs)) {
+                score += roundCompletionBonus();
+                score += unusedDiscBonus(gs.discs);
+                checkExtraLife();
+                levelWon = true;
+                levelWonTimer = 30;
+                DinoSounds.reached();
+                var lvKey = '' + arcadeLevel();
+                if (!bestHops[lvKey] || hops < bestHops[lvKey]) {
+                    bestHops[lvKey] = hops;
+                    localStorage.setItem('dino-qbert-best-hops', JSON.stringify(bestHops));
+                }
+            }
+        }
+        // Enemies still tick during the jump
+        if (roundStarted) {
+            simUpdateEnemies(gs);
+            enemies = gs.enemies;
+            freezeTimer = gs.freezeTimer;
+        }
+        syncVisuals();
         return;
     }
 
