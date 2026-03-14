@@ -898,13 +898,15 @@ function updatePlayer() {
             // Check round complete
             if (!player.dead && allColored()) {
                 score += 1000; checkExtraLife();
-                round++;
                 levelWon = true;
                 DinoSounds.reached();
-                roundMsg = { text: 'LV ' + arcadeLevel() + ' ROUND ' + ((round - 1) % 4 + 1), timer: 30 };
                 var savedRound = round;
                 setTimeout(function () {
-                    if (round === savedRound) initRound();
+                    if (round === savedRound) {
+                        round++;
+                        roundMsg = { text: 'LV ' + arcadeLevel() + ' ROUND ' + ((round - 1) % 4 + 1), timer: 30 };
+                        initRound();
+                    }
                 }, 500);
             }
         } else {
