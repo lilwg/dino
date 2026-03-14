@@ -1598,12 +1598,12 @@ function drawEnemy(e) {
         ctx.restore();
 
     } else if (e.type === 'ugg') {
-        // Ugg spawns bottom-right, moves left → clings to RIGHT faces of cubes
-        _drawRotatedCactus(e.px - TILE_W / 4, e.py - TILE_H / 4 - CUBE_DEPTH / 2, -Math.PI / 2, 0.75);
+        // Ugg clings to RIGHT face of cube: center is (cx + hw/2, cy + hh/2 + CUBE_DEPTH/2)
+        _drawRotatedCactus(e.px + TILE_W / 4, e.py + TILE_H / 4 + CUBE_DEPTH / 2, Math.PI / 2, 0.75);
 
     } else if (e.type === 'wrongway') {
-        // Wrongway spawns bottom-left, moves right → clings to LEFT faces of cubes
-        _drawRotatedCactus(e.px + TILE_W / 4, e.py - TILE_H / 4 - CUBE_DEPTH / 2, Math.PI / 2, 0.75);
+        // Wrongway clings to LEFT face of cube: center is (cx - hw/2, cy + hh/2 + CUBE_DEPTH/2)
+        _drawRotatedCactus(e.px - TILE_W / 4, e.py + TILE_H / 4 + CUBE_DEPTH / 2, -Math.PI / 2, 0.75);
     }
 }
 
