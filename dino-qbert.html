@@ -326,6 +326,7 @@ function discCatchRow(side) {
 function initRound() {
     levelWon = false;
     roundStarted = false;
+    hops = 0;
     cubeStates = [];
     for (var r = 0; r < ROWS; r++)
         for (var c = 0; c <= r; c++)
@@ -900,11 +901,11 @@ function updatePlayer() {
                 round++;
                 levelWon = true;
                 DinoSounds.reached();
-                roundMsg = { text: 'LV ' + arcadeLevel() + ' ROUND ' + ((round - 1) % 4 + 1), timer: 110 };
+                roundMsg = { text: 'LV ' + arcadeLevel() + ' ROUND ' + ((round - 1) % 4 + 1), timer: 30 };
                 var savedRound = round;
                 setTimeout(function () {
                     if (round === savedRound) initRound();
-                }, 2000);
+                }, 500);
             }
         } else {
             var arc = Math.sin(player.jumpT * Math.PI) * 26;
@@ -1605,7 +1606,6 @@ window.restartGame = function () {
     hiScore = Math.max(hiScore || 0, score || 0);
     if (hiScore > 0) localStorage.setItem('dino-qbert-hi', hiScore);
     score   = 0;
-    hops    = 0;
     lives   = 3;
     // Check URL for ?l=N level skip (round = (level-1)*4 + 1)
     var params = new URLSearchParams(window.location.search);
