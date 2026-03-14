@@ -1018,22 +1018,25 @@ exCloneState = function() {
         var rate = EX_MOVE_RATE[e.type] || 0.75;
         var acc = (e.moveTimer !== undefined && e.moveInterval !== undefined)
             ? (e.moveTimer / e.moveInterval) * rate : 0;
+        // Use effective position: if enemy is mid-jump (pre-apex), use destination
+        var pos = enemyEffectivePos(e);
+        var er = pos.row, ec = pos.col;
         if (e.type === 'coily') {
-            ens.push({ type: e.type, row: e.row, col: e.col, hops: e.hops || 0, accum: acc });
+            ens.push({ type: e.type, row: er, col: ec, hops: e.hops || 0, accum: acc });
         } else if (e.type === 'slick' || e.type === 'greenball') {
             continue; // safe enemies — skip
         } else {
             // Lethal random: track nearest ones
-            var d = exBfsDist(player.row, player.col, e.row, e.col);
-            lethalRandom.push({ e: e, dist: d, acc: acc });
+            var d = exBfsDist(player.row, player.col, er, ec);
+            lethalRandom.push({ e: e, dist: d, acc: acc, er: er, ec: ec });
         }
     }
     lethalRandom.sort(function(a, b) { return a.dist - b.dist; });
     for (var i = 0; i < Math.min(3, lethalRandom.length); i++) {
         var lr = lethalRandom[i];
-        ens.push({ type: lr.e.type, row: lr.e.row, col: lr.e.col,
+        ens.push({ type: lr.e.type, row: lr.er, col: lr.ec,
                    hops: lr.e.hops || 0, accum: lr.acc,
-                   cloud: [{ row: lr.e.row, col: lr.e.col, prob: 1.0 }] });
+                   cloud: [{ row: lr.er, col: lr.ec, prob: 1.0 }] });
     }
     var colored = 0;
     for (var i = 0; i < cs.length; i++) colored += Math.min(cs[i].state, tgt);
