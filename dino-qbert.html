@@ -750,6 +750,8 @@ function updateEnemies() {
                 e.falling = true;
             }
         } else if (e.type === 'coily') {
+            // During disc ride, Coily's lure is already handled by useDisc()
+            if (discRide) continue;
             var bestDir = null, bestDist = Infinity;
             for (var k = 0; k < DIR_KEYS.length; k++) {
                 var dk = DIRS[DIR_KEYS[k]];
