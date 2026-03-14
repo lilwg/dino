@@ -1595,7 +1595,7 @@ function drawEnemy(e) {
 
     } else if (e.type === 'ugg') {
         // Ugg on right face: draw on the right side face of the cube above
-        _drawRotatedCactus(e.px, e.py, Math.PI / 2, 0.75);
+        _drawRotatedCactus(e.px - TILE_W / 4, e.py - ROW_STEP / 2, Math.PI / 2, 0.75);
 
     } else if (e.type === 'wrongway') {
         // Wrongway on left face of cube above collision face
