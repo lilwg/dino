@@ -1028,11 +1028,113 @@ var aiResumePath = null;
 
 var AI_TIME_BUDGET = 100; // ms — max time for search before returning best-so-far
 
+// ─── Dynamic tour planner for cycling levels ─────────────────────────────────
+// On cycling levels (lv3+), cube states cycle: stepping on a completed cube
+// reverts it. A depth-limited search can't plan the 56+ move sequences needed
+// to clear the board without creating reverts. Instead, we use a greedy
+// nearest-unfinished-cube strategy with weighted BFS that penalizes crossing
+// completed cubes. This produces an efficient path that naturally avoids reverts.
+//
+// The search is still used when enemies are present (for tactical safety).
+
+function dynamicTourMove(st) {
+    var lv = st.lv !== undefined ? st.lv : arcadeLevel();
+    if (revertPenalty(lv) === 0) return null; // only for cycling levels
+
+    // Build completed mask for weighted BFS
+    var tgt = st.tgt;
+    var completedSet = {};
+    var unfinished = [];
+    for (var i = 0; i < st.cubes.length; i++) {
+        var c = st.cubes[i];
+        if (c.state >= tgt) {
+            completedSet[c.row + ',' + c.col] = true;
+        } else {
+            unfinished.push({ row: c.row, col: c.col, state: c.state });
+        }
+    }
+    if (unfinished.length === 0) return null; // all done
+
+    // Weighted BFS (Dijkstra) from current position: find nearest unfinished cube.
+    // Crossing a completed cube adds the revert penalty to the path cost.
+    var penalty = revertPenalty(lv);
+    var startKey = st.pr + ',' + st.pc;
+    var dist = {};
+    dist[startKey] = 0;
+    var prev = {};
+    prev[startKey] = null;
+    // Simple priority queue (array sorted by cost)
+    var pq = [{ row: st.pr, col: st.pc, cost: 0 }];
+    var bestTarget = null, bestCost = Infinity;
+
+    while (pq.length > 0) {
+        // Find min cost in queue
+        var minIdx = 0;
+        for (var qi = 1; qi < pq.length; qi++) {
+            if (pq[qi].cost < pq[minIdx].cost) minIdx = qi;
+        }
+        var cur = pq[minIdx];
+        pq.splice(minIdx, 1);
+        var curKey = cur.row + ',' + cur.col;
+        if (cur.cost > dist[curKey]) continue; // stale entry
+
+        // Check if this is an unfinished cube
+        if (curKey !== startKey) {
+            for (var ui = 0; ui < unfinished.length; ui++) {
+                if (unfinished[ui].row === cur.row && unfinished[ui].col === cur.col) {
+                    if (cur.cost < bestCost) {
+                        bestCost = cur.cost;
+                        bestTarget = { row: cur.row, col: cur.col };
+                    }
+                    break;
+                }
+            }
+        }
+        // If we found a target and it's closer than anything else could be, stop
+        if (bestTarget && cur.cost > bestCost) break;
+
+        // Expand neighbors
+        for (var k = 0; k < 4; k++) {
+            var dk = DIRS[DIR_KEYS[k]];
+            var nr = cur.row + dk.dr, nc = cur.col + dk.dc;
+            if (!isValidPos(nr, nc)) continue;
+            var nk = nr + ',' + nc;
+            // Cost: 1 base + penalty if crossing a completed cube
+            var moveCost = 1 + (completedSet[nk] ? penalty : 0);
+            var newCost = cur.cost + moveCost;
+            if (dist[nk] === undefined || newCost < dist[nk]) {
+                dist[nk] = newCost;
+                prev[nk] = { row: cur.row, col: cur.col, dir: DIR_KEYS[k] };
+                pq.push({ row: nr, col: nc, cost: newCost });
+            }
+        }
+    }
+
+    if (!bestTarget) return null; // no reachable unfinished cube
+
+    // Reconstruct path and return first move
+    var path = [];
+    var tk = bestTarget.row + ',' + bestTarget.col;
+    while (prev[tk] && prev[tk].dir) {
+        path.unshift(prev[tk].dir);
+        tk = prev[tk].row + ',' + prev[tk].col;
+    }
+    return path.length > 0 ? path[0] : null;
+}
+
+
 function aiPickBestDir() {
     var tmpSt = exCloneState();
 
-    // Phase 0 (disc lure) and Phase 1 (precomputed tour) disabled —
-    // safe search handles everything uniformly.
+    // Phase 1: Dynamic tour for cycling levels (lv3+) without enemies.
+    // A depth-limited search can't plan the 56+ move sequences needed on cycling
+    // levels without oscillating. Use a greedy nearest-unfinished-cube planner
+    // with weighted BFS that penalizes crossing completed cubes instead.
+    // When enemies are present, the search handles both safety and path planning.
+    if (tmpSt.enemies.length === 0) {
+        var tourDir = dynamicTourMove(tmpSt);
+        if (tourDir !== null) return tourDir;
+    }
 
     // Phase 2: Safe search — find move with lowest tour cost among paths
     // where P(death) = 0 at every step. Uses iterative deepening with time budget.
