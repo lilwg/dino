@@ -606,10 +606,7 @@ for (var i = 2; i < process.argv.length; i++) {
     var n = parseInt(process.argv[i]);
     if (!isNaN(n) && n > 0) { numRounds = n; break; }
 }
-if (noEnemies) {
-    // Disable precomputed tours so the AI uses search + tour cost heuristic
-    PRECOMPUTED_TOURS = {};
-}
+// (precomputed tours removed — Dijkstra handles all levels)
 
 console.log('Running ' + numRounds + ' rounds from round ' + startRound + (verbose ? ' (verbose)' : '') + '...\n');
 var result = runGame(startRound + numRounds - 1, verbose);
