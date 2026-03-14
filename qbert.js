@@ -571,17 +571,24 @@ function simUseDisc(gs, idx) {
     for (var i = 0; i < gs.enemies.length; i++) {
         var e = gs.enemies[i];
         if (e.type === 'coily') {
-            // Check if Coily would chase off the edge
-            var bestDir = null, bestDist = Infinity;
-            var exitRow = disc.row;
-            var discCol = disc.side === 0 ? -1 : disc.row + 1;
-            for (var k = 0; k < DIR_KEYS.length; k++) {
-                var dk = DIRS[DIR_KEYS[k]];
-                var nr = e.row + dk.dr, nc = e.col + dk.dc;
-                var dist = Math.abs(exitRow - 1 - nr) + Math.abs(discCol - nc);
-                if (dist < bestDist) { bestDist = dist; bestDir = { nr: nr, nc: nc }; }
+            // Simulate Coily chasing toward the disc exit over multiple hops
+            var lureRow = disc.row;
+            var lureCol = disc.side === 0 ? -1 : disc.row + 1;
+            var cr = e.row, cc = e.col;
+            var fellOff = false;
+            for (var hop = 0; hop < 20; hop++) {
+                var bestDir = null, bestDist = Infinity;
+                for (var k = 0; k < DIR_KEYS.length; k++) {
+                    var dk = DIRS[DIR_KEYS[k]];
+                    var nr = cr + dk.dr, nc = cc + dk.dc;
+                    var dist = Math.abs(lureRow - nr) + Math.abs(lureCol - nc);
+                    if (dist < bestDist) { bestDist = dist; bestDir = { nr: nr, nc: nc }; }
+                }
+                if (!bestDir) break;
+                if (!isValidPos(bestDir.nr, bestDir.nc)) { fellOff = true; break; }
+                cr = bestDir.nr; cc = bestDir.nc;
             }
-            if (bestDir && !isValidPos(bestDir.nr, bestDir.nc)) {
+            if (fellOff) {
                 gs.score += 500;
                 coilyDied = true;
             } else {
