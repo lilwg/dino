@@ -578,7 +578,7 @@ function simUseDisc(gs, idx) {
             for (var k = 0; k < DIR_KEYS.length; k++) {
                 var dk = DIRS[DIR_KEYS[k]];
                 var nr = e.row + dk.dr, nc = e.col + dk.dc;
-                var dist = Math.abs(exitRow - 1 - nr) + Math.abs((disc.side === 0 ? 0 : exitRow) - nc);
+                var dist = Math.abs(exitRow - 1 - nr) + Math.abs(discCol - nc);
                 if (dist < bestDist) { bestDist = dist; bestDir = { nr: nr, nc: nc }; }
             }
             if (bestDir && !isValidPos(bestDir.nr, bestDir.nc)) {
