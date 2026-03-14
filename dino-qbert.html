@@ -585,8 +585,6 @@ function startPlayerJump(nr, nc, dirKey) {
 function killPlayer() {
     if (debugEnemies || player.dead) return;
     player.dead = true;
-    player.pendingDeath = false;
-    player.pendingCatch = null;
     player.pendingDisc = null;
     player.jumping = false;
     DinoSounds.hit();
@@ -805,37 +803,11 @@ function updateEnemies() {
 }
 
 function onEnemyLand(e, idx) {
-    if (player.dead) return;
-    var hit = (e.row === player.row && e.col === player.col);
+    // Arcade model: only on-land EFFECTS here (slick cube reversion).
+    // All collision detection is handled by the per-frame same-tile check.
     if (e.type === 'slick') {
         var cube = cubeAt(e.row, e.col);
         if (cube && cube.state > 0) cube.state--;
-        if (hit) {
-            if (player.jumping) {
-                player.pendingCatch = { type: 'slick', idx: idx };
-            } else {
-                score += 300; checkExtraLife();
-                enemies.splice(idx, 1);
-            }
-        }
-    } else if (e.type === 'greenball') {
-        if (hit) {
-            if (player.jumping) {
-                player.pendingCatch = { type: 'greenball', idx: idx };
-            } else {
-                score += 100; checkExtraLife();
-                enemies.splice(idx, 1);
-            }
-        }
-    } else if (e.type === 'redball' || e.type === 'coily' || e.type === 'egg' ||
-               e.type === 'ugg' || e.type === 'wrongway') {
-        if (hit) {
-            if (player.jumping) {
-                player.pendingDeath = true;
-            } else {
-                killPlayer();
-            }
-        }
     }
 }
 
@@ -906,8 +878,6 @@ function updatePlayer() {
         if (player.deathTimer <= 0 && !gameOver) {
             // Respawn
             player.dead = false;
-            player.pendingDeath = false;
-            player.pendingCatch = null;
             player.pendingDisc = null;
             swearBubble = null;
             var sp = cubeXY(0, 0);
@@ -955,28 +925,7 @@ function updatePlayer() {
             hops++;
             // Color cube on landing
             stompCube(player.row, player.col);
-            // Resolve pending death (enemy landed on our destination mid-jump)
-            if (player.pendingDeath) {
-                player.pendingDeath = false;
-                killPlayer();
-            }
-            // Resolve pending catch (slick/greenball landed on our destination)
-            if (!player.dead && player.pendingCatch) {
-                var pc = player.pendingCatch;
-                player.pendingCatch = null;
-                if (pc.type === 'slick') { score += 300; checkExtraLife(); }
-                else if (pc.type === 'greenball') { score += 100; checkExtraLife(); }
-                // Remove enemy by finding it (index may have shifted)
-                for (var ei = 0; ei < enemies.length; ei++) {
-                    var ee = enemies[ei];
-                    if ((ee.type === 'slick' || ee.type === 'greenball') &&
-                        ee.row === player.row && ee.col === player.col) {
-                        enemies.splice(ei, 1);
-                        break;
-                    }
-                }
-            }
-            // Check enemy collision on landing
+            // Arcade model: collision handled by per-frame same-tile check
             checkPlayerEnemyCollision();
             // Check round complete
             if (!player.dead && allColored()) {
