@@ -378,14 +378,9 @@ function initRound() {
     aiTourIdx    = 0;
     aiBoardSig   = '';
     if (debugEnemies) {
-    // Debug mode: spawn all enemy types quickly, enemies move immediately
+    // Debug mode: spawn only ugg for position tuning
     roundStarted = true;
-    scheduleSpawn(1);                        // Coily egg
-    scheduleSpawn(5, 'redball');
-    scheduleSpawn(10, 'greenball');
-    scheduleSpawn(15, 'slick');
-    scheduleSpawn(20, 'ugg');
-    scheduleSpawn(25, 'wrongway');
+    scheduleSpawn(1, 'ugg');
     } else if (enemiesEnabled) {
     // Spawn timers in frames (at 60fps) — arcade-accurate from video analysis.
     // Video: egg at ~3s after first move, first red ball at ~5s.
@@ -1599,7 +1594,7 @@ function drawEnemy(e) {
 
     } else if (e.type === 'ugg') {
         // Ugg on right face: draw on the right side face of the cube above
-        _drawRotatedCactus(e.px + TILE_W / 4, e.py - TILE_H / 4, Math.PI / 2, 0.75);
+        _drawRotatedCactus(e.px, e.py, Math.PI / 2, 0.75);
 
     } else if (e.type === 'wrongway') {
         // Wrongway on left face of cube above collision face
