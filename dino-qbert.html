@@ -602,9 +602,16 @@ function useDisc(idx) {
     score += 300;
     checkExtraLife();
 
-    // Lure target: Coily will chase toward the disc's edge during the ride
+    // Mark all Coilys with a lure target — they'll chase toward the disc edge
+    // position until the player lands at the apex after the ride
     var lureRow = disc.row;
     var lureCol = (disc.side === 0) ? -1 : disc.row + 1;
+    for (var i = 0; i < enemies.length; i++) {
+        if (enemies[i].type === 'coily') {
+            enemies[i].lureRow = lureRow;
+            enemies[i].lureCol = lureCol;
+        }
+    }
 
     // Start disc ride animation: player flies from disc position to pyramid top
     var dp = discScreenPos(disc);
@@ -613,8 +620,7 @@ function useDisc(idx) {
         side: disc.side,
         t: 0,
         sx: dp.x, sy: dp.y,
-        tx: top.cx, ty: top.cy,
-        lureRow: lureRow, lureCol: lureCol
+        tx: top.cx, ty: top.cy
     };
     // Player is already at disc position from the jump animation
     player.px = dp.x; player.py = dp.y;
@@ -730,19 +736,16 @@ function updateEnemies() {
                 e.falling = true;
             }
         } else if (e.type === 'coily') {
-            // During disc ride, chase the disc exit point instead of the player
-            var chaseRow = player.row, chaseCol = player.col;
-            if (discRide) {
-                // Target the disc exit — off-edge position Coily should jump toward
-                chaseRow = discRide.lureRow != null ? discRide.lureRow : player.row;
-                chaseCol = discRide.lureCol != null ? discRide.lureCol : player.col;
-            }
+            // If lured by a disc, chase the disc edge; otherwise chase the player
+            var lured = e.lureRow != null;
+            var chaseRow = lured ? e.lureRow : player.row;
+            var chaseCol = lured ? e.lureCol : player.col;
             var bestDir = null, bestDist = Infinity;
             for (var k = 0; k < DIR_KEYS.length; k++) {
                 var dk = DIRS[DIR_KEYS[k]];
                 var enr = e.row + dk.dr, enc = e.col + dk.dc;
-                // During disc ride, allow off-edge moves so Coily falls off
-                if (!discRide && !isValidPos(enr, enc)) continue;
+                // When lured, allow off-edge moves so Coily falls off
+                if (!lured && !isValidPos(enr, enc)) continue;
                 var dist = Math.abs(chaseRow - enr) + Math.abs(chaseCol - enc);
                 if (dist < bestDist) { bestDist = dist; bestDir = { nr: enr, nc: enc }; }
             }
