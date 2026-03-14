@@ -242,17 +242,17 @@ var roundStarted = false; // true after first player move — enemies frozen unt
 
 // Base enemy move intervals: idle frames BETWEEN hops (level 1 speed).
 // Total land-to-land = moveInterval + ceil(1/jumpDur).
-// Video analysis at 30fps: Q*bert=15f(0.50s), Coily≈15-16f(0.50-0.53s),
-// red ball≈16f(0.53s). At 60fps: Q*bert=30f, Coily=32f, red ball=32f.
-// With jumpDur 0.143 giving ~7f animation, idle gap = total - 7.
+// Arcade runs at ~61fps, Q*bert hop ~15 arcade frames = 0.25s.
+// At our 60fps: Q*bert=15f total (10 anim + 5 idle).
+// Enemies are slightly slower: Coily ~16f, giving 9 idle + 7 anim.
 var BASE_ENEMY_INTERVALS = {
-    egg:       25,   // 25 idle + 7 anim = 32f (~0.53s) — same as coily
-    coily:     25,   // 25 idle + 7 anim = 32f (~0.53s)
-    redball:   25,   // 25 idle + 7 anim = 32f (~0.53s)
-    greenball: 33,   // 33 idle + 7 anim = 40f (~0.67s) — leisurely
-    slick:     43,   // 43 idle + 7 anim = 50f (~0.83s) — slow
-    ugg:       25,   // 25 idle + 7 anim = 32f (~0.53s) — side-crawlers
-    wrongway:  25    // 25 idle + 7 anim = 32f (~0.53s) — side-crawlers
+    egg:        9,   // 9 idle + 7 anim = 16f (~0.27s) — same as coily
+    coily:      9,   // 9 idle + 7 anim = 16f (~0.27s)
+    redball:    9,   // 9 idle + 7 anim = 16f (~0.27s)
+    greenball: 13,   // 13 idle + 7 anim = 20f (~0.33s) — leisurely
+    slick:     18,   // 18 idle + 7 anim = 25f (~0.42s) — slow
+    ugg:        9,   // 9 idle + 7 anim = 16f (~0.27s) — side-crawlers
+    wrongway:   9    // 9 idle + 7 anim = 16f (~0.27s) — side-crawlers
 };
 
 // Effective enemy intervals for current level
@@ -392,13 +392,13 @@ function initRound() {
     scheduleSpawn(25, 'wrongway');
     } else if (enemiesEnabled) {
     // Spawn timers in frames (at 60fps) — arcade-accurate from video analysis.
-    // Video: egg at ~3s after first move, first red ball at ~6s, then every ~3s.
-    scheduleSpawn(180);                                    // Coily egg (~3s) — always
-    if (hasRedBall())    scheduleSpawn(360, 'redball');     // ~6s
-    if (hasSlick())      scheduleSpawn(900, 'slick');      // ~15s
-    if (hasGreenBall())  scheduleSpawn(540, 'greenball');   // ~9s
-    if (hasUggWrongway()) scheduleSpawn(720, 'ugg');        // ~12s
-    if (hasUggWrongway()) scheduleSpawn(840, 'wrongway');   // ~14s
+    // Video: egg at ~2s after first move, first red ball at ~3s, then every ~3s.
+    scheduleSpawn(120);                                    // Coily egg (~2s) — always
+    if (hasRedBall())    scheduleSpawn(180, 'redball');     // ~3s
+    if (hasSlick())      scheduleSpawn(480, 'slick');      // ~8s
+    if (hasGreenBall())  scheduleSpawn(300, 'greenball');   // ~5s
+    if (hasUggWrongway()) scheduleSpawn(360, 'ugg');        // ~6s
+    if (hasUggWrongway()) scheduleSpawn(420, 'wrongway');   // ~7s
     }
 }
 
@@ -690,12 +690,12 @@ function updateEnemies() {
                         var dft = (ft === 'egg' || ft === 'coily') ? null : ft;
                         scheduleSpawn(30, dft);
                     } else {
-                        if (ft === 'egg' || ft === 'coily') scheduleSpawn(180);
-                        else if (ft === 'redball' && hasRedBall()) scheduleSpawn(Math.max(120, 180 - Math.floor(round / 2) * 10), 'redball');
-                        else if (ft === 'greenball' && hasGreenBall()) scheduleSpawn(540, 'greenball');
-                        else if (ft === 'slick' && hasSlick()) scheduleSpawn(720, 'slick');
-                        else if (ft === 'ugg' && hasUggWrongway()) scheduleSpawn(600, 'ugg');
-                        else if (ft === 'wrongway' && hasUggWrongway()) scheduleSpawn(660, 'wrongway');
+                        if (ft === 'egg' || ft === 'coily') scheduleSpawn(120);
+                        else if (ft === 'redball' && hasRedBall()) scheduleSpawn(Math.max(90, 180 - Math.floor(round / 2) * 15), 'redball');
+                        else if (ft === 'greenball' && hasGreenBall()) scheduleSpawn(300, 'greenball');
+                        else if (ft === 'slick' && hasSlick()) scheduleSpawn(420, 'slick');
+                        else if (ft === 'ugg' && hasUggWrongway()) scheduleSpawn(300, 'ugg');
+                        else if (ft === 'wrongway' && hasUggWrongway()) scheduleSpawn(360, 'wrongway');
                     }
                     continue;
                 }
@@ -826,7 +826,7 @@ function onEnemyLand(e, idx) {
 function updatePlayer() {
     // Disc ride animation: disc swoops upward in an arc to the pyramid top
     if (discRide) {
-        discRide.t += 0.0083;  // ~120 frames (~2.0s) to complete — arcade-accurate
+        discRide.t += 0.012;  // ~83 frames (~1.4s) to complete — arcade-accurate
         if (discRide.t >= 1) {
             discRide.t = 1;
             // Land at top
@@ -886,12 +886,12 @@ function updatePlayer() {
             }
             enemies = kept;
             roundStarted = false; // wait for first move again after respawn
-            scheduleSpawn(180);                                    // Coily egg (~3s)
-            if (hasRedBall())    scheduleSpawn(300, 'redball');     // ~5s
-            if (hasSlick())      scheduleSpawn(720, 'slick');      // ~12s
-            if (hasGreenBall())  scheduleSpawn(480, 'greenball');   // ~8s
-            if (hasUggWrongway()) scheduleSpawn(540, 'ugg');        // ~9s
-            if (hasUggWrongway()) scheduleSpawn(720, 'wrongway');   // ~12s
+            scheduleSpawn(120);                                    // Coily egg (~2s)
+            if (hasRedBall())    scheduleSpawn(150, 'redball');     // ~2.5s
+            if (hasSlick())      scheduleSpawn(420, 'slick');      // ~7s
+            if (hasGreenBall())  scheduleSpawn(300, 'greenball');   // ~5s
+            if (hasUggWrongway()) scheduleSpawn(300, 'ugg');        // ~5s
+            if (hasUggWrongway()) scheduleSpawn(420, 'wrongway');   // ~7s
         }
         return;
     }
@@ -961,7 +961,7 @@ exCloneState = function() {
     // frames-per-hop. Each hop ≈ ceil(1/jumpDur) + aiMoveDelay frames,
     // and the timer ticks by gameSpeed each frame.
     var sm = speedMultiplier();
-    var framesPerHop = Math.ceil(1 / (0.111 * sm)) + Math.max(1, Math.round(20 / sm));
+    var framesPerHop = Math.ceil(1 / (0.111 * sm)) + Math.max(1, Math.round(5 / sm));
     var frameTickPerHop = framesPerHop * (typeof gameSpeed !== 'undefined' ? gameSpeed : 1.0);
     var spawns = [];
     for (var i = 0; i < enemies.length; i++) {
@@ -1081,7 +1081,7 @@ function update() {
     if (!player.jumping && !player.dead && !discRide) {
         if (gameMode === 'rules') {
             aiMoveTimer++;
-            if (aiMoveTimer >= Math.max(1, Math.round(20 / speedMultiplier()))) {
+            if (aiMoveTimer >= Math.max(1, Math.round(5 / speedMultiplier()))) {
                 aiMoveTimer = 0;
                 var dir = computeAIMove();
                 if (dir) tryMove(dir);
