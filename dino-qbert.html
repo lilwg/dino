@@ -210,9 +210,9 @@ function drawCube(c, cx, cy, state) {
     var lv = arcadeLevel();
     var palIdx = lv <= 2 ? 0 : lv <= 4 ? 1 : lv <= 6 ? 2 : 3;
     var topCol   = CUBE_TOP_COLORS[palIdx][state] || CUBE_TOP_COLORS[palIdx][0];
-    var leftCol  = '#d4d4d4';
-    var rightCol = '#bcbcbc';
-    var stroke   = '#535353';
+    var leftCol  = '#a8a8a8';
+    var rightCol = '#909090';
+    var stroke   = '#686868';
 
     function face(pts, col) {
         c.beginPath();
