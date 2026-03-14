@@ -884,6 +884,17 @@ function predictCoilyNext(coilyR, coilyC, targetR, targetC) {
 //   lookahead to avoid traps. Uses iterative-deepening search with memoization.
 // Green ball freeze: treat as Mode 1 regardless (enemies can't move).
 
+// Get the effective position of an enemy. In the HTML game, enemies that are
+// mid-jump (before apex) have destRow/destCol set to where they're heading.
+// We use that as their effective position since they'll arrive there before
+// the player can react (player jump = 36 frames, enemy completes in <34).
+function enemyEffectivePos(e) {
+    if (e.destRow != null && e.destCol != null) {
+        return { row: e.destRow, col: e.destCol };
+    }
+    return { row: e.row, col: e.col };
+}
+
 // Build set of positions that are "below" a lethal random walker.
 // Each random walker goes DL or DR with 50% probability each turn.
 // Standing in either of those squares = coin-flip death. Avoid them.
@@ -893,24 +904,24 @@ function buildDangerSet() {
         var e = enemies[i];
         if (e.type === 'spawn-timer' || e.type === 'slick' || e.type === 'greenball') continue;
         if (e.type === 'coily') continue; // handled by Mode 2 search
-        // Current position is dangerous
-        danger[e.row + ',' + e.col] = true;
+        var pos = enemyEffectivePos(e);
+        var er = pos.row, ec = pos.col;
+        // Current/destination position is dangerous
+        danger[er + ',' + ec] = true;
         // DL/DR children for top-down walkers (egg, redball)
         if (e.type === 'egg' || e.type === 'redball') {
-            var dl = (e.row + 1) + ',' + e.col;
-            var dr = (e.row + 1) + ',' + (e.col + 1);
-            if (isValidPos(e.row + 1, e.col)) danger[dl] = true;
-            if (isValidPos(e.row + 1, e.col + 1)) danger[dr] = true;
+            if (isValidPos(er + 1, ec)) danger[(er + 1) + ',' + ec] = true;
+            if (isValidPos(er + 1, ec + 1)) danger[(er + 1) + ',' + (ec + 1)] = true;
         }
         // Ugg: moves UL (row-1,col-1) or Left (row,col-1)
         if (e.type === 'ugg') {
-            if (isValidPos(e.row - 1, e.col - 1)) danger[(e.row-1) + ',' + (e.col-1)] = true;
-            if (isValidPos(e.row, e.col - 1)) danger[e.row + ',' + (e.col-1)] = true;
+            if (isValidPos(er - 1, ec - 1)) danger[(er-1) + ',' + (ec-1)] = true;
+            if (isValidPos(er, ec - 1)) danger[er + ',' + (ec-1)] = true;
         }
         // Wrongway: moves UR (row-1,col) or Right (row,col+1)
         if (e.type === 'wrongway') {
-            if (isValidPos(e.row - 1, e.col)) danger[(e.row-1) + ',' + e.col] = true;
-            if (isValidPos(e.row, e.col + 1)) danger[e.row + ',' + (e.col+1)] = true;
+            if (isValidPos(er - 1, ec)) danger[(er-1) + ',' + ec] = true;
+            if (isValidPos(er, ec + 1)) danger[er + ',' + (ec+1)] = true;
         }
     }
     return danger;
@@ -1193,11 +1204,12 @@ function isSafeMove(dirKey) {
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
         if (e.type === 'spawn-timer' || e.type === 'slick' || e.type === 'greenball') continue;
-        // Current enemy position
-        if (e.row === nr && e.col === nc) return false;
+        var pos = enemyEffectivePos(e);
+        // Current/destination enemy position
+        if (pos.row === nr && pos.col === nc) return false;
         // Coily's predicted next position (Coily chases toward our landing spot)
         if (e.type === 'coily') {
-            var cp = predictCoilyNext(e.row, e.col, nr, nc);
+            var cp = predictCoilyNext(pos.row, pos.col, nr, nc);
             if (cp.row === nr && cp.col === nc) return false;
         }
     }
@@ -1209,7 +1221,11 @@ function isSafeMove(dirKey) {
 function evalDiscLure() {
     var coily = null;
     for (var i = 0; i < enemies.length; i++) {
-        if (enemies[i].type === 'coily') { coily = enemies[i]; break; }
+        if (enemies[i].type === 'coily') {
+            var pos = enemyEffectivePos(enemies[i]);
+            coily = { row: pos.row, col: pos.col };
+            break;
+        }
     }
     if (!coily) return null;
 
