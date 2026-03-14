@@ -599,6 +599,8 @@ function simUseDisc(gs, idx) {
         for (var i = 0; i < kept.length; i++)
             if (kept[i].type === 'spawn-timer') spawnTimers.push(kept[i]);
         gs.enemies = spawnTimers;
+        // Schedule Coily respawn (new egg after delay)
+        simScheduleSpawn(gs, 180);
     } else {
         gs.enemies = kept;
     }
