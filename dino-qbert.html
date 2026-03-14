@@ -241,18 +241,17 @@ var levelWonTimer = 0;
 var roundStarted = false; // true after first player move — enemies frozen until then
 
 // Base enemy move intervals: idle frames BETWEEN hops (level 1 speed).
-// Total land-to-land = moveInterval + ceil(1/jumpDur).
-// Video measurement: Q*bert hop = 17.5 video frames at 30fps = 0.583s.
-// At 60fps game: Q*bert = 35f total (23 anim + 12 idle).
-// Enemies similar speed: ~18 anim + idle.
+// Total land-to-land = moveInterval/sm + ceil(1/(jumpDur*sm)).
+// At gameSpeed=0.25 (displayed "1x"): sm=0.25, so interval/0.25 = 4*interval.
+// Enemy anim: ceil(1/(0.121*0.25)) = 33f. With interval=1: idle=4f. Total=37f=0.62s.
 var BASE_ENEMY_INTERVALS = {
-    egg:       15,   // 15 idle + 18 anim = 33f (~0.55s)
-    coily:     15,   // 15 idle + 18 anim = 33f (~0.55s)
-    redball:   15,   // 15 idle + 18 anim = 33f (~0.55s)
-    greenball: 22,   // 22 idle + 18 anim = 40f (~0.67s) — leisurely
-    slick:     32,   // 32 idle + 18 anim = 50f (~0.83s) — slow
-    ugg:       15,   // 15 idle + 18 anim = 33f (~0.55s) — side-crawlers
-    wrongway:  15    // 15 idle + 18 anim = 33f (~0.55s) — side-crawlers
+    egg:        1,   // 4 idle + 33 anim = 37f (~0.62s) at 1x
+    coily:      1,   // 4 idle + 33 anim = 37f (~0.62s)
+    redball:    1,   // 4 idle + 33 anim = 37f (~0.62s)
+    greenball:  3,   // 12 idle + 33 anim = 45f (~0.75s) — leisurely
+    slick:      5,   // 20 idle + 33 anim = 53f (~0.88s) — slow
+    ugg:        1,   // 4 idle + 33 anim = 37f (~0.62s) — side-crawlers
+    wrongway:   1    // 4 idle + 33 anim = 37f (~0.62s) — side-crawlers
 };
 
 // Effective enemy intervals for current level
@@ -352,7 +351,7 @@ function initRound() {
         row: 0, col: 0,
         px: sp.cx, py: sp.cy,
         // jump state
-        jumping: false, jumpT: 0, jumpDur: 0.045 * speedMultiplier(),
+        jumping: false, jumpT: 0, jumpDur: 0.114 * speedMultiplier(),
         jumpSX: sp.cx, jumpSY: sp.cy,
         tx: sp.cx, ty: sp.cy,
         // sprite
@@ -432,7 +431,7 @@ function spawnEnemy(forcedType) {
             type: 'egg',
             row: 1, col: eggCol,
             px: eggPos.cx, py: eggPos.cy,
-            jumping: false, jumpT: 0, jumpDur: 0.056 * speedMultiplier(),
+            jumping: false, jumpT: 0, jumpDur: 0.121 * speedMultiplier(),
             jumpSX: eggPos.cx, jumpSY: eggPos.cy,
             tx: eggPos.cx, ty: eggPos.cy,
             hops: 0,
@@ -444,7 +443,7 @@ function spawnEnemy(forcedType) {
             type: 'redball',
             row: spawnRow, col: spawnCol,
             px: sp.cx, py: sp.cy,
-            jumping: false, jumpT: 0, jumpDur: 0.056 * speedMultiplier(),
+            jumping: false, jumpT: 0, jumpDur: 0.121 * speedMultiplier(),
             jumpSX: sp.cx, jumpSY: sp.cy,
             tx: sp.cx, ty: sp.cy,
             frame: 0, frameTimer: 0,
@@ -455,7 +454,7 @@ function spawnEnemy(forcedType) {
             type: 'greenball',
             row: spawnRow, col: spawnCol,
             px: sp.cx, py: sp.cy,
-            jumping: false, jumpT: 0, jumpDur: 0.056 * speedMultiplier(),
+            jumping: false, jumpT: 0, jumpDur: 0.121 * speedMultiplier(),
             jumpSX: sp.cx, jumpSY: sp.cy,
             tx: sp.cx, ty: sp.cy,
             frame: 0, frameTimer: 0,
@@ -466,7 +465,7 @@ function spawnEnemy(forcedType) {
             type: 'slick',
             row: spawnRow, col: spawnCol,
             px: sp.cx, py: sp.cy,
-            jumping: false, jumpT: 0, jumpDur: 0.056 * speedMultiplier(),
+            jumping: false, jumpT: 0, jumpDur: 0.121 * speedMultiplier(),
             jumpSX: sp.cx, jumpSY: sp.cy,
             tx: sp.cx, ty: sp.cy,
             frame: 0, frameTimer: 0,
@@ -480,7 +479,7 @@ function spawnEnemy(forcedType) {
             type: 'ugg',
             row: uggRow, col: uggCol,
             px: usp.cx, py: usp.cy,
-            jumping: false, jumpT: 0, jumpDur: 0.056 * speedMultiplier(),
+            jumping: false, jumpT: 0, jumpDur: 0.121 * speedMultiplier(),
             jumpSX: usp.cx, jumpSY: usp.cy,
             tx: usp.cx, ty: usp.cy,
             frame: 0, frameTimer: 0,
@@ -494,7 +493,7 @@ function spawnEnemy(forcedType) {
             type: 'wrongway',
             row: wwRow, col: wwCol,
             px: wsp.cx, py: wsp.cy,
-            jumping: false, jumpT: 0, jumpDur: 0.056 * speedMultiplier(),
+            jumping: false, jumpT: 0, jumpDur: 0.121 * speedMultiplier(),
             jumpSX: wsp.cx, jumpSY: wsp.cy,
             tx: wsp.cx, ty: wsp.cy,
             frame: 0, frameTimer: 0,
@@ -507,7 +506,7 @@ function spawnEnemy(forcedType) {
 function enemyJumpTo(e, nr, nc) {
     var dst = cubeXY(nr, nc);
     e.jumping = true; e.jumpT = 0;
-    e.jumpDur = 0.056 * speedMultiplier();  // refresh speed each hop
+    e.jumpDur = 0.121 * speedMultiplier();  // refresh speed each hop
     e.jumpSX = e.px; e.jumpSY = e.py;
     // Face based on horizontal direction of jump
     if (dst.cx < e.px) e.facing = 'L';
@@ -548,7 +547,7 @@ function startPlayerJump(nr, nc, dirKey) {
     var dst = cubeXY(nr, nc);
     player.jumping  = true;
     player.jumpT    = 0;
-    player.jumpDur  = 0.045 * speedMultiplier();  // refresh speed each hop
+    player.jumpDur  = 0.114 * speedMultiplier();  // refresh speed each hop
     player.jumpSX   = player.px;
     player.jumpSY   = player.py;
     player.tx       = dst.cx;
@@ -970,7 +969,7 @@ exCloneState = function() {
     // frames-per-hop. Each hop ≈ ceil(1/jumpDur) + aiMoveDelay frames,
     // and the timer ticks by gameSpeed each frame.
     var sm = speedMultiplier();
-    var framesPerHop = Math.ceil(1 / (0.045 * sm)) + Math.max(1, Math.round(12 / sm));
+    var framesPerHop = Math.ceil(1 / (0.114 * sm)) + Math.max(1, Math.round(1 / sm));
     var frameTickPerHop = framesPerHop * (typeof gameSpeed !== 'undefined' ? gameSpeed : 1.0);
     var spawns = [];
     for (var i = 0; i < enemies.length; i++) {
@@ -1090,7 +1089,7 @@ function update() {
     if (!player.jumping && !player.dead && !discRide) {
         if (gameMode === 'rules') {
             aiMoveTimer++;
-            if (aiMoveTimer >= Math.max(1, Math.round(12 / speedMultiplier()))) {
+            if (aiMoveTimer >= Math.max(1, Math.round(1 / speedMultiplier()))) {
                 aiMoveTimer = 0;
                 var dir = computeAIMove();
                 if (dir) tryMove(dir);
@@ -1737,7 +1736,7 @@ window.setGameSpeed = function (v) {
         }
     }
     // Update player jump speed
-    player.jumpDur = 0.045 * speedMultiplier();
+    player.jumpDur = 0.114 * speedMultiplier();
 };
 
 // ─── Input ────────────────────────────────────────────────────────────────────
