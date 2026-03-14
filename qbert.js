@@ -540,13 +540,24 @@ function simUpdateEnemies(gs) {
     }
 }
 
+// Get effective position (destination if mid-jump pre-apex, else current)
+function effectivePos(entity) {
+    if (entity.destRow != null && entity.destCol != null)
+        return { row: entity.destRow, col: entity.destCol };
+    return { row: entity.row, col: entity.col };
+}
+
 // Per-frame collision check: same tile = death (or catch for slick/greenball)
+// Uses effective positions so mid-jump entities collide at their destination,
+// not their source tile (prevents false kills when leaving a cube).
 function simCheckCollision(gs) {
     if (gs.player.dead) return;
+    var pp = effectivePos(gs.player);
     for (var i = 0; i < gs.enemies.length; i++) {
         var e = gs.enemies[i];
         if (e.type === 'spawn-timer') continue;
-        if (e.row === gs.player.row && e.col === gs.player.col) {
+        var ep = effectivePos(e);
+        if (ep.row === pp.row && ep.col === pp.col) {
             if (e.type === 'slick') {
                 gs.score += 300;
                 gs.enemies.splice(i, 1); i--;
