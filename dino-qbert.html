@@ -47,12 +47,13 @@
 // Globals shared with qbert-ai.js (must be declared before it loads)
 var round, player, enemies, cubeStates, discs;
 var aiTour, aiTourIdx, aiBoardSig;
-var exCloneState;
 var gameSpeed = 1.0;  // global speed scale: 1.0 = normal arcade speed ("1x")
+var freezeTimer = 0;
 var enemiesEnabled = true;  // toggle via UI button
 var debugEnemies = false;   // ?debug URL param: spawn all enemies, hide player
 </script>
-<script src="qbert-ai.js?v=2"></script>
+<script src="qbert.js"></script>
+<script src="qbert-ai.js"></script>
 <script>
 
 (function () {
@@ -183,7 +184,7 @@ function applyNight(c) {
     c.globalCompositeOperation = 'source-over';
 }
 
-// ─── Isometric pyramid (ROWS, DIRS, DIR_KEYS etc. loaded from qbert-ai.js) ──
+// ─── Isometric pyramid (ROWS, DIRS, DIR_KEYS etc. loaded from qbert.js) ────
 var TILE_W  = 64, TILE_H = 32;          // diamond: 64×32 (hw=32, hh=16)
 var CUBE_DEPTH = TILE_W / 2;            // = 32; side face is 32×32 → equal area to top diamond ✓
 var ROW_STEP   = TILE_H / 2 + CUBE_DEPTH; // = 48; perfect interlocking: face bottom = next row's diamond top
@@ -240,24 +241,6 @@ var levelWon = false;
 var levelWonTimer = 0;
 var roundStarted = false; // true after first player move — enemies frozen until then
 
-// Idle frames between enemy hops at level 1, 1x speed.
-// Total hop time = idle + ceil(1/jumpDur) frames.
-// At 1x: enemy jumpDur=0.030 → anim=34f. With idle=4: total=38f=0.63s.
-var BASE_ENEMY_INTERVALS = {
-    egg:        4,   // 4 idle + 34 anim = 38f (0.63s)
-    coily:      4,   // 4 idle + 34 anim = 38f (0.63s)
-    redball:    4,   // 4 idle + 34 anim = 38f (0.63s)
-    greenball: 12,   // 12 idle + 34 anim = 46f (0.77s) — leisurely
-    slick:     20,   // 20 idle + 34 anim = 54f (0.90s) — slow
-    ugg:        4,   // 4 idle + 34 anim = 38f (0.63s) — side-crawlers
-    wrongway:   4    // 4 idle + 34 anim = 38f (0.63s) — side-crawlers
-};
-
-// Effective enemy intervals for current level
-function enemyMoveInterval(type) {
-    return Math.round((BASE_ENEMY_INTERVALS[type] || 30) / speedMultiplier());
-}
-
 var score, hiScore, lives, hops;
 var bestHops = {};  // best (minimum) hops per arcade level, persisted
 var extraLifeGiven;
@@ -277,8 +260,9 @@ var inputQueue  = [];
 var heldDir     = null;  // direction currently held by player
 var discRide    = null;  // { side, t, sx, sy, tx, ty } — player riding disc to top
 
-// DIRS, DIR_KEYS, isValidPos, cubeAt, arcadeLevel, targetState, nextCubeState
-// loaded from qbert-ai.js
+// DIRS, DIR_KEYS, isValidPos, cubeAt, allColored, arcadeLevel, targetState,
+// nextCubeState, discConfig, bfsTo, boardSig, etc. loaded from qbert.js
+// AI functions (aiPickBestDir, buildTour, buildDangerMaps) from qbert-ai.js
 
 function stompCube(row, col) {
     var cube = cubeAt(row, col);
@@ -298,7 +282,7 @@ function checkExtraLife() {
     }
 }
 
-// allColored, discConfig loaded from qbert-ai.js
+// allColored, discConfig loaded from qbert.js
 
 // Legacy helper: returns [leftRow, rightRow] for the first two discs
 function discRows() {
@@ -949,91 +933,11 @@ function updatePlayer() {
     }
 }
 
-// ─── AI (bfsTo, boardSig, dangerMaps, safeSearch etc. from qbert-ai.js) ──
-
-exCloneState = function() {
-    var tgt = targetState();
-    var cs = new Array(cubeStates.length);
-    for (var i = 0; i < cubeStates.length; i++)
-        cs[i] = { row: cubeStates[i].row, col: cubeStates[i].col, state: cubeStates[i].state };
-    var ens = [];
-    // Only track enemies that matter for the search: Coily (deterministic),
-    // and the nearest 3 random lethal enemies. Skip safe enemies (slick, greenball).
-    var lethalRandom = [];
-    for (var i = 0; i < enemies.length; i++) {
-        var e = enemies[i];
-        if (e.type === 'spawn-timer') continue;
-        // Frame-accurate: compute commitFrame (frames until enemy commits next pos)
-        var sm = speedMultiplier();
-        var jumpDur = 0.030 * sm;
-        var cf;
-        if (e.jumping) {
-            // Mid-jump: next commit is after this jump finishes + idle + apex
-            cf = Math.ceil((1.0 - (e.jumpT || 0)) / jumpDur)
-               + exEnemyIdle(e.type, sm) + exEnemyApex(sm);
-        } else {
-            var mi = e.moveInterval || exEnemyIdle(e.type, sm);
-            var mt = e.moveTimer || 0;
-            cf = (mi - mt) + exEnemyApex(sm);
-        }
-        // Use effective position: if enemy is mid-jump (pre-apex), use destination
-        var pos = enemyEffectivePos(e);
-        var er = pos.row, ec = pos.col;
-        if (e.type === 'coily') {
-            ens.push({ type: e.type, row: er, col: ec, hops: e.hops || 0,
-                       commitFrame: cf, accum: cf / exPlayerHop(sm) });
-        } else if (e.type === 'slick' || e.type === 'greenball') {
-            continue; // safe enemies — skip
-        } else {
-            var d = exBfsDist(player.row, player.col, er, ec);
-            lethalRandom.push({ e: e, dist: d, cf: cf, er: er, ec: ec });
-        }
-    }
-    lethalRandom.sort(function(a, b) { return a.dist - b.dist; });
-    for (var i = 0; i < Math.min(5, lethalRandom.length); i++) {
-        var lr = lethalRandom[i];
-        ens.push({ type: lr.e.type, row: lr.er, col: lr.ec,
-                   hops: lr.e.hops || 0,
-                   commitFrame: lr.cf, accum: lr.cf / exPlayerHop(sm),
-                   cloud: [{ row: lr.er, col: lr.ec, prob: 1.0 }] });
-    }
-    var colored = 0;
-    for (var i = 0; i < cs.length; i++) colored += Math.min(cs[i].state, tgt);
-    var ds = [];
-    for (var i = 0; i < discs.length; i++)
-        ds.push({ side: discs[i].side, row: discs[i].row, active: discs[i].active });
-    // Include imminent spawn timers for Ugg/Wrongway (dangerous spawn points)
-    // Include spawn timers that will fire within the next few player hops.
-    // Timer is in frames; convert to "AI steps until spawn" by dividing by
-    // frames-per-hop. Each hop ≈ ceil(1/jumpDur) + aiMoveDelay frames,
-    // and the timer ticks by gameSpeed each frame.
-    var sm = speedMultiplier();
-    var framesPerHop = Math.ceil(1 / (0.028 * sm));
-    var frameTickPerHop = framesPerHop * (typeof gameSpeed !== 'undefined' ? gameSpeed : 1.0);
-    var spawns = [];
-    for (var i = 0; i < enemies.length; i++) {
-        var e = enemies[i];
-        if (e.type !== 'spawn-timer') continue;
-        // Convert frame-based timer to AI steps
-        var stepsUntil = Math.ceil(e.timer / frameTickPerHop);
-        if (stepsUntil <= 3) {
-            spawns.push({ timer: stepsUntil, forcedType: e.forcedType || null });
-        }
-    }
-    return { pr: player.row, pc: player.col, cubes: cs, enemies: ens,
-             alive: true, score: 0, cubesColored: colored, tgt: tgt,
-             discs: ds, lv: arcadeLevel(), spawns: spawns,
-             sm: speedMultiplier() };
-};
-
-// exCubeAt, exClone, exMoveEnemies, exPlayerMove, bfsDistTable, exBfsDist,
-// exTourCost, exCanMove, unifiedSearch, aiPickBestDir loaded from qbert-ai.js
+// ─── AI (uses aiPickBestDir, buildTour, buildDangerMaps from qbert-ai.js) ──
 
 function computeAIMove() {
     var tgt = targetState();
-    var danger = buildDangerMaps();
 
-    // Use shared AI logic
     var bestDir = aiPickBestDir();
     aiBestDir = bestDir;
 
