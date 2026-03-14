@@ -342,6 +342,8 @@ function simSpawnEnemy(gs, forcedType) {
 // ─── Simulation: frame-level updates ─────────────────────────────────────────
 
 function simEnemyJumpTo(e, nr, nc, sm) {
+    e.jumpSrcRow = e.row;
+    e.jumpSrcCol = e.col;
     e.jumping = true;
     e.jumpT = 0;
     e.jumpDur = ENEMY_JUMP_DUR * sm;
@@ -609,6 +611,7 @@ function simUseDisc(gs, idx) {
 }
 
 // Try to move the player in a direction. Returns true if move started.
+// Returns 'disc' if a disc was used.
 function simTryMove(gs, dirKey) {
     if (gs.player.dead || gs.player.jumping) return false;
     var d = DIRS[dirKey]; if (!d) return false;
@@ -623,7 +626,7 @@ function simTryMove(gs, dirKey) {
             var isRight = (disc.side === 1 && dirKey === 'UR' && gs.player.col === gs.player.row && gs.player.row === disc.row);
             if (isLeft || isRight) {
                 simUseDisc(gs, di);
-                return true;
+                return 'disc';
             }
         }
         // Fall off edge
@@ -632,6 +635,8 @@ function simTryMove(gs, dirKey) {
         return false;
     }
 
+    gs.player.jumpSrcRow = gs.player.row;
+    gs.player.jumpSrcCol = gs.player.col;
     gs.player.jumping = true;
     gs.player.jumpT = 0;
     gs.player.jumpDur = PLAYER_JUMP_DUR * gs.sm;
@@ -752,11 +757,12 @@ function simCloneGameState() {
             continue;
         }
         var en = { type: e.type, row: e.row, col: e.col,
-                   jumping: !!e.jumping, jumpT: e.jumpT || 0,
-                   jumpDur: e.jumpDur || ENEMY_JUMP_DUR * sm,
-                   destRow: e.destRow || null, destCol: e.destCol || null,
-                   moveTimer: e.moveTimer || 0,
-                   moveInterval: e.moveInterval || enemyMoveInterval(e.type, sm),
+                   jumping: !!e.jumping, jumpT: e.jumpT != null ? e.jumpT : 0,
+                   jumpDur: e.jumpDur != null ? e.jumpDur : ENEMY_JUMP_DUR * sm,
+                   destRow: e.destRow != null ? e.destRow : null,
+                   destCol: e.destCol != null ? e.destCol : null,
+                   moveTimer: e.moveTimer != null ? e.moveTimer : 0,
+                   moveInterval: e.moveInterval != null ? e.moveInterval : enemyMoveInterval(e.type, sm),
                    falling: !!e.falling, willHatch: !!e.willHatch,
                    hops: e.hops || 0 };
         if (e.lureRow != null) { en.lureRow = e.lureRow; en.lureCol = e.lureCol; }
@@ -775,9 +781,10 @@ function simCloneGameState() {
     return {
         player: { row: player.row, col: player.col,
                   dead: !!player.dead, deathTimer: player.deathTimer || 0,
-                  jumping: !!player.jumping, jumpT: player.jumpT || 0,
-                  jumpDur: player.jumpDur || PLAYER_JUMP_DUR * sm,
-                  destRow: player.destRow || null, destCol: player.destCol || null },
+                  jumping: !!player.jumping, jumpT: player.jumpT != null ? player.jumpT : 0,
+                  jumpDur: player.jumpDur != null ? player.jumpDur : PLAYER_JUMP_DUR * sm,
+                  destRow: player.destRow != null ? player.destRow : null,
+                  destCol: player.destCol != null ? player.destCol : null },
         enemies: ens,
         cubes: cubes,
         discs: ds,

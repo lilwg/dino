@@ -24,8 +24,8 @@ function stompsNeeded(cubeState, lv) {
 
 function revertPenalty(lv) {
     if (lv <= 2) return 0;
-    if (lv <= 4) return 1;
-    return 2;
+    if (lv <= 4) return 3;  // toggle: revert + re-stomp = 2 extra, plus detour cost
+    return 4;               // cycle: revert to 0 + 2 re-stomps + detour
 }
 
 function dijkstraWeighted(srcIdx, completedMask, penalty) {
@@ -434,15 +434,22 @@ function mode1Pick(gs, dangerSet) {
         if (!dangerSet[nr + ',' + nc]) return tourDir;
     }
 
+    // Fallback: evaluate each direction with multiple samples to handle
+    // random enemy movement (single simStep can be misleading)
     var bestDir = null, bestCost = Infinity;
     var bestUnsafeDir = null, bestUnsafeCost = Infinity;
+    var SAMPLES = 4;
 
     for (var k = 0; k < DIR_KEYS.length; k++) {
         if (!simCanMove(gs, DIR_KEYS[k])) continue;
-        var child = simDeepClone(gs);
-        simStep(child, DIR_KEYS[k]);
-        if (!child.alive) continue;
-        var tc = simTourCost(child);
+        var totalTC = 0, survived = 0;
+        for (var s = 0; s < SAMPLES; s++) {
+            var child = simDeepClone(gs);
+            var alive = simStep(child, DIR_KEYS[k]);
+            if (alive) { survived++; totalTC += simTourCost(child); }
+        }
+        if (survived === 0) continue;
+        var tc = totalTC / survived;
         var d = DIRS[DIR_KEYS[k]];
         var nr = gs.player.row + d.dr, nc = gs.player.col + d.dc;
 
