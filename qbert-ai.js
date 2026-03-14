@@ -1063,7 +1063,18 @@ function unifiedSearch(st, depth) {
         return { pSurvive: 1, tourCost: -1000 - depth };
     }
     if (depth === 0) {
-        return { pSurvive: 1, tourCost: exTourCost(st) };
+        var tc = exTourCost(st);
+        // Mobility penalty: positions with fewer valid neighbors are worse
+        // when Coily is active (easier to get cornered). Corners like (6,6)
+        // have only 1 neighbor — strongly penalize. Center has 4 neighbors.
+        var neighbors = 0;
+        for (var nk = 0; nk < 4; nk++) {
+            var dk = DIRS[DIR_KEYS[nk]];
+            if (isValidPos(st.pr + dk.dr, st.pc + dk.dc)) neighbors++;
+        }
+        if (neighbors <= 1) tc += 8;       // corner: 1 exit — very bad
+        else if (neighbors === 2) tc += 3;  // edge: 2 exits — somewhat bad
+        return { pSurvive: 1, tourCost: tc };
     }
 
     var key = searchStateKey(st, depth);
@@ -1159,39 +1170,14 @@ function aiPickBestDir() {
 
     var st = exCloneState();
 
-    var dir;
     if (!coilyActive || frozen) {
         // Mode 1: no Coily (or frozen) — pure tour planning + avoid random walkers
         var dangerSet = buildDangerSet();
-        dir = mode1Pick(st, dangerSet);
+        return mode1Pick(st, dangerSet);
     } else {
         // Mode 2: Coily active — multi-step search for evasion + progress
-        dir = mode2Pick(st);
+        return mode2Pick(st);
     }
-
-    // Hard safety: never walk directly onto Coily or into Coily's predicted
-    // next position. The search should handle this, but concurrent jump
-    // animations in the HTML game can cause timing mismatches where the search
-    // sees stale enemy positions. This is a cheap safety net.
-    if (dir && dir !== 'STAY' && !isSafeMove(dir)) {
-        // Try all other directions, pick the safe one with best tour cost
-        var safeFallback = null, safeCost = Infinity;
-        for (var k = 0; k < DIR_KEYS.length; k++) {
-            if (DIR_KEYS[k] === dir) continue;
-            if (!isSafeMove(DIR_KEYS[k])) continue;
-            var d = DIRS[DIR_KEYS[k]];
-            var nr = player.row + d.dr, nc = player.col + d.dc;
-            if (!isValidPos(nr, nc)) continue;
-            var child = exClone(st);
-            child.pr = nr; child.pc = nc;
-            var tc = exTourCost(child);
-            if (tc < safeCost) { safeFallback = DIR_KEYS[k]; safeCost = tc; }
-        }
-        if (safeFallback) dir = safeFallback;
-        else dir = 'STAY'; // no safe move — wait
-    }
-
-    return dir;
 }
 
 // Safety check: never move onto a position occupied by a lethal enemy,
