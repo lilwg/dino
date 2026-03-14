@@ -266,6 +266,7 @@ aiBoardSig   = '';
 var aiMoveScores = {};  // { UL: val, UR: val, DL: val, DR: val } — search scores per direction
 var aiBestDir    = null;
 var inputQueue  = [];
+var heldDir     = null;  // direction currently held by player
 var discRide    = null;  // { side, t, sx, sy, tx, ty } — player riding disc to top
 
 // DIRS, DIR_KEYS, isValidPos, cubeAt, arcadeLevel, targetState, nextCubeState
@@ -1072,6 +1073,8 @@ function update() {
         } else {
             if (inputQueue.length > 0) {
                 tryMove(inputQueue.shift());
+            } else if (heldDir) {
+                tryMove(heldDir);
             }
         }
     }
@@ -1627,6 +1630,7 @@ window.restartGame = function () {
     levelWon  = false;
     aiMoveTimer = 0;
     inputQueue  = [];
+    heldDir     = null;
     inverted    = false;
     dayTimer    = 0;
     nightOpacity= 0;
@@ -1640,6 +1644,7 @@ window.setMode = function (m) {
     document.getElementById('rules-btn').classList.toggle('active', m === 'rules');
     if (m !== 'off') {
         inputQueue = [];
+        heldDir = null;
         if (!vizOn) toggleViz();  // auto-enable viz when AI activated
     }
     aiMoveTimer = 0;
@@ -1678,7 +1683,13 @@ window.setGameSpeed = function (v) {
 };
 
 // ─── Input ────────────────────────────────────────────────────────────────────
-var keysHeld = {};
+function keyToDir(key) {
+    if (key === 'ArrowUp'    || key === 'q' || key === 'Q') return 'UL';
+    if (key === 'ArrowRight' || key === 'w' || key === 'W' || key === 'e' || key === 'E') return 'UR';
+    if (key === 'ArrowLeft'  || key === 'a' || key === 'A') return 'DL';
+    if (key === 'ArrowDown'  || key === 's' || key === 'S' || key === 'd' || key === 'D') return 'DR';
+    return null;
+}
 document.addEventListener('keydown', function (e) {
     if (e.key === 'r' || e.key === 'R') { restartGame(); return; }
     if (e.key === 'p' || e.key === 'P') { togglePause(); return; }
@@ -1686,17 +1697,14 @@ document.addEventListener('keydown', function (e) {
     if (gameMode !== 'off') return;
     var prevent = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'q', 'Q', 'w', 'W', 'e', 'E', 'a', 'A', 's', 'S', 'd', 'D', ' '];
     if (prevent.indexOf(e.key) !== -1) e.preventDefault();
-    if (e.repeat || keysHeld[e.key]) return;
-    keysHeld[e.key] = true;
-    var dir = null;
-    if (e.key === 'ArrowUp'    || e.key === 'q' || e.key === 'Q') dir = 'UL'; // up-left
-    if (e.key === 'ArrowRight' || e.key === 'w' || e.key === 'W' || e.key === 'e' || e.key === 'E') dir = 'UR'; // up-right
-    if (e.key === 'ArrowLeft'  || e.key === 'a' || e.key === 'A') dir = 'DL'; // down-left
-    if (e.key === 'ArrowDown'  || e.key === 's' || e.key === 'S' || e.key === 'd' || e.key === 'D') dir = 'DR'; // down-right
-    if (dir) inputQueue.push(dir);
+    var dir = keyToDir(e.key);
+    if (!dir) return;
+    if (!e.repeat) inputQueue.push(dir);
+    heldDir = dir;
 });
 document.addEventListener('keyup', function (e) {
-    delete keysHeld[e.key];
+    var dir = keyToDir(e.key);
+    if (dir && heldDir === dir) heldDir = null;
 });
 
 // ─── Start ────────────────────────────────────────────────────────────────────
