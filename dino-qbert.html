@@ -1644,9 +1644,22 @@ function drawPaused() {
     ctx.textAlign = 'left';
 }
 
-// ─── Game loop ────────────────────────────────────────────────────────────────
-function loop() {
-    update();
+// ─── Game loop (fixed 60fps simulation) ──────────────────────────────────────
+var lastTime = 0;
+var accumulator = 0;
+var SIM_DT = 1000 / 60;  // 16.667ms per simulation tick
+
+function loop(timestamp) {
+    if (!lastTime) lastTime = timestamp;
+    var delta = timestamp - lastTime;
+    lastTime = timestamp;
+    // Cap delta to avoid spiral of death (e.g. tab was backgrounded)
+    if (delta > 200) delta = 200;
+    accumulator += delta;
+    while (accumulator >= SIM_DT) {
+        update();
+        accumulator -= SIM_DT;
+    }
     draw();
     requestAnimationFrame(loop);
 }
@@ -1669,6 +1682,8 @@ window.restartGame = function () {
     aiMoveTimer = 0;
     inputQueue  = [];
     heldDir     = null;
+    accumulator = 0;
+    lastTime    = 0;
     inverted    = false;
     dayTimer    = 0;
     nightOpacity= 0;
