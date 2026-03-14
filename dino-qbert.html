@@ -1014,10 +1014,15 @@ exCloneState = function() {
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
         if (e.type === 'spawn-timer') continue;
-        // Convert real-time move timer to fractional accumulator for AI search
-        var rate = EX_MOVE_RATE[e.type] || 0.75;
-        var acc = (e.moveTimer !== undefined && e.moveInterval !== undefined)
-            ? (e.moveTimer / e.moveInterval) * rate : 0;
+        // Convert frame-based timer to fractional accumulator for AI search.
+        // If enemy is mid-jump, set accum=0 (just started a hop cycle).
+        var acc;
+        if (e.jumping) {
+            acc = 0;
+        } else {
+            acc = (e.moveTimer !== undefined && e.moveInterval !== undefined)
+                ? (e.moveTimer / e.moveInterval) : 0;
+        }
         // Use effective position: if enemy is mid-jump (pre-apex), use destination
         var pos = enemyEffectivePos(e);
         var er = pos.row, ec = pos.col;

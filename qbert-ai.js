@@ -19,15 +19,16 @@ var DIRS = { UL: {dr:-1, dc:-1}, UR: {dr:-1, dc:0}, DL: {dr:1, dc:0}, DR: {dr:1,
 var DIR_KEYS = ['UL', 'UR', 'DL', 'DR'];
 var DIR_KEYS_WITH_STAY = ['UL', 'UR', 'DL', 'DR', 'STAY'];
 
-// Player hop = 36f (0.60s), enemy hop = 38f (0.63s) at 1x level 1.
+// Player hop = 36f (0.60s), enemy hop ≈ 37f (idle + jump) at 1x level 1.
 // No AI idle delay — AI moves instantly on landing (like holding joystick).
-// Ratio = player_frames / enemy_frames = how far enemy advances per player hop.
+// Ratio ≈ 1.0 for fast enemies: they complete one hop per player hop.
+// Frame-accurate: player jump = 1/0.028 ≈ 36f, enemy idle(4) + jump(33) = 37f.
 var EX_MOVE_RATE = {
-    egg:       36 / 38,   // 0.95 — player slightly faster
-    coily:     36 / 38,   // 0.95
-    redball:   36 / 38,   // 0.95
-    ugg:       36 / 38,   // 0.95
-    wrongway:  36 / 38,   // 0.95
+    egg:       1.0,       // fast — moves once per player hop
+    coily:     1.0,       // fast — moves once per player hop
+    redball:   1.0,       // fast — moves once per player hop
+    ugg:       1.0,       // fast — moves once per player hop
+    wrongway:  1.0,       // fast — moves once per player hop
     greenball: 36 / 46,   // 0.78 — leisurely
     slick:     36 / 54    // 0.67 — slow
 };
@@ -779,7 +780,6 @@ function exPlayerMove(st, dirKey) {
     st.pr = nr; st.pc = nc;
 
     // Check for certain death at landing position (deterministic enemies like Coily)
-    // In the real game, collision kills you even if the cube would complete the level
     for (var ei = 0; ei < st.enemies.length; ei++) {
         var en = st.enemies[ei];
         if (en.type === 'slick' || en.type === 'greenball') continue;
@@ -805,13 +805,13 @@ function exPlayerMove(st, dirKey) {
         st.score += EX_WIN; return true;
     }
 
-    // Simulate enemy movement
+    // Simulate enemy movement (Coily chases new position — standard case)
     exMoveEnemies(st);
 
     // Check death probability after enemies move (they may land on us)
     var pDeathAfter = deathProb(st);
 
-    // Combined death probability: survive both phases
+    // Combined death probability: survive landing + post-move phases
     st.stepDeathProb = 1 - (1 - pDeathLand) * (1 - pDeathAfter);
 
     return true;
@@ -900,10 +900,25 @@ function enemyEffectivePos(e) {
 // Standing in either of those squares = coin-flip death. Avoid them.
 function buildDangerSet() {
     var danger = {};
+    // How many frames per player hop (used for spawn timer check)
+    var sm = (typeof speedMultiplier === 'function') ? speedMultiplier() : 1;
+    var framesPerHop = Math.ceil(1 / (0.028 * sm));
+
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
-        if (e.type === 'spawn-timer' || e.type === 'slick' || e.type === 'greenball') continue;
+        if (e.type === 'slick' || e.type === 'greenball') continue;
         if (e.type === 'coily') continue; // handled by Mode 2 search
+
+        // Imminent spawn timer: mark spawn positions as dangerous
+        if (e.type === 'spawn-timer') {
+            if (e.timer <= framesPerHop * 2) {
+                // Enemy will spawn at row 1 within 2 hops — both spawn cols dangerous
+                danger['1,0'] = true;
+                danger['1,1'] = true;
+            }
+            continue;
+        }
+
         var pos = enemyEffectivePos(e);
         var er = pos.row, ec = pos.col;
         // Current/destination position is dangerous
@@ -958,7 +973,13 @@ function mode1Pick(st, dangerSet) {
         }
     }
 
-    return bestDir || bestUnsafeDir || 'DL';
+    if (bestDir) return bestDir;
+    if (bestUnsafeDir) return bestUnsafeDir;
+    // Fallback: any valid direction
+    for (var k = 0; k < DIR_KEYS.length; k++) {
+        if (exCanMove(st, DIR_KEYS[k])) return DIR_KEYS[k];
+    }
+    return 'STAY';
 }
 
 // ─── Dijkstra tour planner ────────────────────────────────────────────────────
@@ -1155,7 +1176,14 @@ function mode2Pick(st) {
         if (elapsed > AI_TIME_BUDGET) break;
     }
 
-    return bestDir || 'DL';
+    // Fallback: pick any valid direction (avoid falling off edge)
+    if (!bestDir) {
+        for (var k = 0; k < DIR_KEYS.length; k++) {
+            if (exCanMove(st, DIR_KEYS[k])) return DIR_KEYS[k];
+        }
+        return 'STAY';
+    }
+    return bestDir;
 }
 
 function aiPickBestDir() {
