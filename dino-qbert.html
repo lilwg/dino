@@ -268,7 +268,6 @@ var roundMsg;          // { text, timer }
 var swearBubble;       // { x, y, timer }
 var aiDetailPath = [];  // BFS steps to current tour target (valid Q*bert moves)
 var aiTourDots   = [];  // remaining tour centres — drawn as dots only (no lines)
-var aiMoveTimer  = 0;
 aiTour       = [];
 aiTourIdx    = 0;
 aiBoardSig   = '';
@@ -374,7 +373,6 @@ function initRound() {
     discRide    = null;
     aiDetailPath = [];
     aiTourDots   = [];
-    aiMoveTimer  = 0;
     aiTour       = [];
     aiTourInit();
     aiTourIdx    = 0;
@@ -968,7 +966,7 @@ exCloneState = function() {
     // frames-per-hop. Each hop ≈ ceil(1/jumpDur) + aiMoveDelay frames,
     // and the timer ticks by gameSpeed each frame.
     var sm = speedMultiplier();
-    var framesPerHop = Math.ceil(1 / (0.028 * sm)) + Math.max(1, Math.round(4 / sm));
+    var framesPerHop = Math.ceil(1 / (0.028 * sm));
     var frameTickPerHop = framesPerHop * (typeof gameSpeed !== 'undefined' ? gameSpeed : 1.0);
     var spawns = [];
     for (var i = 0; i < enemies.length; i++) {
@@ -1087,11 +1085,11 @@ function update() {
     // Accept input / AI when player is ready (not jumping, not dead, not on disc)
     if (!player.jumping && !player.dead && !discRide) {
         if (gameMode === 'rules') {
-            aiMoveTimer++;
-            if (aiMoveTimer >= Math.max(1, Math.round(4 / speedMultiplier()))) {
-                aiMoveTimer = 0;
-                var dir = computeAIMove();
-                if (dir) tryMove(dir);
+            var dir = computeAIMove();
+            if (dir === 'STAY') {
+                // AI chose to wait — do nothing this frame
+            } else if (dir) {
+                tryMove(dir);
             }
         } else {
             if (inputQueue.length > 0) {
@@ -1682,7 +1680,6 @@ window.restartGame = function () {
     gameOver  = false;
     paused    = false;
     levelWon  = false;
-    aiMoveTimer = 0;
     inputQueue  = [];
     heldDir     = null;
     accumulator = 0;
@@ -1703,7 +1700,6 @@ window.setMode = function (m) {
         heldDir = null;
         if (!vizOn) toggleViz();  // auto-enable viz when AI activated
     }
-    aiMoveTimer = 0;
 };
 
 window.toggleViz = function () {

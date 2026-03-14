@@ -15,19 +15,21 @@
 
 // ─── Core constants ──────────────────────────────────────────────────────────
 var ROWS = 7;
-var DIRS = { UL: {dr:-1, dc:-1}, UR: {dr:-1, dc:0}, DL: {dr:1, dc:0}, DR: {dr:1, dc:1} };
+var DIRS = { UL: {dr:-1, dc:-1}, UR: {dr:-1, dc:0}, DL: {dr:1, dc:0}, DR: {dr:1, dc:1}, STAY: {dr:0, dc:0} };
 var DIR_KEYS = ['UL', 'UR', 'DL', 'DR'];
+var DIR_KEYS_WITH_STAY = ['UL', 'UR', 'DL', 'DR', 'STAY'];
 
-// Player hop = 40f (0.67s), enemy hop = 38f (0.63s) at 1x level 1.
+// Player hop = 36f (0.60s), enemy hop = 38f (0.63s) at 1x level 1.
+// No AI idle delay — AI moves instantly on landing (like holding joystick).
 // Ratio = player_frames / enemy_frames = how far enemy advances per player hop.
 var EX_MOVE_RATE = {
-    egg:       40 / 38,   // 1.05 — slightly faster than player
-    coily:     40 / 38,   // 1.05
-    redball:   40 / 38,   // 1.05
-    ugg:       40 / 38,   // 1.05
-    wrongway:  40 / 38,   // 1.05
-    greenball: 40 / 46,   // 0.87 — leisurely
-    slick:     40 / 54    // 0.74 — slow
+    egg:       36 / 38,   // 0.95 — player slightly faster
+    coily:     36 / 38,   // 0.95
+    redball:   36 / 38,   // 0.95
+    ugg:       36 / 38,   // 0.95
+    wrongway:  36 / 38,   // 0.95
+    greenball: 36 / 46,   // 0.78 — leisurely
+    slick:     36 / 54    // 0.67 — slow
 };
 
 var EX_DEATH = -50000;
@@ -196,7 +198,7 @@ function buildDangerMaps() {
             // Timer units differ: frames in HTML game, turns in test harness.
             // Estimate frames-per-hop to normalize.
             var sm = speedMultiplier();
-            var fph = Math.ceil(1 / (0.028 * sm)) + Math.max(1, Math.round(4 / sm));
+            var fph = Math.ceil(1 / (0.028 * sm));
             var gs = (typeof gameSpeed !== 'undefined') ? gameSpeed : 1.0;
             var tickPerHop = fph * gs;
             // If timer > 100, it's frame-based (HTML); otherwise turn-based (test)
@@ -713,6 +715,14 @@ function coilyLured(e, disc) {
 
 function exPlayerMove(st, dirKey) {
     if (!st.alive) return false;
+
+    // STAY: player doesn't move, enemies still advance
+    if (dirKey === 'STAY') {
+        exMoveEnemies(st);
+        st.stepDeathProb = deathProb(st);
+        return true;
+    }
+
     var d = DIRS[dirKey];
     var nr = st.pr + d.dr, nc = st.pc + d.dc;
 
@@ -843,6 +853,7 @@ function exStateKey(st, depth) {
 var safeMemo = {};
 
 function exCanMove(st, dirKey) {
+    if (dirKey === 'STAY') return true;
     var d = DIRS[dirKey];
     var nr = st.pr + d.dr, nc = st.pc + d.dc;
     if (isValidPos(nr, nc)) return true;
@@ -880,14 +891,17 @@ function safeSearch(st, depth) {
     var key = safeSearchKey(st, depth);
     if (safeMemo[key] !== undefined) return safeMemo[key];
 
+    var dirs = st.enemies.length > 0 ? DIR_KEYS_WITH_STAY : DIR_KEYS;
     var bestCost = Infinity;
-    for (var k = 0; k < 4; k++) {
-        if (!exCanMove(st, DIR_KEYS[k])) continue;
+    for (var k = 0; k < dirs.length; k++) {
+        if (!exCanMove(st, dirs[k])) continue;
         var child = exClone(st);
-        if (!exPlayerMove(child, DIR_KEYS[k])) continue; // died
+        if (!exPlayerMove(child, dirs[k])) continue; // died
         var pDeath = child.stepDeathProb || 0;
         if (pDeath > 0) continue; // unsafe — prune
         var cost = safeSearch(child, depth - 1);
+        // Penalize STAY slightly so we prefer progress when equally safe
+        if (dirs[k] === 'STAY') cost += 0.5;
         if (cost < bestCost) bestCost = cost;
     }
 
@@ -919,10 +933,11 @@ function survivalSearch(st, depth) {
 
     var bestSurv = 0, bestTC = Infinity;
 
-    for (var k = 0; k < 4; k++) {
-        if (!exCanMove(st, DIR_KEYS[k])) continue;
+    var dirs = st.enemies.length > 0 ? DIR_KEYS_WITH_STAY : DIR_KEYS;
+    for (var k = 0; k < dirs.length; k++) {
+        if (!exCanMove(st, dirs[k])) continue;
         var child = exClone(st);
-        if (!exPlayerMove(child, DIR_KEYS[k])) continue; // certain death
+        if (!exPlayerMove(child, dirs[k])) continue; // certain death
         var stepSurvive = 1 - (child.stepDeathProb || 0);
         if (stepSurvive <= 0) continue;
 
@@ -1147,27 +1162,31 @@ function aiPickBestDir() {
     var maxDepth = 8;
 
     // Compute 1-step tour costs for tiebreaking
+    var hasEnemies = tmpSt.enemies.length > 0;
+    var searchDirs = hasEnemies ? DIR_KEYS_WITH_STAY : DIR_KEYS;
     var immediateCost = {};
-    for (var k = 0; k < 4; k++) {
-        if (!exCanMove(tmpSt, DIR_KEYS[k])) continue;
+    for (var k = 0; k < searchDirs.length; k++) {
+        if (!exCanMove(tmpSt, searchDirs[k])) continue;
         var child = exClone(tmpSt);
-        if (!exPlayerMove(child, DIR_KEYS[k])) continue;
-        immediateCost[DIR_KEYS[k]] = exTourCost(child);
+        if (!exPlayerMove(child, searchDirs[k])) continue;
+        immediateCost[searchDirs[k]] = exTourCost(child);
     }
 
     for (var depth = 1; depth <= maxDepth; depth++) {
         safeMemo = {};
         var depthBestDir = null, depthBestCost = Infinity, depthBestImm = Infinity;
-        for (var k = 0; k < 4; k++) {
-            if (!exCanMove(tmpSt, DIR_KEYS[k])) continue;
+        for (var k = 0; k < searchDirs.length; k++) {
+            if (!exCanMove(tmpSt, searchDirs[k])) continue;
             var child = exClone(tmpSt);
-            if (!exPlayerMove(child, DIR_KEYS[k])) continue;
+            if (!exPlayerMove(child, searchDirs[k])) continue;
             var pDeath = child.stepDeathProb || 0;
             if (pDeath > 0) continue; // unsafe first move — skip
             var cost = safeSearch(child, depth - 1);
-            var imm = immediateCost[DIR_KEYS[k]] || Infinity;
+            // Penalize STAY so we prefer progress when equally safe
+            if (searchDirs[k] === 'STAY') cost += 0.5;
+            var imm = immediateCost[searchDirs[k]] || Infinity;
             if (cost < depthBestCost || (cost === depthBestCost && imm < depthBestImm)) {
-                depthBestCost = cost; depthBestDir = DIR_KEYS[k]; depthBestImm = imm;
+                depthBestCost = cost; depthBestDir = searchDirs[k]; depthBestImm = imm;
             }
         }
         // Update best result from this completed depth
@@ -1191,10 +1210,10 @@ function aiPickBestDir() {
     for (var depth = 1; depth <= fallbackMaxDepth; depth++) {
         survivalMemo = {};
         var depthBestDir = null, depthBestSurv = -1, depthBestTC = Infinity;
-        for (var k = 0; k < 4; k++) {
-            if (!exCanMove(tmpSt, DIR_KEYS[k])) continue;
+        for (var k = 0; k < searchDirs.length; k++) {
+            if (!exCanMove(tmpSt, searchDirs[k])) continue;
             var child = exClone(tmpSt);
-            if (!exPlayerMove(child, DIR_KEYS[k])) continue; // certain death
+            if (!exPlayerMove(child, searchDirs[k])) continue; // certain death
             var stepSurvive = 1 - (child.stepDeathProb || 0);
             if (stepSurvive <= 0) continue;
 
@@ -1205,7 +1224,7 @@ function aiPickBestDir() {
                 (Math.abs(totalSurv - depthBestSurv) < 1e-9 && sub.tourCost < depthBestTC)) {
                 depthBestSurv = totalSurv;
                 depthBestTC = sub.tourCost;
-                depthBestDir = DIR_KEYS[k];
+                depthBestDir = searchDirs[k];
             }
         }
         if (depthBestDir !== null) {
