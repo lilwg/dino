@@ -378,9 +378,14 @@ function initRound() {
     aiTourIdx    = 0;
     aiBoardSig   = '';
     if (debugEnemies) {
-    // Debug mode: spawn only ugg for position tuning
+    // Debug mode: spawn all enemy types quickly, enemies move immediately
     roundStarted = true;
-    scheduleSpawn(1, 'ugg');
+    scheduleSpawn(1);                        // Coily egg
+    scheduleSpawn(5, 'redball');
+    scheduleSpawn(10, 'greenball');
+    scheduleSpawn(15, 'slick');
+    scheduleSpawn(20, 'ugg');
+    scheduleSpawn(25, 'wrongway');
     } else if (enemiesEnabled) {
     // Spawn timers in frames (at 60fps) — arcade-accurate from video analysis.
     // Video: egg at ~3s after first move, first red ball at ~5s.
@@ -465,7 +470,7 @@ function spawnEnemy(forcedType) {
         });
     } else if (type === 'ugg') {
         // Ugg spawns at bottom-right corner, moves upward
-        var uggRow = 3, uggCol = 2;
+        var uggRow = ROWS - 1, uggCol = ROWS - 1;
         var usp = cubeXY(uggRow, uggCol);
         enemies.push({
             type: 'ugg',
@@ -475,7 +480,7 @@ function spawnEnemy(forcedType) {
             jumpSX: usp.cx, jumpSY: usp.cy,
             tx: usp.cx, ty: usp.cy,
             frame: 0, frameTimer: 0,
-            moveTimer: 0, moveInterval: 999999
+            moveTimer: 0, moveInterval: enemyMoveInterval('ugg')
         });
     } else if (type === 'wrongway') {
         // Wrongway spawns at bottom-left corner, moves upward
@@ -780,7 +785,6 @@ function updateEnemies() {
             enemyJumpTo(e, snr, snc);
             if (!isValidPos(snr, snc)) e.falling = true;
         } else if (e.type === 'ugg') {
-            if (debugEnemies) continue; // frozen for position tuning
             // Ugg spawns bottom-right, hops on right cube faces toward top-left
             // Two moves: up (row-1,col-1) or left along same row (row,col-1)
             var unr, unc;
@@ -1599,7 +1603,7 @@ function drawEnemy(e) {
 
     } else if (e.type === 'wrongway') {
         // Wrongway on left face of cube above collision face
-        _drawRotatedCactus(e.px + TILE_W / 4, e.py - TILE_H / 4, -Math.PI / 2, 0.75);
+        _drawRotatedCactus(e.px + TILE_W / 4, e.py - ROW_STEP / 2, -Math.PI / 2, 0.75);
     }
 }
 
