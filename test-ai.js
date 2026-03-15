@@ -15,8 +15,7 @@ eval(require('fs').readFileSync(__dirname + '/qbert-ai.js', 'utf8'));
 
 // Override AI time budget — node can afford more than browser's 16ms frame
 AI_TIME_BUDGET = 50;
-MC_SAMPLES = 32;
-MC_DEPTH = 6;
+// Note: MC_SAMPLES and MC_DEPTH are set locally inside mode2Pick() based on level
 
 // ─── Game state ─────────────────────────────────────────────────────────────
 var lives, extraLifeGiven, levelWon, turnCount;
