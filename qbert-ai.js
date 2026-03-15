@@ -24,8 +24,9 @@ function stompsNeeded(cubeState, lv) {
 
 function revertPenalty(lv) {
     if (lv <= 2) return 0;
-    if (lv <= 4) return 3;  // toggle: revert + re-stomp = 2 extra, plus detour cost
-    return 4;               // cycle: revert to 0 + 2 re-stomps + detour
+    if (lv === 3) return 6;  // toggle: stepping on completed cube is catastrophic (undoes work)
+    if (lv === 4) return 5;  // 2-step cycle: revert + re-stomp, heavily penalize
+    return 6;                // 3-step cycle: revert to 0 + 2 re-stomps + detour
 }
 
 function dijkstraWeighted(srcIdx, completedMask, penalty) {
@@ -231,7 +232,7 @@ function buildDangerSet() {
 var aiTour = [], aiTourIdx = 0, aiBoardSig = '';
 var aiDetailPath = [], aiTourDots = [];
 
-function aiTourInit() {}
+function aiTourInit() { aiLastRemaining = 99; aiNoProgressCount = 0; aiStayCount = 0; aiSamePosCount = 0; }
 function aiTourNext() { return null; }
 function findTourResumePath() { return null; }
 
@@ -401,6 +402,8 @@ function evalDiscLure() {
     }
     if (!coily) return null;
 
+    var lv = arcadeLevel();
+
     for (var di = 0; di < discs.length; di++) {
         var disc = discs[di];
         if (!disc.active) continue;
@@ -413,7 +416,9 @@ function evalDiscLure() {
         }
 
         var pathToDisc = bfsTo(player.row, player.col, discRow, discCol);
-        if (pathToDisc && pathToDisc.dist <= 2) {
+        // On revert levels (lv3+), be more willing to path toward discs for lure
+        var maxLureDist = lv >= 3 ? 5 : 2;
+        if (pathToDisc && pathToDisc.dist <= maxLureDist) {
             var simCoilyR = coily.row, simCoilyC = coily.col;
             for (var s = 0; s < pathToDisc.dist; s++) {
                 var cp = predictCoilyNext(simCoilyR, simCoilyC, discRow, discCol);
@@ -522,11 +527,25 @@ function mode2Pick(gs) {
         var survRate = survived / MC_SAMPLES;
         var avgTC = survived > 0 ? totalTC / survived : Infinity;
 
+        // Penalize STAY: it makes no progress, so treat it as slightly worse
+        // unless movement is genuinely more dangerous
+        if (dir === 'STAY') avgTC += 3;
+
         // Export for viz: survival rate (0-1), negative avgTC so higher=better
         aiMoveScores[dir] = survRate >= 1 ? (10000 - avgTC) : (survRate * 100 - 100);
 
-        if (survRate > bestSurv + 1e-9 ||
-            (Math.abs(survRate - bestSurv) < 1e-9 && avgTC < bestTC)) {
+        // Combined ranking: balance survival vs tour progress
+        // When few cubes remain, accept more risk to finish the level
+        var tgt = gs.tgt;
+        var remaining = 0;
+        for (var ci = 0; ci < gs.cubes.length; ci++)
+            if (gs.cubes[ci].state < tgt) remaining++;
+        // survThresh: minimum survival rate gap to override tour cost advantage
+        // With 28 cubes left: 0.05 (very safe). With 1 cube left: ~0.25 (accept more risk)
+        var survThresh = 0.05 + 0.20 * Math.max(0, 1 - remaining / 10);
+
+        if (survRate > bestSurv + survThresh ||
+            (survRate > bestSurv - 1e-9 && avgTC < bestTC)) {
             bestSurv = survRate;
             bestTC = avgTC;
             bestDir = dir;
@@ -573,8 +592,13 @@ function mcPickGreedy(gs) {
                 // Coily chases player's CURRENT pos (source), not destination
                 var cer = e.destRow != null ? e.destRow : e.row;
                 var cec = e.destCol != null ? e.destCol : e.col;
+                // Also avoid Coily's current tile (source collision)
+                if (cer === nr && cec === nc) { danger = true; break; }
                 var cp = predictCoilyNext(cer, cec, gs.player.row, gs.player.col);
                 if (cp.row === nr && cp.col === nc) { danger = true; break; }
+                // Also check 2-step ahead (Coily chases our destination, not source)
+                var cp2 = predictCoilyNext(cp.row, cp.col, nr, nc);
+                if (cp2.row === nr && cp2.col === nc) { score -= 30; }
             } else {
                 var er = e.row, ec = e.col;
                 if (e.destRow != null) { er = e.destRow; ec = e.destCol; }
@@ -586,10 +610,15 @@ function mcPickGreedy(gs) {
             }
         }
         if (danger) score -= 100;
-        // Prefer unfinished cubes
+        // Cube state scoring: prefer unfinished cubes, penalize reverting completed ones
         for (var ci = 0; ci < gs.cubes.length; ci++) {
-            if (gs.cubes[ci].row === nr && gs.cubes[ci].col === nc && gs.cubes[ci].state < gs.tgt) {
-                score += 10;
+            if (gs.cubes[ci].row === nr && gs.cubes[ci].col === nc) {
+                if (gs.cubes[ci].state < gs.tgt) {
+                    score += 10;
+                } else if (gs.lv >= 3) {
+                    // On revert levels, heavily penalize stepping on completed cubes
+                    score -= 8;
+                }
                 break;
             }
         }
@@ -611,6 +640,11 @@ function mcPickGreedy(gs) {
 // ─── Main entry point ────────────────────────────────────────────────────────
 var aiMoveScores = {};  // exported per-direction scores for viz
 var aiMode = 0;         // 0 = no AI, 1 = tour+danger, 2 = Monte Carlo
+var aiStayCount = 0;    // consecutive STAY decisions — used to break stuck loops
+var aiLastPos = '';     // last position key — used to detect oscillation
+var aiSamePosCount = 0; // frames spent on same tile
+var aiLastRemaining = 99; // cubes remaining last time we checked
+var aiNoProgressCount = 0; // moves without reducing remaining cubes
 
 function aiPickBestDir() {
     var coilyActive = false;
@@ -623,12 +657,59 @@ function aiPickBestDir() {
     var gs = simCloneGameState();
     aiMoveScores = {};
 
-    if (!coilyActive || frozen) {
+    // Track how long we've been on the same tile
+    var posKey = gs.player.row + ',' + gs.player.col;
+    if (posKey === aiLastPos) aiSamePosCount++;
+    else { aiSamePosCount = 0; aiLastPos = posKey; }
+
+    // Track progress: count remaining cubes
+    var tgt = gs.tgt;
+    var curRemaining = 0;
+    for (var ci = 0; ci < gs.cubes.length; ci++)
+        if (gs.cubes[ci].state < tgt) curRemaining++;
+    if (curRemaining < aiLastRemaining) {
+        aiLastRemaining = curRemaining;
+        aiNoProgressCount = 0;
+    } else {
+        aiNoProgressCount++;
+    }
+
+    // Force mode 1 (tour+danger) when stuck too long with Coily present
+    // Only do this when very few cubes remain and we've been stuck a long time
+    // (too aggressive switching causes Coily deaths since mode 1 lacks MC safety)
+    var forceMode1 = (aiNoProgressCount > 25 && curRemaining <= 3);
+
+    var result;
+    if (!coilyActive || frozen || forceMode1) {
         aiMode = 1;
         var dangerSet = buildDangerSet();
-        return mode1Pick(gs, dangerSet);
+        result = mode1Pick(gs, dangerSet);
     } else {
         aiMode = 2;
-        return mode2Pick(gs);
+        result = mode2Pick(gs);
     }
+
+    // Track STAY count and break stuck loops
+    if (result === 'STAY') {
+        aiStayCount++;
+        // After 3 consecutive STAYs, force a move (pick best non-STAY option)
+        if (aiStayCount >= 3) {
+            var bestAlt = null, bestAltScore = -Infinity;
+            for (var k = 0; k < DIR_KEYS.length; k++) {
+                if (simCanMove(gs, DIR_KEYS[k])) {
+                    var sc = aiMoveScores[DIR_KEYS[k]];
+                    if (sc !== undefined && sc > bestAltScore) {
+                        bestAltScore = sc; bestAlt = DIR_KEYS[k];
+                    } else if (sc === undefined && !bestAlt) {
+                        bestAlt = DIR_KEYS[k];
+                    }
+                }
+            }
+            if (bestAlt) { result = bestAlt; aiStayCount = 0; }
+        }
+    } else {
+        aiStayCount = 0;
+    }
+
+    return result;
 }
