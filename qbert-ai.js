@@ -493,6 +493,9 @@ function unifiedPick(gs, coilyActive) {
         for (var fk = 0; fk < DIR_KEYS.length; fk++) {
             var fd = DIR_KEYS[fk];
             if (!simCanMove(gs, fd)) continue;
+            // Don't waste discs during freeze
+            var fdd = DIRS[fd];
+            if (!isValidPos(gs.player.row + fdd.dr, gs.player.col + fdd.dc)) continue;
             var fc = simDeepClone(gs);
             if (simStep(fc, fd)) {
                 var ftc = fc.levelWon ? -1000 : simTourCost(fc);
@@ -544,6 +547,13 @@ function unifiedPick(gs, coilyActive) {
     for (var k = 0; k < DIR_KEYS_WITH_STAY.length; k++) {
         var dir = DIR_KEYS_WITH_STAY[k];
         if (!simCanMove(gs, dir)) continue;
+
+        // Don't waste discs when there's no Coily to escape from
+        if (!coilyActive && dir !== 'STAY') {
+            var dd = DIRS[dir];
+            var dnr = gs.player.row + dd.dr, dnc = gs.player.col + dd.dc;
+            if (!isValidPos(dnr, dnc)) continue;  // off-grid = disc move
+        }
 
         var totalTC = 0, survived = 0;
         for (var s = 0; s < SAMPLES; s++) {
