@@ -280,7 +280,7 @@ var discRide    = null;  // { side, t, sx, sy, tx, ty } — player riding disc t
 
 // DIRS, DIR_KEYS, isValidPos, cubeAt, allColored, arcadeLevel, targetState,
 // nextCubeState, discConfig, bfsTo, boardSig, etc. loaded from qbert.js
-// AI functions (aiPickBestDir, buildTour, buildDangerMaps) from qbert-ai.js
+// AI functions (aiPickBestDir, buildDangerSet) from qbert-ai.js
 
 function checkExtraLife() {
     if (!extraLifeGiven && score >= 8000) {
@@ -541,7 +541,7 @@ function tryMove(dirKey) {
 // (updateEnemies, updatePlayer, spawnEnemy, killPlayer, useDisc, checkPlayerEnemyCollision
 //  all removed — game logic now handled by qbert.js simulation functions)
 
-// ─── AI (uses aiPickBestDir, buildTour, buildDangerMaps from qbert-ai.js) ──
+// ─── AI (uses aiPickBestDir, buildDangerSet from qbert-ai.js) ──
 
 function computeAIMove() {
     var tgt = targetState();
@@ -563,47 +563,40 @@ function computeAIMove() {
         }
     }
 
-    // Build viz: tour to show remaining targets, BFS path for detail
-    if (boardSig() !== aiBoardSig || aiTour.length === 0) buildTour();
-    while (aiTourIdx < aiTour.length) {
-        var t = aiTour[aiTourIdx];
-        var tc = cubeAt(t.row, t.col);
-        if (tc && tc.state < tgt) break;
-        aiTourIdx++;
-    }
-
-    aiDetailPath = [];
+    // Build viz: dots on all unfinished cubes, path from player to tour target
     aiTourDots = [];
-    if (bestDir) {
+    aiDetailPath = [];
+    aiTourPath = [];
+    for (var vi = 0; vi < cubeStates.length; vi++)
+        if (cubeStates[vi].state < tgt) aiTourDots.push({ row: cubeStates[vi].row, col: cubeStates[vi].col });
+
+    if (bestDir && bestDir !== 'STAY') {
         var dd = DIRS[bestDir];
         var nr = player.row + dd.dr, nc = player.col + dd.dc;
         if (isValidPos(nr, nc)) {
-            aiDetailPath.push({ row: nr, col: nc });
-            if (aiTourIdx < aiTour.length) {
-                var target = aiTour[aiTourIdx];
-                var res = bfsTo(nr, nc, target.row, target.col);
-                if (res) {
-                    var pr = nr, pc = nc;
-                    for (var i = 0; i < res.path.length; i++) {
-                        var pd = DIRS[res.path[i]];
-                        pr += pd.dr; pc += pd.dc;
-                        aiDetailPath.push({ row: pr, col: pc });
+            // Use dynamicTourMove's BFS to find the target the AI is heading toward
+            var gs2 = simCloneGameState();
+            gs2.player.row = nr; gs2.player.col = nc;
+            // Find the nearest unfinished cube via BFS from landing tile
+            var vizTarget = null, vizBestDist = Infinity;
+            for (var vti = 0; vti < aiTourDots.length; vti++) {
+                var vr = bfsTo(nr, nc, aiTourDots[vti].row, aiTourDots[vti].col);
+                if (vr && vr.dist < vizBestDist) { vizBestDist = vr.dist; vizTarget = vti; }
+            }
+            // Build path: player → landing → BFS to target
+            aiTourPath.push({ row: player.row, col: player.col });
+            aiTourPath.push({ row: nr, col: nc });
+            if (vizTarget !== null) {
+                var vres = bfsTo(nr, nc, aiTourDots[vizTarget].row, aiTourDots[vizTarget].col);
+                if (vres) {
+                    var vpr = nr, vpc = nc;
+                    for (var vpi = 0; vpi < vres.path.length; vpi++) {
+                        var vpd = DIRS[vres.path[vpi]];
+                        vpr += vpd.dr; vpc += vpd.dc;
+                        aiTourPath.push({ row: vpr, col: vpc });
                     }
                 }
             }
-        }
-        for (var i = aiTourIdx; i < aiTour.length; i++)
-            aiTourDots.push({ row: aiTour[i].row, col: aiTour[i].col });
-    }
-
-    // Build ordered tour path for viz: player → next target → subsequent targets
-    aiTourPath = [];
-    if (aiTourIdx < aiTour.length) {
-        aiTourPath.push({ row: player.row, col: player.col });
-        var pr2 = player.row, pc2 = player.col;
-        for (var i = aiTourIdx; i < aiTour.length; i++) {
-            aiTourPath.push({ row: aiTour[i].row, col: aiTour[i].col });
-            pr2 = aiTour[i].row; pc2 = aiTour[i].col;
         }
     }
 
