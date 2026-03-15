@@ -330,6 +330,12 @@ function dynamicTourMove(gs) {
             if (!isValidPos(nr, nc)) continue;
             var nk = nr + ',' + nc;
             var moveCost = 1 + (completedSet[nk] ? penalty : 0);
+            // Extra cost for completed apex and corners — dead ends with revert risk
+            if (completedSet[nk]) {
+                var isApex = (nr === 0 && nc === 0);
+                var isCrnr = (nr === ROWS - 1 && (nc === 0 || nc === ROWS - 1));
+                if (isApex || isCrnr) moveCost += 3;
+            }
             var newCost = cur.cost + moveCost;
             if (dist[nk] === undefined || newCost < dist[nk]) {
                 dist[nk] = newCost;
@@ -459,15 +465,7 @@ function evalDiscLure() {
 
 // ─── Mode 1: Tour planning + danger avoidance ────────────────────────────────
 function mode1Pick(gs, dangerSet) {
-    var tourDir = dynamicTourMove(gs);
-    if (tourDir !== null) {
-        var d = DIRS[tourDir];
-        var nr = gs.player.row + d.dr, nc = gs.player.col + d.dc;
-        if (!dangerSet[nr + ',' + nc]) return tourDir;
-    }
-
-    // Fallback: evaluate each direction with multiple samples to handle
-    // random enemy movement (single simStep can be misleading)
+    // Always evaluate all directions so oscillation breaker has scores
     var bestDir = null, bestCost = Infinity;
     var bestUnsafeDir = null, bestUnsafeCost = Infinity;
     var SAMPLES = 4;
@@ -493,6 +491,14 @@ function mode1Pick(gs, dangerSet) {
         } else {
             if (tc < bestCost) { bestCost = tc; bestDir = DIR_KEYS[k]; }
         }
+    }
+
+    // Use tour planner as primary if it agrees with a safe direction
+    var tourDir = dynamicTourMove(gs);
+    if (tourDir !== null) {
+        var d = DIRS[tourDir];
+        var nr = gs.player.row + d.dr, nc = gs.player.col + d.dc;
+        if (!dangerSet[nr + ',' + nc]) return tourDir;
     }
 
     if (bestDir) return bestDir;
@@ -570,6 +576,11 @@ function mode2Pick(gs) {
                         if (isCorner) avgTC -= 4;
                         else if (isBottom && isEdge) avgTC -= 3;
                         else if (isBottom || isEdge) avgTC -= 1;
+                    } else {
+                        // Penalize landing on completed apex/corners — dead ends
+                        var isApex3 = (nr === 0 && nc === 0);
+                        var isCrnr3 = (nr === ROWS - 1 && (nc === 0 || nc === ROWS - 1));
+                        if (isApex3 || isCrnr3) avgTC += 6;
                     }
                     break;
                 }
@@ -680,9 +691,14 @@ function mcPickGreedy(gs) {
                     if (isCorner) score += 6;
                     else if (isBottom && isEdge) score += 4;
                     else if (isBottom || isEdge) score += 2;
-                } else if (gs.lv >= 3) {
-                    // On revert levels, heavily penalize stepping on completed cubes
-                    score -= 12;
+                } else {
+                    // Penalize stepping on completed cubes (reverts on lv3+, wastes time on all)
+                    var revertPen = gs.lv >= 3 ? -12 : -3;
+                    // Extra penalty for completed apex and corners — dead ends
+                    var isApex2 = (nr === 0 && nc === 0);
+                    var isCrnr2 = (nr === ROWS - 1 && (nc === 0 || nc === ROWS - 1));
+                    if (isApex2 || isCrnr2) revertPen -= 8;
+                    score += revertPen;
                 }
                 break;
             }
@@ -772,25 +788,31 @@ function aiPickBestDir() {
     aiPosHistory.push(posKey);
     if (aiPosHistory.length > AI_HISTORY_LEN) aiPosHistory.shift();
 
-    // Detect oscillation: if we're bouncing between 2 tiles (A-B-A-B pattern)
-    if (result !== 'STAY' && aiPosHistory.length >= 4) {
+    // Detect oscillation: A-B-A (3 positions) or A-B-A-B (4 positions) patterns
+    if (result !== 'STAY' && aiPosHistory.length >= 3) {
         var h = aiPosHistory;
         var len = h.length;
-        // Check if last 4 positions form A-B-A-B
-        if (h[len-1] === h[len-3] && h[len-2] === h[len-4] && h[len-1] !== h[len-2]) {
-            // We're oscillating — pick a different direction that makes tour progress
+        var oscillating = false;
+        // A-B-A pattern (current = 2 positions ago, different from last)
+        if (len >= 3 && h[len-1] === h[len-3] && h[len-1] !== h[len-2]) oscillating = true;
+        // A-B-C-A-B-C pattern (3-cycle)
+        if (len >= 6 && h[len-1] === h[len-4] && h[len-2] === h[len-5] && h[len-3] === h[len-6]) oscillating = true;
+
+        if (oscillating) {
             var d = DIRS[result];
             var destKey = (gs.player.row + d.dr) + ',' + (gs.player.col + d.dc);
+            // Collect recent tiles to avoid
+            var recentTiles = {};
+            for (var ri = Math.max(0, len - 4); ri < len; ri++) recentTiles[h[ri]] = true;
             // If the chosen move goes back to a recent tile, find a better one
-            if (destKey === h[len-2] || destKey === h[len-1]) {
+            if (recentTiles[destKey]) {
                 var altDir = null, altScore = -Infinity;
                 for (var ak = 0; ak < DIR_KEYS.length; ak++) {
                     if (DIR_KEYS[ak] === result) continue;
                     if (!simCanMove(gs, DIR_KEYS[ak])) continue;
                     var ad = DIRS[DIR_KEYS[ak]];
                     var aKey = (gs.player.row + ad.dr) + ',' + (gs.player.col + ad.dc);
-                    // Don't go back to recent oscillation tiles
-                    if (aKey === h[len-1] || aKey === h[len-2]) continue;
+                    if (recentTiles[aKey]) continue;
                     var asc = aiMoveScores[DIR_KEYS[ak]];
                     if (asc !== undefined && asc > altScore) { altScore = asc; altDir = DIR_KEYS[ak]; }
                     else if (asc === undefined && !altDir) altDir = DIR_KEYS[ak];
