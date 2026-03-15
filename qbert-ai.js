@@ -256,9 +256,11 @@ function buildTour() {
             var tr = remaining[i].row, tc2 = remaining[i].col;
             var isEdge = (tc2 === 0 || tc2 === tr);
             var isBottom = (tr >= ROWS - 2);
+            var isCorner = (tr === ROWS - 1 && isEdge);
             if (!danger.immediate[tr + ',' + tc2]) {
-                if (isBottom && isEdge) cost -= 2;
-                else if (isBottom || isEdge) cost -= 1;
+                if (isCorner) cost -= 4;
+                else if (isBottom && isEdge) cost -= 3;
+                else if (isBottom || isEdge) cost -= 1.5;
             }
             if (danger.coilies.length > 0 && countEscapes(tr, tc2, danger.immediate) <= 1) cost += 6;
             if (cost < bestCost) {
@@ -307,12 +309,20 @@ function dynamicTourMove(gs) {
         if (curKey !== startKey) {
             for (var ui = 0; ui < unfinished.length; ui++) {
                 if (unfinished[ui].row === cur.row && unfinished[ui].col === cur.col) {
-                    if (cur.cost < bestCost) { bestCost = cur.cost; bestTarget = { row: cur.row, col: cur.col }; }
+                    // Discount corners and bottom — clear them first while safe
+                    var adjCost = cur.cost;
+                    var isCorner = (cur.row === ROWS - 1 && (cur.col === 0 || cur.col === ROWS - 1));
+                    var isBottom = cur.row >= ROWS - 2;
+                    var isEdge = cur.col === 0 || cur.col === cur.row;
+                    if (isCorner) adjCost -= 2;
+                    else if (isBottom && isEdge) adjCost -= 1.5;
+                    else if (isBottom || isEdge) adjCost -= 0.5;
+                    if (adjCost < bestCost) { bestCost = adjCost; bestTarget = { row: cur.row, col: cur.col }; }
                     break;
                 }
             }
         }
-        if (bestTarget && cur.cost > bestCost) break;
+        if (bestTarget && cur.cost > bestCost + 2) break;
 
         for (var k = 0; k < 4; k++) {
             var dk = DIRS[DIR_KEYS[k]];
@@ -416,8 +426,8 @@ function evalDiscLure() {
         }
 
         var pathToDisc = bfsTo(player.row, player.col, discRow, discCol);
-        // On revert levels (lv3+), be more willing to path toward discs for lure
-        var maxLureDist = lv >= 3 ? 5 : 2;
+        // Be willing to path toward discs for lure — Coily kill is very valuable
+        var maxLureDist = lv >= 3 ? 6 : 4;
         if (pathToDisc && pathToDisc.dist <= maxLureDist) {
             var simCoilyR = coily.row, simCoilyC = coily.col;
             for (var s = 0; s < pathToDisc.dist; s++) {
@@ -532,13 +542,35 @@ function mode2Pick(gs) {
         if (dir === 'STAY') avgTC += 5;
 
         // Bonus for moves that immediately land on an unfinished cube
+        // Also bonus for catching green balls (freeze enemies) and slicks (prevent revert)
         if (dir !== 'STAY') {
             var d = DIRS[dir];
             var nr = gs.player.row + d.dr, nc = gs.player.col + d.dc;
             for (var ci2 = 0; ci2 < gs.cubes.length; ci2++) {
                 if (gs.cubes[ci2].row === nr && gs.cubes[ci2].col === nc) {
-                    if (gs.cubes[ci2].state < gs.tgt) avgTC -= 8;
+                    if (gs.cubes[ci2].state < gs.tgt) {
+                        avgTC -= 8;
+                        // Extra bonus for corners and bottom row — hardest to reach later
+                        var isCorner = (nr === ROWS - 1 && (nc === 0 || nc === ROWS - 1));
+                        var isBottom = nr >= ROWS - 2;
+                        var isEdge = nc === 0 || nc === nr;
+                        if (isCorner) avgTC -= 4;
+                        else if (isBottom && isEdge) avgTC -= 3;
+                        else if (isBottom || isEdge) avgTC -= 1;
+                    }
                     break;
+                }
+            }
+            // Bonus for catching green balls and slicks
+            for (var ei = 0; ei < gs.enemies.length; ei++) {
+                var e = gs.enemies[ei];
+                if (e.type === 'greenball' || e.type === 'slick') {
+                    var er = e.destRow != null ? e.destRow : e.row;
+                    var ec = e.destCol != null ? e.destCol : e.col;
+                    if (er === nr && ec === nc) {
+                        // Green ball freezes all enemies — huge value with Coily active
+                        avgTC -= (e.type === 'greenball') ? 15 : 8;
+                    }
                 }
             }
         }
@@ -627,11 +659,29 @@ function mcPickGreedy(gs) {
             if (gs.cubes[ci].row === nr && gs.cubes[ci].col === nc) {
                 if (gs.cubes[ci].state < gs.tgt) {
                     score += 20;
+                    // Prefer corners and bottom — they're hardest to reach later
+                    var isCorner = (nr === ROWS - 1 && (nc === 0 || nc === ROWS - 1));
+                    var isBottom = nr >= ROWS - 2;
+                    var isEdge = nc === 0 || nc === nr;
+                    if (isCorner) score += 6;
+                    else if (isBottom && isEdge) score += 4;
+                    else if (isBottom || isEdge) score += 2;
                 } else if (gs.lv >= 3) {
                     // On revert levels, heavily penalize stepping on completed cubes
                     score -= 12;
                 }
                 break;
+            }
+        }
+        // Pursue green balls (freeze enemies) and slicks (prevent cube revert)
+        for (var ei2 = 0; ei2 < gs.enemies.length; ei2++) {
+            var eb = gs.enemies[ei2];
+            if (eb.type === 'greenball' || eb.type === 'slick') {
+                var ebr = eb.destRow != null ? eb.destRow : eb.row;
+                var ebc = eb.destCol != null ? eb.destCol : eb.col;
+                if (ebr === nr && ebc === nc) {
+                    score += (eb.type === 'greenball') ? 35 : 15;
+                }
             }
         }
         // Prefer mobility (more neighbors)
