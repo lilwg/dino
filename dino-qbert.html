@@ -1404,16 +1404,17 @@ function loop(timestamp) {
     lastTime = timestamp;
     // Cap delta to avoid spiral of death (e.g. tab was backgrounded)
     if (delta > 200) delta = 200;
-    accumulator += delta;
-    // Max 4 ticks per frame to prevent death spiral if update() is slow
+    accumulator += delta * gameSpeed;
+    // Max ticks scales with speed to allow higher throughput
+    var maxTicks = Math.max(4, gameSpeed * 2);
     var ticks = 0;
-    while (accumulator >= SIM_DT && ticks < 4) {
+    while (accumulator >= SIM_DT && ticks < maxTicks) {
         update();
         accumulator -= SIM_DT;
         ticks++;
     }
     // If we hit the cap, discard remaining accumulator to prevent buildup
-    if (ticks >= 4 && accumulator > SIM_DT) accumulator = 0;
+    if (ticks >= maxTicks && accumulator > SIM_DT) accumulator = 0;
     draw();
     requestAnimationFrame(loop);
 }
@@ -1476,18 +1477,7 @@ window.toggleEnemies = function () {
 window.setGameSpeed = function (v) {
     gameSpeed = v;
     document.getElementById('speed-label').textContent = v + 'x';
-    if (!gs) return;
-    // Update simulation speed multiplier
-    gs.sm = speedMultiplier();
-    // Update move intervals for existing enemies
-    for (var i = 0; i < gs.enemies.length; i++) {
-        var e = gs.enemies[i];
-        if (e.type !== 'spawn-timer' && e.moveInterval !== undefined) {
-            e.moveInterval = enemyMoveInterval(e.type, gs.sm);
-        }
-    }
-    // Update player jump speed
-    gs.player.jumpDur = PLAYER_JUMP_DUR * gs.sm;
+    // Speed slider controls ticks/frame in the game loop — no internal state changes needed
 };
 
 // ─── Input ────────────────────────────────────────────────────────────────────
