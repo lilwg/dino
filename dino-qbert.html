@@ -240,8 +240,9 @@ var levelWonTimer = 0;
 var roundStarted = false; // true after first player move — enemies frozen until then
 
 var score, hiScore, lives, hops;
-var bestHops = {};  // best (minimum) hops per arcade level, persisted
+var bestHops = {};  // best (minimum) hops per arcade level + enemy mode, persisted
 var extraLifeGiven;
+function bestHopsKey() { return '' + arcadeLevel() + (enemiesEnabled ? '' : '-noE'); }
 // round, player, enemies, cubeStates, discs, aiTour, aiTourIdx, aiBoardSig
 // are globals (declared before IIFE) shared with qbert-ai.js
 var frameCount;
@@ -387,7 +388,7 @@ function updateDiscRide() {
             levelWon = true;
             levelWonTimer = 30;
             DinoSounds.reached();
-            var lvKey = '' + arcadeLevel();
+            var lvKey = bestHopsKey();
             if (!bestHops[lvKey] || hops < bestHops[lvKey]) {
                 bestHops[lvKey] = hops;
                 localStorage.setItem('dino-qbert-best-hops', JSON.stringify(bestHops));
@@ -1325,7 +1326,7 @@ function drawHUD() {
     // Top-left: high score + best hops
     ctx.textAlign = 'left';
     ctx.fillText('HI ' + padScore(Math.max(score, hiScore)), 10, 18);
-    var best = bestHops['' + arcadeLevel()];
+    var best = bestHops[bestHopsKey()];
     ctx.fillText('BEST ' + (best ? best : '\u221E'), 10, 34);
 
     // Top-right: lives, then score + hops below

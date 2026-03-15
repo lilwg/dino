@@ -647,7 +647,7 @@ function mode2Pick(gs) {
         // survEps: how close survival rates need to be to count as "tied"
         // Only then does tour cost matter. This prevents the AI from
         // jumping into Coily for a slightly better tour cost.
-        var survEps = 2.0 / mcSamples;  // two sample difference = tied
+        var survEps = 1.0 / mcSamples;  // one sample difference = tied (tighter for Coily safety)
 
         if (survRate > bestSurv + survEps) {
             // Strictly better survival — always prefer
@@ -858,8 +858,10 @@ function aiPickBestDir() {
                     var aKey = (gs.player.row + ad.dr) + ',' + (gs.player.col + ad.dc);
                     if (recentTiles[aKey]) continue;
                     var asc = aiMoveScores[DIR_KEYS[ak]];
-                    // Never pick a move with a death score
-                    if (asc !== undefined && asc <= -10000) continue;
+                    // Never pick a move with poor survival (score < 0 means < 100% survival in MC)
+                    // In mode 2: score = survRate >= 1 ? (10000 - avgTC) : (survRate * 100 - 100)
+                    // So score < 0 means survival < 100%. Only accept safe moves.
+                    if (asc !== undefined && asc < 0) continue;
                     if (asc !== undefined && asc > altScore) { altScore = asc; altDir = DIR_KEYS[ak]; }
                     else if (asc === undefined) {
                         // Validate unknown-score move by simulation
@@ -882,8 +884,8 @@ function aiPickBestDir() {
             for (var k = 0; k < DIR_KEYS.length; k++) {
                 if (simCanMove(gs, DIR_KEYS[k])) {
                     var sc = aiMoveScores[DIR_KEYS[k]];
-                    // Skip moves with death scores
-                    if (sc !== undefined && sc <= -10000) continue;
+                    // Skip moves with any survival risk (score < 0 means < 100% MC survival)
+                    if (sc !== undefined && sc < 0) continue;
                     if (sc !== undefined && sc > bestAltScore) {
                         bestAltScore = sc; bestAlt = DIR_KEYS[k];
                     } else if (sc === undefined) {
@@ -897,6 +899,29 @@ function aiPickBestDir() {
         }
     } else {
         aiStayCount = 0;
+    }
+
+    // Final safety net: if Mode 2 (Coily active), validate the chosen move
+    // via quick MC check to catch any overrides that picked unsafe moves
+    if (aiMode === 2 && result !== 'STAY') {
+        var safeCount = 0, safeTrials = 8;
+        for (var sf = 0; sf < safeTrials; sf++) {
+            var sc2 = simDeepClone(gs);
+            if (simStep(sc2, result)) safeCount++;
+        }
+        if (safeCount < safeTrials) {
+            // Chosen move isn't 100% safe — fall back to the MC best pick
+            // Re-evaluate: pick the direction with best score (highest survival)
+            var safestDir = 'STAY', safestScore = -Infinity;
+            for (var sk2 = 0; sk2 < DIR_KEYS_WITH_STAY.length; sk2++) {
+                var sd = DIR_KEYS_WITH_STAY[sk2];
+                var ssc = aiMoveScores[sd];
+                if (ssc !== undefined && ssc > safestScore) {
+                    safestScore = ssc; safestDir = sd;
+                }
+            }
+            result = safestDir;
+        }
     }
 
     return result;
