@@ -207,8 +207,8 @@ function drawCube(c, cx, cy, state) {
     var lv = arcadeLevel();
     var palIdx = lv <= 2 ? 0 : lv <= 4 ? 1 : lv <= 6 ? 2 : 3;
     var topCol   = CUBE_TOP_COLORS[palIdx][state] || CUBE_TOP_COLORS[palIdx][0];
-    // Round 4 of each level: invisible sides (flat diamonds like the arcade)
-    var r4 = ((round - 1) % 4) === 3;
+    // Round 4 of even levels (2, 4, 6, 8): invisible sides (flat diamonds like the arcade)
+    var r4 = ((round - 1) % 4) === 3 && lv % 2 === 0;
     var leftCol  = r4 ? '#000' : '#a8a8a8';
     var rightCol = r4 ? '#000' : '#909090';
     var stroke   = r4 ? '#000' : '#a0a0a0';
