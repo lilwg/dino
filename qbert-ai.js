@@ -1,4 +1,5 @@
-// qbert-ai.js — Q*bert AI logic
+// qbert-ai.js — Q*bert AI logic  (v2 — oscillation fix + revert penalty)
+var AI_VERSION = 'v2-oscfix';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
