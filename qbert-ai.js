@@ -448,7 +448,8 @@ function evalDiscLure() {
 
         var pathToDisc = bfsTo(player.row, player.col, discRow, discCol);
         // Path toward disc for lure — but not too far, safety degrades over distance
-        var maxLureDist = lv >= 3 ? 4 : 3;
+        // Level 5+: travel farther to lure Coily — peaceful windows are critical
+        var maxLureDist = lv >= 5 ? 6 : (lv >= 3 ? 4 : 3);
         if (pathToDisc && pathToDisc.dist <= maxLureDist) {
             // Verify the whole path is safe from Coily interception
             var simCoilyR = coily.row, simCoilyC = coily.col;
@@ -540,10 +541,12 @@ function unifiedPick(gs, coilyActive) {
                             if (isCorner) avgTC -= 4;
                             else if (isBottom && isEdge) avgTC -= 3;
                             else if (isBottom || isEdge) avgTC -= 1;
-                        } else {
+                        } else if (gs.lv >= 3) {
+                            // Penalty for stepping on completed cube (reverts it)
+                            avgTC += 4;
                             var isApex3 = (nr === 0 && nc === 0);
                             var isCrnr3 = (nr === ROWS - 1 && (nc === 0 || nc === ROWS - 1));
-                            if (isApex3 || isCrnr3) avgTC += 6;
+                            if (isApex3 || isCrnr3) avgTC += 4;  // extra for dead-ends
                         }
                         break;
                     }
@@ -676,7 +679,18 @@ function aiPickBestDir() {
     if (aiPosHistory.length > AI_HISTORY_LEN) aiPosHistory.shift();
 
     // Detect oscillation: A-B-A or A-B-C-A-B-C patterns
-    if (result !== 'STAY' && aiPosHistory.length >= 3) {
+    // Skip override if result leads to an unfinished cube (tour planner's target)
+    var destIsUnfinished = false;
+    if (result !== 'STAY' && gs.lv >= 3) {
+        var dd = DIRS[result];
+        var ddr = gs.player.row + dd.dr, ddc = gs.player.col + dd.dc;
+        for (var dci = 0; dci < gs.cubes.length; dci++) {
+            if (gs.cubes[dci].row === ddr && gs.cubes[dci].col === ddc && gs.cubes[dci].state < gs.tgt) {
+                destIsUnfinished = true; break;
+            }
+        }
+    }
+    if (result !== 'STAY' && !destIsUnfinished && aiPosHistory.length >= 3) {
         var h = aiPosHistory;
         var len = h.length;
         var oscillating = false;
@@ -689,6 +703,12 @@ function aiPickBestDir() {
             var recentTiles = {};
             for (var ri = Math.max(0, len - 4); ri < len; ri++) recentTiles[h[ri]] = true;
             if (recentTiles[destKey]) {
+                // Build completed cube set for revert avoidance
+                var completedCubes = {};
+                if (gs.lv >= 3) {
+                    for (var cci = 0; cci < gs.cubes.length; cci++)
+                        if (gs.cubes[cci].state >= gs.tgt) completedCubes[gs.cubes[cci].row + ',' + gs.cubes[cci].col] = true;
+                }
                 var altDir = null, altScore = -Infinity;
                 for (var ak = 0; ak < DIR_KEYS.length; ak++) {
                     if (DIR_KEYS[ak] === result) continue;
@@ -699,10 +719,25 @@ function aiPickBestDir() {
                     var asc = aiMoveScores[DIR_KEYS[ak]];
                     // Only accept moves with 100% survival (score >= 0)
                     if (asc !== undefined && asc < 0) continue;
+                    // At level 3+: avoid alternatives that revert completed cubes
+                    if (completedCubes[aKey]) continue;
                     if (asc !== undefined && asc > altScore) { altScore = asc; altDir = DIR_KEYS[ak]; }
                     else if (asc === undefined) {
                         var vc = simDeepClone(gs);
                         if (simStep(vc, DIR_KEYS[ak]) && !altDir) altDir = DIR_KEYS[ak];
+                    }
+                }
+                // If no non-reverting alternative, allow reverting ones (but still not recent)
+                if (!altDir) {
+                    for (var ak2 = 0; ak2 < DIR_KEYS.length; ak2++) {
+                        if (DIR_KEYS[ak2] === result) continue;
+                        if (!simCanMove(gs, DIR_KEYS[ak2])) continue;
+                        var ad2 = DIRS[DIR_KEYS[ak2]];
+                        var aKey2 = (gs.player.row + ad2.dr) + ',' + (gs.player.col + ad2.dc);
+                        if (recentTiles[aKey2]) continue;
+                        var asc2 = aiMoveScores[DIR_KEYS[ak2]];
+                        if (asc2 !== undefined && asc2 < 0) continue;
+                        if (asc2 !== undefined && asc2 > altScore) { altScore = asc2; altDir = DIR_KEYS[ak2]; }
                     }
                 }
                 if (altDir) { result = altDir; aiPosHistory.length = 0; }
