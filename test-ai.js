@@ -80,7 +80,8 @@ function simFrame() {
     var playerResult = simUpdatePlayer(gs);
     simUpdateEnemies(gs);
 
-    // Sync freezeTimer for AI access
+    // Sync globals (enemies array may be replaced by simUpdateEnemies)
+    enemies = gs.enemies;
     freezeTimer = gs.freezeTimer;
 
     // Per-frame collision (arcade model: same tile = death)

@@ -56,9 +56,6 @@ var debugEnemies = false;   // ?debug URL param: spawn all enemies, hide player
 <script src="qbert-ai.js"></script>
 <script>
 
-(function () {
-'use strict';
-
 // ─── Canvas & constants ───────────────────────────────────────────────────────
 var canvas = document.getElementById('game-canvas');
 var ctx    = canvas.getContext('2d');
@@ -1527,7 +1524,7 @@ requestAnimationFrame(loop);
 // Log AI version for debugging
 console.log('Q*bert AI version: ' + (typeof AI_VERSION !== 'undefined' ? AI_VERSION : 'UNKNOWN (old code!)'));
 
-})();
+
 </script>
 </body>
 </html>
