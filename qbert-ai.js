@@ -507,11 +507,12 @@ function mode1Pick(gs, dangerSet) {
 // For each candidate move, run N random simulations forward K steps.
 // Pick the move with best survival rate, tiebreak on tour cost.
 
-var AI_TIME_BUDGET = 8;
-var MC_SAMPLES = 24;     // Monte Carlo samples per candidate move
-var MC_DEPTH = 6;        // How many hops to simulate forward
+var AI_TIME_BUDGET = 12;
 
 function mode2Pick(gs) {
+    // Scale MC parameters with level — harder levels need deeper/wider search
+    var MC_SAMPLES = gs.lv >= 3 ? 32 : 24;
+    var MC_DEPTH = gs.lv >= 3 ? 8 : 6;
     // Disc lure first
     var lureDir = evalDiscLure();
     if (lureDir) return lureDir;
@@ -598,12 +599,11 @@ function mode2Pick(gs) {
         for (var ci = 0; ci < gs.cubes.length; ci++)
             if (gs.cubes[ci].state < tgt) remaining++;
         // survThresh: minimum survival rate gap to override tour cost advantage
-        // Keep this conservative — jumping into Coily is almost always worse than a detour
-        // With many cubes: 0.04 (very safe). With few cubes: up to 0.12 (slightly more risk)
-        var survThresh = 0.04 + 0.08 * Math.max(0, 1 - remaining / 8);
+        // Keep conservative — surviving is almost always better than a faster route
+        var survThresh = 0.04 + 0.04 * Math.max(0, 1 - remaining / 8);
 
-        // Never prefer a move where survival < 50% unless everything is bad
-        if (survRate < 0.5 && bestSurv >= 0.5) {
+        // Never prefer a move where survival < 75% unless everything is bad
+        if (survRate < 0.75 && bestSurv >= 0.75) {
             // Skip — don't let tour cost override a high-death move
         } else if (survRate > bestSurv + survThresh ||
             (survRate > bestSurv - 1e-9 && avgTC < bestTC)) {
@@ -755,10 +755,11 @@ function aiPickBestDir() {
         aiNoProgressCount++;
     }
 
-    // Force mode 1 (tour+danger) when stuck too long with Coily present
-    // Only do this when very few cubes remain and we've been stuck a long time
-    // (too aggressive switching causes Coily deaths since mode 1 lacks MC safety)
-    var forceMode1 = (aiNoProgressCount > 25 && curRemaining <= 3);
+    // Force mode 1 (tour+danger) when stuck too long WITHOUT Coily
+    // NEVER force mode 1 when Coily is active — mode 1 has no MC safety check
+    // and will walk straight into Coily. On level 3, slicks revert cubes causing
+    // aiNoProgressCount to climb even during normal play.
+    var forceMode1 = (!coilyActive && aiNoProgressCount > 25 && curRemaining <= 3);
 
     var result;
     if (!coilyActive || frozen || forceMode1) {
