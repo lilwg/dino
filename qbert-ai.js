@@ -484,8 +484,7 @@ function evalDiscLure() {
 // More samples when enemies are present for reliable safety checking.
 
 function unifiedPick(gs, coilyActive) {
-    // Use separate RNG for AI simulations so we don't pollute the game's Math.random.
-    // Each simulation sample gets a different seed for proper Monte Carlo coverage.
+    // Use separate seeded RNG so AI simulations don't pollute game's Math.random.
     var savedRng = simRng;
     var baseSeed = (gs.player.row * 7 + gs.player.col) * 10000 + (frameCount || 0);
     function simSeed(sampleIdx) { simRng = createSeededRng(baseSeed + sampleIdx * 9973); }
@@ -698,6 +697,14 @@ function unifiedPick(gs, coilyActive) {
             var d2 = DIRS[dir];
             var nr2 = gs.player.row + d2.dr, nc2 = gs.player.col + d2.dc;
             if (dangerSet[nr2 + ',' + nc2]) inDanger = true;
+        }
+        // Also flag STAY as dangerous if current tile is in danger set
+        if (dir === 'STAY' && dangerSet[gs.player.row + ',' + gs.player.col]) inDanger = true;
+        // Penalty: starting from a danger tile means source-collision risk during jump
+        if (dir !== 'STAY' && dangerSet[gs.player.row + ',' + gs.player.col]) {
+            // We're on a dangerous tile — penalize but don't mark as inDanger
+            // (we need to leave, but the first third of the jump is still on this tile)
+            avgTC += 4;
         }
 
         // 2-hop safety: when Coily is close, verify the move has a safe follow-up
