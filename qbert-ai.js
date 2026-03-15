@@ -217,8 +217,10 @@ function buildDangerSet() {
         if (e.type === 'coily') continue;
         if (e.type === 'spawn-timer') {
             if (e.timer <= framesPerHop * 2) {
-                danger['1,0'] = true;
-                danger['1,1'] = true;
+                var ft = e.forcedType;
+                if (ft === 'ugg') danger[(ROWS-1) + ',' + (ROWS-1)] = true;
+                else if (ft === 'wrongway') danger[(ROWS-1) + ',0'] = true;
+                else { danger['1,0'] = true; danger['1,1'] = true; }
             }
             continue;
         }
@@ -494,20 +496,48 @@ function unifiedPick(gs, coilyActive) {
     var jumpFrames = Math.ceil(1.0 / (gs.player.jumpDur || 0.028));
     var freezeSafeMargin = jumpFrames + 10;
     if (gs.freezeTimer > freezeSafeMargin) {
-        // Follow tour planner, but validate each move survives simulation
-        // (frozen enemies mid-jump can still collide)
+        // Build set of tiles where enemies will spawn during freeze
+        var freezeSpawnDanger = {};
+        for (var fsi = 0; fsi < gs.enemies.length; fsi++) {
+            var fse = gs.enemies[fsi];
+            if (fse.type !== 'spawn-timer') continue;
+            if (fse.timer <= gs.freezeTimer) {
+                // This enemy will spawn while still frozen
+                var ft = fse.forcedType;
+                if (ft === 'ugg') freezeSpawnDanger[(ROWS-1) + ',' + (ROWS-1)] = true;
+                else if (ft === 'wrongway') freezeSpawnDanger[(ROWS-1) + ',0'] = true;
+                else { freezeSpawnDanger['1,0'] = true; freezeSpawnDanger['1,1'] = true; }
+            }
+        }
+        // Also mark positions of frozen enemies
+        for (var fei = 0; fei < gs.enemies.length; fei++) {
+            var fee = gs.enemies[fei];
+            if (fee.type === 'spawn-timer' || fee.type === 'greenball' || fee.type === 'slick') continue;
+            var fep = enemyEffectivePos(fee);
+            freezeSpawnDanger[fep.row + ',' + fep.col] = true;
+            // Also mark source tile for mid-jump enemies
+            if (fee.jumping) freezeSpawnDanger[fee.row + ',' + fee.col] = true;
+        }
+
+        // Follow tour planner, but validate via simulation + spawn avoidance
         var tourDir = dynamicTourMove(gs);
         if (tourDir && simCanMove(gs, tourDir)) {
-            var tc = simDeepClone(gs);
-            if (simStep(tc, tourDir)) { restoreRng(); return tourDir; }
+            var ttd = DIRS[tourDir];
+            var ttr = gs.player.row + ttd.dr, ttc = gs.player.col + ttd.dc;
+            if (!freezeSpawnDanger[ttr + ',' + ttc]) {
+                var tc = simDeepClone(gs);
+                if (simStep(tc, tourDir)) { restoreRng(); return tourDir; }
+            }
         }
-        // Fallback: pick best surviving tour-cost direction
+        // Fallback: pick best surviving tour-cost direction avoiding spawn danger
         var bestFD = null, bestFC = Infinity;
         for (var fk = 0; fk < DIR_KEYS.length; fk++) {
             var fd = DIR_KEYS[fk];
             if (!simCanMove(gs, fd)) continue;
             var fdd = DIRS[fd];
-            if (!isValidPos(gs.player.row + fdd.dr, gs.player.col + fdd.dc)) continue;
+            var fnr = gs.player.row + fdd.dr, fnc = gs.player.col + fdd.dc;
+            if (!isValidPos(fnr, fnc)) continue;
+            if (freezeSpawnDanger[fnr + ',' + fnc]) continue;
             var fc = simDeepClone(gs);
             if (simStep(fc, fd)) {
                 var ftc = fc.levelWon ? -1000 : simTourCost(fc);
@@ -520,7 +550,7 @@ function unifiedPick(gs, coilyActive) {
     var dangerSet = buildDangerSet();  // non-Coily enemy danger zones
     // More simulation samples when enemies could kill us
     var hasEnemies = gs.enemies.length > 0;
-    var SAMPLES = coilyActive ? 24 : (hasEnemies ? 6 : 4);
+    var SAMPLES = coilyActive ? 24 : (hasEnemies ? 16 : 4);
 
     // Find Coily position for proximity-aware scoring
     var coilyR = -1, coilyC = -1;
