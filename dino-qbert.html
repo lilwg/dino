@@ -1524,6 +1524,9 @@ try { bestHops = JSON.parse(localStorage.getItem('dino-qbert-best-hops')) || {};
 restartGame();
 requestAnimationFrame(loop);
 
+// Log AI version for debugging
+console.log('Q*bert AI version: ' + (typeof AI_VERSION !== 'undefined' ? AI_VERSION : 'UNKNOWN (old code!)'));
+
 })();
 </script>
 </body>
