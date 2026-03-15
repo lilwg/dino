@@ -389,6 +389,8 @@ function isSafeMove(dirKey) {
         if (e.type === 'spawn-timer' || e.type === 'slick' || e.type === 'greenball') continue;
         var pos = enemyEffectivePos(e);
         if (e.type === 'coily') {
+            // Coily's current position is dangerous
+            if (pos.row === nr && pos.col === nc) return false;
             // Coily mid-jump landing tile is dangerous
             if (e.destRow != null && e.destRow === nr && e.destCol === nc) return false;
             // Check where Coily goes next (chases player's current pos)
@@ -426,15 +428,26 @@ function evalDiscLure() {
         }
 
         var pathToDisc = bfsTo(player.row, player.col, discRow, discCol);
-        // Be willing to path toward discs for lure — Coily kill is very valuable
-        var maxLureDist = lv >= 3 ? 6 : 4;
+        // Path toward disc for lure — but not too far, safety degrades over distance
+        var maxLureDist = lv >= 3 ? 4 : 3;
         if (pathToDisc && pathToDisc.dist <= maxLureDist) {
+            // Verify the whole path is safe from Coily interception
             var simCoilyR = coily.row, simCoilyC = coily.col;
+            var pathSafe = true;
+            var pr = player.row, pc = player.col;
             for (var s = 0; s < pathToDisc.dist; s++) {
-                var cp = predictCoilyNext(simCoilyR, simCoilyC, discRow, discCol);
+                var dk = DIRS[pathToDisc.path[s]];
+                pr += dk.dr; pc += dk.dc;
+                // Coily chases player toward disc
+                var cp = predictCoilyNext(simCoilyR, simCoilyC, pr, pc);
+                // Check if Coily lands on or passes through our position
+                if ((cp.row === pr && cp.col === pc) ||
+                    (simCoilyR === pr && simCoilyC === pc)) {
+                    pathSafe = false; break;
+                }
                 simCoilyR = cp.row; simCoilyC = cp.col;
             }
-            if (coilyLured({ row: simCoilyR, col: simCoilyC }, disc)) {
+            if (pathSafe && coilyLured({ row: simCoilyR, col: simCoilyC }, disc)) {
                 if (pathToDisc.path.length > 0 && isSafeMove(pathToDisc.path[0])) {
                     return pathToDisc.path[0];
                 }
@@ -585,10 +598,14 @@ function mode2Pick(gs) {
         for (var ci = 0; ci < gs.cubes.length; ci++)
             if (gs.cubes[ci].state < tgt) remaining++;
         // survThresh: minimum survival rate gap to override tour cost advantage
-        // With many cubes: 0.08 (fairly safe). With few cubes: up to 0.35 (accept more risk to finish)
-        var survThresh = 0.08 + 0.27 * Math.max(0, 1 - remaining / 8);
+        // Keep this conservative — jumping into Coily is almost always worse than a detour
+        // With many cubes: 0.04 (very safe). With few cubes: up to 0.12 (slightly more risk)
+        var survThresh = 0.04 + 0.08 * Math.max(0, 1 - remaining / 8);
 
-        if (survRate > bestSurv + survThresh ||
+        // Never prefer a move where survival < 50% unless everything is bad
+        if (survRate < 0.5 && bestSurv >= 0.5) {
+            // Skip — don't let tour cost override a high-death move
+        } else if (survRate > bestSurv + survThresh ||
             (survRate > bestSurv - 1e-9 && avgTC < bestTC)) {
             bestSurv = survRate;
             bestTC = avgTC;
