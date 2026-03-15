@@ -349,6 +349,14 @@ function killPlayerVisual() {
     player.deathAnimTimer = 0;
     swearBubble = { x: player.px, y: player.py - 40, timer: 90 };
     lives--;
+    var deathInfo = 'DEATH Lv' + arcadeLevel() + '-' + ((round-1)%4+1) + ' @(' + player.row + ',' + player.col + ') lives=' + lives + ' hops=' + hops;
+    for (var di = 0; di < enemies.length; di++) {
+        var de = enemies[di];
+        if (de.type !== 'spawn-timer') deathInfo += ' ' + de.type + '@(' + de.row + ',' + de.col + ')';
+    }
+    console.log(deathInfo);
+    if (!window._deathLog) window._deathLog = [];
+    window._deathLog.push(deathInfo);
     if (lives <= 0) {
         setTimeout(function () { gameOver = true; }, 800);
     }
