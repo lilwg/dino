@@ -482,33 +482,28 @@ function evalDiscLure() {
 // More samples when enemies are present for reliable safety checking.
 
 function unifiedPick(gs, coilyActive) {
-    // ── Freeze mode: enemies are frozen, skip all avoidance ─────────────
-    // Only skip safety if freeze lasts long enough to complete a jump + buffer.
-    // A jump takes ~ceil(1/jumpDur) frames; add buffer for Coily's first move after unfreeze.
+    // Use separate RNG for AI simulations so we don't pollute the game's Math.random
+    var savedRng = simRng;
+    simRng = createSeededRng((gs.player.row * 7 + gs.player.col) * 1000 + (frameCount || 0));
+    function restoreRng() { simRng = savedRng; }
+
+    // ── Freeze mode: skip expensive avoidance but still validate via simulation ──
+    // Only skip danger maps / Coily scoring if freeze lasts long enough.
     var jumpFrames = Math.ceil(1.0 / (gs.player.jumpDur || 0.028));
-    var freezeSafeMargin = jumpFrames + 10;  // jump + buffer for enemy movement after thaw
+    var freezeSafeMargin = jumpFrames + 10;
     if (gs.freezeTimer > freezeSafeMargin) {
-        // Enemies frozen but collision still kills — avoid landing on enemies
+        // Follow tour planner, but validate each move survives simulation
+        // (frozen enemies mid-jump can still collide)
         var tourDir = dynamicTourMove(gs);
         if (tourDir && simCanMove(gs, tourDir)) {
-            // Quick check: don't jump onto a frozen enemy
-            var td = DIRS[tourDir];
-            var tnr = gs.player.row + td.dr, tnc = gs.player.col + td.dc;
-            var tourBlocked = false;
-            for (var fi = 0; fi < gs.enemies.length; fi++) {
-                var fe = gs.enemies[fi];
-                if (fe.type === 'spawn-timer' || fe.type === 'greenball' || fe.type === 'slick') continue;
-                var fp = enemyEffectivePos(fe);
-                if (fp.row === tnr && fp.col === tnc) { tourBlocked = true; break; }
-            }
-            if (!tourBlocked) return tourDir;
+            var tc = simDeepClone(gs);
+            if (simStep(tc, tourDir)) { restoreRng(); return tourDir; }
         }
-        // Fallback: pick best tour-cost direction
+        // Fallback: pick best surviving tour-cost direction
         var bestFD = null, bestFC = Infinity;
         for (var fk = 0; fk < DIR_KEYS.length; fk++) {
             var fd = DIR_KEYS[fk];
             if (!simCanMove(gs, fd)) continue;
-            // Don't waste discs during freeze
             var fdd = DIRS[fd];
             if (!isValidPos(gs.player.row + fdd.dr, gs.player.col + fdd.dc)) continue;
             var fc = simDeepClone(gs);
@@ -517,7 +512,7 @@ function unifiedPick(gs, coilyActive) {
                 if (ftc < bestFC) { bestFC = ftc; bestFD = fd; }
             }
         }
-        if (bestFD) return bestFD;
+        if (bestFD) { restoreRng(); return bestFD; }
     }
 
     var dangerSet = buildDangerSet();  // non-Coily enemy danger zones
@@ -550,7 +545,7 @@ function unifiedPick(gs, coilyActive) {
                 var lc = simDeepClone(gs);
                 if (simStep(lc, lureDir)) lureSafe++;
             }
-            if (lureSafe === SAMPLES) return lureDir;
+            if (lureSafe === SAMPLES) { restoreRng(); return lureDir; }
         }
     }
 
@@ -723,24 +718,29 @@ function unifiedPick(gs, coilyActive) {
                     // Only pursue if this move had 100% survival
                     var slickScore = aiMoveScores[DIR_KEYS[sk]];
                     if (slickScore !== undefined && slickScore >= 0 && simCanMove(gs, DIR_KEYS[sk])) {
-                        return DIR_KEYS[sk];
+                        restoreRng(); return DIR_KEYS[sk];
                     }
                 }
             }
         }
     }
 
-    // Tour planner direction — use it if it's safe
+    // Tour planner direction — use it if it's safe AND not in danger set
     var tourDir = dynamicTourMove(gs);
     if (tourDir !== null) {
         var tourScore = aiMoveScores[tourDir];
         if (tourScore !== undefined && tourScore >= 0) {
-            // Tour direction is safe (100% survival) — use it
-            return tourDir;
+            var td2 = DIRS[tourDir];
+            var tnr2 = gs.player.row + td2.dr, tnc2 = gs.player.col + td2.dc;
+            if (!dangerSet[tnr2 + ',' + tnc2]) {
+                restoreRng(); return tourDir;
+            }
+            // Tour direction is in danger set — fall through to prefer bestSafeDir
         }
     }
 
     // Fall back: best safe direction, then best unsafe, then best overall
+    restoreRng();
     if (bestSafeDir) return bestSafeDir;
     if (bestUnsafeDir) return bestUnsafeDir;
     if (bestAnyDir) return bestAnyDir;
