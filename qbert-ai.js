@@ -551,9 +551,8 @@ function mode2Pick(gs) {
         var survRate = survived / MC_SAMPLES;
         var avgTC = survived > 0 ? totalTC / survived : Infinity;
 
-        // Penalize STAY: it makes no progress, so treat it as slightly worse
-        // unless movement is genuinely more dangerous
-        if (dir === 'STAY') avgTC += 5;
+        // Only penalize STAY for tour cost tiebreaking — never let it override survival
+        if (dir === 'STAY') avgTC += 3;
 
         // Bonus for moves that immediately land on an unfinished cube
         // Also bonus for catching green balls (freeze enemies) and slicks (prevent revert)
@@ -592,21 +591,19 @@ function mode2Pick(gs) {
         // Export for viz: survival rate (0-1), negative avgTC so higher=better
         aiMoveScores[dir] = survRate >= 1 ? (10000 - avgTC) : (survRate * 100 - 100);
 
-        // Combined ranking: balance survival vs tour progress
-        // When few cubes remain, accept more risk to finish the level
-        var tgt = gs.tgt;
-        var remaining = 0;
-        for (var ci = 0; ci < gs.cubes.length; ci++)
-            if (gs.cubes[ci].state < tgt) remaining++;
-        // survThresh: minimum survival rate gap to override tour cost advantage
-        // Keep conservative — surviving is almost always better than a faster route
-        var survThresh = 0.04 + 0.04 * Math.max(0, 1 - remaining / 8);
+        // Ranking: survival first, tour cost only as tiebreaker
+        // survEps: how close survival rates need to be to count as "tied"
+        // Only then does tour cost matter. This prevents the AI from
+        // jumping into Coily for a slightly better tour cost.
+        var survEps = 1.0 / MC_SAMPLES;  // one sample difference = tied
 
-        // Never prefer a move where survival < 75% unless everything is bad
-        if (survRate < 0.75 && bestSurv >= 0.75) {
-            // Skip — don't let tour cost override a high-death move
-        } else if (survRate > bestSurv + survThresh ||
-            (survRate > bestSurv - 1e-9 && avgTC < bestTC)) {
+        if (survRate > bestSurv + survEps) {
+            // Strictly better survival — always prefer
+            bestSurv = survRate;
+            bestTC = avgTC;
+            bestDir = dir;
+        } else if (survRate >= bestSurv - survEps && avgTC < bestTC) {
+            // Survival roughly equal — tiebreak on tour cost
             bestSurv = survRate;
             bestTC = avgTC;
             bestDir = dir;
