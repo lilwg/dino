@@ -213,15 +213,15 @@ function drawCube(c, cx, cy, state) {
     var rightCol = r4 ? '#000' : '#909090';
     var stroke   = r4 ? '#000' : '#a0a0a0';
 
-    function face(pts, col) {
+    function face(pts, col, noStroke) {
         c.beginPath();
         c.moveTo(pts[0], pts[1]);
         for (var i = 2; i < pts.length; i += 2) c.lineTo(pts[i], pts[i + 1]);
         c.closePath();
         c.fillStyle = col; c.fill();
-        c.strokeStyle = stroke; c.lineWidth = 0.5; c.stroke();
+        if (!noStroke) { c.strokeStyle = stroke; c.lineWidth = 0.5; c.stroke(); }
     }
-    face([cx, cy-hh, cx+hw, cy, cx, cy+hh, cx-hw, cy], topCol);                              // top
+    face([cx, cy-hh, cx+hw, cy, cx, cy+hh, cx-hw, cy], topCol, r4);                          // top
     if (!r4) {
         face([cx-hw, cy, cx, cy+hh, cx, cy+hh+CUBE_DEPTH, cx-hw, cy+CUBE_DEPTH], leftCol);   // left
         face([cx+hw, cy, cx, cy+hh, cx, cy+hh+CUBE_DEPTH, cx+hw, cy+CUBE_DEPTH], rightCol);   // right
