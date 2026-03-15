@@ -642,10 +642,15 @@ function unifiedPick(gs, coilyActive) {
                             else if (isBottom || isEdge) avgTC -= 1;
                         } else if (gs.lv >= 3) {
                             // Penalty for stepping on completed cube (reverts it)
-                            avgTC += 4;
+                            // Scale down when few cubes remain — crossing is worth it vs long detours
+                            var unfCount = 0;
+                            for (var uc = 0; uc < gs.cubes.length; uc++)
+                                if (gs.cubes[uc].state < gs.tgt) unfCount++;
+                            var revertPen = unfCount <= 3 ? 1 : (unfCount <= 5 ? 2 : 4);
+                            avgTC += revertPen;
                             var isApex3 = (nr === 0 && nc === 0);
                             var isCrnr3 = (nr === ROWS - 1 && (nc === 0 || nc === ROWS - 1));
-                            if (isApex3 || isCrnr3) avgTC += 4;  // extra for dead-ends
+                            if (isApex3 || isCrnr3) avgTC += revertPen;  // extra for dead-ends
                         }
                         break;
                     }
@@ -675,7 +680,13 @@ function unifiedPick(gs, coilyActive) {
                         var er = e.destRow != null ? e.destRow : e.row;
                         var ec = e.destCol != null ? e.destCol : e.col;
                         if (er === nr && ec === nc) {
-                            avgTC -= (e.type === 'greenball') ? 15 : 8;
+                            // Slicks are worth more on revert levels — catching saves re-work
+                            avgTC -= (e.type === 'greenball') ? 15 : (gs.lv >= 3 ? 20 : 8);
+                        }
+                        // Intercept bonus: if slick is 1 hop from this tile, moving here may catch it next turn
+                        if (e.type === 'slick' && gs.lv >= 3) {
+                            var slickDist = Math.abs(er - nr) + Math.abs(ec - nc);
+                            if (slickDist === 1) avgTC -= 6;
                         }
                     }
                 }
@@ -745,21 +756,33 @@ function unifiedPick(gs, coilyActive) {
 
     // Slick pursuit: catch nearby slicks if the move is safe (lv3+)
     if (gs.lv >= 3) {
+        var bestSlickDir = null, bestSlickDist = Infinity;
         for (var si = 0; si < gs.enemies.length; si++) {
             var se = gs.enemies[si];
             if (se.type !== 'slick') continue;
             var spos = enemyEffectivePos(se);
+            // Predict where slick will be next hop (DL or DR, random — check both)
+            var slickNexts = [spos];
+            if (isValidPos(spos.row + 1, spos.col)) slickNexts.push({ row: spos.row + 1, col: spos.col });
+            if (isValidPos(spos.row + 1, spos.col + 1)) slickNexts.push({ row: spos.row + 1, col: spos.col + 1 });
             for (var sk = 0; sk < DIR_KEYS.length; sk++) {
                 var sdk = DIRS[DIR_KEYS[sk]];
                 var snr = gs.player.row + sdk.dr, snc = gs.player.col + sdk.dc;
-                if (snr === spos.row && snc === spos.col) {
-                    // Only pursue if this move had 100% survival
-                    var slickScore = aiMoveScores[DIR_KEYS[sk]];
-                    if (slickScore !== undefined && slickScore >= 0 && simCanMove(gs, DIR_KEYS[sk])) {
-                        restoreRng(); return DIR_KEYS[sk];
+                if (!isValidPos(snr, snc)) continue;
+                for (var sni = 0; sni < slickNexts.length; sni++) {
+                    var sd = Math.abs(snr - slickNexts[sni].row) + Math.abs(snc - slickNexts[sni].col);
+                    if (sd < bestSlickDist) {
+                        var slickScore = aiMoveScores[DIR_KEYS[sk]];
+                        if (slickScore !== undefined && slickScore >= 0 && simCanMove(gs, DIR_KEYS[sk])) {
+                            bestSlickDist = sd; bestSlickDir = DIR_KEYS[sk];
+                        }
                     }
                 }
             }
+        }
+        // Only intercept if we're very close (distance 0 = same tile, 1 = adjacent)
+        if (bestSlickDir && bestSlickDist <= 0) {
+            restoreRng(); return bestSlickDir;
         }
     }
 
