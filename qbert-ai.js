@@ -483,10 +483,26 @@ function evalDiscLure() {
 
 function unifiedPick(gs, coilyActive) {
     // ── Freeze mode: enemies are frozen, skip all avoidance ─────────────
-    if (gs.freezeTimer > 0) {
-        // Enemies can't move or kill us — just follow the tour planner
+    // Only skip safety if freeze lasts long enough to complete a jump + buffer.
+    // A jump takes ~ceil(1/jumpDur) frames; add buffer for Coily's first move after unfreeze.
+    var jumpFrames = Math.ceil(1.0 / (gs.player.jumpDur || 0.028));
+    var freezeSafeMargin = jumpFrames + 10;  // jump + buffer for enemy movement after thaw
+    if (gs.freezeTimer > freezeSafeMargin) {
+        // Enemies frozen but collision still kills — avoid landing on enemies
         var tourDir = dynamicTourMove(gs);
-        if (tourDir && simCanMove(gs, tourDir)) return tourDir;
+        if (tourDir && simCanMove(gs, tourDir)) {
+            // Quick check: don't jump onto a frozen enemy
+            var td = DIRS[tourDir];
+            var tnr = gs.player.row + td.dr, tnc = gs.player.col + td.dc;
+            var tourBlocked = false;
+            for (var fi = 0; fi < gs.enemies.length; fi++) {
+                var fe = gs.enemies[fi];
+                if (fe.type === 'spawn-timer' || fe.type === 'greenball' || fe.type === 'slick') continue;
+                var fp = enemyEffectivePos(fe);
+                if (fp.row === tnr && fp.col === tnc) { tourBlocked = true; break; }
+            }
+            if (!tourBlocked) return tourDir;
+        }
         // Fallback: pick best tour-cost direction
         var bestFD = null, bestFC = Infinity;
         for (var fk = 0; fk < DIR_KEYS.length; fk++) {

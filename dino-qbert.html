@@ -688,6 +688,10 @@ function update() {
         // Per-frame collision check
         simCheckCollision(gs);
         if (!gs.alive) {
+            console.log('DEATH: ' + (gs.deathEnemy||'?') + ' at (' + gs.player.row + ',' + gs.player.col + ')' +
+                ' frame=' + frameCount + ' round=' + round + ' lv=' + arcadeLevel() +
+                ' freezeTimer=' + gs.freezeTimer +
+                ' enemies=' + gs.enemies.map(function(e){return e.type+'@('+e.row+','+e.col+')'}).join(' '));
             gs.alive = true;
             gs.player.deathTimer = 100;
             killPlayerVisual();
@@ -705,6 +709,10 @@ function update() {
             // Collision on landing
             simCheckCollision(gs);
             if (!gs.alive) {
+                console.log('DEATH ON LANDING: ' + (gs.deathEnemy||'?') + ' at (' + gs.player.row + ',' + gs.player.col + ')' +
+                    ' frame=' + frameCount + ' round=' + round + ' lv=' + arcadeLevel() +
+                    ' freezeTimer=' + gs.freezeTimer +
+                    ' enemies=' + gs.enemies.map(function(e){return e.type+'@('+e.row+','+e.col+')'}).join(' '));
                 gs.alive = true;
                 gs.player.deathTimer = 100;
                 killPlayerVisual();
