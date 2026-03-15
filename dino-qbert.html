@@ -207,9 +207,11 @@ function drawCube(c, cx, cy, state) {
     var lv = arcadeLevel();
     var palIdx = lv <= 2 ? 0 : lv <= 4 ? 1 : lv <= 6 ? 2 : 3;
     var topCol   = CUBE_TOP_COLORS[palIdx][state] || CUBE_TOP_COLORS[palIdx][0];
-    var leftCol  = '#a8a8a8';
-    var rightCol = '#909090';
-    var stroke   = '#a0a0a0';
+    // Round 4 of each level: invisible sides (flat diamonds like the arcade)
+    var r4 = ((round - 1) % 4) === 3;
+    var leftCol  = r4 ? '#000' : '#a8a8a8';
+    var rightCol = r4 ? '#000' : '#909090';
+    var stroke   = r4 ? '#000' : '#a0a0a0';
 
     function face(pts, col) {
         c.beginPath();
@@ -220,8 +222,10 @@ function drawCube(c, cx, cy, state) {
         c.strokeStyle = stroke; c.lineWidth = 0.5; c.stroke();
     }
     face([cx, cy-hh, cx+hw, cy, cx, cy+hh, cx-hw, cy], topCol);                              // top
-    face([cx-hw, cy, cx, cy+hh, cx, cy+hh+CUBE_DEPTH, cx-hw, cy+CUBE_DEPTH], leftCol);       // left
-    face([cx+hw, cy, cx, cy+hh, cx, cy+hh+CUBE_DEPTH, cx+hw, cy+CUBE_DEPTH], rightCol);      // right
+    if (!r4) {
+        face([cx-hw, cy, cx, cy+hh, cx, cy+hh+CUBE_DEPTH, cx-hw, cy+CUBE_DEPTH], leftCol);   // left
+        face([cx+hw, cy, cx, cy+hh, cx, cy+hh+CUBE_DEPTH, cx+hw, cy+CUBE_DEPTH], rightCol);   // right
+    }
 }
 
 // ─── Game state (simulation-driven) ──────────────────────────────────────────
