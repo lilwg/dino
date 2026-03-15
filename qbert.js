@@ -15,6 +15,20 @@
 //   gs.sm, gs.tgt, gs.lv, gs.cubesColored, gs.score, gs.alive,
 //   gs.freezeTimer, gs.round, gs.levelWon
 
+// ─── Simulation RNG ─────────────────────────────────────────────────────────
+// AI simulations use a separate RNG so they don't pollute the game's Math.random sequence.
+var simRng = Math.random;  // default: use Math.random (real game)
+
+// Simple mulberry32 seeded PRNG for AI simulations
+function createSeededRng(seed) {
+    return function() {
+        seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+        var t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+        t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+        return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+}
+
 // ─── Constants ───────────────────────────────────────────────────────────────
 var ROWS = 7;
 var DIRS = { UL: {dr:-1, dc:-1}, UR: {dr:-1, dc:0}, DL: {dr:1, dc:0}, DR: {dr:1, dc:1}, STAY: {dr:0, dc:0} };
@@ -58,8 +72,9 @@ function levelSpeed(rnd) {
 }
 
 function speedMultiplier(rnd) {
-    var gs = (typeof gameSpeed !== 'undefined') ? gameSpeed : 1.0;
-    return levelSpeed(rnd) * gs;
+    // Speed slider no longer affects internal timing — it controls ticks/frame.
+    // Only level-based speed scaling applies here.
+    return levelSpeed(rnd);
 }
 
 function enemyMoveInterval(type, sm) {
@@ -322,7 +337,7 @@ function simSpawnEnemy(gs, forcedType) {
             if (gs.enemies[i].type === 'coily' || gs.enemies[i].type === 'egg') { hasCoily = true; break; }
         type = hasCoily ? 'redball' : 'egg';
     }
-    var spawnCol = Math.floor(Math.random() * 2);
+    var spawnCol = Math.floor(simRng() * 2);
     var interval = enemyMoveInterval(type, gs.sm);
     if (type === 'ugg') {
         gs.enemies.push({ type: 'ugg', row: ROWS-1, col: ROWS-1,
@@ -488,7 +503,7 @@ function simUpdateEnemies(gs) {
 
         // Execute move by type
         if (e.type === 'egg') {
-            var dir = Math.random() < 0.5 ? 'DL' : 'DR';
+            var dir = simRng() < 0.5 ? 'DL' : 'DR';
             var delta = DIRS[dir];
             var nr = e.row + delta.dr, nc = e.col + delta.dc;
             e.hops = (e.hops || 0) + 1;
@@ -518,19 +533,19 @@ function simUpdateEnemies(gs) {
                 e.falling = true;
             }
         } else if (e.type === 'redball' || e.type === 'greenball' || e.type === 'slick') {
-            var dir = Math.random() < 0.5 ? 'DL' : 'DR';
+            var dir = simRng() < 0.5 ? 'DL' : 'DR';
             var delta = DIRS[dir];
             var nr = e.row + delta.dr, nc = e.col + delta.dc;
             simEnemyJumpTo(e, nr, nc, gs.sm);
             if (!isValidPos(nr, nc)) e.falling = true;
         } else if (e.type === 'ugg') {
-            var udir = Math.random() < 0.5;
+            var udir = simRng() < 0.5;
             var unr = udir ? e.row - 1 : e.row;
             var unc = e.col - 1;
             simEnemyJumpTo(e, unr, unc, gs.sm);
             if (!isValidPos(unr, unc)) e.falling = true;
         } else if (e.type === 'wrongway') {
-            var wdir = Math.random() < 0.5;
+            var wdir = simRng() < 0.5;
             var wnr = wdir ? e.row - 1 : e.row;
             var wnc = wdir ? e.col : e.col + 1;
             simEnemyJumpTo(e, wnr, wnc, gs.sm);
@@ -549,6 +564,7 @@ function collisionTile(entity) {
 }
 
 // Per-frame collision check: same tile = death (or catch for slick/greenball)
+// During freeze, enemies are harmless (can still catch slick/greenball).
 function simCheckCollision(gs) {
     if (gs.player.dead) return;
     var pt = collisionTile(gs.player);
@@ -566,6 +582,9 @@ function simCheckCollision(gs) {
                 gs.score += 100;
                 gs.freezeTimer = 300;
                 gs.enemies.splice(i, 1); i--;
+            } else if (gs.freezeTimer > 0) {
+                // Enemies are frozen and harmless — skip lethal collision
+                continue;
             } else {
                 gs.alive = false;
                 gs.player.dead = true;

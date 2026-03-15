@@ -207,21 +207,25 @@ function drawCube(c, cx, cy, state) {
     var lv = arcadeLevel();
     var palIdx = lv <= 2 ? 0 : lv <= 4 ? 1 : lv <= 6 ? 2 : 3;
     var topCol   = CUBE_TOP_COLORS[palIdx][state] || CUBE_TOP_COLORS[palIdx][0];
-    var leftCol  = '#a8a8a8';
-    var rightCol = '#909090';
-    var stroke   = '#a0a0a0';
+    // Round 4 of even levels (2, 4, 6, 8): invisible sides (flat diamonds like the arcade)
+    var r4 = ((round - 1) % 4) === 3 && lv % 2 === 0;
+    var leftCol  = r4 ? '#000' : '#a8a8a8';
+    var rightCol = r4 ? '#000' : '#909090';
+    var stroke   = r4 ? '#000' : '#a0a0a0';
 
-    function face(pts, col) {
+    function face(pts, col, noStroke) {
         c.beginPath();
         c.moveTo(pts[0], pts[1]);
         for (var i = 2; i < pts.length; i += 2) c.lineTo(pts[i], pts[i + 1]);
         c.closePath();
         c.fillStyle = col; c.fill();
-        c.strokeStyle = stroke; c.lineWidth = 0.5; c.stroke();
+        if (!noStroke) { c.strokeStyle = stroke; c.lineWidth = 0.5; c.stroke(); }
     }
-    face([cx, cy-hh, cx+hw, cy, cx, cy+hh, cx-hw, cy], topCol);                              // top
-    face([cx-hw, cy, cx, cy+hh, cx, cy+hh+CUBE_DEPTH, cx-hw, cy+CUBE_DEPTH], leftCol);       // left
-    face([cx+hw, cy, cx, cy+hh, cx, cy+hh+CUBE_DEPTH, cx+hw, cy+CUBE_DEPTH], rightCol);      // right
+    face([cx, cy-hh, cx+hw, cy, cx, cy+hh, cx-hw, cy], topCol, r4);                          // top
+    if (!r4) {
+        face([cx-hw, cy, cx, cy+hh, cx, cy+hh+CUBE_DEPTH, cx-hw, cy+CUBE_DEPTH], leftCol);   // left
+        face([cx+hw, cy, cx, cy+hh, cx, cy+hh+CUBE_DEPTH, cx+hw, cy+CUBE_DEPTH], rightCol);   // right
+    }
 }
 
 // ─── Game state (simulation-driven) ──────────────────────────────────────────
@@ -688,6 +692,10 @@ function update() {
         // Per-frame collision check
         simCheckCollision(gs);
         if (!gs.alive) {
+            console.log('DEATH: ' + (gs.deathEnemy||'?') + ' at (' + gs.player.row + ',' + gs.player.col + ')' +
+                ' frame=' + frameCount + ' round=' + round + ' lv=' + arcadeLevel() +
+                ' freezeTimer=' + gs.freezeTimer +
+                ' enemies=' + gs.enemies.map(function(e){return e.type+'@('+e.row+','+e.col+')'}).join(' '));
             gs.alive = true;
             gs.player.deathTimer = 100;
             killPlayerVisual();
@@ -705,6 +713,10 @@ function update() {
             // Collision on landing
             simCheckCollision(gs);
             if (!gs.alive) {
+                console.log('DEATH ON LANDING: ' + (gs.deathEnemy||'?') + ' at (' + gs.player.row + ',' + gs.player.col + ')' +
+                    ' frame=' + frameCount + ' round=' + round + ' lv=' + arcadeLevel() +
+                    ' freezeTimer=' + gs.freezeTimer +
+                    ' enemies=' + gs.enemies.map(function(e){return e.type+'@('+e.row+','+e.col+')'}).join(' '));
                 gs.alive = true;
                 gs.player.deathTimer = 100;
                 killPlayerVisual();
@@ -1404,16 +1416,17 @@ function loop(timestamp) {
     lastTime = timestamp;
     // Cap delta to avoid spiral of death (e.g. tab was backgrounded)
     if (delta > 200) delta = 200;
-    accumulator += delta;
-    // Max 4 ticks per frame to prevent death spiral if update() is slow
+    accumulator += delta * gameSpeed;
+    // Max ticks scales with speed to allow higher throughput
+    var maxTicks = Math.max(4, gameSpeed * 2);
     var ticks = 0;
-    while (accumulator >= SIM_DT && ticks < 4) {
+    while (accumulator >= SIM_DT && ticks < maxTicks) {
         update();
         accumulator -= SIM_DT;
         ticks++;
     }
     // If we hit the cap, discard remaining accumulator to prevent buildup
-    if (ticks >= 4 && accumulator > SIM_DT) accumulator = 0;
+    if (ticks >= maxTicks && accumulator > SIM_DT) accumulator = 0;
     draw();
     requestAnimationFrame(loop);
 }
@@ -1476,18 +1489,7 @@ window.toggleEnemies = function () {
 window.setGameSpeed = function (v) {
     gameSpeed = v;
     document.getElementById('speed-label').textContent = v + 'x';
-    if (!gs) return;
-    // Update simulation speed multiplier
-    gs.sm = speedMultiplier();
-    // Update move intervals for existing enemies
-    for (var i = 0; i < gs.enemies.length; i++) {
-        var e = gs.enemies[i];
-        if (e.type !== 'spawn-timer' && e.moveInterval !== undefined) {
-            e.moveInterval = enemyMoveInterval(e.type, gs.sm);
-        }
-    }
-    // Update player jump speed
-    gs.player.jumpDur = PLAYER_JUMP_DUR * gs.sm;
+    // Speed slider controls ticks/frame in the game loop — no internal state changes needed
 };
 
 // ─── Input ────────────────────────────────────────────────────────────────────
