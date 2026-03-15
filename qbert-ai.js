@@ -3,9 +3,8 @@
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
 //
-// Two-mode AI:
-//   Mode 1 (no Coily): Tour planning + danger zone avoidance
-//   Mode 2 (Coily alive): Monte Carlo simulation search
+// Unified AI: always tour-plan, validate safety via simulation.
+// No mode switching — Coily just means more safety samples.
 //
 // The AI uses the SAME simulation code as the game (simStep from qbert.js).
 // No separate collision model — what the AI predicts IS what the game does.
@@ -477,303 +476,163 @@ function evalDiscLure() {
     return null;
 }
 
-// ─── Mode 1: Tour planning + danger avoidance ────────────────────────────────
-function mode1Pick(gs, dangerSet) {
-    // Always evaluate all directions so oscillation breaker has scores
-    var bestDir = null, bestCost = Infinity;
-    var bestUnsafeDir = null, bestUnsafeCost = Infinity;
-    var SAMPLES = 4;
+// ─── Unified pick: tour planning + simulation-validated safety ───────────────
+// Always plans toward unfinished cubes. Validates each candidate via simulation.
+// More samples when enemies are present for reliable safety checking.
 
-    for (var k = 0; k < DIR_KEYS.length; k++) {
-        if (!simCanMove(gs, DIR_KEYS[k])) continue;
-        var totalTC = 0, survived = 0;
-        for (var s = 0; s < SAMPLES; s++) {
-            var child = simDeepClone(gs);
-            var alive = simStep(child, DIR_KEYS[k]);
-            if (alive) { survived++; totalTC += simTourCost(child); }
-        }
-        if (survived === 0) { aiMoveScores[DIR_KEYS[k]] = -10000; continue; }
-        var tc = totalTC / survived;
-        var d = DIRS[DIR_KEYS[k]];
-        var nr = gs.player.row + d.dr, nc = gs.player.col + d.dc;
+function unifiedPick(gs, coilyActive) {
+    var dangerSet = buildDangerSet();  // non-Coily enemy danger zones
+    // More simulation samples when enemies could kill us
+    var hasEnemies = gs.enemies.length > 0;
+    var SAMPLES = coilyActive ? 16 : (hasEnemies ? 6 : 4);
 
-        // Export for viz: negative tour cost (lower cost = higher score)
-        aiMoveScores[DIR_KEYS[k]] = dangerSet[nr + ',' + nc] ? (-tc - 100) : -tc;
-
-        if (dangerSet[nr + ',' + nc]) {
-            if (tc < bestUnsafeCost) { bestUnsafeCost = tc; bestUnsafeDir = DIR_KEYS[k]; }
-        } else {
-            if (tc < bestCost) { bestCost = tc; bestDir = DIR_KEYS[k]; }
+    // Disc lure — use it if Coily is active and the lure move is safe
+    if (coilyActive) {
+        var lureDir = evalDiscLure();
+        if (lureDir) {
+            var lureSafe = 0;
+            for (var ls = 0; ls < SAMPLES; ls++) {
+                var lc = simDeepClone(gs);
+                if (simStep(lc, lureDir)) lureSafe++;
+            }
+            if (lureSafe === SAMPLES) return lureDir;
         }
     }
 
-    // Slick pursuit: intercept nearby slicks to prevent cube reversion (lv3+)
+    // Evaluate all directions: simulate for survival + tour cost
+    var bestSafeDir = null, bestSafeCost = Infinity;
+    var bestUnsafeDir = null, bestUnsafeCost = Infinity;
+    var bestAnyDir = null, bestAnySurv = -1, bestAnyCost = Infinity;
+
+    for (var k = 0; k < DIR_KEYS_WITH_STAY.length; k++) {
+        var dir = DIR_KEYS_WITH_STAY[k];
+        if (!simCanMove(gs, dir)) continue;
+
+        var totalTC = 0, survived = 0;
+        for (var s = 0; s < SAMPLES; s++) {
+            var child = simDeepClone(gs);
+            var alive = simStep(child, dir);
+            if (alive) {
+                survived++;
+                if (child.levelWon) totalTC -= 1000;
+                else totalTC += simTourCost(child);
+            }
+        }
+
+        var survRate = survived / SAMPLES;
+        var avgTC = survived > 0 ? totalTC / survived : Infinity;
+
+        // STAY penalty — it makes no tour progress
+        if (dir === 'STAY') avgTC += 3;
+
+        // Bonus/penalty for what we land on
+        if (dir !== 'STAY') {
+            var d = DIRS[dir];
+            var nr = gs.player.row + d.dr, nc = gs.player.col + d.dc;
+            if (isValidPos(nr, nc)) {
+                for (var ci2 = 0; ci2 < gs.cubes.length; ci2++) {
+                    if (gs.cubes[ci2].row === nr && gs.cubes[ci2].col === nc) {
+                        if (gs.cubes[ci2].state < gs.tgt) {
+                            avgTC -= 8;
+                            var isCorner = (nr === ROWS - 1 && (nc === 0 || nc === ROWS - 1));
+                            var isBottom = nr >= ROWS - 2;
+                            var isEdge = nc === 0 || nc === nr;
+                            if (isCorner) avgTC -= 4;
+                            else if (isBottom && isEdge) avgTC -= 3;
+                            else if (isBottom || isEdge) avgTC -= 1;
+                        } else {
+                            var isApex3 = (nr === 0 && nc === 0);
+                            var isCrnr3 = (nr === ROWS - 1 && (nc === 0 || nc === ROWS - 1));
+                            if (isApex3 || isCrnr3) avgTC += 6;
+                        }
+                        break;
+                    }
+                }
+                // Bonus for catching green balls and slicks
+                for (var ei = 0; ei < gs.enemies.length; ei++) {
+                    var e = gs.enemies[ei];
+                    if (e.type === 'greenball' || e.type === 'slick') {
+                        var er = e.destRow != null ? e.destRow : e.row;
+                        var ec = e.destCol != null ? e.destCol : e.col;
+                        if (er === nr && ec === nc) {
+                            avgTC -= (e.type === 'greenball') ? 15 : 8;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Export for viz
+        if (survived === 0) {
+            aiMoveScores[dir] = -10000;
+        } else if (survRate >= 1) {
+            aiMoveScores[dir] = 10000 - avgTC;
+        } else {
+            aiMoveScores[dir] = survRate * 100 - 100;
+        }
+
+        // Track best options by category
+        var inDanger = false;
+        if (dir !== 'STAY') {
+            var d2 = DIRS[dir];
+            var nr2 = gs.player.row + d2.dr, nc2 = gs.player.col + d2.dc;
+            if (dangerSet[nr2 + ',' + nc2]) inDanger = true;
+        }
+
+        if (survived === SAMPLES) {
+            // 100% survival — safe move
+            if (!inDanger) {
+                if (avgTC < bestSafeCost) { bestSafeCost = avgTC; bestSafeDir = dir; }
+            } else {
+                if (avgTC < bestUnsafeCost) { bestUnsafeCost = avgTC; bestUnsafeDir = dir; }
+            }
+        }
+        // Track best overall (for fallback)
+        if (survRate > bestAnySurv || (survRate === bestAnySurv && avgTC < bestAnyCost)) {
+            bestAnySurv = survRate; bestAnyCost = avgTC; bestAnyDir = dir;
+        }
+    }
+
+    // Slick pursuit: catch nearby slicks if the move is safe (lv3+)
     if (gs.lv >= 3) {
         for (var si = 0; si < gs.enemies.length; si++) {
             var se = gs.enemies[si];
             if (se.type !== 'slick') continue;
             var spos = enemyEffectivePos(se);
-            // Check if slick is within 1 hop of player
             for (var sk = 0; sk < DIR_KEYS.length; sk++) {
                 var sdk = DIRS[DIR_KEYS[sk]];
                 var snr = gs.player.row + sdk.dr, snc = gs.player.col + sdk.dc;
-                if (snr === spos.row && snc === spos.col && !dangerSet[snr + ',' + snc]) {
-                    if (simCanMove(gs, DIR_KEYS[sk])) return DIR_KEYS[sk];
+                if (snr === spos.row && snc === spos.col) {
+                    // Only pursue if this move had 100% survival
+                    var slickScore = aiMoveScores[DIR_KEYS[sk]];
+                    if (slickScore !== undefined && slickScore >= 0 && simCanMove(gs, DIR_KEYS[sk])) {
+                        return DIR_KEYS[sk];
+                    }
                 }
             }
         }
     }
 
-    // Use tour planner as primary if it agrees with a safe direction
+    // Tour planner direction — use it if it's safe
     var tourDir = dynamicTourMove(gs);
     if (tourDir !== null) {
-        var d = DIRS[tourDir];
-        var nr = gs.player.row + d.dr, nc = gs.player.col + d.dc;
-        if (!dangerSet[nr + ',' + nc]) return tourDir;
+        var tourScore = aiMoveScores[tourDir];
+        if (tourScore !== undefined && tourScore >= 0) {
+            // Tour direction is safe (100% survival) — use it
+            return tourDir;
+        }
     }
 
-    if (bestDir) return bestDir;
+    // Fall back: best safe direction, then best unsafe, then best overall
+    if (bestSafeDir) return bestSafeDir;
     if (bestUnsafeDir) return bestUnsafeDir;
-    for (var k = 0; k < DIR_KEYS.length; k++) {
-        if (simCanMove(gs, DIR_KEYS[k])) return DIR_KEYS[k];
-    }
+    if (bestAnyDir) return bestAnyDir;
     return 'STAY';
-}
-
-// ─── Mode 2: Monte Carlo search ─────────────────────────────────────────────
-// For each candidate move, run N random simulations forward K steps.
-// Pick the move with best survival rate, tiebreak on tour cost.
-
-var AI_TIME_BUDGET = 12;
-
-function mode2Pick(gs) {
-    // Scale MC parameters with level — harder levels need deeper/wider search
-    var mcSamples = gs.lv >= 3 ? 32 : 24;
-    var mcDepth = gs.lv >= 3 ? 8 : 6;
-
-    // Disc lure — validate through simulation before committing
-    var lureDir = evalDiscLure();
-    if (lureDir) {
-        // Quick survival check: run mcSamples simulations of the lure move
-        var lureSurvived = 0;
-        for (var ls = 0; ls < mcSamples; ls++) {
-            var lc = simDeepClone(gs);
-            if (simStep(lc, lureDir)) lureSurvived++;
-        }
-        // Only use lure if survival rate is high enough
-        if (lureSurvived / mcSamples >= 0.75) return lureDir;
-    }
-
-    var startTime = typeof performance !== 'undefined' ? performance.now() : Date.now();
-    var bestDir = null, bestSurv = -1, bestTC = Infinity;
-
-    for (var k = 0; k < DIR_KEYS_WITH_STAY.length; k++) {
-        var dir = DIR_KEYS_WITH_STAY[k];
-        if (!simCanMove(gs, dir)) continue;
-
-        var survived = 0;
-        var totalTC = 0;
-        var won = 0;
-
-        for (var s = 0; s < mcSamples; s++) {
-            var clone = simDeepClone(gs);
-            var alive = simStep(clone, dir);
-            if (!alive) continue;
-            if (clone.levelWon) { survived++; won++; totalTC -= 1000; continue; }
-
-            // Continue simulating forward with greedy AI moves
-            for (var step = 1; step < mcDepth; step++) {
-                // Pick a reasonable move: avoid danger, make tour progress
-                var bestStepDir = mcPickGreedy(clone);
-                alive = simStep(clone, bestStepDir);
-                if (!alive || clone.levelWon) break;
-            }
-            if (alive) {
-                survived++;
-                if (clone.levelWon) { won++; totalTC -= 1000; }
-                else totalTC += simTourCost(clone);
-            }
-        }
-
-        var survRate = survived / mcSamples;
-        var avgTC = survived > 0 ? totalTC / survived : Infinity;
-
-        // Only penalize STAY for tour cost tiebreaking — never let it override survival
-        if (dir === 'STAY') avgTC += 3;
-
-        // Bonus for moves that immediately land on an unfinished cube
-        // Also bonus for catching green balls (freeze enemies) and slicks (prevent revert)
-        if (dir !== 'STAY') {
-            var d = DIRS[dir];
-            var nr = gs.player.row + d.dr, nc = gs.player.col + d.dc;
-            for (var ci2 = 0; ci2 < gs.cubes.length; ci2++) {
-                if (gs.cubes[ci2].row === nr && gs.cubes[ci2].col === nc) {
-                    if (gs.cubes[ci2].state < gs.tgt) {
-                        avgTC -= 8;
-                        // Extra bonus for corners and bottom row — hardest to reach later
-                        var isCorner = (nr === ROWS - 1 && (nc === 0 || nc === ROWS - 1));
-                        var isBottom = nr >= ROWS - 2;
-                        var isEdge = nc === 0 || nc === nr;
-                        if (isCorner) avgTC -= 4;
-                        else if (isBottom && isEdge) avgTC -= 3;
-                        else if (isBottom || isEdge) avgTC -= 1;
-                    } else {
-                        // Penalize landing on completed apex/corners — dead ends
-                        var isApex3 = (nr === 0 && nc === 0);
-                        var isCrnr3 = (nr === ROWS - 1 && (nc === 0 || nc === ROWS - 1));
-                        if (isApex3 || isCrnr3) avgTC += 6;
-                    }
-                    break;
-                }
-            }
-            // Bonus for catching green balls and slicks
-            for (var ei = 0; ei < gs.enemies.length; ei++) {
-                var e = gs.enemies[ei];
-                if (e.type === 'greenball' || e.type === 'slick') {
-                    var er = e.destRow != null ? e.destRow : e.row;
-                    var ec = e.destCol != null ? e.destCol : e.col;
-                    if (er === nr && ec === nc) {
-                        // Green ball freezes all enemies — huge value with Coily active
-                        avgTC -= (e.type === 'greenball') ? 15 : 8;
-                    }
-                }
-            }
-        }
-
-        // Export for viz: survival rate (0-1), negative avgTC so higher=better
-        aiMoveScores[dir] = survRate >= 1 ? (10000 - avgTC) : (survRate * 100 - 100);
-
-        // Ranking: survival first, tour cost only as tiebreaker
-        // survEps: how close survival rates need to be to count as "tied"
-        // Only then does tour cost matter. This prevents the AI from
-        // jumping into Coily for a slightly better tour cost.
-        var survEps = 1.0 / mcSamples;  // one sample difference = tied (tighter for Coily safety)
-
-        if (survRate > bestSurv + survEps) {
-            // Strictly better survival — always prefer
-            bestSurv = survRate;
-            bestTC = avgTC;
-            bestDir = dir;
-        } else if (survRate >= bestSurv - survEps && avgTC < bestTC) {
-            // Survival roughly equal — tiebreak on tour cost
-            bestSurv = survRate;
-            bestTC = avgTC;
-            bestDir = dir;
-        }
-
-        // Time check
-        var elapsed = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - startTime;
-        if (elapsed > AI_TIME_BUDGET) break;
-    }
-
-    if (!bestDir) {
-        for (var k = 0; k < DIR_KEYS.length; k++)
-            if (simCanMove(gs, DIR_KEYS[k])) return DIR_KEYS[k];
-        return 'STAY';
-    }
-    return bestDir;
-}
-
-// Greedy move picker for MC rollouts: avoid enemies, make tour progress
-function mcPickGreedy(gs) {
-    var bestDir = 'STAY', bestScore = -Infinity;
-    for (var k = 0; k < DIR_KEYS_WITH_STAY.length; k++) {
-        var dir = DIR_KEYS_WITH_STAY[k];
-        if (!simCanMove(gs, dir)) continue;
-        var d = DIRS[dir];
-        var nr = gs.player.row + d.dr, nc = gs.player.col + d.dc;
-        if (dir !== 'STAY' && !isValidPos(nr, nc)) {
-            // Disc escape — always good
-            return dir;
-        }
-        var score = 0;
-        // Avoid enemies — but Coily is deterministic so we can exploit
-        // apex immunity: jumping TO a standing Coily's tile is safe (they swap)
-        var danger = false;
-        for (var ei = 0; ei < gs.enemies.length; ei++) {
-            var e = gs.enemies[ei];
-            if (e.type === 'spawn-timer' || e.type === 'slick' || e.type === 'greenball') continue;
-            if (e.type === 'coily') {
-                if (e.destRow != null) {
-                    // Coily mid-jump: landing tile is dangerous
-                    if (e.destRow === nr && e.destCol === nc) { danger = true; break; }
-                }
-                // Coily standing or mid-jump: check where it goes NEXT
-                // Coily chases player's CURRENT pos (source), not destination
-                var cer = e.destRow != null ? e.destRow : e.row;
-                var cec = e.destCol != null ? e.destCol : e.col;
-                // Also avoid Coily's current tile (source collision)
-                if (cer === nr && cec === nc) { danger = true; break; }
-                var cp = predictCoilyNext(cer, cec, gs.player.row, gs.player.col);
-                if (cp.row === nr && cp.col === nc) { danger = true; break; }
-                // Also check 2-step ahead (Coily chases our destination, not source)
-                var cp2 = predictCoilyNext(cp.row, cp.col, nr, nc);
-                if (cp2.row === nr && cp2.col === nc) { score -= 30; }
-            } else {
-                var er = e.row, ec = e.col;
-                if (e.destRow != null) { er = e.destRow; ec = e.destCol; }
-                if (er === nr && ec === nc) { danger = true; break; }
-                if (e.type === 'egg' || e.type === 'redball') {
-                    if (isValidPos(er + 1, ec) && er + 1 === nr && ec === nc) danger = true;
-                    if (isValidPos(er + 1, ec + 1) && er + 1 === nr && ec + 1 === nc) danger = true;
-                }
-            }
-        }
-        if (danger) score -= 100;
-        // Cube state scoring: strongly prefer unfinished cubes to drive completion
-        for (var ci = 0; ci < gs.cubes.length; ci++) {
-            if (gs.cubes[ci].row === nr && gs.cubes[ci].col === nc) {
-                if (gs.cubes[ci].state < gs.tgt) {
-                    score += 20;
-                    // Prefer corners and bottom — they're hardest to reach later
-                    var isCorner = (nr === ROWS - 1 && (nc === 0 || nc === ROWS - 1));
-                    var isBottom = nr >= ROWS - 2;
-                    var isEdge = nc === 0 || nc === nr;
-                    if (isCorner) score += 6;
-                    else if (isBottom && isEdge) score += 4;
-                    else if (isBottom || isEdge) score += 2;
-                } else {
-                    // Penalize stepping on completed cubes (reverts on lv3+, wastes time on all)
-                    // On lv3 toggle levels, reverting is catastrophic — strongly avoid
-                    var revertPen = gs.lv >= 3 ? -25 : -3;
-                    // Extra penalty for completed apex and corners — dead ends
-                    var isApex2 = (nr === 0 && nc === 0);
-                    var isCrnr2 = (nr === ROWS - 1 && (nc === 0 || nc === ROWS - 1));
-                    if (isApex2 || isCrnr2) revertPen -= 8;
-                    score += revertPen;
-                }
-                break;
-            }
-        }
-        // Pursue green balls (freeze enemies) and slicks (prevent cube revert)
-        for (var ei2 = 0; ei2 < gs.enemies.length; ei2++) {
-            var eb = gs.enemies[ei2];
-            if (eb.type === 'greenball' || eb.type === 'slick') {
-                var ebr = eb.destRow != null ? eb.destRow : eb.row;
-                var ebc = eb.destCol != null ? eb.destCol : eb.col;
-                if (ebr === nr && ebc === nc) {
-                    score += (eb.type === 'greenball') ? 35 : 15;
-                }
-            }
-        }
-        // Prefer mobility (more neighbors)
-        var neighbors = 0;
-        for (var nk = 0; nk < 4; nk++) {
-            var dk = DIRS[DIR_KEYS[nk]];
-            if (isValidPos(nr + dk.dr, nc + dk.dc)) neighbors++;
-        }
-        score += neighbors;
-        // STAY penalty — staying makes no progress
-        if (dir === 'STAY') score -= 3;
-
-        if (score > bestScore) { bestScore = score; bestDir = dir; }
-    }
-    return bestDir;
 }
 
 // ─── Main entry point ────────────────────────────────────────────────────────
 var aiMoveScores = {};  // exported per-direction scores for viz
-var aiMode = 0;         // 0 = no AI, 1 = tour+danger, 2 = Monte Carlo
+var aiMode = 0;         // 0 = no AI, 1 = unified (always set to 1 now)
 var aiStayCount = 0;    // consecutive STAY decisions — used to break stuck loops
 var aiLastPos = '';     // last position key — used to detect oscillation
 var aiSamePosCount = 0; // frames spent on same tile
@@ -784,16 +643,14 @@ var AI_HISTORY_LEN = 8; // how many positions to track
 
 function aiPickBestDir() {
     var coilyActive = false;
-    var frozen = false;
     for (var i = 0; i < enemies.length; i++) {
         if (enemies[i].type === 'coily') coilyActive = true;
-        // Egg about to hatch into Coily — preemptively use Mode 2 (MC safety)
         if (enemies[i].type === 'egg' && (enemies[i].willHatch || (enemies[i].hops || 0) >= 5)) coilyActive = true;
     }
-    if (typeof freezeTimer !== 'undefined' && freezeTimer > 0) frozen = true;
 
     var gs = simCloneGameState();
     aiMoveScores = {};
+    aiMode = 1;
 
     // Track how long we've been on the same tile
     var posKey = gs.player.row + ',' + gs.player.col;
@@ -812,43 +669,25 @@ function aiPickBestDir() {
         aiNoProgressCount++;
     }
 
-    // Force mode 1 (tour+danger) when stuck too long WITHOUT Coily
-    // NEVER force mode 1 when Coily is active — mode 1 has no MC safety check
-    // and will walk straight into Coily. On level 3, slicks revert cubes causing
-    // aiNoProgressCount to climb even during normal play.
-    var forceMode1 = (!coilyActive && aiNoProgressCount > 25 && curRemaining <= 3);
-
-    var result;
-    if (!coilyActive || frozen || forceMode1) {
-        aiMode = 1;
-        var dangerSet = buildDangerSet();
-        result = mode1Pick(gs, dangerSet);
-    } else {
-        aiMode = 2;
-        result = mode2Pick(gs);
-    }
+    var result = unifiedPick(gs, coilyActive);
 
     // Track position history for oscillation detection
     aiPosHistory.push(posKey);
     if (aiPosHistory.length > AI_HISTORY_LEN) aiPosHistory.shift();
 
-    // Detect oscillation: A-B-A (3 positions) or A-B-A-B (4 positions) patterns
+    // Detect oscillation: A-B-A or A-B-C-A-B-C patterns
     if (result !== 'STAY' && aiPosHistory.length >= 3) {
         var h = aiPosHistory;
         var len = h.length;
         var oscillating = false;
-        // A-B-A pattern (current = 2 positions ago, different from last)
         if (len >= 3 && h[len-1] === h[len-3] && h[len-1] !== h[len-2]) oscillating = true;
-        // A-B-C-A-B-C pattern (3-cycle)
         if (len >= 6 && h[len-1] === h[len-4] && h[len-2] === h[len-5] && h[len-3] === h[len-6]) oscillating = true;
 
         if (oscillating) {
             var d = DIRS[result];
             var destKey = (gs.player.row + d.dr) + ',' + (gs.player.col + d.dc);
-            // Collect recent tiles to avoid
             var recentTiles = {};
             for (var ri = Math.max(0, len - 4); ri < len; ri++) recentTiles[h[ri]] = true;
-            // If the chosen move goes back to a recent tile, find a better one
             if (recentTiles[destKey]) {
                 var altDir = null, altScore = -Infinity;
                 for (var ak = 0; ak < DIR_KEYS.length; ak++) {
@@ -858,13 +697,10 @@ function aiPickBestDir() {
                     var aKey = (gs.player.row + ad.dr) + ',' + (gs.player.col + ad.dc);
                     if (recentTiles[aKey]) continue;
                     var asc = aiMoveScores[DIR_KEYS[ak]];
-                    // Never pick a move with poor survival (score < 0 means < 100% survival in MC)
-                    // In mode 2: score = survRate >= 1 ? (10000 - avgTC) : (survRate * 100 - 100)
-                    // So score < 0 means survival < 100%. Only accept safe moves.
+                    // Only accept moves with 100% survival (score >= 0)
                     if (asc !== undefined && asc < 0) continue;
                     if (asc !== undefined && asc > altScore) { altScore = asc; altDir = DIR_KEYS[ak]; }
                     else if (asc === undefined) {
-                        // Validate unknown-score move by simulation
                         var vc = simDeepClone(gs);
                         if (simStep(vc, DIR_KEYS[ak]) && !altDir) altDir = DIR_KEYS[ak];
                     }
@@ -874,22 +710,18 @@ function aiPickBestDir() {
         }
     }
 
-    // Track STAY count and break stuck loops
+    // Break stuck STAY loops
     if (result === 'STAY') {
         aiStayCount++;
-        // After 3 consecutive STAYs, force a move (pick best non-STAY option)
-        // But never force a move that kills us
         if (aiStayCount >= 3) {
             var bestAlt = null, bestAltScore = -Infinity;
             for (var k = 0; k < DIR_KEYS.length; k++) {
                 if (simCanMove(gs, DIR_KEYS[k])) {
                     var sc = aiMoveScores[DIR_KEYS[k]];
-                    // Skip moves with any survival risk (score < 0 means < 100% MC survival)
                     if (sc !== undefined && sc < 0) continue;
                     if (sc !== undefined && sc > bestAltScore) {
                         bestAltScore = sc; bestAlt = DIR_KEYS[k];
                     } else if (sc === undefined) {
-                        // Validate by simulation
                         var vc2 = simDeepClone(gs);
                         if (simStep(vc2, DIR_KEYS[k]) && !bestAlt) bestAlt = DIR_KEYS[k];
                     }
@@ -899,29 +731,6 @@ function aiPickBestDir() {
         }
     } else {
         aiStayCount = 0;
-    }
-
-    // Final safety net: if Mode 2 (Coily active), validate the chosen move
-    // via quick MC check to catch any overrides that picked unsafe moves
-    if (aiMode === 2 && result !== 'STAY') {
-        var safeCount = 0, safeTrials = 8;
-        for (var sf = 0; sf < safeTrials; sf++) {
-            var sc2 = simDeepClone(gs);
-            if (simStep(sc2, result)) safeCount++;
-        }
-        if (safeCount < safeTrials) {
-            // Chosen move isn't 100% safe — fall back to the MC best pick
-            // Re-evaluate: pick the direction with best score (highest survival)
-            var safestDir = 'STAY', safestScore = -Infinity;
-            for (var sk2 = 0; sk2 < DIR_KEYS_WITH_STAY.length; sk2++) {
-                var sd = DIR_KEYS_WITH_STAY[sk2];
-                var ssc = aiMoveScores[sd];
-                if (ssc !== undefined && ssc > safestScore) {
-                    safestScore = ssc; safestDir = sd;
-                }
-            }
-            result = safestDir;
-        }
     }
 
     return result;

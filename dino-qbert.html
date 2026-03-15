@@ -875,8 +875,8 @@ function drawVizPath() {
     if (typeof aiMode !== 'undefined' && aiMode > 0) {
         ctx.font = '10px monospace';
         ctx.textAlign = 'left';
-        ctx.fillStyle = aiMode === 2 ? 'rgba(255,100,100,0.8)' : 'rgba(100,200,255,0.8)';
-        ctx.fillText(aiMode === 2 ? 'MC' : 'TOUR', 8, 14);
+        ctx.fillStyle = 'rgba(100,200,255,0.8)';
+        ctx.fillText('AI', 8, 14);
     }
 
     // Draw search scores on adjacent cubes
@@ -933,16 +933,12 @@ function drawVizPath() {
                 ctx.stroke();
             }
 
-            // Draw value text — show survival % in MC mode, tour cost in mode 1
+            // Draw value text — show tour cost for safe moves, survival % for unsafe
             var label;
             if (v <= -10000) label = 'DIE';
             else if (v >= 9000) label = 'WIN';
-            else if (aiMode === 2) {
-                if (v >= 0) label = '100%';
-                else label = Math.max(0, Math.round(v + 100)) + '%';
-            } else {
-                label = Math.round(-v).toString();
-            }
+            else if (v >= 0) label = Math.round(10000 - v).toString();
+            else label = Math.max(0, Math.round(v + 100)) + '%';
             ctx.font = '9px monospace';
             ctx.textAlign = 'center';
             ctx.fillStyle = isBest ? '#fff' : 'rgba(255,255,255,0.7)';
