@@ -482,9 +482,11 @@ function evalDiscLure() {
 // More samples when enemies are present for reliable safety checking.
 
 function unifiedPick(gs, coilyActive) {
-    // Use separate RNG for AI simulations so we don't pollute the game's Math.random
+    // Use separate RNG for AI simulations so we don't pollute the game's Math.random.
+    // Each simulation sample gets a different seed for proper Monte Carlo coverage.
     var savedRng = simRng;
-    simRng = createSeededRng((gs.player.row * 7 + gs.player.col) * 1000 + (frameCount || 0));
+    var baseSeed = (gs.player.row * 7 + gs.player.col) * 10000 + (frameCount || 0);
+    function simSeed(sampleIdx) { simRng = createSeededRng(baseSeed + sampleIdx * 9973); }
     function restoreRng() { simRng = savedRng; }
 
     // ── Freeze mode: skip expensive avoidance but still validate via simulation ──
@@ -542,6 +544,7 @@ function unifiedPick(gs, coilyActive) {
         if (lureDir) {
             var lureSafe = 0;
             for (var ls = 0; ls < SAMPLES; ls++) {
+                simSeed(ls);
                 var lc = simDeepClone(gs);
                 if (simStep(lc, lureDir)) lureSafe++;
             }
@@ -567,6 +570,7 @@ function unifiedPick(gs, coilyActive) {
 
         var totalTC = 0, survived = 0;
         for (var s = 0; s < SAMPLES; s++) {
+            simSeed(k * 100 + s);
             var child = simDeepClone(gs);
             var alive = simStep(child, dir);
             if (alive) {
@@ -677,6 +681,7 @@ function unifiedPick(gs, coilyActive) {
                     var d2dir = DIR_KEYS_WITH_STAY[d2k];
                     var d2surv = 0;
                     for (var d2s = 0; d2s < hop2Samples; d2s++) {
+                        simSeed(k * 1000 + d2k * 100 + d2s);
                         var d2c = simDeepClone(gs);
                         if (simStep(d2c, dir) && simStep(d2c, d2dir)) d2surv++;
                     }
