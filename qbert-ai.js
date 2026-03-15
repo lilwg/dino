@@ -232,7 +232,7 @@ function buildDangerSet() {
 var aiTour = [], aiTourIdx = 0, aiBoardSig = '';
 var aiDetailPath = [], aiTourDots = [];
 
-function aiTourInit() { aiLastRemaining = 99; aiNoProgressCount = 0; aiStayCount = 0; aiSamePosCount = 0; }
+function aiTourInit() { aiLastRemaining = 99; aiNoProgressCount = 0; aiStayCount = 0; aiSamePosCount = 0; aiPosHistory = []; }
 function aiTourNext() { return null; }
 function findTourResumePath() { return null; }
 
@@ -707,6 +707,8 @@ var aiLastPos = '';     // last position key — used to detect oscillation
 var aiSamePosCount = 0; // frames spent on same tile
 var aiLastRemaining = 99; // cubes remaining last time we checked
 var aiNoProgressCount = 0; // moves without reducing remaining cubes
+var aiPosHistory = [];  // recent position history for oscillation detection
+var AI_HISTORY_LEN = 8; // how many positions to track
 
 function aiPickBestDir() {
     var coilyActive = false;
@@ -749,6 +751,38 @@ function aiPickBestDir() {
     } else {
         aiMode = 2;
         result = mode2Pick(gs);
+    }
+
+    // Track position history for oscillation detection
+    aiPosHistory.push(posKey);
+    if (aiPosHistory.length > AI_HISTORY_LEN) aiPosHistory.shift();
+
+    // Detect oscillation: if we're bouncing between 2 tiles (A-B-A-B pattern)
+    if (result !== 'STAY' && aiPosHistory.length >= 4) {
+        var h = aiPosHistory;
+        var len = h.length;
+        // Check if last 4 positions form A-B-A-B
+        if (h[len-1] === h[len-3] && h[len-2] === h[len-4] && h[len-1] !== h[len-2]) {
+            // We're oscillating — pick a different direction that makes tour progress
+            var d = DIRS[result];
+            var destKey = (gs.player.row + d.dr) + ',' + (gs.player.col + d.dc);
+            // If the chosen move goes back to a recent tile, find a better one
+            if (destKey === h[len-2] || destKey === h[len-1]) {
+                var altDir = null, altScore = -Infinity;
+                for (var ak = 0; ak < DIR_KEYS.length; ak++) {
+                    if (DIR_KEYS[ak] === result) continue;
+                    if (!simCanMove(gs, DIR_KEYS[ak])) continue;
+                    var ad = DIRS[DIR_KEYS[ak]];
+                    var aKey = (gs.player.row + ad.dr) + ',' + (gs.player.col + ad.dc);
+                    // Don't go back to recent oscillation tiles
+                    if (aKey === h[len-1] || aKey === h[len-2]) continue;
+                    var asc = aiMoveScores[DIR_KEYS[ak]];
+                    if (asc !== undefined && asc > altScore) { altScore = asc; altDir = DIR_KEYS[ak]; }
+                    else if (asc === undefined && !altDir) altDir = DIR_KEYS[ak];
+                }
+                if (altDir) { result = altDir; aiPosHistory.length = 0; }
+            }
+        }
     }
 
     // Track STAY count and break stuck loops
