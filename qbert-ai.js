@@ -161,8 +161,7 @@ function buildDangerMaps() {
         if (e.type === 'spawn-timer') {
             var sm = speedMultiplier();
             var fph = Math.ceil(1 / (0.028 * sm));
-            var gs2 = (typeof gameSpeed !== 'undefined') ? gameSpeed : 1.0;
-            var tickPerHop = fph * gs2;
+            var tickPerHop = fph;
             var hopsUntil = e.timer > 20 ? Math.ceil(e.timer / tickPerHop) : e.timer;
             if (hopsUntil <= 2) {
                 var ft = e.forcedType;
@@ -218,8 +217,10 @@ function buildDangerSet() {
         if (e.type === 'coily') continue;
         if (e.type === 'spawn-timer') {
             if (e.timer <= framesPerHop * 2) {
-                danger['1,0'] = true;
-                danger['1,1'] = true;
+                var ft = e.forcedType;
+                if (ft === 'ugg') danger[(ROWS-1) + ',' + (ROWS-1)] = true;
+                else if (ft === 'wrongway') danger[(ROWS-1) + ',0'] = true;
+                else { danger['1,0'] = true; danger['1,1'] = true; }
             }
             continue;
         }
@@ -483,32 +484,72 @@ function evalDiscLure() {
 // More samples when enemies are present for reliable safety checking.
 
 function unifiedPick(gs, coilyActive) {
-    // ── Freeze mode: enemies are frozen, skip all avoidance ─────────────
-    if (gs.freezeTimer > 0) {
-        // Enemies can't move or kill us — just follow the tour planner
+    // Use separate seeded RNG so AI simulations don't pollute game's Math.random.
+    var savedRng = simRng;
+    var baseSeed = (gs.player.row * 7 + gs.player.col) * 10000 + (frameCount || 0);
+    function simSeed(sampleIdx) { simRng = createSeededRng(baseSeed + sampleIdx * 9973); }
+    function restoreRng() { simRng = savedRng; }
+
+    // ── Freeze mode: skip expensive avoidance but still validate via simulation ──
+    // Only skip danger maps / Coily scoring if freeze lasts long enough.
+    var jumpFrames = Math.ceil(1.0 / (gs.player.jumpDur || 0.028));
+    var freezeSafeMargin = jumpFrames + 10;
+    if (gs.freezeTimer > freezeSafeMargin) {
+        // Build set of tiles where enemies will spawn during freeze
+        var freezeSpawnDanger = {};
+        for (var fsi = 0; fsi < gs.enemies.length; fsi++) {
+            var fse = gs.enemies[fsi];
+            if (fse.type !== 'spawn-timer') continue;
+            if (fse.timer <= gs.freezeTimer) {
+                // This enemy will spawn while still frozen
+                var ft = fse.forcedType;
+                if (ft === 'ugg') freezeSpawnDanger[(ROWS-1) + ',' + (ROWS-1)] = true;
+                else if (ft === 'wrongway') freezeSpawnDanger[(ROWS-1) + ',0'] = true;
+                else { freezeSpawnDanger['1,0'] = true; freezeSpawnDanger['1,1'] = true; }
+            }
+        }
+        // Also mark positions of frozen enemies
+        for (var fei = 0; fei < gs.enemies.length; fei++) {
+            var fee = gs.enemies[fei];
+            if (fee.type === 'spawn-timer' || fee.type === 'greenball' || fee.type === 'slick') continue;
+            var fep = enemyEffectivePos(fee);
+            freezeSpawnDanger[fep.row + ',' + fep.col] = true;
+            // Also mark source tile for mid-jump enemies
+            if (fee.jumping) freezeSpawnDanger[fee.row + ',' + fee.col] = true;
+        }
+
+        // Follow tour planner, but validate via simulation + spawn avoidance
         var tourDir = dynamicTourMove(gs);
-        if (tourDir && simCanMove(gs, tourDir)) return tourDir;
-        // Fallback: pick best tour-cost direction
+        if (tourDir && simCanMove(gs, tourDir)) {
+            var ttd = DIRS[tourDir];
+            var ttr = gs.player.row + ttd.dr, ttc = gs.player.col + ttd.dc;
+            if (!freezeSpawnDanger[ttr + ',' + ttc]) {
+                var tc = simDeepClone(gs);
+                if (simStep(tc, tourDir)) { restoreRng(); return tourDir; }
+            }
+        }
+        // Fallback: pick best surviving tour-cost direction avoiding spawn danger
         var bestFD = null, bestFC = Infinity;
         for (var fk = 0; fk < DIR_KEYS.length; fk++) {
             var fd = DIR_KEYS[fk];
             if (!simCanMove(gs, fd)) continue;
-            // Don't waste discs during freeze
             var fdd = DIRS[fd];
-            if (!isValidPos(gs.player.row + fdd.dr, gs.player.col + fdd.dc)) continue;
+            var fnr = gs.player.row + fdd.dr, fnc = gs.player.col + fdd.dc;
+            if (!isValidPos(fnr, fnc)) continue;
+            if (freezeSpawnDanger[fnr + ',' + fnc]) continue;
             var fc = simDeepClone(gs);
             if (simStep(fc, fd)) {
                 var ftc = fc.levelWon ? -1000 : simTourCost(fc);
                 if (ftc < bestFC) { bestFC = ftc; bestFD = fd; }
             }
         }
-        if (bestFD) return bestFD;
+        if (bestFD) { restoreRng(); return bestFD; }
     }
 
     var dangerSet = buildDangerSet();  // non-Coily enemy danger zones
     // More simulation samples when enemies could kill us
     var hasEnemies = gs.enemies.length > 0;
-    var SAMPLES = coilyActive ? 24 : (hasEnemies ? 6 : 4);
+    var SAMPLES = coilyActive ? 24 : (hasEnemies ? 16 : 4);
 
     // Find Coily position for proximity-aware scoring
     var coilyR = -1, coilyC = -1;
@@ -532,10 +573,11 @@ function unifiedPick(gs, coilyActive) {
         if (lureDir) {
             var lureSafe = 0;
             for (var ls = 0; ls < SAMPLES; ls++) {
+                simSeed(ls);
                 var lc = simDeepClone(gs);
                 if (simStep(lc, lureDir)) lureSafe++;
             }
-            if (lureSafe === SAMPLES) return lureDir;
+            if (lureSafe === SAMPLES) { restoreRng(); return lureDir; }
         }
     }
 
@@ -557,6 +599,7 @@ function unifiedPick(gs, coilyActive) {
 
         var totalTC = 0, survived = 0;
         for (var s = 0; s < SAMPLES; s++) {
+            simSeed(k * 100 + s);
             var child = simDeepClone(gs);
             var alive = simStep(child, dir);
             if (alive) {
@@ -599,10 +642,15 @@ function unifiedPick(gs, coilyActive) {
                             else if (isBottom || isEdge) avgTC -= 1;
                         } else if (gs.lv >= 3) {
                             // Penalty for stepping on completed cube (reverts it)
-                            avgTC += 4;
+                            // Scale down when few cubes remain — crossing is worth it vs long detours
+                            var unfCount = 0;
+                            for (var uc = 0; uc < gs.cubes.length; uc++)
+                                if (gs.cubes[uc].state < gs.tgt) unfCount++;
+                            var revertPen = unfCount <= 3 ? 1 : (unfCount <= 5 ? 2 : 4);
+                            avgTC += revertPen;
                             var isApex3 = (nr === 0 && nc === 0);
                             var isCrnr3 = (nr === ROWS - 1 && (nc === 0 || nc === ROWS - 1));
-                            if (isApex3 || isCrnr3) avgTC += 4;  // extra for dead-ends
+                            if (isApex3 || isCrnr3) avgTC += revertPen;  // extra for dead-ends
                         }
                         break;
                     }
@@ -632,7 +680,13 @@ function unifiedPick(gs, coilyActive) {
                         var er = e.destRow != null ? e.destRow : e.row;
                         var ec = e.destCol != null ? e.destCol : e.col;
                         if (er === nr && ec === nc) {
-                            avgTC -= (e.type === 'greenball') ? 15 : 8;
+                            // Slicks are worth more on revert levels — catching saves re-work
+                            avgTC -= (e.type === 'greenball') ? 15 : (gs.lv >= 3 ? 20 : 8);
+                        }
+                        // Intercept bonus: if slick is 1 hop from this tile, moving here may catch it next turn
+                        if (e.type === 'slick' && gs.lv >= 3) {
+                            var slickDist = Math.abs(er - nr) + Math.abs(ec - nc);
+                            if (slickDist === 1) avgTC -= 6;
                         }
                     }
                 }
@@ -655,6 +709,10 @@ function unifiedPick(gs, coilyActive) {
             var nr2 = gs.player.row + d2.dr, nc2 = gs.player.col + d2.dc;
             if (dangerSet[nr2 + ',' + nc2]) inDanger = true;
         }
+        // Also flag STAY as dangerous if current tile is in danger set
+        if (dir === 'STAY' && dangerSet[gs.player.row + ',' + gs.player.col]) inDanger = true;
+        // Penalize moves into danger zones — MC simulation may not catch all random outcomes
+        if (inDanger && survived === SAMPLES) avgTC += 6;
 
         // 2-hop safety: when Coily is close, verify the move has a safe follow-up
         if (survived === SAMPLES && coilyR >= 0 && dir !== 'STAY') {
@@ -667,6 +725,7 @@ function unifiedPick(gs, coilyActive) {
                     var d2dir = DIR_KEYS_WITH_STAY[d2k];
                     var d2surv = 0;
                     for (var d2s = 0; d2s < hop2Samples; d2s++) {
+                        simSeed(k * 1000 + d2k * 100 + d2s);
                         var d2c = simDeepClone(gs);
                         if (simStep(d2c, dir) && simStep(d2c, d2dir)) d2surv++;
                     }
@@ -697,35 +756,52 @@ function unifiedPick(gs, coilyActive) {
 
     // Slick pursuit: catch nearby slicks if the move is safe (lv3+)
     if (gs.lv >= 3) {
+        var bestSlickDir = null, bestSlickDist = Infinity;
         for (var si = 0; si < gs.enemies.length; si++) {
             var se = gs.enemies[si];
             if (se.type !== 'slick') continue;
             var spos = enemyEffectivePos(se);
+            // Predict where slick will be next hop (DL or DR, random — check both)
+            var slickNexts = [spos];
+            if (isValidPos(spos.row + 1, spos.col)) slickNexts.push({ row: spos.row + 1, col: spos.col });
+            if (isValidPos(spos.row + 1, spos.col + 1)) slickNexts.push({ row: spos.row + 1, col: spos.col + 1 });
             for (var sk = 0; sk < DIR_KEYS.length; sk++) {
                 var sdk = DIRS[DIR_KEYS[sk]];
                 var snr = gs.player.row + sdk.dr, snc = gs.player.col + sdk.dc;
-                if (snr === spos.row && snc === spos.col) {
-                    // Only pursue if this move had 100% survival
-                    var slickScore = aiMoveScores[DIR_KEYS[sk]];
-                    if (slickScore !== undefined && slickScore >= 0 && simCanMove(gs, DIR_KEYS[sk])) {
-                        return DIR_KEYS[sk];
+                if (!isValidPos(snr, snc)) continue;
+                for (var sni = 0; sni < slickNexts.length; sni++) {
+                    var sd = Math.abs(snr - slickNexts[sni].row) + Math.abs(snc - slickNexts[sni].col);
+                    if (sd < bestSlickDist) {
+                        var slickScore = aiMoveScores[DIR_KEYS[sk]];
+                        if (slickScore !== undefined && slickScore >= 0 && simCanMove(gs, DIR_KEYS[sk])) {
+                            bestSlickDist = sd; bestSlickDir = DIR_KEYS[sk];
+                        }
                     }
                 }
             }
         }
+        // Only intercept if we're very close (distance 0 = same tile, 1 = adjacent)
+        if (bestSlickDir && bestSlickDist <= 0) {
+            restoreRng(); return bestSlickDir;
+        }
     }
 
-    // Tour planner direction — use it if it's safe
+    // Tour planner direction — use it if it's safe AND not in danger set
     var tourDir = dynamicTourMove(gs);
     if (tourDir !== null) {
         var tourScore = aiMoveScores[tourDir];
         if (tourScore !== undefined && tourScore >= 0) {
-            // Tour direction is safe (100% survival) — use it
-            return tourDir;
+            var td2 = DIRS[tourDir];
+            var tnr2 = gs.player.row + td2.dr, tnc2 = gs.player.col + td2.dc;
+            if (!dangerSet[tnr2 + ',' + tnc2]) {
+                restoreRng(); return tourDir;
+            }
+            // Tour direction is in danger set — fall through to prefer bestSafeDir
         }
     }
 
     // Fall back: best safe direction, then best unsafe, then best overall
+    restoreRng();
     if (bestSafeDir) return bestSafeDir;
     if (bestUnsafeDir) return bestUnsafeDir;
     if (bestAnyDir) return bestAnyDir;
