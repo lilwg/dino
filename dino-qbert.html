@@ -747,7 +747,7 @@ function update() {
                 levelWon = true;
                 levelWonTimer = 30;
                 DinoSounds.reached();
-                var lvKey = '' + arcadeLevel();
+                var lvKey = bestHopsKey();
                 if (!bestHops[lvKey] || hops < bestHops[lvKey]) {
                     bestHops[lvKey] = hops;
                     localStorage.setItem('dino-qbert-best-hops', JSON.stringify(bestHops));
