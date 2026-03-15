@@ -256,9 +256,9 @@ var levelWonTimer = 0;
 var roundStarted = false; // true after first player move — enemies frozen until then
 
 var score, hiScore, lives, hops;
-var bestHops = {};  // best (minimum) hops per arcade level + enemy mode, persisted
+var bestHops = {};  // best (minimum) hops per level-round + enemy mode, persisted
 var extraLifeGiven;
-function bestHopsKey() { return '' + arcadeLevel() + (enemiesEnabled ? '' : '-noE'); }
+function bestHopsKey() { return arcadeLevel() + '-' + ((round - 1) % 4 + 1) + (enemiesEnabled ? '' : '-noE'); }
 // round, player, enemies, cubeStates, discs, aiTour, aiTourIdx, aiBoardSig
 // are globals (declared before IIFE) shared with qbert-ai.js
 var frameCount;
