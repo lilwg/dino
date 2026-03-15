@@ -519,9 +519,19 @@ function mode2Pick(gs) {
     // Scale MC parameters with level — harder levels need deeper/wider search
     var MC_SAMPLES = gs.lv >= 3 ? 32 : 24;
     var MC_DEPTH = gs.lv >= 3 ? 8 : 6;
-    // Disc lure first
+
+    // Disc lure — validate through simulation before committing
     var lureDir = evalDiscLure();
-    if (lureDir) return lureDir;
+    if (lureDir) {
+        // Quick survival check: run MC_SAMPLES simulations of the lure move
+        var lureSurvived = 0;
+        for (var ls = 0; ls < MC_SAMPLES; ls++) {
+            var lc = simDeepClone(gs);
+            if (simStep(lc, lureDir)) lureSurvived++;
+        }
+        // Only use lure if survival rate is high enough
+        if (lureSurvived / MC_SAMPLES >= 0.75) return lureDir;
+    }
 
     var startTime = typeof performance !== 'undefined' ? performance.now() : Date.now();
     var bestDir = null, bestSurv = -1, bestTC = Infinity;
@@ -606,7 +616,7 @@ function mode2Pick(gs) {
         // survEps: how close survival rates need to be to count as "tied"
         // Only then does tour cost matter. This prevents the AI from
         // jumping into Coily for a slightly better tour cost.
-        var survEps = 1.0 / MC_SAMPLES;  // one sample difference = tied
+        var survEps = 2.0 / MC_SAMPLES;  // two sample difference = tied
 
         if (survRate > bestSurv + survEps) {
             // Strictly better survival — always prefer
@@ -814,8 +824,14 @@ function aiPickBestDir() {
                     var aKey = (gs.player.row + ad.dr) + ',' + (gs.player.col + ad.dc);
                     if (recentTiles[aKey]) continue;
                     var asc = aiMoveScores[DIR_KEYS[ak]];
+                    // Never pick a move with a death score
+                    if (asc !== undefined && asc <= -10000) continue;
                     if (asc !== undefined && asc > altScore) { altScore = asc; altDir = DIR_KEYS[ak]; }
-                    else if (asc === undefined && !altDir) altDir = DIR_KEYS[ak];
+                    else if (asc === undefined) {
+                        // Validate unknown-score move by simulation
+                        var vc = simDeepClone(gs);
+                        if (simStep(vc, DIR_KEYS[ak]) && !altDir) altDir = DIR_KEYS[ak];
+                    }
                 }
                 if (altDir) { result = altDir; aiPosHistory.length = 0; }
             }
@@ -826,15 +842,20 @@ function aiPickBestDir() {
     if (result === 'STAY') {
         aiStayCount++;
         // After 3 consecutive STAYs, force a move (pick best non-STAY option)
+        // But never force a move that kills us
         if (aiStayCount >= 3) {
             var bestAlt = null, bestAltScore = -Infinity;
             for (var k = 0; k < DIR_KEYS.length; k++) {
                 if (simCanMove(gs, DIR_KEYS[k])) {
                     var sc = aiMoveScores[DIR_KEYS[k]];
+                    // Skip moves with death scores
+                    if (sc !== undefined && sc <= -10000) continue;
                     if (sc !== undefined && sc > bestAltScore) {
                         bestAltScore = sc; bestAlt = DIR_KEYS[k];
-                    } else if (sc === undefined && !bestAlt) {
-                        bestAlt = DIR_KEYS[k];
+                    } else if (sc === undefined) {
+                        // Validate by simulation
+                        var vc2 = simDeepClone(gs);
+                        if (simStep(vc2, DIR_KEYS[k]) && !bestAlt) bestAlt = DIR_KEYS[k];
                     }
                 }
             }
