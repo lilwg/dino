@@ -359,6 +359,9 @@
             ctx.beginPath(); ctx.moveTo(0, CH - 8); ctx.lineTo(CW, CH - 8); ctx.stroke();
         }
 
+        // Night sky elements (behind bricks and game objects)
+        if (nightOpacity > 0) drawNightElements(ctx);
+
         // Bricks
         for (var r = 0; r < ROWS; r++) {
             for (var c = 0; c < COLS; c++) {
@@ -2163,7 +2166,6 @@
 
     function playDraw() {
         drawBreakoutGame(playCtx, playGame, playAnim, playLastAction, playLastDir);
-        drawNightElements(playCtx);
         if (inverted) {
             playCtx.globalCompositeOperation = 'difference';
             playCtx.fillStyle = '#fff';
