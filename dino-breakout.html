@@ -31,10 +31,10 @@
                 <button class="si-btn" onclick="restartGame()">Restart</button>
                 <button class="si-btn" id="pause-btn" onclick="togglePause()">Pause</button>
                 <button class="si-btn" id="fs-btn" onclick="toggleFullscreen()">Fullscreen</button>
-                <div class="si-speed" style="font-size: 11px;">
-                    Difficulty: <input type="range" id="play-diff" min="1" max="10" value="1">
-                    <span id="play-diff-val">1</span>
-                </div>
+                <label style="display:inline-flex;align-items:center;gap:4px;margin-left:8px;font-size:12px;color:#535353;">
+                    Speed <input type="range" id="speed-slider" min="1" max="8" step="1" value="1" style="width:80px;" oninput="setGameSpeed(parseFloat(this.value))">
+                    <span id="speed-label">1x</span>
+                </label>
             </div>
 
             <p class="si-help" style="text-align: center;">&larr; / A left &nbsp;|&nbsp; &rarr; / D right &nbsp;|&nbsp; Space launch &nbsp;|&nbsp; R restart &nbsp;|&nbsp; Touch: drag</p>
@@ -85,6 +85,7 @@
     // ═════════════════════════════════════════════════════════════════
     //  SHARED CONSTANTS & SPRITES
     // ═════════════════════════════════════════════════════════════════
+    var gameSpeed = 1;
     var CW = 600, CH = 400;
     var PAD_W_BASE = 60, PAD_H = 12;
     var PAD_Y = CH - 12 - (PAD_H + 20) - 2; // top of dino's head (on ground)
@@ -97,7 +98,85 @@
     var BRICK_LEFT = (CW - COLS * (BRICK_W + BRICK_GAP) + BRICK_GAP) / 2;
     var ROW_TYPES = ['PTERO', 'PTERO', 'PTERO', 'PTERO', 'CACTUS', 'CACTUS', 'CACTUS', 'CACTUS'];
     var ROW_POINTS = [30, 30, 25, 25, 20, 20, 15, 15];
-    var ROW_COLORS = ['#404040', '#404040', '#565656', '#565656', '#6a6a6a', '#6a6a6a', '#848484', '#848484'];
+    // Level color palettes + night inversion rules
+    var ARCADE_COLORS   = ['#e03030', '#e03030', '#e08020', '#e08020', '#30a030', '#30a030', '#e0c020', '#e0c020'];
+    var INVERTED_COLORS = ['#1fcfcf', '#1fcfcf', '#1f7fdf', '#1f7fdf', '#cf5fcf', '#cf5fcf', '#1f3fdf', '#1f3fdf'];
+    var ATARI_COLORS    = ['#e03030', '#e06020', '#30a030', '#30c0c0', '#e0c020', '#3030e0', '#e03030', '#e06020'];
+    var ATARI_INV_COLORS = ['#1fcfcf', '#1f9fdf', '#cf5fcf', '#cf3f3f', '#1f3fdf', '#cfcf1f', '#1fcfcf', '#1f9fdf'];
+    // nightInvert: 'none' | 'all' | 'half'
+    // dynamic: null or function(r, c, frame) returning a CSS color
+    // Levels 1-6: fixed palettes, 7: random, 8: random inverted,
+    // 9: random half-invert, 10+: surprise modes
+    var _randomColors = null, _randomLevel = -1;
+    var _randomInvColors = null, _randomInvLevel = -1;
+    function getRandomColors() { var c = []; for (var i = 0; i < ROWS; i++) c.push('hsl(' + Math.floor(Math.random() * 360) + ',70%,50%)'); return c; }
+    function invertColor(hex) {
+        // Parse hsl() or hex and invert
+        if (hex.indexOf('hsl') === 0) {
+            var m = hex.match(/hsl\((\d+),\s*(\d+)%,\s*(\d+)%\)/);
+            if (m) return 'hsl(' + ((parseInt(m[1]) + 180) % 360) + ',' + m[2] + '%,' + m[3] + '%)';
+        }
+        var r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
+        return '#' + (255-r).toString(16).padStart(2,'0') + (255-g).toString(16).padStart(2,'0') + (255-b).toString(16).padStart(2,'0');
+    }
+    function getLevelColors(level) {
+        var cycle = ((level - 1) % 13) + 1;
+        if (cycle === 1) return { colors: ARCADE_COLORS, nightInvert: 'none', dynamic: null };
+        if (cycle === 2) return { colors: INVERTED_COLORS, nightInvert: 'none', dynamic: null };
+        if (cycle === 3) return { colors: ARCADE_COLORS, nightInvert: 'all', dynamic: null };
+        if (cycle === 4) return { colors: ATARI_COLORS, nightInvert: 'none', dynamic: null };
+        if (cycle === 5) return { colors: ATARI_INV_COLORS, nightInvert: 'none', dynamic: null };
+        if (cycle === 6) return { colors: ATARI_COLORS, nightInvert: 'all', dynamic: null };
+        if (cycle === 7) {
+            if (_randomLevel !== level) { _randomColors = getRandomColors(); _randomLevel = level; }
+            return { colors: _randomColors, nightInvert: 'none', dynamic: null };
+        }
+        if (cycle === 8) {
+            if (_randomInvLevel !== level) {
+                var base = getRandomColors();
+                _randomInvColors = base.map(invertColor);
+                _randomInvLevel = level;
+            }
+            return { colors: _randomInvColors, nightInvert: 'none', dynamic: null };
+        }
+        if (cycle === 9) {
+            if (_randomLevel !== level) { _randomColors = getRandomColors(); _randomLevel = level; }
+            return { colors: _randomColors, nightInvert: 'half', dynamic: null };
+        }
+        // Surprise modes for 10+
+        if (cycle === 10) {
+            // Rainbow wave — hue shifts across rows and over time
+            return { colors: ARCADE_COLORS, nightInvert: 'none', dynamic: function(r, c, frame) {
+                var hue = ((r * 45 + c * 25 + frame * 2) % 360);
+                return 'hsl(' + hue + ',80%,55%)';
+            }};
+        }
+        if (cycle === 11) {
+            // Disco — each brick flashes a random color every 8 frames
+            return { colors: ARCADE_COLORS, nightInvert: 'none', dynamic: function(r, c, frame) {
+                var seed = Math.sin(r * 131 + c * 997 + Math.floor(frame / 8) * 7919) * 43758.5453;
+                var hue = Math.floor((seed - Math.floor(seed)) * 360);
+                return 'hsl(' + hue + ',85%,55%)';
+            }};
+        }
+        if (cycle === 12) {
+            // Checkerboard pulse — alternating warm/cool that swap every 30 frames
+            return { colors: ARCADE_COLORS, nightInvert: 'none', dynamic: function(r, c, frame) {
+                var checker = (r + c) % 2;
+                var phase = Math.floor(frame / 30) % 2;
+                if (checker === phase) return 'hsl(' + (frame % 360) + ',75%,50%)';
+                return 'hsl(' + ((frame + 180) % 360) + ',75%,50%)';
+            }};
+        }
+        // cycle 13: invisible bricks — they're there but you can't see them!
+        return { colors: ARCADE_COLORS, nightInvert: 'none', dynamic: function(r, c, frame) {
+            // Bricks fade in and out with a shimmer
+            var alpha = 0.15 + 0.15 * Math.sin(r * 0.7 + c * 1.3 + frame * 0.08);
+            var hue = (r * 45 + c * 25) % 360;
+            return 'hsla(' + hue + ',70%,60%,' + alpha.toFixed(2) + ')';
+        }};
+    }
+    var ROW_COLORS = ARCADE_COLORS;
     var MAX_LIVES = 3;
     var FRAME_SKIP = 3;
 
@@ -130,9 +209,7 @@
     })();
 
     function getDifficulty() {
-        var d = parseInt(document.getElementById('play-diff').value) || 3;
-        document.getElementById('play-diff-val').textContent = d;
-        return d;
+        return 3;
     }
     function getBallSpeedMult() { return 1 + (getDifficulty() - 1) * 0.35; }
     function getPadWidth() { return Math.max(30, PAD_W_BASE - (getDifficulty() - 1) * 3); }
@@ -359,12 +436,16 @@
             ctx.beginPath(); ctx.moveTo(0, CH - 8); ctx.lineTo(CW, CH - 8); ctx.stroke();
         }
 
+        // Night sky elements (behind bricks and game objects)
+        if (nightOpacity > 0) drawNightElements(ctx);
+
         // Bricks
+        var lvColors = getLevelColors(g.level);
         for (var r = 0; r < ROWS; r++) {
             for (var c = 0; c < COLS; c++) {
                 if (!g.bricks[r][c]) continue;
                 var br = brickRect(r, c);
-                ctx.fillStyle = ROW_COLORS[r];
+                ctx.fillStyle = lvColors.dynamic ? lvColors.dynamic(r, c, dayTimer) : lvColors.colors[r];
                 ctx.fillRect(br.x, br.y, br.w, br.h);
                 if (spriteImg && spriteImg.complete) {
                     ctx.globalCompositeOperation = 'screen';
@@ -2037,6 +2118,11 @@
     }
     placeStars();
 
+    window.setGameSpeed = function (v) {
+        gameSpeed = v;
+        document.getElementById('speed-label').textContent = v + 'x';
+    };
+
     window.resetPlayGame = function () {
         playGame.reset();
         gameStarted = false;
@@ -2163,12 +2249,25 @@
 
     function playDraw() {
         drawBreakoutGame(playCtx, playGame, playAnim, playLastAction, playLastDir);
-        drawNightElements(playCtx);
         if (inverted) {
             playCtx.globalCompositeOperation = 'difference';
             playCtx.fillStyle = '#fff';
             playCtx.fillRect(0, 0, CW, CH);
             playCtx.globalCompositeOperation = 'source-over';
+            // Redraw brick colors so they don't invert at night (unless level allows it)
+            var lvInfo = getLevelColors(playGame.level);
+            if (lvInfo.nightInvert !== 'all') {
+                for (var br_r = 0; br_r < ROWS; br_r++) {
+                    // 'half' mode: only preserve top half (rows 0-3), let bottom half invert
+                    if (lvInfo.nightInvert === 'half' && br_r >= ROWS / 2) continue;
+                    for (var br_c = 0; br_c < COLS; br_c++) {
+                        if (!playGame.bricks[br_r][br_c]) continue;
+                        var brc = brickRect(br_r, br_c);
+                        playCtx.fillStyle = lvInfo.dynamic ? lvInfo.dynamic(br_r, br_c, dayTimer) : lvInfo.colors[br_r];
+                        playCtx.fillRect(brc.x, brc.y, brc.w, brc.h);
+                    }
+                }
+            }
         }
         // Draw viz AFTER inversion so colors stay correct
         if (aiMode === 'rules' && breakoutSimAI._vizEnabled) drawBreakoutSimViz(playCtx);
@@ -2210,8 +2309,7 @@
     }
 
     function playLoop() {
-        // FRAME_SKIP=1 for playable game (smooth speed)
-        playUpdate();
+        for (var sp = 0; sp < gameSpeed; sp++) playUpdate();
         playDraw();
         requestAnimationFrame(playLoop);
     }
@@ -2710,11 +2808,7 @@
         document.getElementById('human-btn').classList.toggle('active', mode === 'off');
         // rules-btn active state handled by setAIMode
 
-        // Set difficulty defaults: Human=1, AI=6
-        var slider = document.getElementById('play-diff');
-        var val = mode === 'rules' ? 6 : 1;
-        slider.value = val;
-        document.getElementById('play-diff-val').textContent = val;
+        // Difficulty slider removed — fixed at default
 
         // Viz on by default when entering AI mode
         if (mode === 'rules' && window.breakoutSimAI) {
@@ -2740,10 +2834,7 @@
         origResetPlayGame();
     };
 
-    // --- Slider live update ---
-    document.getElementById('play-diff').addEventListener('input', function () {
-        document.getElementById('play-diff-val').textContent = this.value;
-    });
+    // --- Slider live update (difficulty slider removed) ---
 
     // --- R key restart (enhanced) ---
     document.addEventListener('keydown', function (e) {

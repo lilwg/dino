@@ -31,10 +31,10 @@
                 <button class="si-btn" onclick="restartGame()">Restart</button>
                 <button class="si-btn" id="pause-btn" onclick="togglePause()">Pause</button>
                 <button class="si-btn" id="fs-btn" onclick="toggleFullscreen()">Fullscreen</button>
-                <div class="si-speed" style="font-size: 11px;">
-                    Difficulty: <input type="range" id="play-diff" min="1" max="10" value="1">
-                    <span id="play-diff-val">1</span>
-                </div>
+                <label style="display:inline-flex;align-items:center;gap:4px;margin-left:8px;font-size:12px;color:#535353;">
+                    Speed <input type="range" id="speed-slider" min="1" max="8" step="1" value="1" style="width:80px;" oninput="setGameSpeed(parseFloat(this.value))">
+                    <span id="speed-label">1x</span>
+                </label>
             </div>
 
             <p class="si-help" style="text-align: center;">&uarr; / W up &nbsp;|&nbsp; &darr; / S down &nbsp;|&nbsp; R restart &nbsp;|&nbsp; Touch: drag</p>
@@ -84,11 +84,12 @@
     // =================================================================
     //  SHARED CONSTANTS & SPRITES
     // =================================================================
+    var gameSpeed = 1;
     var CW = 600, CH = 400;
     var PAD_W = 8, PAD_H = 60;
     var AGENT_X = 20, OPP_X = CW - 20 - PAD_W;
-    var PAD_SPEED = 5, OPP_SPEED_BASE = 3.5;
-    var BALL_SZ = 8, BALL_SPEED = 4;
+    var PAD_SPEED = 3.75, OPP_SPEED_BASE = 2.625;
+    var BALL_SZ = 8, BALL_SPEED = 3;
     var TOP = 25, BOT = CH - 10;
     var MAX_SCORE = 21;
     var FRAME_SKIP = 3;
@@ -130,16 +131,11 @@
     };
 
     function getOppSpeed() {
-        var d = parseInt(document.getElementById('play-diff').value) || 1;
-        document.getElementById('play-diff-val').textContent = d;
-        // Difficulty 1=slow (1.8), 5=same speed as player (5), 10=very fast (9)
-        return 1 + d * 0.8;
+        return 1 + 1 * 0.8; // fixed at difficulty 1
     }
 
     function getBallSpeedMult() {
-        var d = parseInt(document.getElementById('play-diff').value) || 1;
-        // diff 1=1.0x, 6=1.4x, 10=1.72x
-        return 1 + (d - 1) * 0.08;
+        return 1; // fixed at difficulty 1
     }
 
     PongGame.prototype.step = function (action) {
@@ -744,6 +740,11 @@
     }
     placeStars();
 
+    window.setGameSpeed = function (v) {
+        gameSpeed = v;
+        document.getElementById('speed-label').textContent = v + 'x';
+    };
+
     window.resetPlayGame = function () {
         playGame.reset(); playOver = false; gameStarted = false; paused = false;
         inverted = false; dayTimer = 0; nightOpacity = 0; placeStars();
@@ -992,7 +993,7 @@
     }
 
     function playLoop() {
-        for (var i = 0; i < FRAME_SKIP; i++) playUpdate();
+        for (var i = 0; i < FRAME_SKIP * gameSpeed; i++) playUpdate();
         playDraw();
         requestAnimationFrame(playLoop);
     }
@@ -2130,11 +2131,7 @@
         document.getElementById('human-btn').classList.toggle('active', mode === 'off');
         // rules-btn active state handled by setAIMode
 
-        // Set difficulty defaults: Human=1, AI=6
-        var slider = document.getElementById('play-diff');
-        var val = mode === 'rules' ? 6 : 1;
-        slider.value = val;
-        document.getElementById('play-diff-val').textContent = val;
+        // Difficulty slider removed — fixed at default
 
         // Viz on by default when entering AI mode
         if (mode === 'rules' && window.pongSimAI) {
@@ -2160,10 +2157,7 @@
         origResetPlayGame();
     };
 
-    // --- Slider live update ---
-    document.getElementById('play-diff').addEventListener('input', function () {
-        document.getElementById('play-diff-val').textContent = this.value;
-    });
+    // --- Slider live update (difficulty slider removed) ---
 
     // --- R key restart (enhanced) ---
     document.addEventListener('keydown', function (e) {

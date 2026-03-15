@@ -27,7 +27,9 @@
     var ENEMY_BULLET_W = 3;
     var ENEMY_BULLET_H = 10;
     var ENEMY_BULLET_SPEED = 3;
-    var ENEMY_FIRE_CHANCE = 0.008;
+    var ENEMY_FIRE_CHANCE = 0.008;  // legacy, unused
+    var MAX_ENEMY_BULLETS = 3;      // arcade: max 3 enemy shots on screen
+    var ENEMY_RELOAD_RATE = 48;     // frames between shots (~0.8s at 60fps, arcade reload ~48 steps)
 
     // Alien grid — classic Space Invaders layout: 5 rows × 8 cols
     var ALIEN_COLS = 8;
@@ -194,6 +196,7 @@
         this.firePressed = false;  // track press-release for no auto-fire
         this.bullets = [];
         this.enemyBullets = [];
+        this.enemyReloadTimer = 0;  // arcade-style reload cooldown
         this.aliens = [];
         this.bunkers = [];       // { x, y, w, h, canvas }
         this.explosions = [];    // { x, y, ttl }
@@ -501,33 +504,38 @@
         }
         if (shouldDrop) this.alienDir *= -1;
 
-        // Enemy fire — rate scales up as aliens are killed (like original)
+        // Enemy fire — arcade-style: max 3 bullets, reload timer, bottom-of-column only
         // Skip random firing during simulation (deterministic lookahead)
         if (this._suppressEnemyFire) return;
+        this.enemyReloadTimer--;
+        if (this.enemyReloadTimer > 0) return;
+        if (this.enemyBullets.length >= MAX_ENEMY_BULLETS) return;
+
+        // Find bottom-most alive alien in each column (only they can fire)
+        var shooters = [];
+        for (var col = 0; col < ALIEN_COLS; col++) {
+            var lowest = null;
+            for (var i = 0; i < this.aliens.length; i++) {
+                var a = this.aliens[i];
+                if (a.alive && a.col === col && (!lowest || a.y > lowest.y)) lowest = a;
+            }
+            if (lowest) shooters.push(lowest);
+        }
+        if (shooters.length === 0) return;
+
+        // Pick a random shooter and fire
+        var shooter = shooters[Math.floor(Math.random() * shooters.length)];
+        this.enemyBullets.push({
+            x: shooter.x + shooter.w / 2 - ENEMY_BULLET_W / 2,
+            y: shooter.y + shooter.h,
+            w: ENEMY_BULLET_W, h: ENEMY_BULLET_H
+        });
+
+        // Reload rate decreases (faster firing) as aliens die, like arcade
         var alive = 0;
         for (var i = 0; i < this.aliens.length; i++) if (this.aliens[i].alive) alive++;
-        var extraWaves = [0, 2, 5][Math.min(this.difficultyLevel, 3) - 1] || 0;
-        var diffFireMult = 1 + extraWaves * 0.4;
-        var fireChance = Math.min(ENEMY_FIRE_CHANCE * 4 * diffFireMult, ENEMY_FIRE_CHANCE * diffFireMult * (ALIEN_ROWS * ALIEN_COLS) / Math.max(alive, 1));
-        for (var i = 0; i < this.aliens.length; i++) {
-            var a = this.aliens[i]; if (!a.alive) continue;
-            if (Math.random() < fireChance) {
-                var isLowest = true;
-                for (var j = 0; j < this.aliens.length; j++) {
-                    if (j !== i && this.aliens[j].alive &&
-                        this.aliens[j].col === a.col && this.aliens[j].y > a.y) {
-                        isLowest = false; break;
-                    }
-                }
-                if (isLowest) {
-                    this.enemyBullets.push({
-                        x: a.x + a.w / 2 - ENEMY_BULLET_W / 2,
-                        y: a.y + a.h,
-                        w: ENEMY_BULLET_W, h: ENEMY_BULLET_H
-                    });
-                }
-            }
-        }
+        var reloadScale = Math.max(0.3, alive / (ALIEN_ROWS * ALIEN_COLS));
+        this.enemyReloadTimer = Math.floor(ENEMY_RELOAD_RATE * reloadScale);
     };
 
     // --- Enemy bullets ---
@@ -833,6 +841,7 @@
         this.frameCount = 0;
         this.bullets = [];
         this.enemyBullets = [];
+        this.enemyReloadTimer = 0;
         this.explosions = [];
         this.player.x = CANVAS_W / 2 - PLAYER_W / 2;
         this.player.cooldown = 0;
@@ -1008,7 +1017,8 @@
             enemyBullets: ebSnap,
             bunkers: bunkerSnap,
             gameOver: this.gameOver,
-            mystery: this.mystery ? { x: this.mystery.x, y: this.mystery.y, dir: this.mystery.dir } : null
+            mystery: this.mystery ? { x: this.mystery.x, y: this.mystery.y, dir: this.mystery.dir } : null,
+            enemyReloadTimer: this.enemyReloadTimer
         };
     };
 
@@ -1052,6 +1062,7 @@
         }
         // Restore mystery ship
         this.mystery = snap.mystery ? { x: snap.mystery.x, y: snap.mystery.y, dir: snap.mystery.dir } : null;
+        this.enemyReloadTimer = snap.enemyReloadTimer || 0;
         // Clear transient state
         this.explosions = [];
         this.keys = {};

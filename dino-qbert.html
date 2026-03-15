@@ -228,6 +228,21 @@ function drawCube(c, cx, cy, state) {
     }
 }
 
+function drawCubeTop(c, cx, cy, state) {
+    var hw = TILE_W / 2, hh = TILE_H / 2;
+    var lv = arcadeLevel();
+    var palIdx = lv <= 2 ? 0 : lv <= 4 ? 1 : lv <= 6 ? 2 : 3;
+    var topCol = CUBE_TOP_COLORS[palIdx][state] || CUBE_TOP_COLORS[palIdx][0];
+    c.beginPath();
+    c.moveTo(cx, cy - hh);
+    c.lineTo(cx + hw, cy);
+    c.lineTo(cx, cy + hh);
+    c.lineTo(cx - hw, cy);
+    c.closePath();
+    c.fillStyle = topCol;
+    c.fill();
+}
+
 // ─── Game state (simulation-driven) ──────────────────────────────────────────
 // The authoritative game state is held in gs (created by simCreateRoundState from qbert.js).
 // HTML code only handles rendering + visual effects. All game logic goes through sim functions.
@@ -840,6 +855,24 @@ function draw() {
 
     // Night inversion
     applyNight(ctx);
+
+    // Redraw cube top faces after inversion so their colors stay true at night
+    if (inverted) {
+        pyrCtx.clearRect(0, 0, pyrCvs.width, pyrCvs.height);
+        pyrCtx.save();
+        pyrCtx.scale(1 / PYR_SCALE, 1 / PYR_SCALE);
+        for (var rt = 0; rt < ROWS; rt++) {
+            for (var ct = 0; ct <= rt; ct++) {
+                var cubeT = cubeAt(rt, ct);
+                var posT  = cubeXY(rt, ct);
+                drawCubeTop(pyrCtx, posT.cx, posT.cy, cubeT ? cubeT.state : 0);
+            }
+        }
+        pyrCtx.restore();
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(pyrCvs, 0, 0, CW, CH);
+        ctx.imageSmoothingEnabled = true;
+    }
 
     // HUD (drawn post-inversion so it flips too, matching dino runner style)
     drawHUD();

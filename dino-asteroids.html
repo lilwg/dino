@@ -21,11 +21,10 @@
                 <button class="si-btn" onclick="restartGame()">Restart</button>
                 <button class="si-btn" id="pause-btn" onclick="togglePause()">Pause</button>
                 <button class="si-btn" id="fs-btn" onclick="toggleFullscreen()">Fullscreen</button>
-                <span class="si-speed" id="diff-wrap">
-                    <label for="diff-slider">Difficulty</label>
-                    <input type="range" id="diff-slider" min="0" max="100" value="50" oninput="setDifficulty(this.value)">
-                    <span id="diff-label">50</span>
-                </span>
+                <label style="display:inline-flex;align-items:center;gap:4px;margin-left:8px;font-size:12px;color:#535353;">
+                    Speed <input type="range" id="speed-slider" min="1" max="8" step="1" value="1" style="width:80px;" oninput="setGameSpeed(parseFloat(this.value))">
+                    <span id="speed-label">1x</span>
+                </label>
             </div>
             <p class="si-help" style="text-align:center;">↑ thrust &nbsp;|&nbsp; ←→ rotate &nbsp;|&nbsp; Space fire &nbsp;|&nbsp; H hyperspace &nbsp;|&nbsp; R restart</p>
             <!-- Mobile touch controls -->
@@ -155,6 +154,7 @@ function diffUfoShot()  { var d=gameDiff/100; return 1.6 - 1.05*d; }
 // Small UFO chance:           d=0 → 0.15,  d=0.5 → 0.4, d=1 → 0.75
 function diffSmallUfo() { var d=gameDiff/100; return 0.15 + 0.6*d; }
 
+var gameSpeed = 1;
 // ─── State ───────────────────────────────────────────────────────────────────
 var gs, player, bullets, rocks, sparks, ufo;
 var sc, hi, lv, lives, ufoT, tick;
@@ -1024,6 +1024,10 @@ window.setMode = function(m) {
     // If AI is selected while on the start/gameover screen, kick off the game
     if (m === 'ai' && (gs === 'start' || gs === 'gameover')) initGame();
 };
+window.setGameSpeed = function(v) {
+    gameSpeed = v;
+    document.getElementById('speed-label').textContent = v + 'x';
+};
 window.setDifficulty = function(v) {
     gameDiff = parseInt(v, 10);
     document.getElementById('diff-label').textContent = v;
@@ -1089,7 +1093,7 @@ bullets=[]; rocks=[]; sparks=[]; ufo=null;
 inv=false; dayT=0; nightA=0; moonPh=0; moonX=CW;
 placeStars();
 
-function loop() { update(); draw(); requestAnimationFrame(loop); }
+function loop() { for (var sp = 0; sp < gameSpeed; sp++) update(); draw(); requestAnimationFrame(loop); }
 loop();
 
 })();
