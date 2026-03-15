@@ -80,7 +80,7 @@
 
   .cell.highlighted {
     border-color: #6c5ce7;
-    background: #16213e;
+    background: #1e2a4a;
   }
 
   .cell.correct {
@@ -128,9 +128,7 @@
     line-height: 1.35;
   }
 
-  .clue-item:hover {
-    background: #16213e;
-  }
+  .clue-item:hover { background: #16213e; }
 
   .clue-item.active {
     background: #1e2a5e;
@@ -143,12 +141,8 @@
     opacity: 0.7;
   }
 
-  .clue-num {
-    font-weight: 700;
-    margin-right: 4px;
-  }
+  .clue-num { font-weight: 700; margin-right: 4px; }
 
-  /* Mobile keyboard area */
   #keyboard {
     position: fixed;
     bottom: 0;
@@ -195,7 +189,6 @@
     font-size: 0.75rem;
   }
 
-  /* Win overlay */
   #win-overlay {
     display: none;
     position: fixed;
@@ -249,7 +242,7 @@
 </head>
 <body>
 
-<h1>Lauren Crossword</h1>
+<h1>The Lauren Russell Crossword</h1>
 <p class="subtitle">How well do you know Lauren?</p>
 <div id="timer-bar">0:00</div>
 
@@ -286,8 +279,8 @@
 </div>
 
 <div id="win-overlay">
-  <h2>You did it!</h2>
-  <p id="win-msg">You really know Lauren!</p>
+  <h2>You really know Lauren!</h2>
+  <p id="win-msg">Betty Blanch and June Bug Yoda Buddha Furiosa would be proud.</p>
   <p id="win-time"></p>
   <button onclick="location.reload()">Play Again</button>
 </div>
@@ -295,53 +288,69 @@
 <canvas class="confetti-canvas" id="confetti-canvas"></canvas>
 
 <script>
-// ========== PUZZLE DATA ==========
-const PUZZLES = [
-  {
-    // 13x13 grid
-    cols: 13,
-    rows: 13,
-    words: [
-      // Across
-      { word: "LAUREN",    clue: "The star of this puzzle!",                         row: 0, col: 3, dir: "across", num: 1 },
-      { word: "SMILE",     clue: "Lauren's is absolutely contagious",                row: 2, col: 0, dir: "across", num: 2 },
-      { word: "KINDNESS",  clue: "The trait Lauren is most known for",               row: 4, col: 2, dir: "across", num: 5 },
-      { word: "LOYAL",     clue: "Lauren sticks by her friends — she's incredibly ___", row: 6, col: 0, dir: "across", num: 7 },
-      { word: "CREATIVE",  clue: "Lauren always has ___ ideas",                      row: 8, col: 3, dir: "across", num: 9 },
-      { word: "BRIGHT",    clue: "Lauren's future is looking ___",                   row: 10, col: 1, dir: "across", num: 11 },
-      { word: "LAUGH",     clue: "Lauren's ___ can light up a whole room",           row: 12, col: 4, dir: "across", num: 13 },
-      // Down
-      { word: "SPARKLE",   clue: "What Lauren's eyes do when she's excited",         row: 0, col: 3, dir: "down", num: 1 },
-      { word: "MAGIC",     clue: "Lauren brings a little ___ wherever she goes",     row: 0, col: 8, dir: "down", num: 3 },
-      { word: "HEART",     clue: "Lauren has a huge ___",                            row: 2, col: 4, dir: "down", num: 4 },
-      { word: "DANCING",   clue: "Lauren loves ___",                                 row: 4, col: 6, dir: "down", num: 6 },
-      { word: "VIBRANT",   clue: "Lauren's personality is so ___",                   row: 6, col: 0, dir: "down", num: 7 },
-      { word: "CLEVER",    clue: "Lauren always finds the ___ solution",             row: 6, col: 4, dir: "down", num: 8 },
-      { word: "TALENT",    clue: "Lauren has no shortage of ___",                    row: 4, col: 10, dir: "down", num: 10 },
-      { word: "RADIANT",   clue: "How Lauren looks on any given day",                row: 6, col: 2, dir: "down", num: 12 },
-    ]
-  }
-];
+/*
+  GRID LAYOUT (13 rows x 13 cols):
 
-// ========== GAME STATE ==========
-const puzzle = PUZZLES[0];
+       0  1  2  3  4  5  6  7  8  9 10 11 12
+   0:  S  E  A  T  T  L  E  .  .  .  .  .  .
+   1:  A  .  .  .  .  A  .  .  .  .  .  .  .
+   2:  M  E  T  .  M  U  S  E  U  M  .  .  .
+   3:  .  .  .  V  .  R  .  .  C  .  .  .  .
+   4:  .  .  D  I  R  E  C  T  O  R  .  .  .
+   5:  .  .  .  S  .  N  .  .  H  .  .  .  .
+   6:  .  .  .  I  .  .  .  .  O  .  .  .  .
+   7:  .  B  E  T  T  Y  .  A  E  .  .  .  .
+   8:  .  .  .  O  .  .  R  U  S  S  E  L  L
+   9:  .  .  .  R  .  .  .  G  .  .  .  .  .
+  10:  .  .  .  .  .  .  J  U  N  E  B  U  G
+  11:  .  .  .  .  .  .  .  S  .  .  .  .  .
+  12:  .  .  .  .  .  .  .  T  .  .  .  .  .
+*/
+
+const puzzle = {
+  cols: 13,
+  rows: 13,
+  words: [
+    // ACROSS
+    { word: "SEATTLE",  clue: "Lauren's current city in the Pacific Northwest",                  row: 0,  col: 0, dir: "across", num: 1  },
+    { word: "MET",      clue: "Famous NYC museum where Lauren worked for 8+ years (abbr.)",      row: 2,  col: 0, dir: "across", num: 3  },
+    { word: "MUSEUM",   clue: "Type of institution where Lauren has built her entire career",     row: 2,  col: 4, dir: "across", num: 4  },
+    { word: "DIRECTOR", clue: "Lauren's job title at SAM",                                       row: 4,  col: 2, dir: "across", num: 7  },
+    { word: "BETTY",    clue: "___ Blanch, one of Lauren's beloved cats",                        row: 7,  col: 1, dir: "across", num: 8  },
+    { word: "RUSSELL",  clue: "Lauren's last name",                                              row: 8,  col: 6, dir: "across", num: 10 },
+    { word: "JUNEBUG",  clue: "___ Yoda Buddha Furiosa, Lauren's other cat",                     row: 10, col: 6, dir: "across", num: 11 },
+    // DOWN
+    { word: "SAM",      clue: "Seattle Art Museum, for short",                                   row: 0,  col: 0, dir: "down",   num: 1  },
+    { word: "LAUREN",   clue: "The star of this crossword!",                                     row: 0,  col: 5, dir: "down",   num: 2  },
+    { word: "VISITOR",  clue: "Lauren's department focuses on ___ Experience",                    row: 3,  col: 3, dir: "down",   num: 5  },
+    { word: "COHOES",   clue: "Lauren's hometown in New York",                                   row: 3,  col: 8, dir: "down",   num: 6  },
+    { word: "AUGUST",   clue: "Lauren's birth month",                                            row: 7,  col: 7, dir: "down",   num: 9  },
+  ]
+};
+
 const { rows, cols, words } = puzzle;
 
-// Build the answer grid and cell metadata
+// Build answer grid and cell numbers
 const answer = Array.from({ length: rows }, () => Array(cols).fill(null));
 const cellNums = Array.from({ length: rows }, () => Array(cols).fill(0));
 const userGrid = Array.from({ length: rows }, () => Array(cols).fill(""));
 
-words.forEach(w => {
+// Map each cell to its across/down word index
+const cellWordMap = Array.from({ length: rows }, () =>
+  Array.from({ length: cols }, () => ({ across: -1, down: -1 }))
+);
+
+words.forEach((w, wi) => {
   for (let i = 0; i < w.word.length; i++) {
     const r = w.dir === "down" ? w.row + i : w.row;
     const c = w.dir === "across" ? w.col + i : w.col;
     answer[r][c] = w.word[i];
+    cellWordMap[r][c][w.dir] = wi;
   }
-  cellNums[w.row][w.col] = w.num;
+  if (!cellNums[w.row][w.col]) cellNums[w.row][w.col] = w.num;
 });
 
-let selectedCell = null; // {r, c}
+let selectedCell = null;
 let currentDir = "across";
 let timerSec = 0;
 let timerInterval = null;
@@ -350,7 +359,6 @@ let solved = false;
 // ========== RENDER GRID ==========
 const gridEl = document.getElementById("crossword-grid");
 gridEl.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
-gridEl.style.width = Math.min(cols * 36, window.innerWidth - 20) + "px";
 
 const cellEls = [];
 
@@ -371,7 +379,6 @@ for (let r = 0; r < rows; r++) {
       const letterSpan = document.createElement("span");
       letterSpan.className = "cell-letter";
       div.appendChild(letterSpan);
-
       div.addEventListener("click", () => onCellClick(r, c));
     }
     gridEl.appendChild(div);
@@ -383,101 +390,88 @@ for (let r = 0; r < rows; r++) {
 const acrossCluesEl = document.getElementById("across-clues");
 const downCluesEl = document.getElementById("down-clues");
 
-words.filter(w => w.dir === "across").sort((a,b) => a.num - b.num).forEach(w => {
+words.filter(w => w.dir === "across").sort((a, b) => a.num - b.num).forEach(w => {
   const div = document.createElement("div");
   div.className = "clue-item";
   div.dataset.num = w.num;
   div.dataset.dir = "across";
-  div.innerHTML = `<span class="clue-num">${w.num}.</span> ${w.clue}`;
-  div.addEventListener("click", () => {
-    currentDir = "across";
-    selectCell(w.row, w.col);
-  });
+  div.innerHTML = `<span class="clue-num">${w.num}.</span> ${w.clue} (${w.word.length})`;
+  div.addEventListener("click", () => { currentDir = "across"; selectCell(w.row, w.col); });
   acrossCluesEl.appendChild(div);
 });
 
-words.filter(w => w.dir === "down").sort((a,b) => a.num - b.num).forEach(w => {
+words.filter(w => w.dir === "down").sort((a, b) => a.num - b.num).forEach(w => {
   const div = document.createElement("div");
   div.className = "clue-item";
   div.dataset.num = w.num;
   div.dataset.dir = "down";
-  div.innerHTML = `<span class="clue-num">${w.num}.</span> ${w.clue}`;
-  div.addEventListener("click", () => {
-    currentDir = "down";
-    selectCell(w.row, w.col);
-  });
+  div.innerHTML = `<span class="clue-num">${w.num}.</span> ${w.clue} (${w.word.length})`;
+  div.addEventListener("click", () => { currentDir = "down"; selectCell(w.row, w.col); });
   downCluesEl.appendChild(div);
 });
+
+// ========== WORD CELL LOOKUP ==========
+// Returns the cells of the word at (r,c) in the given direction, using explicit word definitions
+function getWordCells(r, c, dir) {
+  const wi = cellWordMap[r][c][dir];
+  if (wi === -1) return [];
+  const w = words[wi];
+  const cells = [];
+  for (let i = 0; i < w.word.length; i++) {
+    const wr = w.dir === "down" ? w.row + i : w.row;
+    const wc = w.dir === "across" ? w.col + i : w.col;
+    cells.push({ r: wr, c: wc });
+  }
+  return cells;
+}
 
 // ========== CELL INTERACTION ==========
 function onCellClick(r, c) {
   if (answer[r][c] === null) return;
   if (selectedCell && selectedCell.r === r && selectedCell.c === c) {
-    // Toggle direction
-    currentDir = currentDir === "across" ? "down" : "across";
+    // Toggle direction, but only if this cell has a word in the other direction
+    const otherDir = currentDir === "across" ? "down" : "across";
+    if (cellWordMap[r][c][otherDir] !== -1) {
+      currentDir = otherDir;
+    }
+  } else {
+    // If cell doesn't have a word in current direction, switch
+    if (cellWordMap[r][c][currentDir] === -1) {
+      currentDir = currentDir === "across" ? "down" : "across";
+    }
   }
   selectCell(r, c);
 }
 
 function selectCell(r, c) {
-  if (!timerInterval) startTimer();
+  if (!timerInterval && !solved) startTimer();
   selectedCell = { r, c };
   updateHighlights();
   showKeyboard();
 }
 
-function getWordCells(r, c, dir) {
-  const cells = [];
-  if (dir === "across") {
-    let start = c;
-    while (start > 0 && answer[r][start - 1] !== null) start--;
-    let end = c;
-    while (end < cols - 1 && answer[r][end + 1] !== null) end++;
-    for (let i = start; i <= end; i++) cells.push({ r, c: i });
-  } else {
-    let start = r;
-    while (start > 0 && answer[start - 1][c] !== null) start--;
-    let end = r;
-    while (end < rows - 1 && answer[end + 1][c] !== null) end++;
-    for (let i = start; i <= end; i++) cells.push({ r: i, c });
-  }
-  return cells;
-}
-
 function updateHighlights() {
-  // Clear all
   for (let r = 0; r < rows; r++)
-    for (let c = 0; c < cols; c++) {
+    for (let c = 0; c < cols; c++)
       cellEls[r][c].classList.remove("selected", "highlighted");
-    }
 
   if (!selectedCell) return;
+
   const wc = getWordCells(selectedCell.r, selectedCell.c, currentDir);
   wc.forEach(({ r, c }) => cellEls[r][c].classList.add("highlighted"));
   cellEls[selectedCell.r][selectedCell.c].classList.add("selected");
 
   // Highlight active clue
   document.querySelectorAll(".clue-item").forEach(el => el.classList.remove("active"));
-  const wordInfo = findWordAt(selectedCell.r, selectedCell.c, currentDir);
-  if (wordInfo) {
-    const clueEl = document.querySelector(`.clue-item[data-num="${wordInfo.num}"][data-dir="${wordInfo.dir}"]`);
+  const wi = cellWordMap[selectedCell.r][selectedCell.c][currentDir];
+  if (wi !== -1) {
+    const w = words[wi];
+    const clueEl = document.querySelector(`.clue-item[data-num="${w.num}"][data-dir="${w.dir}"]`);
     if (clueEl) {
       clueEl.classList.add("active");
       clueEl.scrollIntoView({ block: "nearest", behavior: "smooth" });
     }
   }
-}
-
-function findWordAt(r, c, dir) {
-  return words.find(w => {
-    if (w.dir !== dir) return false;
-    for (let i = 0; i < w.word.length; i++) {
-      const wr = w.dir === "down" ? w.row + i : w.row;
-      const wc = w.dir === "across" ? w.col + i : w.col;
-      if (wr === r && wc === c) return true;
-    }
-    return false;
-  });
 }
 
 // ========== INPUT ==========
@@ -489,13 +483,21 @@ function inputLetter(ch) {
   userGrid[r][c] = ch;
   cellEls[r][c].querySelector(".cell-letter").textContent = ch;
 
-  // Auto-advance
+  // Auto-advance to next empty cell in word, or just next cell
   const wc = getWordCells(r, c, currentDir);
   const idx = wc.findIndex(cell => cell.r === r && cell.c === c);
+  // Try to find next empty cell
+  for (let i = idx + 1; i < wc.length; i++) {
+    if (userGrid[wc[i].r][wc[i].c] === "") {
+      selectCell(wc[i].r, wc[i].c);
+      checkWords();
+      return;
+    }
+  }
+  // If no empty cell, just advance one
   if (idx < wc.length - 1) {
     selectCell(wc[idx + 1].r, wc[idx + 1].c);
   }
-
   checkWords();
 }
 
@@ -504,7 +506,6 @@ function deleteLetter() {
   const { r, c } = selectedCell;
 
   if (userGrid[r][c] === "") {
-    // Move back
     const wc = getWordCells(r, c, currentDir);
     const idx = wc.findIndex(cell => cell.r === r && cell.c === c);
     if (idx > 0) {
@@ -517,6 +518,7 @@ function deleteLetter() {
     userGrid[r][c] = "";
     cellEls[r][c].querySelector(".cell-letter").textContent = "";
   }
+  checkWords();
 }
 
 // Physical keyboard
@@ -525,29 +527,28 @@ document.addEventListener("keydown", e => {
   if (e.key === "Backspace") { e.preventDefault(); deleteLetter(); }
   else if (e.key === "Tab" || e.key === "Enter") {
     e.preventDefault();
-    currentDir = currentDir === "across" ? "down" : "across";
-    updateHighlights();
+    if (selectedCell) {
+      const otherDir = currentDir === "across" ? "down" : "across";
+      if (cellWordMap[selectedCell.r][selectedCell.c][otherDir] !== -1) {
+        currentDir = otherDir;
+        updateHighlights();
+      }
+    }
   }
-  else if (/^[a-zA-Z]$/.test(e.key)) {
-    inputLetter(e.key.toUpperCase());
-  }
-  else if (e.key === "ArrowRight" && selectedCell) {
-    const nc = Math.min(cols - 1, selectedCell.c + 1);
-    if (answer[selectedCell.r][nc] !== null) selectCell(selectedCell.r, nc);
-  }
-  else if (e.key === "ArrowLeft" && selectedCell) {
-    const nc = Math.max(0, selectedCell.c - 1);
-    if (answer[selectedCell.r][nc] !== null) selectCell(selectedCell.r, nc);
-  }
-  else if (e.key === "ArrowDown" && selectedCell) {
-    const nr = Math.min(rows - 1, selectedCell.r + 1);
-    if (answer[nr][selectedCell.c] !== null) selectCell(nr, selectedCell.c);
-  }
-  else if (e.key === "ArrowUp" && selectedCell) {
-    const nr = Math.max(0, selectedCell.r - 1);
-    if (answer[nr][selectedCell.c] !== null) selectCell(nr, selectedCell.c);
-  }
+  else if (/^[a-zA-Z]$/.test(e.key)) inputLetter(e.key.toUpperCase());
+  else if (e.key === "ArrowRight" && selectedCell) moveToNextCell(0, 1);
+  else if (e.key === "ArrowLeft" && selectedCell) moveToNextCell(0, -1);
+  else if (e.key === "ArrowDown" && selectedCell) moveToNextCell(1, 0);
+  else if (e.key === "ArrowUp" && selectedCell) moveToNextCell(-1, 0);
 });
+
+function moveToNextCell(dr, dc) {
+  let nr = selectedCell.r + dr;
+  let nc = selectedCell.c + dc;
+  if (nr >= 0 && nr < rows && nc >= 0 && nc < cols && answer[nr][nc] !== null) {
+    selectCell(nr, nc);
+  }
+}
 
 // On-screen keyboard
 document.querySelectorAll(".kb-key").forEach(btn => {
@@ -555,9 +556,14 @@ document.querySelectorAll(".kb-key").forEach(btn => {
     e.preventDefault();
     const key = btn.dataset.key || btn.textContent;
     if (key === "DEL") deleteLetter();
-    else if (key === "✓") {
-      currentDir = currentDir === "across" ? "down" : "across";
-      updateHighlights();
+    else if (key === "\u2713") {
+      if (selectedCell) {
+        const otherDir = currentDir === "across" ? "down" : "across";
+        if (cellWordMap[selectedCell.r][selectedCell.c][otherDir] !== -1) {
+          currentDir = otherDir;
+          updateHighlights();
+        }
+      }
     }
     else inputLetter(key);
   });
@@ -580,7 +586,6 @@ function checkWords() {
       else if (userGrid[r][c] !== w.word[i]) wordCorrect = false;
     }
     if (!wordCorrect) allDone = false;
-    // Mark clue solved
     const clueEl = document.querySelector(`.clue-item[data-num="${w.num}"][data-dir="${w.dir}"]`);
     if (wordCorrect && wordComplete) {
       if (clueEl) clueEl.classList.add("solved");
@@ -598,7 +603,6 @@ function checkWords() {
       }
     }
   });
-
   if (allDone) winGame();
 }
 
@@ -620,9 +624,7 @@ function startTimer() {
 }
 
 function formatTime(s) {
-  const m = Math.floor(s / 60);
-  const sec = s % 60;
-  return `${m}:${sec.toString().padStart(2, "0")}`;
+  return `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`;
 }
 
 // ========== CONFETTI ==========
@@ -631,10 +633,8 @@ function launchConfetti() {
   const ctx = canvas.getContext("2d");
   canvas.width = window.innerWidth;
   canvas.height = window.innerHeight;
-
   const pieces = [];
   const colors = ["#e879a8", "#a78bfa", "#2ecc71", "#f9ca24", "#ff6b6b", "#74b9ff"];
-
   for (let i = 0; i < 150; i++) {
     pieces.push({
       x: Math.random() * canvas.width,
@@ -648,15 +648,12 @@ function launchConfetti() {
       rv: (Math.random() - 0.5) * 0.1,
     });
   }
-
   let frame = 0;
   function animate() {
     if (frame > 300) { ctx.clearRect(0, 0, canvas.width, canvas.height); return; }
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     pieces.forEach(p => {
-      p.x += p.vx;
-      p.y += p.vy;
-      p.rot += p.rv;
+      p.x += p.vx; p.y += p.vy; p.rot += p.rv;
       ctx.save();
       ctx.translate(p.x, p.y);
       ctx.rotate(p.rot);
@@ -672,7 +669,7 @@ function launchConfetti() {
 
 // ========== RESPONSIVE ==========
 function resizeGrid() {
-  const maxW = Math.min(cols * 40, window.innerWidth - 16);
+  const maxW = Math.min(cols * 38, window.innerWidth - 16);
   gridEl.style.width = maxW + "px";
 }
 window.addEventListener("resize", resizeGrid);
