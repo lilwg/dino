@@ -22,11 +22,24 @@ function stompsNeeded(cubeState, lv) {
     return cubeState === 0 ? 2 : (cubeState === 1 ? 1 : 0);
 }
 
-function revertPenalty(lv) {
+function revertPenalty(lv, cubes, tgt) {
     if (lv <= 2) return 0;
-    if (lv === 3) return 6;  // toggle: stepping on completed cube is catastrophic (undoes work)
-    if (lv === 4) return 5;  // 2-step cycle: revert + re-stomp, heavily penalize
-    return 6;                // 3-step cycle: revert to 0 + 2 re-stomps + detour
+    var basePenalty;
+    if (lv === 3) basePenalty = 6;       // toggle: stepping on completed cube undoes work
+    else if (lv === 4) basePenalty = 5;  // 2-step cycle: revert + re-stomp
+    else basePenalty = 6;                // 3-step cycle: revert to 0 + 2 re-stomps
+
+    // Scale penalty down when few cubes remain — crossing completed cubes
+    // is worth it to reach the last few unfinished ones instead of long detours
+    if (cubes) {
+        var total = cubes.length;
+        var remaining = 0;
+        for (var i = 0; i < total; i++)
+            if (cubes[i].state < (tgt || 1)) remaining++;
+        // Scale linearly: at 5+ remaining full penalty, at 1 remaining penalty=1
+        if (remaining <= 5) basePenalty = Math.max(1, Math.round(basePenalty * remaining / 5));
+    }
+    return basePenalty;
 }
 
 function dijkstraWeighted(srcIdx, completedMask, penalty) {
@@ -80,7 +93,7 @@ function mstFromDistTable(allNodes, distTable) {
 }
 
 function mstTourCost(startIdx, cubes, tgt, lv) {
-    var penalty = revertPenalty(lv);
+    var penalty = revertPenalty(lv, cubes, tgt);
     var completedMask = 0;
     var nodes = [];
     var extraStomps = 0;
@@ -161,10 +174,11 @@ function buildDangerMaps() {
             continue;
         }
         if (e.type === 'greenball' || e.type === 'slick') continue;
-        immediate[e.row + ',' + e.col] = true;
+        var pos = enemyEffectivePos(e);
+        immediate[pos.row + ',' + pos.col] = true;
         for (var k = 0; k < DIR_KEYS.length; k++) {
             var dk = DIRS[DIR_KEYS[k]];
-            var nr = e.row + dk.dr, nc = e.col + dk.dc;
+            var nr = pos.row + dk.dr, nc = pos.col + dk.dc;
             if (isValidPos(nr, nc)) immediate[nr + ',' + nc] = true;
         }
         if (e.type === 'coily') coilies.push(e);
@@ -290,7 +304,7 @@ function dynamicTourMove(gs) {
     }
     if (unfinished.length === 0) return null;
 
-    var penalty = revertPenalty(lv);
+    var penalty = revertPenalty(lv, gs.cubes, tgt);
     var startKey = gs.player.row + ',' + gs.player.col;
     var dist = {}; dist[startKey] = 0;
     var prev = {}; prev[startKey] = null;
@@ -493,6 +507,23 @@ function mode1Pick(gs, dangerSet) {
         }
     }
 
+    // Slick pursuit: intercept nearby slicks to prevent cube reversion (lv3+)
+    if (gs.lv >= 3) {
+        for (var si = 0; si < gs.enemies.length; si++) {
+            var se = gs.enemies[si];
+            if (se.type !== 'slick') continue;
+            var spos = enemyEffectivePos(se);
+            // Check if slick is within 1 hop of player
+            for (var sk = 0; sk < DIR_KEYS.length; sk++) {
+                var sdk = DIRS[DIR_KEYS[sk]];
+                var snr = gs.player.row + sdk.dr, snc = gs.player.col + sdk.dc;
+                if (snr === spos.row && snc === spos.col && !dangerSet[snr + ',' + snc]) {
+                    if (simCanMove(gs, DIR_KEYS[sk])) return DIR_KEYS[sk];
+                }
+            }
+        }
+    }
+
     // Use tour planner as primary if it agrees with a safe direction
     var tourDir = dynamicTourMove(gs);
     if (tourDir !== null) {
@@ -517,20 +548,20 @@ var AI_TIME_BUDGET = 12;
 
 function mode2Pick(gs) {
     // Scale MC parameters with level — harder levels need deeper/wider search
-    var MC_SAMPLES = gs.lv >= 3 ? 32 : 24;
-    var MC_DEPTH = gs.lv >= 3 ? 8 : 6;
+    var mcSamples = gs.lv >= 3 ? 32 : 24;
+    var mcDepth = gs.lv >= 3 ? 8 : 6;
 
     // Disc lure — validate through simulation before committing
     var lureDir = evalDiscLure();
     if (lureDir) {
-        // Quick survival check: run MC_SAMPLES simulations of the lure move
+        // Quick survival check: run mcSamples simulations of the lure move
         var lureSurvived = 0;
-        for (var ls = 0; ls < MC_SAMPLES; ls++) {
+        for (var ls = 0; ls < mcSamples; ls++) {
             var lc = simDeepClone(gs);
             if (simStep(lc, lureDir)) lureSurvived++;
         }
         // Only use lure if survival rate is high enough
-        if (lureSurvived / MC_SAMPLES >= 0.75) return lureDir;
+        if (lureSurvived / mcSamples >= 0.75) return lureDir;
     }
 
     var startTime = typeof performance !== 'undefined' ? performance.now() : Date.now();
@@ -544,14 +575,14 @@ function mode2Pick(gs) {
         var totalTC = 0;
         var won = 0;
 
-        for (var s = 0; s < MC_SAMPLES; s++) {
+        for (var s = 0; s < mcSamples; s++) {
             var clone = simDeepClone(gs);
             var alive = simStep(clone, dir);
             if (!alive) continue;
             if (clone.levelWon) { survived++; won++; totalTC -= 1000; continue; }
 
             // Continue simulating forward with greedy AI moves
-            for (var step = 1; step < MC_DEPTH; step++) {
+            for (var step = 1; step < mcDepth; step++) {
                 // Pick a reasonable move: avoid danger, make tour progress
                 var bestStepDir = mcPickGreedy(clone);
                 alive = simStep(clone, bestStepDir);
@@ -564,7 +595,7 @@ function mode2Pick(gs) {
             }
         }
 
-        var survRate = survived / MC_SAMPLES;
+        var survRate = survived / mcSamples;
         var avgTC = survived > 0 ? totalTC / survived : Infinity;
 
         // Only penalize STAY for tour cost tiebreaking — never let it override survival
@@ -616,7 +647,7 @@ function mode2Pick(gs) {
         // survEps: how close survival rates need to be to count as "tied"
         // Only then does tour cost matter. This prevents the AI from
         // jumping into Coily for a slightly better tour cost.
-        var survEps = 2.0 / MC_SAMPLES;  // two sample difference = tied
+        var survEps = 2.0 / mcSamples;  // two sample difference = tied
 
         if (survRate > bestSurv + survEps) {
             // Strictly better survival — always prefer
@@ -703,7 +734,8 @@ function mcPickGreedy(gs) {
                     else if (isBottom || isEdge) score += 2;
                 } else {
                     // Penalize stepping on completed cubes (reverts on lv3+, wastes time on all)
-                    var revertPen = gs.lv >= 3 ? -12 : -3;
+                    // On lv3 toggle levels, reverting is catastrophic — strongly avoid
+                    var revertPen = gs.lv >= 3 ? -25 : -3;
                     // Extra penalty for completed apex and corners — dead ends
                     var isApex2 = (nr === 0 && nc === 0);
                     var isCrnr2 = (nr === ROWS - 1 && (nc === 0 || nc === ROWS - 1));
@@ -755,6 +787,8 @@ function aiPickBestDir() {
     var frozen = false;
     for (var i = 0; i < enemies.length; i++) {
         if (enemies[i].type === 'coily') coilyActive = true;
+        // Egg about to hatch into Coily — preemptively use Mode 2 (MC safety)
+        if (enemies[i].type === 'egg' && (enemies[i].willHatch || (enemies[i].hops || 0) >= 5)) coilyActive = true;
     }
     if (typeof freezeTimer !== 'undefined' && freezeTimer > 0) frozen = true;
 
