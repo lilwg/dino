@@ -564,6 +564,7 @@ function collisionTile(entity) {
 }
 
 // Per-frame collision check: same tile = death (or catch for slick/greenball)
+// During freeze, enemies are harmless (can still catch slick/greenball).
 function simCheckCollision(gs) {
     if (gs.player.dead) return;
     var pt = collisionTile(gs.player);
@@ -581,6 +582,9 @@ function simCheckCollision(gs) {
                 gs.score += 100;
                 gs.freezeTimer = 300;
                 gs.enemies.splice(i, 1); i--;
+            } else if (gs.freezeTimer > 0) {
+                // Enemies are frozen and harmless — skip lethal collision
+                continue;
             } else {
                 gs.alive = false;
                 gs.player.dead = true;

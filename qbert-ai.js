@@ -700,12 +700,8 @@ function unifiedPick(gs, coilyActive) {
         }
         // Also flag STAY as dangerous if current tile is in danger set
         if (dir === 'STAY' && dangerSet[gs.player.row + ',' + gs.player.col]) inDanger = true;
-        // Penalty: starting from a danger tile means source-collision risk during jump
-        if (dir !== 'STAY' && dangerSet[gs.player.row + ',' + gs.player.col]) {
-            // We're on a dangerous tile — penalize but don't mark as inDanger
-            // (we need to leave, but the first third of the jump is still on this tile)
-            avgTC += 4;
-        }
+        // Penalize moves into danger zones — MC simulation may not catch all random outcomes
+        if (inDanger && survived === SAMPLES) avgTC += 6;
 
         // 2-hop safety: when Coily is close, verify the move has a safe follow-up
         if (survived === SAMPLES && coilyR >= 0 && dir !== 'STAY') {
