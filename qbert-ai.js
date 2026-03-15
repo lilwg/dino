@@ -154,59 +154,7 @@ function predictCoilyNext(coilyR, coilyC, targetR, targetC) {
     return { row: coilyR + dd.dr, col: coilyC + dd.dc };
 }
 
-function buildDangerMaps() {
-    var immediate = {}, predicted = {}, coilies = [];
-    for (var i = 0; i < enemies.length; i++) {
-        var e = enemies[i];
-        if (e.type === 'spawn-timer') {
-            var sm = speedMultiplier();
-            var fph = Math.ceil(1 / (0.028 * sm));
-            var tickPerHop = fph;
-            var hopsUntil = e.timer > 20 ? Math.ceil(e.timer / tickPerHop) : e.timer;
-            if (hopsUntil <= 2) {
-                var ft = e.forcedType;
-                if (ft === 'ugg') immediate[(ROWS-1) + ',' + (ROWS-1)] = true;
-                else if (ft === 'wrongway') immediate[(ROWS-1) + ',0'] = true;
-                else if (ft === 'egg' || !ft) immediate['0,0'] = true;
-                else if (ft === 'redball') { immediate['1,0'] = true; immediate['1,1'] = true; }
-            }
-            continue;
-        }
-        if (e.type === 'greenball' || e.type === 'slick') continue;
-        var pos = enemyEffectivePos(e);
-        immediate[pos.row + ',' + pos.col] = true;
-        for (var k = 0; k < DIR_KEYS.length; k++) {
-            var dk = DIRS[DIR_KEYS[k]];
-            var nr = pos.row + dk.dr, nc = pos.col + dk.dc;
-            if (isValidPos(nr, nc)) immediate[nr + ',' + nc] = true;
-        }
-        if (e.type === 'coily') coilies.push(e);
-    }
-    for (var ci = 0; ci < coilies.length; ci++) {
-        for (var step = 1; step <= 3; step++) {
-            var fp = predictCoilyPos(coilies[ci], player.row, player.col, step);
-            predicted[fp.row + ',' + fp.col] = true;
-            for (var k = 0; k < DIR_KEYS.length; k++) {
-                var dk = DIRS[DIR_KEYS[k]];
-                var nr = fp.row + dk.dr, nc = fp.col + dk.dc;
-                if (isValidPos(nr, nc)) predicted[nr + ',' + nc] = true;
-            }
-        }
-    }
-    return { immediate: immediate, predicted: predicted, coilies: coilies };
-}
-
-function countEscapes(row, col, dangerSet) {
-    var count = 0;
-    for (var k = 0; k < DIR_KEYS.length; k++) {
-        var dk = DIRS[DIR_KEYS[k]];
-        var nr = row + dk.dr, nc = col + dk.dc;
-        if (isValidPos(nr, nc) && !dangerSet[nr + ',' + nc]) count++;
-    }
-    return count;
-}
-
-// Build danger set for Mode 1 (random walker avoidance)
+// Build danger set — marks tiles where non-Coily enemies are or will move
 function buildDangerSet() {
     var danger = {};
     var sm = (typeof speedMultiplier === 'function') ? speedMultiplier() : 1;
@@ -248,49 +196,6 @@ var aiTour = [], aiTourIdx = 0, aiBoardSig = '';
 var aiDetailPath = [], aiTourDots = [];
 
 function aiTourInit() { aiLastRemaining = 99; aiNoProgressCount = 0; aiStayCount = 0; aiSamePosCount = 0; aiPosHistory = []; }
-function aiTourNext() { return null; }
-function findTourResumePath() { return null; }
-
-function buildTour() {
-    var tgt = targetState();
-    var danger = buildDangerMaps();
-    var remaining = [];
-    for (var i = 0; i < cubeStates.length; i++)
-        if (cubeStates[i].state < tgt)
-            remaining.push({ row: cubeStates[i].row, col: cubeStates[i].col });
-    var tour = [];
-    var cr = player.row, cc = player.col;
-    while (remaining.length > 0) {
-        var best = null, bestCost = Infinity, bestIdx = -1;
-        for (var i = 0; i < remaining.length; i++) {
-            var res = bfsTo(cr, cc, remaining[i].row, remaining[i].col);
-            if (!res) continue;
-            var cost = res.dist;
-            if (danger.immediate[remaining[i].row + ',' + remaining[i].col]) cost += 8;
-            if (danger.predicted[remaining[i].row + ',' + remaining[i].col]) cost += 3;
-            var tr = remaining[i].row, tc2 = remaining[i].col;
-            var isEdge = (tc2 === 0 || tc2 === tr);
-            var isBottom = (tr >= ROWS - 2);
-            var isCorner = (tr === ROWS - 1 && isEdge);
-            if (!danger.immediate[tr + ',' + tc2]) {
-                if (isCorner) cost -= 4;
-                else if (isBottom && isEdge) cost -= 3;
-                else if (isBottom || isEdge) cost -= 1.5;
-            }
-            if (danger.coilies.length > 0 && countEscapes(tr, tc2, danger.immediate) <= 1) cost += 6;
-            if (cost < bestCost) {
-                bestCost = cost; best = remaining[i]; bestIdx = i;
-            }
-        }
-        if (!best) break;
-        tour.push(best);
-        remaining.splice(bestIdx, 1);
-        cr = best.row; cc = best.col;
-    }
-    aiTour = tour;
-    aiTourIdx = 0;
-    aiBoardSig = boardSig();
-}
 
 // Dijkstra tour planner — nearest unfinished cube via weighted BFS
 function dynamicTourMove(gs) {
@@ -479,6 +384,68 @@ function evalDiscLure() {
     return null;
 }
 
+// ─── Scoring helpers ─────────────────────────────────────────────────────────
+
+// Score adjustment for landing on a tile (cube progress, reverts, enemy catches)
+function scoreLanding(gs, nr, nc) {
+    var adj = 0;
+    for (var i = 0; i < gs.cubes.length; i++) {
+        if (gs.cubes[i].row !== nr || gs.cubes[i].col !== nc) continue;
+        if (gs.cubes[i].state < gs.tgt) {
+            adj -= 8;
+            var isCorner = (nr === ROWS - 1 && (nc === 0 || nc === ROWS - 1));
+            var isBottom = nr >= ROWS - 2;
+            var isEdge = nc === 0 || nc === nr;
+            if (isCorner) adj -= 4;
+            else if (isBottom && isEdge) adj -= 3;
+            else if (isBottom || isEdge) adj -= 1;
+        } else if (gs.lv >= 3) {
+            var unfCount = 0;
+            for (var uc = 0; uc < gs.cubes.length; uc++)
+                if (gs.cubes[uc].state < gs.tgt) unfCount++;
+            var revertPen = unfCount <= 3 ? 1 : (unfCount <= 5 ? 2 : 4);
+            adj += revertPen;
+            var isApex = (nr === 0 && nc === 0);
+            var isCrnr = (nr === ROWS - 1 && (nc === 0 || nc === ROWS - 1));
+            if (isApex || isCrnr) adj += revertPen;
+        }
+        break;
+    }
+    // Bonus for catching green balls and slicks
+    for (var ei = 0; ei < gs.enemies.length; ei++) {
+        var e = gs.enemies[ei];
+        if (e.type !== 'greenball' && e.type !== 'slick') continue;
+        var er = e.destRow != null ? e.destRow : e.row;
+        var ec = e.destCol != null ? e.destCol : e.col;
+        if (er === nr && ec === nc)
+            adj -= (e.type === 'greenball') ? 15 : (gs.lv >= 3 ? 20 : 8);
+        if (e.type === 'slick' && gs.lv >= 3 && Math.abs(er - nr) + Math.abs(ec - nc) === 1)
+            adj -= 6;
+    }
+    return adj;
+}
+
+// Score adjustment for Coily proximity
+function scoreCoilyProximity(gs, nr, nc, coilyR, coilyC) {
+    if (coilyR < 0) return 0;
+    var adj = 0;
+    var curDist = Math.abs(coilyR - gs.player.row) + Math.abs(coilyC - gs.player.col);
+    var newDist = Math.abs(coilyR - nr) + Math.abs(coilyC - nc);
+    if (newDist < curDist) adj += 6;
+    else if (newDist > curDist) adj -= 3;
+    if (newDist <= 1) adj += 8;
+    else if (newDist <= 2) adj += 3;
+    // Escape route bonus: prefer tiles with more valid exits
+    var exits = 0;
+    for (var ek = 0; ek < DIR_KEYS.length; ek++) {
+        var edk = DIRS[DIR_KEYS[ek]];
+        if (isValidPos(nr + edk.dr, nc + edk.dc)) exits++;
+    }
+    if (exits <= 1) adj += 6;
+    else if (exits <= 2) adj += 2;
+    return adj;
+}
+
 // ─── Unified pick: tour planning + simulation-validated safety ───────────────
 // Always plans toward unfinished cubes. Validates each candidate via simulation.
 // More samples when enemies are present for reliable safety checking.
@@ -489,6 +456,9 @@ function unifiedPick(gs, coilyActive) {
     var baseSeed = (gs.player.row * 7 + gs.player.col) * 10000 + (frameCount || 0);
     function simSeed(sampleIdx) { simRng = createSeededRng(baseSeed + sampleIdx * 9973); }
     function restoreRng() { simRng = savedRng; }
+
+    // Cache tour planner result — called once, used in freeze path and main path
+    var tourDir = dynamicTourMove(gs);
 
     // ── Freeze mode: skip expensive avoidance but still validate via simulation ──
     // Only skip danger maps / Coily scoring if freeze lasts long enough.
@@ -519,7 +489,6 @@ function unifiedPick(gs, coilyActive) {
         }
 
         // Follow tour planner, but validate via simulation + spawn avoidance
-        var tourDir = dynamicTourMove(gs);
         if (tourDir && simCanMove(gs, tourDir)) {
             var ttd = DIRS[tourDir];
             var ttr = gs.player.row + ttd.dr, ttc = gs.player.col + ttd.dc;
@@ -549,7 +518,7 @@ function unifiedPick(gs, coilyActive) {
     var dangerSet = buildDangerSet();  // non-Coily enemy danger zones
     // More simulation samples when enemies could kill us
     var hasEnemies = gs.enemies.length > 0;
-    var SAMPLES = coilyActive ? 24 : (hasEnemies ? 16 : 4);
+    var SAMPLES = coilyActive ? 32 : (hasEnemies ? 20 : 4);
 
     // Find Coily position for proximity-aware scoring
     var coilyR = -1, coilyC = -1;
@@ -630,66 +599,8 @@ function unifiedPick(gs, coilyActive) {
             var d = DIRS[dir];
             var nr = gs.player.row + d.dr, nc = gs.player.col + d.dc;
             if (isValidPos(nr, nc)) {
-                for (var ci2 = 0; ci2 < gs.cubes.length; ci2++) {
-                    if (gs.cubes[ci2].row === nr && gs.cubes[ci2].col === nc) {
-                        if (gs.cubes[ci2].state < gs.tgt) {
-                            avgTC -= 8;
-                            var isCorner = (nr === ROWS - 1 && (nc === 0 || nc === ROWS - 1));
-                            var isBottom = nr >= ROWS - 2;
-                            var isEdge = nc === 0 || nc === nr;
-                            if (isCorner) avgTC -= 4;
-                            else if (isBottom && isEdge) avgTC -= 3;
-                            else if (isBottom || isEdge) avgTC -= 1;
-                        } else if (gs.lv >= 3) {
-                            // Penalty for stepping on completed cube (reverts it)
-                            // Scale down when few cubes remain — crossing is worth it vs long detours
-                            var unfCount = 0;
-                            for (var uc = 0; uc < gs.cubes.length; uc++)
-                                if (gs.cubes[uc].state < gs.tgt) unfCount++;
-                            var revertPen = unfCount <= 3 ? 1 : (unfCount <= 5 ? 2 : 4);
-                            avgTC += revertPen;
-                            var isApex3 = (nr === 0 && nc === 0);
-                            var isCrnr3 = (nr === ROWS - 1 && (nc === 0 || nc === ROWS - 1));
-                            if (isApex3 || isCrnr3) avgTC += revertPen;  // extra for dead-ends
-                        }
-                        break;
-                    }
-                }
-                // Coily proximity penalty: prefer moves that increase distance from Coily
-                if (coilyR >= 0) {
-                    var curDist = Math.abs(coilyR - gs.player.row) + Math.abs(coilyC - gs.player.col);
-                    var newDist = Math.abs(coilyR - nr) + Math.abs(coilyC - nc);
-                    if (newDist < curDist) avgTC += 6;  // moving toward Coily
-                    else if (newDist > curDist) avgTC -= 3;  // moving away from Coily
-                    // Extra penalty for getting very close
-                    if (newDist <= 1) avgTC += 8;
-                    else if (newDist <= 2) avgTC += 3;
-                    // Escape route bonus: prefer tiles with more valid exits
-                    var exits = 0;
-                    for (var ek = 0; ek < DIR_KEYS.length; ek++) {
-                        var edk = DIRS[DIR_KEYS[ek]];
-                        if (isValidPos(nr + edk.dr, nc + edk.dc)) exits++;
-                    }
-                    if (exits <= 1) avgTC += 6;  // dead-end penalty
-                    else if (exits <= 2) avgTC += 2;  // limited options
-                }
-                // Bonus for catching green balls and slicks
-                for (var ei = 0; ei < gs.enemies.length; ei++) {
-                    var e = gs.enemies[ei];
-                    if (e.type === 'greenball' || e.type === 'slick') {
-                        var er = e.destRow != null ? e.destRow : e.row;
-                        var ec = e.destCol != null ? e.destCol : e.col;
-                        if (er === nr && ec === nc) {
-                            // Slicks are worth more on revert levels — catching saves re-work
-                            avgTC -= (e.type === 'greenball') ? 15 : (gs.lv >= 3 ? 20 : 8);
-                        }
-                        // Intercept bonus: if slick is 1 hop from this tile, moving here may catch it next turn
-                        if (e.type === 'slick' && gs.lv >= 3) {
-                            var slickDist = Math.abs(er - nr) + Math.abs(ec - nc);
-                            if (slickDist === 1) avgTC -= 6;
-                        }
-                    }
-                }
+                avgTC += scoreLanding(gs, nr, nc);
+                avgTC += scoreCoilyProximity(gs, nr, nc, coilyR, coilyC);
             }
         }
 
@@ -714,13 +625,13 @@ function unifiedPick(gs, coilyActive) {
         // Penalize moves into danger zones — MC simulation may not catch all random outcomes
         if (inDanger && survived === SAMPLES) avgTC += 6;
 
-        // 2-hop safety: when Coily is close, verify the move has a safe follow-up
+        // 2-hop safety: when Coily is nearby, verify the move has a safe follow-up
         if (survived === SAMPLES && coilyR >= 0 && dir !== 'STAY') {
             var curCoilyDist = Math.abs(coilyR - gs.player.row) + Math.abs(coilyC - gs.player.col);
-            if (curCoilyDist <= 4) {
+            if (curCoilyDist <= 6) {
                 // Check if the resulting position has at least one safe 2nd move
                 var has2ndSafe = false;
-                var hop2Samples = 4;
+                var hop2Samples = curCoilyDist <= 3 ? 8 : 4;
                 for (var d2k = 0; d2k < DIR_KEYS_WITH_STAY.length; d2k++) {
                     var d2dir = DIR_KEYS_WITH_STAY[d2k];
                     var d2surv = 0;
@@ -787,7 +698,6 @@ function unifiedPick(gs, coilyActive) {
     }
 
     // Tour planner direction — use it if it's safe AND not in danger set
-    var tourDir = dynamicTourMove(gs);
     if (tourDir !== null) {
         var tourScore = aiMoveScores[tourDir];
         if (tourScore !== undefined && tourScore >= 0) {
