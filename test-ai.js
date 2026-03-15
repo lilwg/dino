@@ -15,8 +15,7 @@ eval(require('fs').readFileSync(__dirname + '/qbert-ai.js', 'utf8'));
 
 // Override AI time budget — node can afford more than browser's 16ms frame
 AI_TIME_BUDGET = 50;
-MC_SAMPLES = 32;
-MC_DEPTH = 6;
+// Note: MC_SAMPLES and MC_DEPTH are set locally inside mode2Pick() based on level
 
 // ─── Game state ─────────────────────────────────────────────────────────────
 var lives, extraLifeGiven, levelWon, turnCount;
@@ -81,7 +80,8 @@ function simFrame() {
     var playerResult = simUpdatePlayer(gs);
     simUpdateEnemies(gs);
 
-    // Sync freezeTimer for AI access
+    // Sync globals (enemies array may be replaced by simUpdateEnemies)
+    enemies = gs.enemies;
     freezeTimer = gs.freezeTimer;
 
     // Per-frame collision (arcade model: same tile = death)
@@ -182,7 +182,7 @@ function runGame(maxRounds, verbose) {
     for (; round <= maxRounds; round++) {
         initRound();
         var moveNum = 0;
-        var maxFrames = 200 * 60;
+        var maxFrames = 400 * 60;
 
         if (verbose) {
             console.log('\n' + '='.repeat(50));
