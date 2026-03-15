@@ -25,19 +25,18 @@ function stompsNeeded(cubeState, lv) {
 function revertPenalty(lv, cubes, tgt) {
     if (lv <= 2) return 0;
     var basePenalty;
-    if (lv === 3) basePenalty = 6;       // toggle: stepping on completed cube undoes work
-    else if (lv === 4) basePenalty = 5;  // 2-step cycle: revert + re-stomp
-    else basePenalty = 6;                // 3-step cycle: revert to 0 + 2 re-stomps
+    if (lv === 3) basePenalty = 8;       // toggle: stepping on completed cube undoes work (need 2 extra hops)
+    else if (lv === 4) basePenalty = 6;  // 2-step cycle: revert + re-stomp
+    else basePenalty = 7;                // 3-step cycle: revert to 0 + 2 re-stomps
 
     // Scale penalty down when few cubes remain — crossing completed cubes
     // is worth it to reach the last few unfinished ones instead of long detours
     if (cubes) {
-        var total = cubes.length;
         var remaining = 0;
-        for (var i = 0; i < total; i++)
+        for (var i = 0; i < cubes.length; i++)
             if (cubes[i].state < (tgt || 1)) remaining++;
-        // Scale linearly: at 5+ remaining full penalty, at 1 remaining penalty=1
-        if (remaining <= 5) basePenalty = Math.max(1, Math.round(basePenalty * remaining / 5));
+        // Scale down only when very few remain
+        if (remaining <= 3) basePenalty = Math.max(2, Math.round(basePenalty * remaining / 4));
     }
     return basePenalty;
 }
@@ -178,6 +177,14 @@ function buildDangerSet() {
         if (e.type === 'egg' || e.type === 'redball') {
             if (isValidPos(er + 1, ec)) danger[(er + 1) + ',' + ec] = true;
             if (isValidPos(er + 1, ec + 1)) danger[(er + 1) + ',' + (ec + 1)] = true;
+            // Egg about to hatch into Coily — mark all adjacent tiles dangerous
+            if (e.type === 'egg' && ((e.hops || 0) >= 4 || e.willHatch)) {
+                for (var ek = 0; ek < DIR_KEYS.length; ek++) {
+                    var edk = DIRS[DIR_KEYS[ek]];
+                    var enr = er + edk.dr, enc = ec + edk.dc;
+                    if (isValidPos(enr, enc)) danger[enr + ',' + enc] = true;
+                }
+            }
         }
         if (e.type === 'ugg') {
             if (isValidPos(er - 1, ec - 1)) danger[(er-1) + ',' + (ec-1)] = true;
@@ -198,21 +205,31 @@ var aiDetailPath = [], aiTourDots = [];
 function aiTourInit() { aiLastRemaining = 99; aiNoProgressCount = 0; aiStayCount = 0; aiSamePosCount = 0; aiPosHistory = []; }
 
 // Dijkstra tour planner — nearest unfinished cube via weighted BFS
+// On toggle levels (lv3+), prefers targets reachable without crossing completed cubes
+// and targets with adjacent unfinished neighbors (sweep-friendly)
 function dynamicTourMove(gs) {
     var lv = gs.lv;
     var tgt = gs.tgt;
     var completedSet = {};
+    var unfinishedSet = {};
     var unfinished = [];
     for (var i = 0; i < gs.cubes.length; i++) {
         var c = gs.cubes[i];
         if (c.state >= tgt) completedSet[c.row + ',' + c.col] = true;
-        else unfinished.push({ row: c.row, col: c.col });
+        else {
+            unfinished.push({ row: c.row, col: c.col });
+            unfinishedSet[c.row + ',' + c.col] = true;
+        }
     }
     if (unfinished.length === 0) return null;
 
     var penalty = revertPenalty(lv, gs.cubes, tgt);
+
+    // On toggle levels, count how many completed cubes each path crosses
+    // and give extra bonus for reaching targets via unfinished-only paths
     var startKey = gs.player.row + ',' + gs.player.col;
     var dist = {}; dist[startKey] = 0;
+    var reverts = {}; reverts[startKey] = 0;  // completed cubes crossed
     var prev = {}; prev[startKey] = null;
     var pq = [{ row: gs.player.row, col: gs.player.col, cost: 0 }];
     var bestTarget = null, bestCost = Infinity;
@@ -226,21 +243,17 @@ function dynamicTourMove(gs) {
         var curKey = cur.row + ',' + cur.col;
         if (cur.cost > dist[curKey]) continue;
 
-        if (curKey !== startKey) {
-            for (var ui = 0; ui < unfinished.length; ui++) {
-                if (unfinished[ui].row === cur.row && unfinished[ui].col === cur.col) {
-                    // Discount corners and bottom — clear them first while safe
-                    var adjCost = cur.cost;
-                    var isCorner = (cur.row === ROWS - 1 && (cur.col === 0 || cur.col === ROWS - 1));
-                    var isBottom = cur.row >= ROWS - 2;
-                    var isEdge = cur.col === 0 || cur.col === cur.row;
-                    if (isCorner) adjCost -= 2;
-                    else if (isBottom && isEdge) adjCost -= 1.5;
-                    else if (isBottom || isEdge) adjCost -= 0.5;
-                    if (adjCost < bestCost) { bestCost = adjCost; bestTarget = { row: cur.row, col: cur.col }; }
-                    break;
-                }
-            }
+        if (curKey !== startKey && unfinishedSet[curKey]) {
+            var adjCost = cur.cost;
+            var isCorner = (cur.row === ROWS - 1 && (cur.col === 0 || cur.col === ROWS - 1));
+            var isBottom = cur.row >= ROWS - 2;
+            var isEdge = cur.col === 0 || cur.col === cur.row;
+            if (isCorner) adjCost -= 2;
+            else if (isBottom && isEdge) adjCost -= 1.5;
+            else if (isBottom || isEdge) adjCost -= 0.5;
+            // Big bonus for zero-revert paths — reached without crossing completed cubes
+            if (lv >= 3 && (reverts[curKey] || 0) === 0) adjCost -= 3;
+            if (adjCost < bestCost) { bestCost = adjCost; bestTarget = { row: cur.row, col: cur.col }; }
         }
         if (bestTarget && cur.cost > bestCost + 2) break;
 
@@ -249,9 +262,10 @@ function dynamicTourMove(gs) {
             var nr = cur.row + dk.dr, nc = cur.col + dk.dc;
             if (!isValidPos(nr, nc)) continue;
             var nk = nr + ',' + nc;
-            var moveCost = 1 + (completedSet[nk] ? penalty : 0);
+            var isCompleted = !!completedSet[nk];
+            var moveCost = 1 + (isCompleted ? penalty : 0);
             // Extra cost for completed apex and corners — dead ends with revert risk
-            if (completedSet[nk]) {
+            if (isCompleted) {
                 var isApex = (nr === 0 && nc === 0);
                 var isCrnr = (nr === ROWS - 1 && (nc === 0 || nc === ROWS - 1));
                 if (isApex || isCrnr) moveCost += 3;
@@ -259,6 +273,7 @@ function dynamicTourMove(gs) {
             var newCost = cur.cost + moveCost;
             if (dist[nk] === undefined || newCost < dist[nk]) {
                 dist[nk] = newCost;
+                reverts[nk] = (reverts[curKey] || 0) + (isCompleted ? 1 : 0);
                 prev[nk] = { row: cur.row, col: cur.col, dir: DIR_KEYS[k] };
                 pq.push({ row: nr, col: nc, cost: newCost });
             }
@@ -403,7 +418,7 @@ function scoreLanding(gs, nr, nc) {
             var unfCount = 0;
             for (var uc = 0; uc < gs.cubes.length; uc++)
                 if (gs.cubes[uc].state < gs.tgt) unfCount++;
-            var revertPen = unfCount <= 3 ? 1 : (unfCount <= 5 ? 2 : 4);
+            var revertPen = unfCount <= 3 ? 2 : (unfCount <= 5 ? 4 : 6);
             adj += revertPen;
             var isApex = (nr === 0 && nc === 0);
             var isCrnr = (nr === ROWS - 1 && (nc === 0 || nc === ROWS - 1));
@@ -433,16 +448,46 @@ function scoreCoilyProximity(gs, nr, nc, coilyR, coilyC) {
     var newDist = Math.abs(coilyR - nr) + Math.abs(coilyC - nc);
     if (newDist < curDist) adj += 6;
     else if (newDist > curDist) adj -= 3;
-    if (newDist <= 1) adj += 8;
-    else if (newDist <= 2) adj += 3;
+    if (newDist <= 1) adj += 12;
+    else if (newDist <= 2) adj += 5;
     // Escape route bonus: prefer tiles with more valid exits
     var exits = 0;
     for (var ek = 0; ek < DIR_KEYS.length; ek++) {
         var edk = DIRS[DIR_KEYS[ek]];
         if (isValidPos(nr + edk.dr, nc + edk.dc)) exits++;
     }
-    if (exits <= 1) adj += 6;
-    else if (exits <= 2) adj += 2;
+    if (exits <= 1) adj += 10;  // dead-end: apex, corners — heavily penalize
+    else if (exits <= 2) adj += 4;
+    // Apex is especially dangerous — only 2 exits, Coily can easily trap
+    if (nr === 0 && nc === 0 && newDist <= 4) adj += 8;
+    return adj;
+}
+
+// Score penalty for moving toward non-Coily enemies (ugg, wrongway, redball, egg)
+function scoreEnemyProximity(gs, nr, nc) {
+    var adj = 0;
+    var nearbyEnemies = 0;
+    for (var i = 0; i < gs.enemies.length; i++) {
+        var e = gs.enemies[i];
+        if (e.type === 'coily' || e.type === 'greenball' || e.type === 'slick' || e.type === 'spawn-timer') continue;
+        var er = e.destRow != null ? e.destRow : e.row;
+        var ec = e.destCol != null ? e.destCol : e.col;
+        var dist = Math.abs(er - nr) + Math.abs(ec - nc);
+        if (dist <= 1) { adj += 5; nearbyEnemies++; }
+        else if (dist <= 2) { adj += 2; nearbyEnemies++; }
+    }
+    // Trap avoidance: penalize low-exit tiles when enemies are nearby
+    if (nearbyEnemies > 0) {
+        var exits = 0;
+        for (var ek = 0; ek < DIR_KEYS.length; ek++) {
+            var edk = DIRS[DIR_KEYS[ek]];
+            if (isValidPos(nr + edk.dr, nc + edk.dc)) exits++;
+        }
+        if (exits <= 1) adj += 6;  // apex or corner with enemies nearby
+        else if (exits <= 2) adj += 2;
+        // Multiple enemies converging — extra danger
+        if (nearbyEnemies >= 2) adj += 4;
+    }
     return adj;
 }
 
@@ -601,6 +646,7 @@ function unifiedPick(gs, coilyActive) {
             if (isValidPos(nr, nc)) {
                 avgTC += scoreLanding(gs, nr, nc);
                 avgTC += scoreCoilyProximity(gs, nr, nc, coilyR, coilyC);
+                avgTC += scoreEnemyProximity(gs, nr, nc);
             }
         }
 
@@ -727,7 +773,7 @@ var aiSamePosCount = 0; // frames spent on same tile
 var aiLastRemaining = 99; // cubes remaining last time we checked
 var aiNoProgressCount = 0; // moves without reducing remaining cubes
 var aiPosHistory = [];  // recent position history for oscillation detection
-var AI_HISTORY_LEN = 8; // how many positions to track
+var AI_HISTORY_LEN = 12; // how many positions to track
 
 function aiPickBestDir() {
     var coilyActive = false;
@@ -827,6 +873,39 @@ function aiPickBestDir() {
                 }
                 if (altDir) { result = altDir; aiPosHistory.length = 0; }
             }
+        }
+    }
+
+    // No-progress breaker: if we've made many moves without reducing remaining cubes,
+    // force a move toward an unfinished cube even if it means crossing completed ones
+    if (gs.lv >= 3 && aiNoProgressCount > 15 && result !== 'STAY') {
+        var dd3 = DIRS[result];
+        var dr3 = gs.player.row + dd3.dr, dc3 = gs.player.col + dd3.dc;
+        var destIsUnf3 = false;
+        for (var ufi = 0; ufi < gs.cubes.length; ufi++) {
+            if (gs.cubes[ufi].row === dr3 && gs.cubes[ufi].col === dc3 && gs.cubes[ufi].state < gs.tgt) {
+                destIsUnf3 = true; break;
+            }
+        }
+        if (!destIsUnf3) {
+            // Current move doesn't land on unfinished cube — find one that does
+            var bestProgDir = null, bestProgScore = -Infinity;
+            for (var pk = 0; pk < DIR_KEYS.length; pk++) {
+                if (!simCanMove(gs, DIR_KEYS[pk])) continue;
+                var pd = DIRS[DIR_KEYS[pk]];
+                var pnr = gs.player.row + pd.dr, pnc = gs.player.col + pd.dc;
+                if (!isValidPos(pnr, pnc)) continue;
+                for (var pui = 0; pui < gs.cubes.length; pui++) {
+                    if (gs.cubes[pui].row === pnr && gs.cubes[pui].col === pnc && gs.cubes[pui].state < gs.tgt) {
+                        var psc = aiMoveScores[DIR_KEYS[pk]];
+                        if (psc !== undefined && psc >= 0 && psc > bestProgScore) {
+                            bestProgScore = psc; bestProgDir = DIR_KEYS[pk];
+                        }
+                        break;
+                    }
+                }
+            }
+            if (bestProgDir) { result = bestProgDir; aiNoProgressCount = 0; aiPosHistory.length = 0; }
         }
     }
 
