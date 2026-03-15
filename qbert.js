@@ -58,8 +58,9 @@ function levelSpeed(rnd) {
 }
 
 function speedMultiplier(rnd) {
-    var gs = (typeof gameSpeed !== 'undefined') ? gameSpeed : 1.0;
-    return levelSpeed(rnd) * gs;
+    // Speed slider no longer affects internal timing — it controls ticks/frame.
+    // Only level-based speed scaling applies here.
+    return levelSpeed(rnd);
 }
 
 function enemyMoveInterval(type, sm) {
