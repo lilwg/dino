@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic  (v2 — oscillation fix + revert penalty)
-var AI_VERSION = 'v3-coily-safe';
+var AI_VERSION = 'v4-freeze-aware';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -483,6 +483,25 @@ function evalDiscLure() {
 // More samples when enemies are present for reliable safety checking.
 
 function unifiedPick(gs, coilyActive) {
+    // ── Freeze mode: enemies are frozen, skip all avoidance ─────────────
+    if (gs.freezeTimer > 0) {
+        // Enemies can't move or kill us — just follow the tour planner
+        var tourDir = dynamicTourMove(gs);
+        if (tourDir && simCanMove(gs, tourDir)) return tourDir;
+        // Fallback: pick best tour-cost direction
+        var bestFD = null, bestFC = Infinity;
+        for (var fk = 0; fk < DIR_KEYS.length; fk++) {
+            var fd = DIR_KEYS[fk];
+            if (!simCanMove(gs, fd)) continue;
+            var fc = simDeepClone(gs);
+            if (simStep(fc, fd)) {
+                var ftc = fc.levelWon ? -1000 : simTourCost(fc);
+                if (ftc < bestFC) { bestFC = ftc; bestFD = fd; }
+            }
+        }
+        if (bestFD) return bestFD;
+    }
+
     var dangerSet = buildDangerSet();  // non-Coily enemy danger zones
     // More simulation samples when enemies could kill us
     var hasEnemies = gs.enemies.length > 0;
@@ -541,7 +560,17 @@ function unifiedPick(gs, coilyActive) {
         var avgTC = survived > 0 ? totalTC / survived : Infinity;
 
         // STAY penalty — it makes no tour progress
-        if (dir === 'STAY') avgTC += 3;
+        // But reduce penalty when Coily is close: waiting lets Coily pass
+        if (dir === 'STAY') {
+            if (coilyR >= 0) {
+                var stayDist = Math.abs(coilyR - gs.player.row) + Math.abs(coilyC - gs.player.col);
+                if (stayDist <= 2) avgTC += 0;       // Coily very close — stay is free
+                else if (stayDist <= 3) avgTC += 1;   // Coily nearby — small penalty
+                else avgTC += 3;
+            } else {
+                avgTC += 3;
+            }
+        }
 
         // Bonus/penalty for what we land on
         if (dir !== 'STAY') {
