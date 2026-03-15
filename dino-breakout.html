@@ -97,7 +97,7 @@
     var BRICK_LEFT = (CW - COLS * (BRICK_W + BRICK_GAP) + BRICK_GAP) / 2;
     var ROW_TYPES = ['PTERO', 'PTERO', 'PTERO', 'PTERO', 'CACTUS', 'CACTUS', 'CACTUS', 'CACTUS'];
     var ROW_POINTS = [30, 30, 25, 25, 20, 20, 15, 15];
-    var ROW_COLORS = ['#e03030', '#e03030', '#e08020', '#e08020', '#e0c020', '#e0c020', '#30a030', '#30a030'];
+    var ROW_COLORS = ['#e03030', '#e03030', '#e08020', '#e08020', '#30a030', '#30a030', '#e0c020', '#e0c020'];
     var MAX_LIVES = 3;
     var FRAME_SKIP = 3;
 
@@ -2169,6 +2169,15 @@
             playCtx.fillStyle = '#fff';
             playCtx.fillRect(0, 0, CW, CH);
             playCtx.globalCompositeOperation = 'source-over';
+            // Redraw brick colors so they don't invert at night
+            for (var br_r = 0; br_r < ROWS; br_r++) {
+                for (var br_c = 0; br_c < COLS; br_c++) {
+                    if (!playGame.bricks[br_r][br_c]) continue;
+                    var brc = brickRect(br_r, br_c);
+                    playCtx.fillStyle = ROW_COLORS[br_r];
+                    playCtx.fillRect(brc.x, brc.y, brc.w, brc.h);
+                }
+            }
         }
         // Draw viz AFTER inversion so colors stay correct
         if (aiMode === 'rules' && breakoutSimAI._vizEnabled) drawBreakoutSimViz(playCtx);
