@@ -21,11 +21,6 @@
                 <button class="si-btn" onclick="restartGame()">Restart</button>
                 <button class="si-btn" id="pause-btn" onclick="togglePause()">Pause</button>
                 <button class="si-btn" id="fs-btn" onclick="toggleFullscreen()">Fullscreen</button>
-                <span class="si-speed" id="diff-wrap">
-                    <label for="diff-slider">Difficulty</label>
-                    <input type="range" id="diff-slider" min="0" max="100" value="50" oninput="setDifficulty(this.value)">
-                    <span id="diff-label">50</span>
-                </span>
                 <label style="display:inline-flex;align-items:center;gap:4px;margin-left:8px;font-size:12px;color:#535353;">
                     Speed <input type="range" id="speed-slider" min="1" max="8" step="1" value="1" style="width:80px;" oninput="setGameSpeed(parseFloat(this.value))">
                     <span id="speed-label">1x</span>
