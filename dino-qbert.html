@@ -1323,9 +1323,15 @@ function drawHUD() {
     ctx.textAlign = 'left';
     ctx.fillText('HI ' + padScore(Math.max(score, hiScore)), 10, 18);
     var best = bestHops[bestHopsKey()];
-    ctx.font = '600 18px "Courier New",monospace';
-    ctx.fillText('BEST ' + (best ? best : '\u221E'), 10, 36);
-    ctx.font = '600 13px "Courier New",monospace';
+    if (best) {
+        ctx.fillText('BEST ' + best, 10, 34);
+    } else {
+        ctx.fillText('BEST ', 10, 34);
+        var bestW = ctx.measureText('BEST ').width;
+        ctx.font = '600 20px "Courier New",monospace';
+        ctx.fillText('\u221E', 10 + bestW, 34);
+        ctx.font = '600 13px "Courier New",monospace';
+    }
 
     // Top-right: lives, then score + hops below
     for (var i = 0; i < lives; i++) {
