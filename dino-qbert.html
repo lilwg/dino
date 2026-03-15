@@ -1323,7 +1323,9 @@ function drawHUD() {
     ctx.textAlign = 'left';
     ctx.fillText('HI ' + padScore(Math.max(score, hiScore)), 10, 18);
     var best = bestHops[bestHopsKey()];
-    ctx.fillText('BEST ' + (best ? best : '\u221E'), 10, 34);
+    ctx.font = '600 18px "Courier New",monospace';
+    ctx.fillText('BEST ' + (best ? best : '\u221E'), 10, 36);
+    ctx.font = '600 13px "Courier New",monospace';
 
     // Top-right: lives, then score + hops below
     for (var i = 0; i < lives; i++) {
