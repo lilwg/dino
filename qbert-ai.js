@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic  (v2 — oscillation fix + revert penalty)
-var AI_VERSION = 'v2-oscfix';
+var AI_VERSION = 'v3-coily-safe';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -486,7 +486,23 @@ function unifiedPick(gs, coilyActive) {
     var dangerSet = buildDangerSet();  // non-Coily enemy danger zones
     // More simulation samples when enemies could kill us
     var hasEnemies = gs.enemies.length > 0;
-    var SAMPLES = coilyActive ? 16 : (hasEnemies ? 6 : 4);
+    var SAMPLES = coilyActive ? 24 : (hasEnemies ? 6 : 4);
+
+    // Find Coily position for proximity-aware scoring
+    var coilyR = -1, coilyC = -1;
+    if (coilyActive) {
+        for (var ci = 0; ci < gs.enemies.length; ci++) {
+            var ce = gs.enemies[ci];
+            if (ce.type === 'coily') {
+                var cp = enemyEffectivePos(ce);
+                coilyR = cp.row; coilyC = cp.col; break;
+            }
+            if (ce.type === 'egg' && (ce.willHatch || (ce.hops || 0) >= 5)) {
+                var ep = enemyEffectivePos(ce);
+                coilyR = ep.row; coilyC = ep.col; break;
+            }
+        }
+    }
 
     // Disc lure — use it if Coily is active and the lure move is safe
     if (coilyActive) {
@@ -552,6 +568,24 @@ function unifiedPick(gs, coilyActive) {
                         break;
                     }
                 }
+                // Coily proximity penalty: prefer moves that increase distance from Coily
+                if (coilyR >= 0) {
+                    var curDist = Math.abs(coilyR - gs.player.row) + Math.abs(coilyC - gs.player.col);
+                    var newDist = Math.abs(coilyR - nr) + Math.abs(coilyC - nc);
+                    if (newDist < curDist) avgTC += 6;  // moving toward Coily
+                    else if (newDist > curDist) avgTC -= 3;  // moving away from Coily
+                    // Extra penalty for getting very close
+                    if (newDist <= 1) avgTC += 8;
+                    else if (newDist <= 2) avgTC += 3;
+                    // Escape route bonus: prefer tiles with more valid exits
+                    var exits = 0;
+                    for (var ek = 0; ek < DIR_KEYS.length; ek++) {
+                        var edk = DIRS[DIR_KEYS[ek]];
+                        if (isValidPos(nr + edk.dr, nc + edk.dc)) exits++;
+                    }
+                    if (exits <= 1) avgTC += 6;  // dead-end penalty
+                    else if (exits <= 2) avgTC += 2;  // limited options
+                }
                 // Bonus for catching green balls and slicks
                 for (var ei = 0; ei < gs.enemies.length; ei++) {
                     var e = gs.enemies[ei];
@@ -581,6 +615,31 @@ function unifiedPick(gs, coilyActive) {
             var d2 = DIRS[dir];
             var nr2 = gs.player.row + d2.dr, nc2 = gs.player.col + d2.dc;
             if (dangerSet[nr2 + ',' + nc2]) inDanger = true;
+        }
+
+        // 2-hop safety: when Coily is close, verify the move has a safe follow-up
+        if (survived === SAMPLES && coilyR >= 0 && dir !== 'STAY') {
+            var curCoilyDist = Math.abs(coilyR - gs.player.row) + Math.abs(coilyC - gs.player.col);
+            if (curCoilyDist <= 4) {
+                // Check if the resulting position has at least one safe 2nd move
+                var has2ndSafe = false;
+                var hop2Samples = 4;
+                for (var d2k = 0; d2k < DIR_KEYS_WITH_STAY.length; d2k++) {
+                    var d2dir = DIR_KEYS_WITH_STAY[d2k];
+                    var d2surv = 0;
+                    for (var d2s = 0; d2s < hop2Samples; d2s++) {
+                        var d2c = simDeepClone(gs);
+                        if (simStep(d2c, dir) && simStep(d2c, d2dir)) d2surv++;
+                    }
+                    if (d2surv === hop2Samples) { has2ndSafe = true; break; }
+                }
+                if (!has2ndSafe) {
+                    // This move leads to a trapped position — demote it
+                    avgTC += 20;
+                    survived = 0; // treat as unsafe
+                    aiMoveScores[dir] = -5000;
+                }
+            }
         }
 
         if (survived === SAMPLES) {
