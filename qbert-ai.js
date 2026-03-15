@@ -529,7 +529,19 @@ function mode2Pick(gs) {
 
         // Penalize STAY: it makes no progress, so treat it as slightly worse
         // unless movement is genuinely more dangerous
-        if (dir === 'STAY') avgTC += 3;
+        if (dir === 'STAY') avgTC += 5;
+
+        // Bonus for moves that immediately land on an unfinished cube
+        if (dir !== 'STAY') {
+            var d = DIRS[dir];
+            var nr = gs.player.row + d.dr, nc = gs.player.col + d.dc;
+            for (var ci2 = 0; ci2 < gs.cubes.length; ci2++) {
+                if (gs.cubes[ci2].row === nr && gs.cubes[ci2].col === nc) {
+                    if (gs.cubes[ci2].state < gs.tgt) avgTC -= 8;
+                    break;
+                }
+            }
+        }
 
         // Export for viz: survival rate (0-1), negative avgTC so higher=better
         aiMoveScores[dir] = survRate >= 1 ? (10000 - avgTC) : (survRate * 100 - 100);
@@ -541,8 +553,8 @@ function mode2Pick(gs) {
         for (var ci = 0; ci < gs.cubes.length; ci++)
             if (gs.cubes[ci].state < tgt) remaining++;
         // survThresh: minimum survival rate gap to override tour cost advantage
-        // With 28 cubes left: 0.05 (very safe). With 1 cube left: ~0.25 (accept more risk)
-        var survThresh = 0.05 + 0.20 * Math.max(0, 1 - remaining / 10);
+        // With many cubes: 0.08 (fairly safe). With few cubes: up to 0.35 (accept more risk to finish)
+        var survThresh = 0.08 + 0.27 * Math.max(0, 1 - remaining / 8);
 
         if (survRate > bestSurv + survThresh ||
             (survRate > bestSurv - 1e-9 && avgTC < bestTC)) {
@@ -610,14 +622,14 @@ function mcPickGreedy(gs) {
             }
         }
         if (danger) score -= 100;
-        // Cube state scoring: prefer unfinished cubes, penalize reverting completed ones
+        // Cube state scoring: strongly prefer unfinished cubes to drive completion
         for (var ci = 0; ci < gs.cubes.length; ci++) {
             if (gs.cubes[ci].row === nr && gs.cubes[ci].col === nc) {
                 if (gs.cubes[ci].state < gs.tgt) {
-                    score += 10;
+                    score += 20;
                 } else if (gs.lv >= 3) {
                     // On revert levels, heavily penalize stepping on completed cubes
-                    score -= 8;
+                    score -= 12;
                 }
                 break;
             }
@@ -629,8 +641,8 @@ function mcPickGreedy(gs) {
             if (isValidPos(nr + dk.dr, nc + dk.dc)) neighbors++;
         }
         score += neighbors;
-        // STAY penalty
-        if (dir === 'STAY') score -= 1;
+        // STAY penalty — staying makes no progress
+        if (dir === 'STAY') score -= 3;
 
         if (score > bestScore) { bestScore = score; bestDir = dir; }
     }
