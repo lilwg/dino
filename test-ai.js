@@ -182,7 +182,7 @@ function runGame(maxRounds, verbose) {
     for (; round <= maxRounds; round++) {
         initRound();
         var moveNum = 0;
-        var maxFrames = 200 * 60;
+        var maxFrames = 400 * 60;
 
         if (verbose) {
             console.log('\n' + '='.repeat(50));
