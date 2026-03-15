@@ -35,6 +35,10 @@
                     Difficulty: <input type="range" id="play-diff" min="1" max="10" value="1">
                     <span id="play-diff-val">1</span>
                 </div>
+                <label style="display:inline-flex;align-items:center;gap:4px;margin-left:8px;font-size:12px;color:#535353;">
+                    Speed <input type="range" id="speed-slider" min="1" max="8" step="1" value="1" style="width:80px;" oninput="setGameSpeed(parseFloat(this.value))">
+                    <span id="speed-label">1x</span>
+                </label>
             </div>
 
             <p class="si-help" style="text-align: center;">&uarr; / W up &nbsp;|&nbsp; &darr; / S down &nbsp;|&nbsp; R restart &nbsp;|&nbsp; Touch: drag</p>
@@ -84,6 +88,7 @@
     // =================================================================
     //  SHARED CONSTANTS & SPRITES
     // =================================================================
+    var gameSpeed = 1;
     var CW = 600, CH = 400;
     var PAD_W = 8, PAD_H = 60;
     var AGENT_X = 20, OPP_X = CW - 20 - PAD_W;
@@ -744,6 +749,11 @@
     }
     placeStars();
 
+    window.setGameSpeed = function (v) {
+        gameSpeed = v;
+        document.getElementById('speed-label').textContent = v + 'x';
+    };
+
     window.resetPlayGame = function () {
         playGame.reset(); playOver = false; gameStarted = false; paused = false;
         inverted = false; dayTimer = 0; nightOpacity = 0; placeStars();
@@ -992,7 +1002,7 @@
     }
 
     function playLoop() {
-        for (var i = 0; i < FRAME_SKIP; i++) playUpdate();
+        for (var i = 0; i < FRAME_SKIP * gameSpeed; i++) playUpdate();
         playDraw();
         requestAnimationFrame(playLoop);
     }

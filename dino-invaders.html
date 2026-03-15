@@ -34,6 +34,10 @@
                         oninput="setDifficulty(parseInt(this.value))">
                     <span id="difficulty-val">Normal</span>
                 </div>
+                <label style="display:inline-flex;align-items:center;gap:4px;margin-left:8px;font-size:12px;color:#535353;">
+                    Speed <input type="range" id="speed-slider" min="1" max="8" step="1" value="1" style="width:80px;" oninput="setGameSpeed(parseFloat(this.value))">
+                    <span id="speed-label">1x</span>
+                </label>
             </div>
 
             <p class="si-help" style="text-align: center;">&larr; / &rarr; move &nbsp;|&nbsp; Space fire &nbsp;|&nbsp; R restart &nbsp;|&nbsp; Touch: drag &amp; tap</p>
@@ -405,6 +409,11 @@
     window.setDifficulty = function (level) {
         game.difficultyLevel = level;
         document.getElementById('difficulty-val').textContent = DIFFICULTY_NAMES[level - 1];
+    };
+
+    window.setGameSpeed = function (v) {
+        game.speedMultiplier = v;
+        document.getElementById('speed-label').textContent = v + 'x';
     };
 
     // Hook into the game's update cycle via aiAgent interface
