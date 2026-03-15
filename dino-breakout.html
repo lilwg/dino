@@ -209,9 +209,7 @@
     })();
 
     function getDifficulty() {
-        var d = parseInt(document.getElementById('play-diff').value) || 3;
-        document.getElementById('play-diff-val').textContent = d;
-        return d;
+        return 3;
     }
     function getBallSpeedMult() { return 1 + (getDifficulty() - 1) * 0.35; }
     function getPadWidth() { return Math.max(30, PAD_W_BASE - (getDifficulty() - 1) * 3); }
@@ -2810,11 +2808,7 @@
         document.getElementById('human-btn').classList.toggle('active', mode === 'off');
         // rules-btn active state handled by setAIMode
 
-        // Set difficulty defaults: Human=1, AI=6
-        var slider = document.getElementById('play-diff');
-        var val = mode === 'rules' ? 6 : 1;
-        slider.value = val;
-        document.getElementById('play-diff-val').textContent = val;
+        // Difficulty slider removed — fixed at default
 
         // Viz on by default when entering AI mode
         if (mode === 'rules' && window.breakoutSimAI) {
@@ -2840,10 +2834,7 @@
         origResetPlayGame();
     };
 
-    // --- Slider live update ---
-    document.getElementById('play-diff').addEventListener('input', function () {
-        document.getElementById('play-diff-val').textContent = this.value;
-    });
+    // --- Slider live update (difficulty slider removed) ---
 
     // --- R key restart (enhanced) ---
     document.addEventListener('keydown', function (e) {

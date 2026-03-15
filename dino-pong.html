@@ -131,16 +131,11 @@
     };
 
     function getOppSpeed() {
-        var d = parseInt(document.getElementById('play-diff').value) || 1;
-        document.getElementById('play-diff-val').textContent = d;
-        // Difficulty 1=slow (1.8), 5=same speed as player (5), 10=very fast (9)
-        return 1 + d * 0.8;
+        return 1 + 1 * 0.8; // fixed at difficulty 1
     }
 
     function getBallSpeedMult() {
-        var d = parseInt(document.getElementById('play-diff').value) || 1;
-        // diff 1=1.0x, 6=1.4x, 10=1.72x
-        return 1 + (d - 1) * 0.08;
+        return 1; // fixed at difficulty 1
     }
 
     PongGame.prototype.step = function (action) {
@@ -2136,11 +2131,7 @@
         document.getElementById('human-btn').classList.toggle('active', mode === 'off');
         // rules-btn active state handled by setAIMode
 
-        // Set difficulty defaults: Human=1, AI=6
-        var slider = document.getElementById('play-diff');
-        var val = mode === 'rules' ? 6 : 1;
-        slider.value = val;
-        document.getElementById('play-diff-val').textContent = val;
+        // Difficulty slider removed — fixed at default
 
         // Viz on by default when entering AI mode
         if (mode === 'rules' && window.pongSimAI) {
@@ -2166,10 +2157,7 @@
         origResetPlayGame();
     };
 
-    // --- Slider live update ---
-    document.getElementById('play-diff').addEventListener('input', function () {
-        document.getElementById('play-diff-val').textContent = this.value;
-    });
+    // --- Slider live update (difficulty slider removed) ---
 
     // --- R key restart (enhanced) ---
     document.addEventListener('keydown', function (e) {
