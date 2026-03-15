@@ -161,8 +161,7 @@ function buildDangerMaps() {
         if (e.type === 'spawn-timer') {
             var sm = speedMultiplier();
             var fph = Math.ceil(1 / (0.028 * sm));
-            var gs2 = (typeof gameSpeed !== 'undefined') ? gameSpeed : 1.0;
-            var tickPerHop = fph * gs2;
+            var tickPerHop = fph;
             var hopsUntil = e.timer > 20 ? Math.ceil(e.timer / tickPerHop) : e.timer;
             if (hopsUntil <= 2) {
                 var ft = e.forcedType;
