@@ -205,8 +205,9 @@ var aiDetailPath = [], aiTourDots = [];
 function aiTourInit() { aiLastRemaining = 99; aiNoProgressCount = 0; aiStayCount = 0; aiSamePosCount = 0; aiPosHistory = []; }
 
 // Dijkstra tour planner — nearest unfinished cube via weighted BFS
-// On toggle levels (lv3+), prefers targets reachable without crossing completed cubes
-// and targets with adjacent unfinished neighbors (sweep-friendly)
+// On toggle levels (lv3+), uses cluster-based sweep planning:
+// finds connected components of unfinished cubes and targets the nearest
+// cluster's closest member, preferring paths that don't cross completed cubes.
 function dynamicTourMove(gs) {
     var lv = gs.lv;
     var tgt = gs.tgt;
@@ -225,11 +226,40 @@ function dynamicTourMove(gs) {
 
     var penalty = revertPenalty(lv, gs.cubes, tgt);
 
-    // On toggle levels, count how many completed cubes each path crosses
-    // and give extra bonus for reaching targets via unfinished-only paths
+    // On toggle levels, find connected clusters of unfinished cubes
+    // and give bonus to targets in larger clusters (more sweep potential)
+    var clusterSize = {};  // key -> cluster size
+    if (lv >= 3 && unfinished.length > 1) {
+        // BFS to find connected components among unfinished cubes
+        var visited = {};
+        for (var ci = 0; ci < unfinished.length; ci++) {
+            var ck = unfinished[ci].row + ',' + unfinished[ci].col;
+            if (visited[ck]) continue;
+            // BFS from this unfinished cube
+            var cluster = [ck];
+            visited[ck] = true;
+            var qi2 = 0;
+            while (qi2 < cluster.length) {
+                var parts = cluster[qi2].split(',');
+                var cr = parseInt(parts[0]), cc = parseInt(parts[1]);
+                for (var ck2 = 0; ck2 < 4; ck2++) {
+                    var cdk = DIRS[DIR_KEYS[ck2]];
+                    var cnk = (cr + cdk.dr) + ',' + (cc + cdk.dc);
+                    if (!visited[cnk] && unfinishedSet[cnk]) {
+                        visited[cnk] = true;
+                        cluster.push(cnk);
+                    }
+                }
+                qi2++;
+            }
+            for (var cj = 0; cj < cluster.length; cj++)
+                clusterSize[cluster[cj]] = cluster.length;
+        }
+    }
+
     var startKey = gs.player.row + ',' + gs.player.col;
     var dist = {}; dist[startKey] = 0;
-    var reverts = {}; reverts[startKey] = 0;  // completed cubes crossed
+    var reverts = {}; reverts[startKey] = 0;
     var prev = {}; prev[startKey] = null;
     var pq = [{ row: gs.player.row, col: gs.player.col, cost: 0 }];
     var bestTarget = null, bestCost = Infinity;
@@ -252,10 +282,14 @@ function dynamicTourMove(gs) {
             else if (isBottom && isEdge) adjCost -= 1.5;
             else if (isBottom || isEdge) adjCost -= 0.5;
             // Big bonus for zero-revert paths — reached without crossing completed cubes
-            if (lv >= 3 && (reverts[curKey] || 0) === 0) adjCost -= 3;
+            if (lv >= 3 && (reverts[curKey] || 0) === 0) adjCost -= 4;
+            // Cluster bonus: prefer targets in larger connected groups (sweep-friendly)
+            if (lv >= 3 && clusterSize[curKey]) {
+                adjCost -= Math.min(clusterSize[curKey], 6) * 0.8;
+            }
             if (adjCost < bestCost) { bestCost = adjCost; bestTarget = { row: cur.row, col: cur.col }; }
         }
-        if (bestTarget && cur.cost > bestCost + 2) break;
+        if (bestTarget && cur.cost > bestCost + 3) break;
 
         for (var k = 0; k < 4; k++) {
             var dk = DIRS[DIR_KEYS[k]];
@@ -264,11 +298,17 @@ function dynamicTourMove(gs) {
             var nk = nr + ',' + nc;
             var isCompleted = !!completedSet[nk];
             var moveCost = 1 + (isCompleted ? penalty : 0);
-            // Extra cost for completed apex and corners — dead ends with revert risk
-            if (isCompleted) {
+            // On toggle levels, penalize completed dead-end tiles
+            if (isCompleted && lv >= 3) {
                 var isApex = (nr === 0 && nc === 0);
                 var isCrnr = (nr === ROWS - 1 && (nc === 0 || nc === ROWS - 1));
-                if (isApex || isCrnr) moveCost += 3;
+                var isEdgeT = (nc === 0 || nc === nr) && !isApex && !isCrnr;
+                if (isApex || isCrnr) moveCost += 10;  // strongly avoid
+                else if (isEdgeT) moveCost += 5;        // discouraged
+            } else if (isCompleted) {
+                var isApex2 = (nr === 0 && nc === 0);
+                var isCrnr2 = (nr === ROWS - 1 && (nc === 0 || nc === ROWS - 1));
+                if (isApex2 || isCrnr2) moveCost += 4;
             }
             var newCost = cur.cost + moveCost;
             if (dist[nk] === undefined || newCost < dist[nk]) {
@@ -401,6 +441,22 @@ function evalDiscLure() {
 
 // ─── Scoring helpers ─────────────────────────────────────────────────────────
 
+// Check if a tile is a dead-end (apex, corner, or edge) that's completed on toggle levels
+// These tiles should be avoided because stepping on them reverts progress and leaves you trapped
+function isDeadEndCompleted(gs, r, c) {
+    if (gs.lv < 3) return false;
+    var isApex = (r === 0 && c === 0);
+    var isCorner = (r === ROWS - 1 && (c === 0 || c === ROWS - 1));
+    var isEdge = (c === 0 || c === r) && !isApex && !isCorner;
+    if (!isApex && !isCorner && !isEdge) return false;
+    // Check if this tile is completed
+    for (var i = 0; i < gs.cubes.length; i++) {
+        if (gs.cubes[i].row === r && gs.cubes[i].col === c)
+            return gs.cubes[i].state >= gs.tgt;
+    }
+    return false;
+}
+
 // Score adjustment for landing on a tile (cube progress, reverts, enemy catches)
 function scoreLanding(gs, nr, nc) {
     var adj = 0;
@@ -420,9 +476,13 @@ function scoreLanding(gs, nr, nc) {
                 if (gs.cubes[uc].state < gs.tgt) unfCount++;
             var revertPen = unfCount <= 3 ? 2 : (unfCount <= 5 ? 4 : 6);
             adj += revertPen;
+            // Massive penalty for reverting dead-end tiles (apex, corners, edges)
+            // These cost 2+ extra hops to fix and trap you in a dead end
             var isApex = (nr === 0 && nc === 0);
             var isCrnr = (nr === ROWS - 1 && (nc === 0 || nc === ROWS - 1));
-            if (isApex || isCrnr) adj += revertPen;
+            var isEdgeT = (nc === 0 || nc === nr) && !isApex && !isCrnr;
+            if (isApex || isCrnr) adj += 12;  // strongly avoid completed apex/corners
+            else if (isEdgeT) adj += 8;        // avoid completed edges
         }
         break;
     }
@@ -477,17 +537,18 @@ function scoreEnemyProximity(gs, nr, nc) {
         else if (dist <= 2) { adj += 2; nearbyEnemies++; }
     }
     // Trap avoidance: penalize low-exit tiles when enemies are nearby
-    if (nearbyEnemies > 0) {
-        var exits = 0;
-        for (var ek = 0; ek < DIR_KEYS.length; ek++) {
-            var edk = DIRS[DIR_KEYS[ek]];
-            if (isValidPos(nr + edk.dr, nc + edk.dc)) exits++;
-        }
-        if (exits <= 1) adj += 6;  // apex or corner with enemies nearby
-        else if (exits <= 2) adj += 2;
-        // Multiple enemies converging — extra danger
-        if (nearbyEnemies >= 2) adj += 4;
+    var exits = 0;
+    for (var ek = 0; ek < DIR_KEYS.length; ek++) {
+        var edk = DIRS[DIR_KEYS[ek]];
+        if (isValidPos(nr + edk.dr, nc + edk.dc)) exits++;
     }
+    if (nearbyEnemies > 0) {
+        if (exits <= 1) adj += 8;  // apex or corner with enemies nearby
+        else if (exits <= 2) adj += 3;
+        if (nearbyEnemies >= 2) adj += 5;
+    }
+    // General: penalize apex and bottom corners even without enemies (dead ends)
+    if (exits <= 1 && gs.enemies.length > 0) adj += 3;
     return adj;
 }
 
@@ -799,6 +860,9 @@ function aiPickBestDir() {
     if (curRemaining < aiLastRemaining) {
         aiLastRemaining = curRemaining;
         aiNoProgressCount = 0;
+    } else if (gs.lv >= 3 && curRemaining > aiLastRemaining) {
+        // Toggle level: remaining went UP (we reverted cubes) — count faster
+        aiNoProgressCount += 2;
     } else {
         aiNoProgressCount++;
     }
@@ -825,8 +889,20 @@ function aiPickBestDir() {
         var h = aiPosHistory;
         var len = h.length;
         var oscillating = false;
+        // A-B-A pattern (2-cycle)
         if (len >= 3 && h[len-1] === h[len-3] && h[len-1] !== h[len-2]) oscillating = true;
+        // A-B-C-A-B-C pattern (3-cycle)
         if (len >= 6 && h[len-1] === h[len-4] && h[len-2] === h[len-5] && h[len-3] === h[len-6]) oscillating = true;
+        // A-B-C-D-A-B-C-D pattern (4-cycle)
+        if (len >= 8 && h[len-1] === h[len-5] && h[len-2] === h[len-6] && h[len-3] === h[len-7] && h[len-4] === h[len-8]) oscillating = true;
+        // General: count unique tiles in recent history — if very few, we're looping
+        if (len >= 8) {
+            var uniqueTiles = {};
+            for (var ui = len - 8; ui < len; ui++) uniqueTiles[h[ui]] = true;
+            var uniqueCount = 0;
+            for (var uk in uniqueTiles) uniqueCount++;
+            if (uniqueCount <= 3) oscillating = true;
+        }
 
         if (oscillating) {
             var d = DIRS[result];
@@ -878,7 +954,7 @@ function aiPickBestDir() {
 
     // No-progress breaker: if we've made many moves without reducing remaining cubes,
     // force a move toward an unfinished cube even if it means crossing completed ones
-    if (gs.lv >= 3 && aiNoProgressCount > 15 && result !== 'STAY') {
+    if (gs.lv >= 3 && aiNoProgressCount > 10 && result !== 'STAY') {
         var dd3 = DIRS[result];
         var dr3 = gs.player.row + dd3.dr, dc3 = gs.player.col + dd3.dc;
         var destIsUnf3 = false;
