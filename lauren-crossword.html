@@ -1,0 +1,682 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Lauren Crossword Puzzle</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #1a1a2e;
+    color: #eee;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    overflow-x: hidden;
+  }
+
+  h1 {
+    font-size: 1.6rem;
+    margin: 16px 0 4px;
+    text-align: center;
+    background: linear-gradient(135deg, #e879a8, #a78bfa);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .subtitle {
+    font-size: 0.85rem;
+    color: #888;
+    margin-bottom: 12px;
+    text-align: center;
+  }
+
+  #timer-bar {
+    font-size: 0.85rem;
+    color: #a78bfa;
+    margin-bottom: 8px;
+  }
+
+  #grid-wrapper {
+    position: relative;
+    display: inline-block;
+    margin: 0 auto;
+  }
+
+  #crossword-grid {
+    display: grid;
+    gap: 2px;
+    margin: 0 auto;
+  }
+
+  .cell {
+    width: 100%;
+    aspect-ratio: 1;
+    position: relative;
+    background: #16213e;
+    border: 2px solid #333;
+    border-radius: 3px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+  }
+
+  .cell.black {
+    background: #0a0a1a;
+    border-color: #0a0a1a;
+    cursor: default;
+  }
+
+  .cell.selected {
+    border-color: #a78bfa;
+    background: #1e2a5e;
+  }
+
+  .cell.highlighted {
+    border-color: #6c5ce7;
+    background: #16213e;
+  }
+
+  .cell.correct {
+    background: #1a3a2a;
+    border-color: #2ecc71;
+  }
+
+  .cell-number {
+    position: absolute;
+    top: 1px;
+    left: 2px;
+    font-size: 0.55rem;
+    color: #888;
+    line-height: 1;
+    pointer-events: none;
+  }
+
+  .cell-letter {
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: #eee;
+    text-transform: uppercase;
+    pointer-events: none;
+  }
+
+  #clues-section {
+    width: 100%;
+    max-width: 500px;
+    padding: 12px 16px 100px;
+  }
+
+  .clue-direction {
+    font-size: 1rem;
+    font-weight: 700;
+    color: #a78bfa;
+    margin: 12px 0 6px;
+  }
+
+  .clue-item {
+    font-size: 0.85rem;
+    padding: 6px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.15s;
+    line-height: 1.35;
+  }
+
+  .clue-item:hover {
+    background: #16213e;
+  }
+
+  .clue-item.active {
+    background: #1e2a5e;
+    color: #a78bfa;
+  }
+
+  .clue-item.solved {
+    color: #2ecc71;
+    text-decoration: line-through;
+    opacity: 0.7;
+  }
+
+  .clue-num {
+    font-weight: 700;
+    margin-right: 4px;
+  }
+
+  /* Mobile keyboard area */
+  #keyboard {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: #111;
+    padding: 6px 4px;
+    display: none;
+    flex-direction: column;
+    gap: 4px;
+    z-index: 100;
+  }
+
+  #keyboard.visible { display: flex; }
+
+  .kb-row {
+    display: flex;
+    justify-content: center;
+    gap: 3px;
+  }
+
+  .kb-key {
+    min-width: 30px;
+    height: 42px;
+    border: none;
+    border-radius: 5px;
+    background: #2a2a3e;
+    color: #eee;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: 1;
+    max-width: 38px;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .kb-key:active { background: #6c5ce7; }
+
+  .kb-key.wide {
+    max-width: 60px;
+    font-size: 0.75rem;
+  }
+
+  /* Win overlay */
+  #win-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.85);
+    z-index: 200;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 20px;
+  }
+
+  #win-overlay.show { display: flex; }
+
+  #win-overlay h2 {
+    font-size: 2rem;
+    background: linear-gradient(135deg, #e879a8, #a78bfa);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: 10px;
+  }
+
+  #win-overlay p { color: #aaa; font-size: 1rem; margin: 4px 0; }
+
+  #win-overlay button {
+    margin-top: 20px;
+    padding: 12px 32px;
+    border: none;
+    border-radius: 8px;
+    background: linear-gradient(135deg, #e879a8, #a78bfa);
+    color: #fff;
+    font-size: 1rem;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .confetti-canvas {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 201;
+  }
+
+  @media (min-width: 600px) {
+    .cell-number { font-size: 0.65rem; }
+    .cell-letter { font-size: 1.3rem; }
+  }
+</style>
+</head>
+<body>
+
+<h1>Lauren Crossword</h1>
+<p class="subtitle">How well do you know Lauren?</p>
+<div id="timer-bar">0:00</div>
+
+<div id="grid-wrapper">
+  <div id="crossword-grid"></div>
+</div>
+
+<div id="clues-section">
+  <div class="clue-direction">Across</div>
+  <div id="across-clues"></div>
+  <div class="clue-direction">Down</div>
+  <div id="down-clues"></div>
+</div>
+
+<div id="keyboard">
+  <div class="kb-row">
+    <button class="kb-key">Q</button><button class="kb-key">W</button><button class="kb-key">E</button>
+    <button class="kb-key">R</button><button class="kb-key">T</button><button class="kb-key">Y</button>
+    <button class="kb-key">U</button><button class="kb-key">I</button><button class="kb-key">O</button>
+    <button class="kb-key">P</button>
+  </div>
+  <div class="kb-row">
+    <button class="kb-key">A</button><button class="kb-key">S</button><button class="kb-key">D</button>
+    <button class="kb-key">F</button><button class="kb-key">G</button><button class="kb-key">H</button>
+    <button class="kb-key">J</button><button class="kb-key">K</button><button class="kb-key">L</button>
+  </div>
+  <div class="kb-row">
+    <button class="kb-key wide" data-key="DEL">DEL</button>
+    <button class="kb-key">Z</button><button class="kb-key">X</button><button class="kb-key">C</button>
+    <button class="kb-key">V</button><button class="kb-key">B</button><button class="kb-key">N</button>
+    <button class="kb-key">M</button>
+    <button class="kb-key wide" data-key="ENTER">&#x2713;</button>
+  </div>
+</div>
+
+<div id="win-overlay">
+  <h2>You did it!</h2>
+  <p id="win-msg">You really know Lauren!</p>
+  <p id="win-time"></p>
+  <button onclick="location.reload()">Play Again</button>
+</div>
+
+<canvas class="confetti-canvas" id="confetti-canvas"></canvas>
+
+<script>
+// ========== PUZZLE DATA ==========
+const PUZZLES = [
+  {
+    // 13x13 grid
+    cols: 13,
+    rows: 13,
+    words: [
+      // Across
+      { word: "LAUREN",    clue: "The star of this puzzle!",                         row: 0, col: 3, dir: "across", num: 1 },
+      { word: "SMILE",     clue: "Lauren's is absolutely contagious",                row: 2, col: 0, dir: "across", num: 2 },
+      { word: "KINDNESS",  clue: "The trait Lauren is most known for",               row: 4, col: 2, dir: "across", num: 5 },
+      { word: "LOYAL",     clue: "Lauren sticks by her friends — she's incredibly ___", row: 6, col: 0, dir: "across", num: 7 },
+      { word: "CREATIVE",  clue: "Lauren always has ___ ideas",                      row: 8, col: 3, dir: "across", num: 9 },
+      { word: "BRIGHT",    clue: "Lauren's future is looking ___",                   row: 10, col: 1, dir: "across", num: 11 },
+      { word: "LAUGH",     clue: "Lauren's ___ can light up a whole room",           row: 12, col: 4, dir: "across", num: 13 },
+      // Down
+      { word: "SPARKLE",   clue: "What Lauren's eyes do when she's excited",         row: 0, col: 3, dir: "down", num: 1 },
+      { word: "MAGIC",     clue: "Lauren brings a little ___ wherever she goes",     row: 0, col: 8, dir: "down", num: 3 },
+      { word: "HEART",     clue: "Lauren has a huge ___",                            row: 2, col: 4, dir: "down", num: 4 },
+      { word: "DANCING",   clue: "Lauren loves ___",                                 row: 4, col: 6, dir: "down", num: 6 },
+      { word: "VIBRANT",   clue: "Lauren's personality is so ___",                   row: 6, col: 0, dir: "down", num: 7 },
+      { word: "CLEVER",    clue: "Lauren always finds the ___ solution",             row: 6, col: 4, dir: "down", num: 8 },
+      { word: "TALENT",    clue: "Lauren has no shortage of ___",                    row: 4, col: 10, dir: "down", num: 10 },
+      { word: "RADIANT",   clue: "How Lauren looks on any given day",                row: 6, col: 2, dir: "down", num: 12 },
+    ]
+  }
+];
+
+// ========== GAME STATE ==========
+const puzzle = PUZZLES[0];
+const { rows, cols, words } = puzzle;
+
+// Build the answer grid and cell metadata
+const answer = Array.from({ length: rows }, () => Array(cols).fill(null));
+const cellNums = Array.from({ length: rows }, () => Array(cols).fill(0));
+const userGrid = Array.from({ length: rows }, () => Array(cols).fill(""));
+
+words.forEach(w => {
+  for (let i = 0; i < w.word.length; i++) {
+    const r = w.dir === "down" ? w.row + i : w.row;
+    const c = w.dir === "across" ? w.col + i : w.col;
+    answer[r][c] = w.word[i];
+  }
+  cellNums[w.row][w.col] = w.num;
+});
+
+let selectedCell = null; // {r, c}
+let currentDir = "across";
+let timerSec = 0;
+let timerInterval = null;
+let solved = false;
+
+// ========== RENDER GRID ==========
+const gridEl = document.getElementById("crossword-grid");
+gridEl.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+gridEl.style.width = Math.min(cols * 36, window.innerWidth - 20) + "px";
+
+const cellEls = [];
+
+for (let r = 0; r < rows; r++) {
+  cellEls[r] = [];
+  for (let c = 0; c < cols; c++) {
+    const div = document.createElement("div");
+    div.classList.add("cell");
+    if (answer[r][c] === null) {
+      div.classList.add("black");
+    } else {
+      if (cellNums[r][c]) {
+        const numSpan = document.createElement("span");
+        numSpan.className = "cell-number";
+        numSpan.textContent = cellNums[r][c];
+        div.appendChild(numSpan);
+      }
+      const letterSpan = document.createElement("span");
+      letterSpan.className = "cell-letter";
+      div.appendChild(letterSpan);
+
+      div.addEventListener("click", () => onCellClick(r, c));
+    }
+    gridEl.appendChild(div);
+    cellEls[r][c] = div;
+  }
+}
+
+// ========== RENDER CLUES ==========
+const acrossCluesEl = document.getElementById("across-clues");
+const downCluesEl = document.getElementById("down-clues");
+
+words.filter(w => w.dir === "across").sort((a,b) => a.num - b.num).forEach(w => {
+  const div = document.createElement("div");
+  div.className = "clue-item";
+  div.dataset.num = w.num;
+  div.dataset.dir = "across";
+  div.innerHTML = `<span class="clue-num">${w.num}.</span> ${w.clue}`;
+  div.addEventListener("click", () => {
+    currentDir = "across";
+    selectCell(w.row, w.col);
+  });
+  acrossCluesEl.appendChild(div);
+});
+
+words.filter(w => w.dir === "down").sort((a,b) => a.num - b.num).forEach(w => {
+  const div = document.createElement("div");
+  div.className = "clue-item";
+  div.dataset.num = w.num;
+  div.dataset.dir = "down";
+  div.innerHTML = `<span class="clue-num">${w.num}.</span> ${w.clue}`;
+  div.addEventListener("click", () => {
+    currentDir = "down";
+    selectCell(w.row, w.col);
+  });
+  downCluesEl.appendChild(div);
+});
+
+// ========== CELL INTERACTION ==========
+function onCellClick(r, c) {
+  if (answer[r][c] === null) return;
+  if (selectedCell && selectedCell.r === r && selectedCell.c === c) {
+    // Toggle direction
+    currentDir = currentDir === "across" ? "down" : "across";
+  }
+  selectCell(r, c);
+}
+
+function selectCell(r, c) {
+  if (!timerInterval) startTimer();
+  selectedCell = { r, c };
+  updateHighlights();
+  showKeyboard();
+}
+
+function getWordCells(r, c, dir) {
+  const cells = [];
+  if (dir === "across") {
+    let start = c;
+    while (start > 0 && answer[r][start - 1] !== null) start--;
+    let end = c;
+    while (end < cols - 1 && answer[r][end + 1] !== null) end++;
+    for (let i = start; i <= end; i++) cells.push({ r, c: i });
+  } else {
+    let start = r;
+    while (start > 0 && answer[start - 1][c] !== null) start--;
+    let end = r;
+    while (end < rows - 1 && answer[end + 1][c] !== null) end++;
+    for (let i = start; i <= end; i++) cells.push({ r: i, c });
+  }
+  return cells;
+}
+
+function updateHighlights() {
+  // Clear all
+  for (let r = 0; r < rows; r++)
+    for (let c = 0; c < cols; c++) {
+      cellEls[r][c].classList.remove("selected", "highlighted");
+    }
+
+  if (!selectedCell) return;
+  const wc = getWordCells(selectedCell.r, selectedCell.c, currentDir);
+  wc.forEach(({ r, c }) => cellEls[r][c].classList.add("highlighted"));
+  cellEls[selectedCell.r][selectedCell.c].classList.add("selected");
+
+  // Highlight active clue
+  document.querySelectorAll(".clue-item").forEach(el => el.classList.remove("active"));
+  const wordInfo = findWordAt(selectedCell.r, selectedCell.c, currentDir);
+  if (wordInfo) {
+    const clueEl = document.querySelector(`.clue-item[data-num="${wordInfo.num}"][data-dir="${wordInfo.dir}"]`);
+    if (clueEl) {
+      clueEl.classList.add("active");
+      clueEl.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+  }
+}
+
+function findWordAt(r, c, dir) {
+  return words.find(w => {
+    if (w.dir !== dir) return false;
+    for (let i = 0; i < w.word.length; i++) {
+      const wr = w.dir === "down" ? w.row + i : w.row;
+      const wc = w.dir === "across" ? w.col + i : w.col;
+      if (wr === r && wc === c) return true;
+    }
+    return false;
+  });
+}
+
+// ========== INPUT ==========
+function inputLetter(ch) {
+  if (!selectedCell || solved) return;
+  const { r, c } = selectedCell;
+  if (answer[r][c] === null) return;
+
+  userGrid[r][c] = ch;
+  cellEls[r][c].querySelector(".cell-letter").textContent = ch;
+
+  // Auto-advance
+  const wc = getWordCells(r, c, currentDir);
+  const idx = wc.findIndex(cell => cell.r === r && cell.c === c);
+  if (idx < wc.length - 1) {
+    selectCell(wc[idx + 1].r, wc[idx + 1].c);
+  }
+
+  checkWords();
+}
+
+function deleteLetter() {
+  if (!selectedCell || solved) return;
+  const { r, c } = selectedCell;
+
+  if (userGrid[r][c] === "") {
+    // Move back
+    const wc = getWordCells(r, c, currentDir);
+    const idx = wc.findIndex(cell => cell.r === r && cell.c === c);
+    if (idx > 0) {
+      const prev = wc[idx - 1];
+      selectCell(prev.r, prev.c);
+      userGrid[prev.r][prev.c] = "";
+      cellEls[prev.r][prev.c].querySelector(".cell-letter").textContent = "";
+    }
+  } else {
+    userGrid[r][c] = "";
+    cellEls[r][c].querySelector(".cell-letter").textContent = "";
+  }
+}
+
+// Physical keyboard
+document.addEventListener("keydown", e => {
+  if (solved) return;
+  if (e.key === "Backspace") { e.preventDefault(); deleteLetter(); }
+  else if (e.key === "Tab" || e.key === "Enter") {
+    e.preventDefault();
+    currentDir = currentDir === "across" ? "down" : "across";
+    updateHighlights();
+  }
+  else if (/^[a-zA-Z]$/.test(e.key)) {
+    inputLetter(e.key.toUpperCase());
+  }
+  else if (e.key === "ArrowRight" && selectedCell) {
+    const nc = Math.min(cols - 1, selectedCell.c + 1);
+    if (answer[selectedCell.r][nc] !== null) selectCell(selectedCell.r, nc);
+  }
+  else if (e.key === "ArrowLeft" && selectedCell) {
+    const nc = Math.max(0, selectedCell.c - 1);
+    if (answer[selectedCell.r][nc] !== null) selectCell(selectedCell.r, nc);
+  }
+  else if (e.key === "ArrowDown" && selectedCell) {
+    const nr = Math.min(rows - 1, selectedCell.r + 1);
+    if (answer[nr][selectedCell.c] !== null) selectCell(nr, selectedCell.c);
+  }
+  else if (e.key === "ArrowUp" && selectedCell) {
+    const nr = Math.max(0, selectedCell.r - 1);
+    if (answer[nr][selectedCell.c] !== null) selectCell(nr, selectedCell.c);
+  }
+});
+
+// On-screen keyboard
+document.querySelectorAll(".kb-key").forEach(btn => {
+  btn.addEventListener("click", e => {
+    e.preventDefault();
+    const key = btn.dataset.key || btn.textContent;
+    if (key === "DEL") deleteLetter();
+    else if (key === "✓") {
+      currentDir = currentDir === "across" ? "down" : "across";
+      updateHighlights();
+    }
+    else inputLetter(key);
+  });
+});
+
+function showKeyboard() {
+  document.getElementById("keyboard").classList.add("visible");
+}
+
+// ========== CHECK / WIN ==========
+function checkWords() {
+  let allDone = true;
+  words.forEach(w => {
+    let wordComplete = true;
+    let wordCorrect = true;
+    for (let i = 0; i < w.word.length; i++) {
+      const r = w.dir === "down" ? w.row + i : w.row;
+      const c = w.dir === "across" ? w.col + i : w.col;
+      if (userGrid[r][c] === "") { wordComplete = false; wordCorrect = false; }
+      else if (userGrid[r][c] !== w.word[i]) wordCorrect = false;
+    }
+    if (!wordCorrect) allDone = false;
+    // Mark clue solved
+    const clueEl = document.querySelector(`.clue-item[data-num="${w.num}"][data-dir="${w.dir}"]`);
+    if (wordCorrect && wordComplete) {
+      if (clueEl) clueEl.classList.add("solved");
+      for (let i = 0; i < w.word.length; i++) {
+        const r = w.dir === "down" ? w.row + i : w.row;
+        const c = w.dir === "across" ? w.col + i : w.col;
+        cellEls[r][c].classList.add("correct");
+      }
+    } else {
+      if (clueEl) clueEl.classList.remove("solved");
+      for (let i = 0; i < w.word.length; i++) {
+        const r = w.dir === "down" ? w.row + i : w.row;
+        const c = w.dir === "across" ? w.col + i : w.col;
+        cellEls[r][c].classList.remove("correct");
+      }
+    }
+  });
+
+  if (allDone) winGame();
+}
+
+function winGame() {
+  solved = true;
+  clearInterval(timerInterval);
+  document.getElementById("keyboard").classList.remove("visible");
+  document.getElementById("win-time").textContent = `Time: ${formatTime(timerSec)}`;
+  document.getElementById("win-overlay").classList.add("show");
+  launchConfetti();
+}
+
+// ========== TIMER ==========
+function startTimer() {
+  timerInterval = setInterval(() => {
+    timerSec++;
+    document.getElementById("timer-bar").textContent = formatTime(timerSec);
+  }, 1000);
+}
+
+function formatTime(s) {
+  const m = Math.floor(s / 60);
+  const sec = s % 60;
+  return `${m}:${sec.toString().padStart(2, "0")}`;
+}
+
+// ========== CONFETTI ==========
+function launchConfetti() {
+  const canvas = document.getElementById("confetti-canvas");
+  const ctx = canvas.getContext("2d");
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+
+  const pieces = [];
+  const colors = ["#e879a8", "#a78bfa", "#2ecc71", "#f9ca24", "#ff6b6b", "#74b9ff"];
+
+  for (let i = 0; i < 150; i++) {
+    pieces.push({
+      x: Math.random() * canvas.width,
+      y: Math.random() * canvas.height - canvas.height,
+      w: Math.random() * 10 + 5,
+      h: Math.random() * 6 + 3,
+      color: colors[Math.floor(Math.random() * colors.length)],
+      vy: Math.random() * 3 + 2,
+      vx: (Math.random() - 0.5) * 2,
+      rot: Math.random() * Math.PI * 2,
+      rv: (Math.random() - 0.5) * 0.1,
+    });
+  }
+
+  let frame = 0;
+  function animate() {
+    if (frame > 300) { ctx.clearRect(0, 0, canvas.width, canvas.height); return; }
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    pieces.forEach(p => {
+      p.x += p.vx;
+      p.y += p.vy;
+      p.rot += p.rv;
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.rot);
+      ctx.fillStyle = p.color;
+      ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+      ctx.restore();
+    });
+    frame++;
+    requestAnimationFrame(animate);
+  }
+  animate();
+}
+
+// ========== RESPONSIVE ==========
+function resizeGrid() {
+  const maxW = Math.min(cols * 40, window.innerWidth - 16);
+  gridEl.style.width = maxW + "px";
+}
+window.addEventListener("resize", resizeGrid);
+resizeGrid();
+</script>
+</body>
+</html>
