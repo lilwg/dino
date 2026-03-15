@@ -97,7 +97,31 @@
     var BRICK_LEFT = (CW - COLS * (BRICK_W + BRICK_GAP) + BRICK_GAP) / 2;
     var ROW_TYPES = ['PTERO', 'PTERO', 'PTERO', 'PTERO', 'CACTUS', 'CACTUS', 'CACTUS', 'CACTUS'];
     var ROW_POINTS = [30, 30, 25, 25, 20, 20, 15, 15];
-    var ROW_COLORS = ['#e03030', '#e03030', '#e08020', '#e08020', '#30a030', '#30a030', '#e0c020', '#e0c020'];
+    // Level color palettes + night inversion rules
+    var ARCADE_COLORS   = ['#e03030', '#e03030', '#e08020', '#e08020', '#30a030', '#30a030', '#e0c020', '#e0c020'];
+    var INVERTED_COLORS = ['#1fcfcf', '#1fcfcf', '#1f7fdf', '#1f7fdf', '#cf5fcf', '#cf5fcf', '#1f3fdf', '#1f3fdf'];
+    var ATARI_COLORS    = ['#e03030', '#e06020', '#30a030', '#30c0c0', '#e0c020', '#3030e0', '#e03030', '#e06020'];
+    var ATARI_INV_COLORS = ['#1fcfcf', '#1f9fdf', '#cf5fcf', '#cf3f3f', '#1f3fdf', '#cfcf1f', '#1fcfcf', '#1f9fdf'];
+    // Per-level: { colors, allowNightInvert }
+    // Level 1: arcade, no invert | Level 2: inverted arcade, no invert
+    // Level 3: arcade, inverts at night | Level 4: atari 2600
+    // Level 5: inverted atari | Level 6: atari, inverts at night
+    // Level 7+: random colors
+    var _randomColors = null, _randomLevel = -1;
+    function getRandomColors() { var c = []; for (var i = 0; i < ROWS; i++) c.push('hsl(' + Math.floor(Math.random() * 360) + ',70%,50%)'); return c; }
+    function getLevelColors(level) {
+        var cycle = ((level - 1) % 7) + 1;
+        if (cycle === 1) return { colors: ARCADE_COLORS, allowNightInvert: false };
+        if (cycle === 2) return { colors: INVERTED_COLORS, allowNightInvert: false };
+        if (cycle === 3) return { colors: ARCADE_COLORS, allowNightInvert: true };
+        if (cycle === 4) return { colors: ATARI_COLORS, allowNightInvert: false };
+        if (cycle === 5) return { colors: ATARI_INV_COLORS, allowNightInvert: false };
+        if (cycle === 6) return { colors: ATARI_COLORS, allowNightInvert: true };
+        // cycle 7: random
+        if (_randomLevel !== level) { _randomColors = getRandomColors(); _randomLevel = level; }
+        return { colors: _randomColors, allowNightInvert: false };
+    }
+    var ROW_COLORS = ARCADE_COLORS;
     var MAX_LIVES = 3;
     var FRAME_SKIP = 3;
 
@@ -363,11 +387,12 @@
         if (nightOpacity > 0) drawNightElements(ctx);
 
         // Bricks
+        var lvColors = getLevelColors(g.level);
         for (var r = 0; r < ROWS; r++) {
             for (var c = 0; c < COLS; c++) {
                 if (!g.bricks[r][c]) continue;
                 var br = brickRect(r, c);
-                ctx.fillStyle = ROW_COLORS[r];
+                ctx.fillStyle = lvColors.colors[r];
                 ctx.fillRect(br.x, br.y, br.w, br.h);
                 if (spriteImg && spriteImg.complete) {
                     ctx.globalCompositeOperation = 'screen';
@@ -2171,13 +2196,16 @@
             playCtx.fillStyle = '#fff';
             playCtx.fillRect(0, 0, CW, CH);
             playCtx.globalCompositeOperation = 'source-over';
-            // Redraw brick colors so they don't invert at night
-            for (var br_r = 0; br_r < ROWS; br_r++) {
-                for (var br_c = 0; br_c < COLS; br_c++) {
-                    if (!playGame.bricks[br_r][br_c]) continue;
-                    var brc = brickRect(br_r, br_c);
-                    playCtx.fillStyle = ROW_COLORS[br_r];
-                    playCtx.fillRect(brc.x, brc.y, brc.w, brc.h);
+            // Redraw brick colors so they don't invert at night (unless level allows it)
+            var lvInfo = getLevelColors(playGame.level);
+            if (!lvInfo.allowNightInvert) {
+                for (var br_r = 0; br_r < ROWS; br_r++) {
+                    for (var br_c = 0; br_c < COLS; br_c++) {
+                        if (!playGame.bricks[br_r][br_c]) continue;
+                        var brc = brickRect(br_r, br_c);
+                        playCtx.fillStyle = lvInfo.colors[br_r];
+                        playCtx.fillRect(brc.x, brc.y, brc.w, brc.h);
+                    }
                 }
             }
         }
