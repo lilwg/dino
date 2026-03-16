@@ -774,6 +774,13 @@ function simStep(gs, dir) {
         }
         if (gs.levelWon) return true;
     }
+    // Simulate 1 idle frame after landing — catch enemies about to land
+    // on the player's tile in the brief window before the next jump starts.
+    // The player stands idle for 1 frame while the AI decides the next move.
+    if (gs.alive && !gs.player.jumping) {
+        simUpdateEnemies(gs);
+        simCheckCollision(gs);
+    }
     return gs.alive;
 }
 
