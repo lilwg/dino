@@ -708,7 +708,7 @@ function update() {
         enemies = gs.enemies; // array may change from spawns/removals
 
         // Per-frame collision check
-        simCheckCollision(gs);
+        if (enemiesEnabled) simCheckCollision(gs);
         if (!gs.alive) {
             console.log('DEATH: ' + (gs.deathEnemy||'?') + ' at (' + gs.player.row + ',' + gs.player.col + ')' +
                 ' frame=' + frameCount + ' round=' + round + ' lv=' + arcadeLevel() +
@@ -729,7 +729,7 @@ function update() {
             hops++;
 
             // Collision on landing
-            simCheckCollision(gs);
+            if (enemiesEnabled) simCheckCollision(gs);
             if (!gs.alive) {
                 console.log('DEATH ON LANDING: ' + (gs.deathEnemy||'?') + ' at (' + gs.player.row + ',' + gs.player.col + ')' +
                     ' frame=' + frameCount + ' round=' + round + ' lv=' + arcadeLevel() +
@@ -825,7 +825,7 @@ function draw() {
     if (debugEnemies || vizOn) drawEnemyCollisionFaces();
 
     // Enemies and player (before inversion so they invert with scene)
-    for (var i = 0; i < enemies.length; i++) drawEnemy(enemies[i]);
+    if (enemiesEnabled) for (var i = 0; i < enemies.length; i++) drawEnemy(enemies[i]);
     drawPlayer();
 
     // Draw spinning disc under player during disc ride
@@ -1504,7 +1504,6 @@ window.toggleEnemies = function () {
     var btn = document.getElementById('enemies-btn');
     btn.textContent = 'Enemies: ' + (enemiesEnabled ? 'On' : 'Off');
     btn.classList.toggle('active', enemiesEnabled);
-    restartGame();
 };
 
 window.setGameSpeed = function (v) {

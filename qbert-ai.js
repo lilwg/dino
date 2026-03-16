@@ -422,33 +422,30 @@ function isExhaustiveSafe(gs, dir) {
     for (var i = 0; i < gs.enemies.length; i++) {
         var e = gs.enemies[i];
 
-        // Check spawn-timers that will expire during this hop
+        // Check spawn-timers that will expire during this hop — enemy spawns mid-jump
         if (e.type === 'spawn-timer') {
             if (e.timer <= maxFrames) {
                 var ft = e.forcedType;
-                // Determine if Coily egg (no forcedType means egg/redball based on existing enemies)
                 if (!ft) {
                     var hasCoilyOrEgg = false;
                     for (var ci = 0; ci < gs.enemies.length; ci++)
                         if (gs.enemies[ci].type === 'coily' || gs.enemies[ci].type === 'egg') { hasCoilyOrEgg = true; break; }
                     ft = hasCoilyOrEgg ? 'redball' : 'egg';
                 }
-                // Redballs and eggs spawn at (1, 0) or (1, 1) — check both columns
+                // Redballs and eggs spawn at row 1, col 0 or 1 — check both
                 if (ft === 'redball' || ft === 'egg') {
                     for (var sc = 0; sc < 2; sc++) {
-                        var spawnFrame = e.timer;
-                        for (var f = spawnFrame; f < maxFrames; f++) {
+                        for (var f = e.timer; f < maxFrames; f++) {
                             var pt = playerTiles[f];
                             if (pt && pt.row === 1 && pt.col === sc) return false;
                         }
                     }
                 }
-                // ugg spawns at (ROWS-1, ROWS-1), wrongway at (ROWS-1, 0) — far from apex, skip
             }
             continue;
         }
 
-        // Skip non-threatening types and coily (deterministic — MC handles it perfectly)
+        // Skip non-threatening types and Coily (deterministic — MC handles perfectly)
         if (e.type === 'slick' || e.type === 'greenball') continue;
         if (e.type === 'coily') continue;
 
@@ -639,6 +636,24 @@ function unifiedPick(gs, coilyActive) {
             if (!isValidPos(dnr, dnc)) continue;
         }
 
+        // Never enter a completed dead-end cube (e.g. bottom corners) — no reason to visit
+        if (dir !== 'STAY') {
+            var dde = DIRS[dir];
+            var lr = gs.player.row + dde.dr, lc = gs.player.col + dde.dc;
+            if (isValidPos(lr, lc)) {
+                var lidx = posToIdx[lr * ROWS + lc];
+                if (lidx >= 0 && posAdj[lidx].length <= 1) {
+                    var cubeComplete = false;
+                    for (var ci = 0; ci < gs.cubes.length; ci++) {
+                        if (gs.cubes[ci].row === lr && gs.cubes[ci].col === lc && gs.cubes[ci].state >= gs.tgt) {
+                            cubeComplete = true; break;
+                        }
+                    }
+                    if (cubeComplete) continue;
+                }
+            }
+        }
+
         // Hop 1: simulate this direction
         var survived = 0, totalTC = 0;
         var hop1States = [];  // save states for hop 2+ check
@@ -664,11 +679,28 @@ function unifiedPick(gs, coilyActive) {
         // Exhaustive nearby-enemy check: MC may miss rare collision paths
         // (e.g. ugg/wrongway with 12% hit probability → 8% miss rate at 20 samples).
         // The exhaustive check enumerates ALL possible paths for nearby enemies.
-        // Skip for STAY: simStep's STAY exits early (coily hop cycle), exhaustive
-        // uses a longer fixed window → false positives.  MC handles STAY correctly.
-        if (safe1[dir] && hasEnemies && dir !== 'STAY') {
+        if (safe1[dir] && hasEnemies) {
             restoreRng();
-            if (!isExhaustiveSafe(gs, dir)) {
+            if (dir === 'STAY') {
+                // Short-window exhaustive for STAY: only check 1 enemy hop cycle
+                // (full window causes false positives from distant enemies).
+                var stayFrames = 10;
+                var stayTiles = [];
+                for (var sf = 0; sf < stayFrames; sf++) stayTiles.push({ row: gs.player.row, col: gs.player.col });
+                var stayUnsafe = false;
+                for (var sei = 0; sei < gs.enemies.length; sei++) {
+                    var se = gs.enemies[sei];
+                    if (se.type === 'spawn-timer' || se.type === 'slick' || se.type === 'greenball' || se.type === 'coily') continue;
+                    var ser = se.jumping && se.jumpT >= 0.67 ? (se.destRow != null ? se.destRow : se.row) : se.row;
+                    var sec = se.jumping && se.jumpT >= 0.67 ? (se.destCol != null ? se.destCol : se.col) : se.col;
+                    if (Math.abs(ser - gs.player.row) + Math.abs(sec - gs.player.col) > 2) continue;
+                    var seClone = cloneEnemyLight(se);
+                    if (enemyPathCollides(seClone, stayTiles, 0, stayFrames, gs.player.row, gs.player.col, gs.sm)) {
+                        stayUnsafe = true; break;
+                    }
+                }
+                if (stayUnsafe) { safe1[dir] = false; hop1Surv[dir] = 0; }
+            } else if (!isExhaustiveSafe(gs, dir)) {
                 safe1[dir] = false;
                 hop1Surv[dir] = 0;
             }
@@ -726,8 +758,16 @@ function unifiedPick(gs, coilyActive) {
             if (!has2ndSafe) {
                 aiMoveScores[dir] = -5000;
             }
+        } else if (dir === 'STAY' && hasEnemies) {
+            // STAY is safe2 only if at least one movement direction passed safe1.
+            // Prevents sitting in danger zones while Coily closes in.
+            var canEscape = false;
+            for (var ek = 0; ek < DIR_KEYS.length; ek++) {
+                if (safe1[DIR_KEYS[ek]]) { canEscape = true; break; }
+            }
+            safe2[dir] = canEscape;
         } else {
-            safe2[dir] = true;  // no enemies or STAY — skip hop 2+3 check
+            safe2[dir] = true;  // no enemies — skip hop 2+3 check
         }
     }
 
