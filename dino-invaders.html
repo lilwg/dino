@@ -106,6 +106,7 @@
             // --- 1. TARGET SELECTION: UFO > fastest alien to kill ---
             var target = null;
             var targetReason = 'none';
+            var claimedAliens = [];
 
             if (g.mystery) {
                 target = { x: g.mystery.x, y: g.mystery.y, w: 40, h: 16, isMystery: true };
