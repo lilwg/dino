@@ -188,13 +188,12 @@
                         bestAlien = a;
                     }
                 }
-                var colSpan = maxCol - minCol + 1;
-                if (bestEdge && colSpan > 3) {
-                    target = bestEdge;
-                    targetReason = 'edge';
-                } else if (bestDanger) {
+                if (bestDanger) {
                     target = bestDanger;
                     targetReason = 'danger';
+                } else if (bestEdge) {
+                    target = bestEdge;
+                    targetReason = 'edge';
                 } else if (bestAlien) {
                     target = bestAlien;
                     targetReason = 'fastest';
