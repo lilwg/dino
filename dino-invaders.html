@@ -150,15 +150,16 @@
                 }
 
                 // Pick target: danger (near game-over) > fastest TTK
-                // Dynamic margin: more when aliens are fast (fewer alive) or level is high.
+                // Margin: 48px base + small scaling for speed/wave
                 var aliveCount = alive.length;
                 var wave = g.wave || 1;
-                var margin = 72 + Math.max(0, Math.floor((55 - aliveCount) * 2.5)) + Math.min(wave * 6, 90);
+                var margin = 48 + Math.max(0, Math.floor((55 - aliveCount) * 0.5)) + Math.min(wave * 2, 24);
                 var DANGER_Y = 337 - margin;
                 var bestAlien = null;
                 var bestTime = Infinity;
                 var bestDanger = null;
-                var bestDangerTime = Infinity;
+                var bestDangerY = -1;
+                var bestDangerTtk = Infinity;
                 for (var i = 0; i < hittable.length; i++) {
                     var a = hittable[i];
                     var claimed = false;
@@ -170,9 +171,13 @@
                     var alignFrames = Math.abs(alienCx - playerCx) / 4;
                     var bulletFrames = (337 - a.y) / 6;
                     var ttk = alignFrames + bulletFrames;
-                    if (a.y + a.h >= DANGER_Y && ttk < bestDangerTime) {
-                        bestDangerTime = ttk;
-                        bestDanger = a;
+                    // Danger: lowest Y first, TTK as tiebreaker for similar heights
+                    if (a.y + a.h >= DANGER_Y) {
+                        if (a.y > bestDangerY + 5 || (a.y >= bestDangerY - 5 && ttk < bestDangerTtk)) {
+                            bestDangerY = a.y;
+                            bestDangerTtk = ttk;
+                            bestDanger = a;
+                        }
                     }
                     if (ttk < bestTime) {
                         bestTime = ttk;
