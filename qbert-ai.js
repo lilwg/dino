@@ -22,101 +22,84 @@ function stompsNeeded(cubeState, lv) {
     return cubeState === 0 ? 2 : (cubeState === 1 ? 1 : 0);
 }
 
-function revertPenalty(lv, cubes, tgt) {
-    if (lv <= 2) return 0;
-    var basePenalty;
-    if (lv === 3) basePenalty = 8;       // toggle: stepping on completed cube undoes work (need 2 extra hops)
-    else if (lv === 4) basePenalty = 6;  // 2-step cycle: revert + re-stomp
-    else basePenalty = 7;                // 3-step cycle: revert to 0 + 2 re-stomps
 
-    // Scale penalty down when few cubes remain — crossing completed cubes
-    // is worth it to reach the last few unfinished ones instead of long detours
-    if (cubes) {
-        var remaining = 0;
-        for (var i = 0; i < cubes.length; i++)
-            if (cubes[i].state < (tgt || 1)) remaining++;
-        // Scale down only when very few remain
-        if (remaining <= 3) basePenalty = Math.max(2, Math.round(basePenalty * remaining / 4));
-    }
-    return basePenalty;
-}
-
-function dijkstraWeighted(srcIdx, completedMask, penalty) {
-    var dist = new Array(POS_COUNT);
-    var visited = new Uint8Array(POS_COUNT);
-    for (var i = 0; i < POS_COUNT; i++) dist[i] = 999;
-    dist[srcIdx] = 0;
-    for (var iter = 0; iter < POS_COUNT; iter++) {
-        var u = -1, uDist = 999;
-        for (var i = 0; i < POS_COUNT; i++) {
-            if (!visited[i] && dist[i] < uDist) { uDist = dist[i]; u = i; }
-        }
-        if (u < 0) break;
-        visited[u] = 1;
+// Nearest-neighbor greedy tour cost — simulates walking the pyramid,
+// tracking reverts on toggle levels so the estimate reflects actual work.
+// BFS shortest path between two positions on the pyramid.
+function bfsPath(fromIdx, toIdx) {
+    if (fromIdx === toIdx) return [];
+    var prev = new Int8Array(POS_COUNT);
+    for (var i = 0; i < POS_COUNT; i++) prev[i] = -1;
+    prev[fromIdx] = fromIdx;
+    var queue = [fromIdx];
+    var qi = 0;
+    while (qi < queue.length) {
+        var u = queue[qi++];
         var adj = posAdj[u];
         for (var a = 0; a < adj.length; a++) {
             var v = adj[a];
-            if (visited[v]) continue;
-            var cost = 1 + ((completedMask & (1 << v)) ? penalty : 0);
-            var newDist = dist[u] + cost;
-            if (newDist < dist[v]) dist[v] = newDist;
+            if (prev[v] === -1) {
+                prev[v] = u;
+                if (v === toIdx) {
+                    // reconstruct path (sequence of position indices traversed, excluding start)
+                    var path = [];
+                    var cur = toIdx;
+                    while (cur !== fromIdx) { path.push(cur); cur = prev[cur]; }
+                    path.reverse();
+                    return path;
+                }
+                queue.push(v);
+            }
         }
     }
-    return dist;
+    return []; // unreachable
 }
 
-function mstFromDistTable(allNodes, distTable) {
-    var n = allNodes.length;
-    if (n === 0) return 0;
-    var inMST = new Uint8Array(n);
-    var minEdge = new Array(n);
-    for (var i = 0; i < n; i++) minEdge[i] = 999;
-    minEdge[0] = 0;
-    var total = 0;
-    for (var iter = 0; iter < n; iter++) {
-        var u = -1, uCost = 999;
-        for (var i = 0; i < n; i++) {
-            if (!inMST[i] && minEdge[i] < uCost) { uCost = minEdge[i]; u = i; }
-        }
-        if (u < 0) break;
-        inMST[u] = 1;
-        total += uCost;
-        var uDists = distTable[u];
-        for (var i = 0; i < n; i++) {
-            if (inMST[i]) continue;
-            var d = uDists[allNodes[i]];
-            if (d < minEdge[i]) minEdge[i] = d;
-        }
-    }
-    return total;
-}
-
-function mstTourCost(startIdx, cubes, tgt, lv) {
-    var penalty = revertPenalty(lv, cubes, tgt);
-    var completedMask = 0;
-    var nodes = [];
-    var extraStomps = 0;
+function greedyTourCost(startIdx, cubes, tgt, lv) {
+    // Build per-position stomp count
+    var stomps = new Int8Array(POS_COUNT); // how many stomps each position still needs
     for (var i = 0; i < cubes.length; i++) {
         var idx = posToIdx[cubes[i].row * ROWS + cubes[i].col];
-        var s = stompsNeeded(cubes[i].state, lv);
-        if (s > 0) {
-            nodes.push(idx);
-            extraStomps += 2 * (s - 1);
-        } else {
-            completedMask |= (1 << idx);
-        }
+        stomps[idx] = stompsNeeded(cubes[i].state, lv);
     }
-    if (nodes.length === 0) return 0;
-    var allNodes = [startIdx].concat(nodes);
-    var distTable = [];
-    for (var i = 0; i < allNodes.length; i++)
-        distTable.push(dijkstraWeighted(allNodes[i], completedMask, penalty));
-    return mstFromDistTable(allNodes, distTable) + extraStomps;
+
+    var isToggle = lv >= 3;
+    var curIdx = startIdx;
+    var totalHops = 0;
+
+    // Greedy: repeatedly walk to the nearest unfinished cube
+    for (var iter = 0; iter < 200; iter++) { // safety cap
+        // Find nearest unfinished cube by BFS distance
+        var bestIdx = -1, bestDist = 999;
+        for (var i = 0; i < POS_COUNT; i++) {
+            if (stomps[i] > 0) {
+                var d = distMatrix[curIdx * POS_COUNT + i];
+                if (d < bestDist) { bestDist = d; bestIdx = i; }
+            }
+        }
+        if (bestIdx === -1) break; // all done
+
+        // Walk the path to bestIdx, tracking reverts
+        var path = bfsPath(curIdx, bestIdx);
+        for (var p = 0; p < path.length; p++) {
+            totalHops++;
+            var pos = path[p];
+            if (stomps[pos] > 0) {
+                stomps[pos]--;
+            } else if (isToggle) {
+                // Stepping on a completed cube reverts it
+                stomps[pos] = 1;
+            }
+        }
+        curIdx = bestIdx;
+    }
+
+    return totalHops;
 }
 
 // Tour cost from a simulation state
 function simTourCost(gs) {
-    return mstTourCost(posToIdx[gs.player.row * ROWS + gs.player.col], gs.cubes, gs.tgt, gs.lv);
+    return greedyTourCost(posToIdx[gs.player.row * ROWS + gs.player.col], gs.cubes, gs.tgt, gs.lv);
 }
 
 // ─── Danger zone assessment ──────────────────────────────────────────────────
