@@ -92,11 +92,16 @@ function greedyTourCost(startIdx, cubes, tgt, lv) {
             while (pc !== curIdx) { path.push(pc); pc = dijk.prev[pc]; }
             totalHops += path.length; // actual hop count (unweighted)
 
-            // Apply stomp/revert along the path
+            // Apply stomps along path; fix reverts immediately (never leave debt)
             for (var p = path.length - 1; p >= 0; p--) {
                 var pos = path[p];
-                if (stomps[pos] > 0) stomps[pos]--;
-                else stomps[pos] = 1; // revert
+                if (stomps[pos] > 0) {
+                    stomps[pos]--;
+                } else {
+                    // Crossed a completed cube: charge 2 hops to fix it on the spot
+                    totalHops += 2;
+                    // stomps[pos] stays 0 — it's fixed, no debt left behind
+                }
             }
             curIdx = bestIdx;
         } else {
