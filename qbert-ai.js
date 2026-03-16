@@ -23,92 +23,85 @@ function stompsNeeded(cubeState, lv) {
 }
 
 
-// Nearest-neighbor greedy tour cost — simulates walking the pyramid,
-// tracking reverts on toggle levels so the estimate reflects actual work.
-// Uses weighted shortest paths that prefer unfinished cubes and avoid
-// completed cubes on toggle levels.
-function weightedPath(fromIdx, toIdx, stomps, isToggle) {
-    if (fromIdx === toIdx) return [];
+// MST-based tour cost — stable lower bound, no path-dependent noise.
+// On toggle levels, penalizes crossing completed cubes (each crossing
+// creates a revert = ~2 extra hops to fix later).
+function dijkstraWeighted(srcIdx, completedMask, penalty) {
     var dist = new Array(POS_COUNT);
-    var prev = new Int8Array(POS_COUNT);
-    for (var i = 0; i < POS_COUNT; i++) { dist[i] = 999; prev[i] = -1; }
-    dist[fromIdx] = 0; prev[fromIdx] = fromIdx;
-    // Simple Dijkstra (28 nodes)
     var visited = new Uint8Array(POS_COUNT);
+    for (var i = 0; i < POS_COUNT; i++) dist[i] = 999;
+    dist[srcIdx] = 0;
     for (var iter = 0; iter < POS_COUNT; iter++) {
         var u = -1, uDist = 999;
-        for (var i = 0; i < POS_COUNT; i++)
+        for (var i = 0; i < POS_COUNT; i++) {
             if (!visited[i] && dist[i] < uDist) { uDist = dist[i]; u = i; }
-        if (u < 0 || u === toIdx) break;
+        }
+        if (u < 0) break;
         visited[u] = 1;
         var adj = posAdj[u];
         for (var a = 0; a < adj.length; a++) {
             var v = adj[a];
             if (visited[v]) continue;
-            // Base cost 1 hop. On toggle levels, penalize completed cubes (reverts).
-            // Slightly prefer unfinished cubes en route (free stomps).
-            var cost = 1;
-            if (isToggle && stomps[v] <= 0) cost += 2;    // revert penalty
-            else if (stomps[v] > 0) cost = 0.8;           // slight bonus for free stomp
-            var nd = dist[u] + cost;
-            if (nd < dist[v]) { dist[v] = nd; prev[v] = u; }
+            var cost = 1 + ((completedMask & (1 << v)) ? penalty : 0);
+            var newDist = dist[u] + cost;
+            if (newDist < dist[v]) dist[v] = newDist;
         }
     }
-    // Reconstruct actual path (position indices, excluding start)
-    var path = [];
-    var cur = toIdx;
-    while (cur !== fromIdx && prev[cur] >= 0) { path.push(cur); cur = prev[cur]; }
-    path.reverse();
-    return path;
+    return dist;
 }
 
-function greedyTourCost(startIdx, cubes, tgt, lv) {
-    // Build per-position stomp count
-    var stomps = new Int8Array(POS_COUNT);
+function mstFromDistTable(allNodes, distTable) {
+    var n = allNodes.length;
+    if (n === 0) return 0;
+    var inMST = new Uint8Array(n);
+    var minEdge = new Array(n);
+    for (var i = 0; i < n; i++) minEdge[i] = 999;
+    minEdge[0] = 0;
+    var total = 0;
+    for (var iter = 0; iter < n; iter++) {
+        var u = -1, uCost = 999;
+        for (var i = 0; i < n; i++) {
+            if (!inMST[i] && minEdge[i] < uCost) { uCost = minEdge[i]; u = i; }
+        }
+        if (u < 0) break;
+        inMST[u] = 1;
+        total += uCost;
+        var uDists = distTable[u];
+        for (var i = 0; i < n; i++) {
+            if (inMST[i]) continue;
+            var d = uDists[allNodes[i]];
+            if (d < minEdge[i]) minEdge[i] = d;
+        }
+    }
+    return total;
+}
+
+function mstTourCost(startIdx, cubes, tgt, lv) {
+    var penalty = lv >= 3 ? 2 : 0;  // toggle: each completed cube crossing ≈ 2 extra hops
+    var completedMask = 0;
+    var nodes = [];
+    var extraStomps = 0;
     for (var i = 0; i < cubes.length; i++) {
         var idx = posToIdx[cubes[i].row * ROWS + cubes[i].col];
-        stomps[idx] = stompsNeeded(cubes[i].state, lv);
+        var s = stompsNeeded(cubes[i].state, lv);
+        if (s > 0) {
+            nodes.push(idx);
+            extraStomps += 2 * (s - 1);
+        } else {
+            completedMask |= (1 << idx);
+        }
     }
-
-    var isToggle = lv >= 3;
-    var curIdx = startIdx;
-    var totalHops = 0;
-
-    for (var iter = 0; iter < 200; iter++) {
-        // Find nearest unfinished cube by BFS distance
-        var bestIdx = -1, bestDist = 999;
-        for (var i = 0; i < POS_COUNT; i++) {
-            if (stomps[i] > 0 && i !== curIdx) {
-                var d = distMatrix[curIdx * POS_COUNT + i];
-                if (d < bestDist) { bestDist = d; bestIdx = i; }
-            }
-        }
-        // Handle multi-stomp: if only curIdx still needs stomps, cost = 2 per remaining
-        if (bestIdx === -1) {
-            if (stomps[curIdx] > 0) totalHops += stomps[curIdx] * 2;
-            break;
-        }
-
-        // Walk weighted shortest path to target
-        var path = weightedPath(curIdx, bestIdx, stomps, isToggle);
-        for (var p = 0; p < path.length; p++) {
-            totalHops++;
-            var pos = path[p];
-            if (stomps[pos] > 0) {
-                stomps[pos]--;
-            } else if (isToggle) {
-                stomps[pos] = 1; // revert
-            }
-        }
-        curIdx = bestIdx;
-    }
-
-    return totalHops;
+    if (nodes.length === 0) return 0;
+    var allNodes = [startIdx].concat(nodes);
+    var distTable = [];
+    for (var i = 0; i < allNodes.length; i++)
+        distTable.push(dijkstraWeighted(allNodes[i], completedMask, penalty));
+    return mstFromDistTable(allNodes, distTable) + extraStomps;
 }
 
 // Tour cost from a simulation state
 function simTourCost(gs) {
-    return greedyTourCost(posToIdx[gs.player.row * ROWS + gs.player.col], gs.cubes, gs.tgt, gs.lv);
+    return mstTourCost(posToIdx[gs.player.row * ROWS + gs.player.col], gs.cubes, gs.tgt, gs.lv);
 }
 
 // ─── Danger zone assessment ──────────────────────────────────────────────────
