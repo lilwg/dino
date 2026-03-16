@@ -655,7 +655,8 @@ function unifiedPick(gs, coilyActive) {
 
         // Hop 2+3: if hop 1 is safe and enemies exist, verify a safe 3-hop chain.
         // Hop 2: MC (3 seeds) + exhaustive. Hop 3: MC only (avoids cornering).
-        if (safe1[dir] && hasEnemies && dir !== 'STAY') {
+        // STAY included: enemies move during STAY, must verify safe follow-up exists.
+        if (safe1[dir] && hasEnemies) {
             var has2ndSafe = false;
             for (var d2k = 0; d2k < DIR_KEYS_WITH_STAY.length; d2k++) {
                 var d2dir = DIR_KEYS_WITH_STAY[d2k];
@@ -700,7 +701,7 @@ function unifiedPick(gs, coilyActive) {
                 aiMoveScores[dir] = -5000;
             }
         } else {
-            safe2[dir] = true;  // no enemies or STAY — skip hop 2+3 check
+            safe2[dir] = true;  // no enemies — skip hop 2+3 check
         }
     }
 
