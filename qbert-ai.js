@@ -23,9 +23,37 @@ function stompsNeeded(cubeState, lv) {
 }
 
 
+// Dijkstra from srcIdx with penalty for stepping on completed cubes.
+// Returns {dist: Float64Array, prev: Int8Array} for path reconstruction.
+function dijkstraFrom(srcIdx, stomps, penalty) {
+    var dist = new Float64Array(POS_COUNT);
+    var prev = new Int8Array(POS_COUNT);
+    var visited = new Uint8Array(POS_COUNT);
+    for (var i = 0; i < POS_COUNT; i++) { dist[i] = 999; prev[i] = -1; }
+    dist[srcIdx] = 0; prev[srcIdx] = srcIdx;
+    for (var iter = 0; iter < POS_COUNT; iter++) {
+        var u = -1, uDist = 999;
+        for (var i = 0; i < POS_COUNT; i++) {
+            if (!visited[i] && dist[i] < uDist) { uDist = dist[i]; u = i; }
+        }
+        if (u < 0) break;
+        visited[u] = 1;
+        var adj = posAdj[u];
+        for (var a = 0; a < adj.length; a++) {
+            var v = adj[a];
+            if (visited[v]) continue;
+            // Penalty for stepping onto a completed cube (will need to re-fix it)
+            var cost = 1 + (stomps[v] === 0 ? penalty : 0);
+            var nd = dist[u] + cost;
+            if (nd < dist[v]) { dist[v] = nd; prev[v] = u; }
+        }
+    }
+    return {dist: dist, prev: prev};
+}
+
 // Greedy nearest-neighbor tour cost with deterministic tie-breaking.
-// Tracks reverts on toggle levels. Ties broken by lowest position index
-// so the estimate is stable across similar starting positions.
+// On toggle levels, uses Dijkstra to route around completed cubes.
+// Ties broken by lowest position index for stability.
 function greedyTourCost(startIdx, cubes, tgt, lv) {
     var stomps = new Int8Array(POS_COUNT);
     for (var i = 0; i < cubes.length; i++) {
@@ -34,57 +62,62 @@ function greedyTourCost(startIdx, cubes, tgt, lv) {
     }
 
     var isToggle = lv >= 3;
+    // Penalty: each completed cube crossed costs ~2 extra hops to re-fix
+    var REVERT_PENALTY = 2;
     var curIdx = startIdx;
     var totalHops = 0;
 
     for (var iter = 0; iter < 200; iter++) {
-        // Find nearest unfinished cube; break ties by lowest index
-        var bestIdx = -1, bestDist = 999;
-        for (var i = 0; i < POS_COUNT; i++) {
-            if (stomps[i] > 0 && i !== curIdx) {
-                var d = distMatrix[curIdx * POS_COUNT + i];
-                if (d < bestDist || (d === bestDist && (bestIdx === -1 || i < bestIdx))) {
-                    bestDist = d; bestIdx = i;
-                }
-            }
-        }
-        if (bestIdx === -1) {
-            if (stomps[curIdx] > 0) totalHops += stomps[curIdx] * 2;
-            break;
-        }
+        if (isToggle) {
+            // Dijkstra from current position, penalizing completed cubes
+            var dijk = dijkstraFrom(curIdx, stomps, REVERT_PENALTY);
 
-        // Walk shortest path, tracking reverts
-        totalHops += bestDist;
-        // Count completed cubes crossed on the shortest path (BFS)
-        if (isToggle && bestDist > 1) {
-            // BFS to find path and count reverts
-            var prev = new Int8Array(POS_COUNT);
-            for (var j = 0; j < POS_COUNT; j++) prev[j] = -1;
-            prev[curIdx] = curIdx;
-            var queue = [curIdx], qi = 0;
-            while (qi < queue.length) {
-                var u = queue[qi++];
-                if (u === bestIdx) break;
-                var adj = posAdj[u];
-                for (var a = 0; a < adj.length; a++) {
-                    var v = adj[a];
-                    if (prev[v] === -1) { prev[v] = u; queue.push(v); }
+            // Find nearest unfinished cube by weighted distance; ties → lowest index
+            var bestIdx = -1, bestDist = 999;
+            for (var i = 0; i < POS_COUNT; i++) {
+                if (stomps[i] > 0 && i !== curIdx) {
+                    var d = dijk.dist[i];
+                    if (d < bestDist || (d === bestDist && (bestIdx === -1 || i < bestIdx))) {
+                        bestDist = d; bestIdx = i;
+                    }
                 }
             }
-            // Walk path and apply reverts
+            if (bestIdx === -1) {
+                if (stomps[curIdx] > 0) totalHops += stomps[curIdx] * 2;
+                break;
+            }
+
+            // Walk the Dijkstra path (avoids completed cubes), count real hops
             var path = [], pc = bestIdx;
-            while (pc !== curIdx) { path.push(pc); pc = prev[pc]; }
+            while (pc !== curIdx) { path.push(pc); pc = dijk.prev[pc]; }
+            totalHops += path.length; // actual hop count (unweighted)
+
+            // Apply stomp/revert along the path
             for (var p = path.length - 1; p >= 0; p--) {
                 var pos = path[p];
                 if (stomps[pos] > 0) stomps[pos]--;
                 else stomps[pos] = 1; // revert
             }
+            curIdx = bestIdx;
         } else {
-            // Direct neighbor or non-toggle: just stomp destination
-            if (stomps[bestIdx] > 0) stomps[bestIdx]--;
-            else if (isToggle) stomps[bestIdx] = 1;
+            // Non-toggle: use precomputed BFS distances
+            var bestIdx = -1, bestDist = 999;
+            for (var i = 0; i < POS_COUNT; i++) {
+                if (stomps[i] > 0 && i !== curIdx) {
+                    var d = distMatrix[curIdx * POS_COUNT + i];
+                    if (d < bestDist || (d === bestDist && (bestIdx === -1 || i < bestIdx))) {
+                        bestDist = d; bestIdx = i;
+                    }
+                }
+            }
+            if (bestIdx === -1) {
+                if (stomps[curIdx] > 0) totalHops += stomps[curIdx] * 2;
+                break;
+            }
+            totalHops += bestDist;
+            stomps[bestIdx]--;
+            curIdx = bestIdx;
         }
-        curIdx = bestIdx;
     }
 
     return totalHops;
