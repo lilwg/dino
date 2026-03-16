@@ -150,10 +150,10 @@
                 }
 
                 // Pick target: danger (near game-over) > fastest TTK
-                // Dynamic margin: more margin when aliens move fast (fewer alive = faster)
-                // At full grid (~55 aliens), margin = ~84px. At 5 aliens, margin = ~180px.
+                // Dynamic margin: more when aliens are fast (fewer alive) or level is high.
                 var aliveCount = alive.length;
-                var margin = 72 + Math.max(0, Math.floor((55 - aliveCount) * 2.5));
+                var wave = g.wave || 1;
+                var margin = 72 + Math.max(0, Math.floor((55 - aliveCount) * 2.5)) + Math.min(wave * 6, 90);
                 var DANGER_Y = 337 - margin;
                 var bestAlien = null;
                 var bestTime = Infinity;
