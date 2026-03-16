@@ -409,8 +409,7 @@ function enemyPathCollides(e, playerTiles, frame, maxFrames, pDestR, pDestC, sm)
 }
 
 // Main entry: returns true if direction is safe from ALL possible nearby-enemy paths.
-// skipCoily: if true, skip Coily (for hop-2 checks where hop-1 already validated Coily).
-function isExhaustiveSafe(gs, dir, skipCoily) {
+function isExhaustiveSafe(gs, dir) {
     var playerTiles = computePlayerTiles(gs.player.row, gs.player.col, dir, gs.sm);
     if (!playerTiles) return true; // disc move — no on-grid collision possible
 
@@ -422,9 +421,36 @@ function isExhaustiveSafe(gs, dir, skipCoily) {
 
     for (var i = 0; i < gs.enemies.length; i++) {
         var e = gs.enemies[i];
-        // Skip non-threatening types (and optionally Coily for hop-2 checks)
-        if (e.type === 'spawn-timer' || e.type === 'slick' || e.type === 'greenball') continue;
-        if (skipCoily && e.type === 'coily') continue;
+
+        // Check spawn-timers that will expire during this hop
+        if (e.type === 'spawn-timer') {
+            if (e.timer <= maxFrames) {
+                var ft = e.forcedType;
+                // Determine if Coily egg (no forcedType means egg/redball based on existing enemies)
+                if (!ft) {
+                    var hasCoilyOrEgg = false;
+                    for (var ci = 0; ci < gs.enemies.length; ci++)
+                        if (gs.enemies[ci].type === 'coily' || gs.enemies[ci].type === 'egg') { hasCoilyOrEgg = true; break; }
+                    ft = hasCoilyOrEgg ? 'redball' : 'egg';
+                }
+                // Redballs and eggs spawn at (1, 0) or (1, 1) — check both columns
+                if (ft === 'redball' || ft === 'egg') {
+                    for (var sc = 0; sc < 2; sc++) {
+                        var spawnFrame = e.timer;
+                        for (var f = spawnFrame; f < maxFrames; f++) {
+                            var pt = playerTiles[f];
+                            if (pt && pt.row === 1 && pt.col === sc) return false;
+                        }
+                    }
+                }
+                // ugg spawns at (ROWS-1, ROWS-1), wrongway at (ROWS-1, 0) — far from apex, skip
+            }
+            continue;
+        }
+
+        // Skip non-threatening types and coily (deterministic — MC handles it perfectly)
+        if (e.type === 'slick' || e.type === 'greenball') continue;
+        if (e.type === 'coily') continue;
 
         // Effective position for distance check
         var er = e.jumping && e.jumpT >= 0.67 ? (e.destRow != null ? e.destRow : e.row) : e.row;
@@ -673,12 +699,10 @@ function unifiedPick(gs, coilyActive) {
                     }
                     if (!stateOk) { d2ok = false; break; }
                 }
-                // Exhaustive check on hop-2 (skip Coily — hop-1 exhaustive handles it).
-                // Only check first 6 hop1States for performance.
+                // Exhaustive check on hop-2: catch rare enemy paths MC misses
                 if (d2ok && d2dir !== 'STAY') {
-                    var maxExh = Math.min(hop1States.length, 6);
-                    for (var si2 = 0; si2 < maxExh; si2++) {
-                        if (!isExhaustiveSafe(hop1States[si2], d2dir, true)) { d2ok = false; break; }
+                    for (var si2 = 0; si2 < hop1States.length; si2++) {
+                        if (!isExhaustiveSafe(hop1States[si2], d2dir)) { d2ok = false; break; }
                     }
                 }
                 // Hop 3: verify at least one safe escape from hop-2 state (anti-cornering)
