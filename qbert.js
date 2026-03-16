@@ -122,7 +122,8 @@ function discConfig(rnd) {
 
 function roundCompletionBonus(rnd) {
     var r = (rnd !== undefined) ? rnd : round;
-    return Math.min(5000, 750 + 250 * r);
+    var lv = arcadeLevel(r);
+    return Math.min(5000, 750 + 1000 * lv + 250 * r);
 }
 
 function unusedDiscBonus(dsList) {

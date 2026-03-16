@@ -265,7 +265,7 @@ var roundStarted = false; // true after first player move — enemies frozen unt
 
 var score, hiScore, lives, hops;
 var bestHops = {};  // best (minimum) hops per level-round + enemy mode, persisted
-var extraLifeGiven;
+var nextExtraLife;
 function bestHopsKey() { return arcadeLevel() + '-' + ((round - 1) % 4 + 1) + (enemiesEnabled ? '' : '-noE'); }
 // round, player, enemies, cubeStates, discs, aiTour, aiTourIdx, aiBoardSig
 // are globals (declared before IIFE) shared with qbert-ai.js
@@ -291,9 +291,9 @@ var discRide    = null;  // { side, t, sx, sy, tx, ty } — player riding disc t
 // AI functions (aiPickBestDir, buildDangerSet) from qbert-ai.js
 
 function checkExtraLife() {
-    if (!extraLifeGiven && score >= 8000) {
-        extraLifeGiven = true;
+    while (score >= nextExtraLife) {
         lives++;
+        nextExtraLife += 14000;
     }
 }
 
@@ -1463,7 +1463,7 @@ window.restartGame = function () {
     var startLevel = parseInt(params.get('l'));
     round = (startLevel > 1 && startLevel <= 9) ? (startLevel - 1) * 4 + 1 : 1;
     debugEnemies = params.has('debug');
-    extraLifeGiven = false;
+    nextExtraLife = 8000;
     gameOver  = false;
     paused    = false;
     levelWon  = false;
