@@ -671,12 +671,8 @@ function unifiedPick(gs, coilyActive) {
                     }
                     if (!stateOk) { d2ok = false; break; }
                 }
-                // Exhaustive check on hop-2: catch rare enemy paths MC misses
-                if (d2ok && d2dir !== 'STAY') {
-                    for (var si2 = 0; si2 < hop1States.length; si2++) {
-                        if (!isExhaustiveSafe(hop1States[si2], d2dir)) { d2ok = false; break; }
-                    }
-                }
+                // Hop-2 safety relies on MC (3 seeds × 10 states) — hop-1 exhaustive
+                // (with Coily) already catches direct collision risks.
                 // Hop 3: verify at least one safe escape from hop-2 state (anti-cornering)
                 if (d2ok && hop2States.length > 0) {
                     var has3rdSafe = false;
