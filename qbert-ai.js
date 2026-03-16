@@ -614,7 +614,7 @@ function unifiedPick(gs, coilyActive) {
 
         // Hop 1: simulate this direction
         var survived = 0, totalTC = 0;
-        var hop1States = [];  // save states for hop 2 check
+        var hop1States = [];  // save states for hop 2+ check
         for (var s = 0; s < SAMPLES; s++) {
             simSeed(k * 100 + s);
             var child = simDeepClone(gs);
@@ -653,7 +653,7 @@ function unifiedPick(gs, coilyActive) {
         else if (survived === SAMPLES && safe1[dir]) aiMoveScores[dir] = 10000 - (totalTC / survived);
         else aiMoveScores[dir] = (survived / SAMPLES) * 100 - 100;
 
-        // Hop 2: if hop 1 is safe and enemies exist, verify at least one safe follow-up
+        // Hop 2+3: if hop 1 is safe and enemies exist, verify safe follow-up chain
         if (safe1[dir] && hasEnemies && dir !== 'STAY') {
             var has2ndSafe = false;
             for (var d2k = 0; d2k < DIR_KEYS_WITH_STAY.length; d2k++) {
@@ -668,7 +668,6 @@ function unifiedPick(gs, coilyActive) {
             }
             safe2[dir] = has2ndSafe;
             if (!has2ndSafe) {
-                // Hop 1 safe but no safe hop 2 — mark unsafe
                 aiMoveScores[dir] = -5000;
             }
         } else {
