@@ -393,123 +393,6 @@ function aiTourInit() { aiLastRemaining = 99; aiNoProgressCount = 0; aiStayCount
 // finds connected components of unfinished cubes and targets the nearest
 // cluster's closest member, preferring paths that don't cross completed cubes.
 
-function dynamicTourMove(gs) {
-    var lv = gs.lv;
-    var tgt = gs.tgt;
-    var completedSet = {};
-    var unfinishedSet = {};
-    var unfinished = [];
-    for (var i = 0; i < gs.cubes.length; i++) {
-        var c = gs.cubes[i];
-        if (c.state >= tgt) completedSet[c.row + ',' + c.col] = true;
-        else {
-            unfinished.push({ row: c.row, col: c.col });
-            unfinishedSet[c.row + ',' + c.col] = true;
-        }
-    }
-    if (unfinished.length === 0) return null;
-
-    var penalty = revertPenalty(lv, gs.cubes, tgt);
-
-
-    // On toggle levels, find connected clusters of unfinished cubes
-    // and give bonus to targets in larger clusters (more sweep potential)
-    var clusterSize = {};  // key -> cluster size
-    if (lv >= 3 && unfinished.length > 1) {
-        // BFS to find connected components among unfinished cubes
-        var visited = {};
-        for (var ci = 0; ci < unfinished.length; ci++) {
-            var ck = unfinished[ci].row + ',' + unfinished[ci].col;
-            if (visited[ck]) continue;
-            // BFS from this unfinished cube
-            var cluster = [ck];
-            visited[ck] = true;
-            var qi2 = 0;
-            while (qi2 < cluster.length) {
-                var parts = cluster[qi2].split(',');
-                var cr = parseInt(parts[0]), cc = parseInt(parts[1]);
-                for (var ck2 = 0; ck2 < 4; ck2++) {
-                    var cdk = DIRS[DIR_KEYS[ck2]];
-                    var cnk = (cr + cdk.dr) + ',' + (cc + cdk.dc);
-                    if (!visited[cnk] && unfinishedSet[cnk]) {
-                        visited[cnk] = true;
-                        cluster.push(cnk);
-                    }
-                }
-                qi2++;
-            }
-            for (var cj = 0; cj < cluster.length; cj++)
-                clusterSize[cluster[cj]] = cluster.length;
-        }
-    }
-
-    var startKey = gs.player.row + ',' + gs.player.col;
-    var dist = {}; dist[startKey] = 0;
-    var reverts = {}; reverts[startKey] = 0;
-    var prev = {}; prev[startKey] = null;
-    var pq = [{ row: gs.player.row, col: gs.player.col, cost: 0 }];
-    var bestTarget = null, bestCost = Infinity;
-
-    while (pq.length > 0) {
-        var minIdx = 0;
-        for (var qi = 1; qi < pq.length; qi++)
-            if (pq[qi].cost < pq[minIdx].cost) minIdx = qi;
-        var cur = pq[minIdx];
-        pq.splice(minIdx, 1);
-        var curKey = cur.row + ',' + cur.col;
-        if (cur.cost > dist[curKey]) continue;
-
-        if (curKey !== startKey && unfinishedSet[curKey]) {
-            var adjCost = cur.cost;
-            // Big bonus for zero-revert paths — reached without crossing completed cubes
-            if (lv >= 3 && (reverts[curKey] || 0) === 0) adjCost -= 4;
-            // Cluster bonus: prefer targets in larger connected groups (sweep-friendly)
-            if (lv >= 3 && clusterSize[curKey]) {
-                adjCost -= Math.min(clusterSize[curKey], 6) * 0.8;
-            }
-            if (adjCost < bestCost) { bestCost = adjCost; bestTarget = { row: cur.row, col: cur.col }; }
-        }
-        if (bestTarget && cur.cost > bestCost + 3) break;
-
-        for (var k = 0; k < 4; k++) {
-            var dk = DIRS[DIR_KEYS[k]];
-            var nr = cur.row + dk.dr, nc = cur.col + dk.dc;
-            if (!isValidPos(nr, nc)) continue;
-            var nk = nr + ',' + nc;
-            var isCompleted = !!completedSet[nk];
-            var moveCost = 1 + (isCompleted ? penalty : 0);
-
-            // On toggle levels, penalize completed dead-end tiles
-            if (isCompleted && lv >= 3) {
-                var isApex = (nr === 0 && nc === 0);
-                var isCrnr = (nr === ROWS - 1 && (nc === 0 || nc === ROWS - 1));
-                var isEdgeT = (nc === 0 || nc === nr) && !isApex && !isCrnr;
-                if (isApex || isCrnr) moveCost += 10;  // strongly avoid
-                else if (isEdgeT) moveCost += 5;        // discouraged
-            } else if (isCompleted) {
-                var isApex2 = (nr === 0 && nc === 0);
-                var isCrnr2 = (nr === ROWS - 1 && (nc === 0 || nc === ROWS - 1));
-                if (isApex2 || isCrnr2) moveCost += 4;
-            }
-            var newCost = cur.cost + moveCost;
-            if (dist[nk] === undefined || newCost < dist[nk]) {
-                dist[nk] = newCost;
-                reverts[nk] = (reverts[curKey] || 0) + (isCompleted ? 1 : 0);
-                prev[nk] = { row: cur.row, col: cur.col, dir: DIR_KEYS[k] };
-                pq.push({ row: nr, col: nc, cost: newCost });
-            }
-        }
-    }
-
-    if (!bestTarget) return null;
-    var path = [];
-    var tk = bestTarget.row + ',' + bestTarget.col;
-    while (prev[tk] && prev[tk].dir) {
-        path.unshift(prev[tk].dir);
-        tk = prev[tk].row + ',' + prev[tk].col;
-    }
-    return path.length > 0 ? path[0] : null;
-}
 
 // ─── Can-move check ──────────────────────────────────────────────────────────
 function simCanMove(gs, dirKey) {
@@ -633,8 +516,6 @@ function unifiedPick(gs, coilyActive) {
     function simSeed(sampleIdx) { simRng = createSeededRng(baseSeed + sampleIdx * 9973); }
     function restoreRng() { simRng = savedRng; }
 
-    var tourDir = dynamicTourMove(gs);
-    aiLastTourDir = tourDir;
 
     // MC samples for safety validation — enough to catch random enemy moves
     var hasEnemies = gs.enemies.length > 0;
@@ -738,6 +619,7 @@ function unifiedPick(gs, coilyActive) {
     }
 
     aiLastHop1Surv = hop1Surv;
+    aiLastTourCosts = tourCosts;
 
     // Slick pursuit on toggle levels — catch them if adjacent and safe
     if (gs.lv >= 3) {
@@ -757,12 +639,7 @@ function unifiedPick(gs, coilyActive) {
         }
     }
 
-    // Prefer tour planner direction if it's fully safe (hop 1 + hop 2)
-    if (tourDir !== null && safe1[tourDir] && safe2[tourDir]) {
-        restoreRng(); return tourDir;
-    }
-
-    // Fall back: best fully-safe direction by tour cost
+    // Pick safe direction with lowest tour cost
     var bestDir = null, bestCost = Infinity;
     for (var fk = 0; fk < DIR_KEYS_WITH_STAY.length; fk++) {
         var fd = DIR_KEYS_WITH_STAY[fk];
@@ -790,7 +667,7 @@ function unifiedPick(gs, coilyActive) {
 
 // ─── Main entry point ────────────────────────────────────────────────────────
 var aiMoveScores = {};  // exported per-direction scores for viz
-var aiLastTourDir = null;  // last tour direction from unifiedPick
+var aiLastTourCosts = {};  // last per-direction tour costs from unifiedPick
 var aiLastHop1Surv = {};   // last hop-1 survival rates from unifiedPick
 var aiMode = 0;         // 0 = no AI, 1 = unified (always set to 1 now)
 var aiStayCount = 0;    // consecutive STAY decisions — used to break stuck loops
@@ -952,10 +829,18 @@ function aiPickBestDir() {
                     }
                 }
             }
-            // Phase 2 (>20): use tour direction if safe — it routes around enemies now
-            if (!bestProgDir && aiNoProgressCount > 20 && aiLastTourDir !== null) {
-                var tsc = aiMoveScores[aiLastTourDir];
-                if (tsc !== undefined && tsc >= 0) bestProgDir = aiLastTourDir;
+            // Phase 2 (>20): pick best safe direction by tour cost
+            if (!bestProgDir && aiNoProgressCount > 20) {
+                var bestTC = Infinity;
+                for (var pk2 = 0; pk2 < DIR_KEYS.length; pk2++) {
+                    var pk2sc = aiMoveScores[DIR_KEYS[pk2]];
+                    if (pk2sc !== undefined && pk2sc >= 0 && aiLastTourCosts[DIR_KEYS[pk2]] !== undefined) {
+                        if (aiLastTourCosts[DIR_KEYS[pk2]] < bestTC) {
+                            bestTC = aiLastTourCosts[DIR_KEYS[pk2]];
+                            bestProgDir = DIR_KEYS[pk2];
+                        }
+                    }
+                }
             }
             // Phase 3 (>30): accept highest-survival move (relax 100% requirement)
             if (!bestProgDir && aiNoProgressCount > 30) {
