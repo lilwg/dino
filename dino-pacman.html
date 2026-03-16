@@ -1,0 +1,1039 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DinoPacman</title>
+    <link rel="stylesheet" href="si-styles.css?v=2">
+    <script src="fs-toggle.js"></script>
+    <script src="dino-sounds.js"></script>
+    <style>
+        #game-canvas { width: 100%; height: auto; max-width: none !important; }
+    </style>
+</head>
+<body>
+    <img id="offline-resources-1x"
+         src="assets/default_100_percent/100-offline-sprite.png"
+         style="display:none;">
+
+    <div class="si-page" style="padding-bottom: 40px;">
+        <h1>DinoPacman</h1>
+        <p class="si-subtitle">Chomp dots and outrun the pterodactyls</p>
+
+        <div class="si-game-box">
+            <canvas id="game-canvas" width="600" height="460"></canvas>
+
+            <div class="si-controls" style="margin-top: 12px;">
+                <button class="si-btn active" id="human-btn" onclick="setMode('off')">Human</button>
+                <button class="si-btn" id="rules-btn" onclick="setMode('rules')">AI</button>
+                <button class="si-btn" id="viz-btn" onclick="toggleViz()">Viz</button>
+                <button class="si-btn" onclick="restartGame()">Restart</button>
+                <button class="si-btn" id="pause-btn" onclick="togglePause()">Pause</button>
+                <button class="si-btn" id="fs-btn" onclick="toggleFullscreen()">Fullscreen</button>
+                <label style="display:inline-flex;align-items:center;gap:4px;margin-left:8px;font-size:12px;color:#535353;">
+                    Speed <input type="range" id="speed-slider" min="1" max="8" step="1" value="1" style="width:80px;" oninput="setGameSpeed(parseFloat(this.value))">
+                    <span id="speed-label">1x</span>
+                </label>
+            </div>
+
+            <p class="si-help" style="text-align: center;">&larr; / A left &nbsp;|&nbsp; &rarr; / D right &nbsp;|&nbsp; &uarr; / W up &nbsp;|&nbsp; &darr; / S down &nbsp;|&nbsp; R restart</p>
+        </div>
+
+        <h2 style="margin-top: 16px;">How it works</h2>
+        <p class="si-prose">
+            The AI uses BFS flood-fill to compute shortest distances from the T-Rex to every reachable tile. Each ghost projects a danger zone&mdash;tiles within a few steps are penalized based on proximity and ghost mode. When powered up, the AI flips strategy: it chases frightened ghosts using BFS, prioritizing the nearest vulnerable target for maximum combo score (200&rarr;400&rarr;800&rarr;1600).
+        </p>
+        <p class="si-prose">
+            In normal mode, the AI scores every reachable dot by combining its BFS distance with a ghost-danger penalty. Power pellets get a strategic bonus when ghosts are nearby&mdash;eating one at the right moment can clear a cluster of ghosts. The AI also avoids dead-end corridors when ghosts are close. Tap <strong>Viz</strong> to see ghost danger zones (red halos), the AI&rsquo;s planned path (green dotted line), target highlights, and each ghost&rsquo;s target tile (colored squares).
+        </p>
+
+        <p style="margin-top: 20px;">
+            <a href="/" style="color: #0071e3; font-size: 14px; text-decoration: none;">&larr; Back</a>
+        </p>
+    </div>
+
+    <!-- Hidden elements for JS compatibility -->
+    <div style="display:none">
+        <button id="dqn-btn"></button>
+        <input type="range" id="dqn-speed" min="1" max="500" value="100">
+        <span id="dqn-speed-val">100</span>
+        <span id="dqn-stats"></span>
+        <button id="dqn-train-btn"></button>
+        <button id="dqn-cached-btn"></button>
+        <div id="dqn-viz-box"><canvas id="dqn-chart" width="1" height="1"></canvas></div>
+    </div>
+
+<script>
+(function () {
+    'use strict';
+
+    // =================================================================
+    //  CONSTANTS & LAYOUT
+    // =================================================================
+    var CW = 600, CH = 460;
+    // 28x31 classic grid. TILE = 13 => 28*13=364 wide, 31*13=403 tall + 30 top + 20 bottom = 453
+    var TILE = 13;
+    var COLS = 28, ROWS = 31;
+    var MAZE_X = Math.floor((CW - COLS * TILE) / 2);
+    var MAZE_Y = 30;
+    var gameSpeed = 1;
+    var paused = false;
+    var aiMode = 'off';
+    var vizEnabled = false;
+
+    // Sprites from the dino sprite sheet
+    var SPRITES = {
+        TREX_RUN1: { x: 936, y: 2, w: 44, h: 47 },
+        TREX_RUN2: { x: 980, y: 2, w: 44, h: 47 },
+        TREX_IDLE: { x: 848, y: 2, w: 44, h: 47 },
+        PTERO1:    { x: 134, y: 2, w: 46, h: 40 },
+        PTERO2:    { x: 180, y: 2, w: 46, h: 40 }
+    };
+    var spriteImg = document.getElementById('offline-resources-1x');
+
+    var canvas = document.getElementById('game-canvas');
+    var ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+    // Directions: 0=right, 1=down, 2=left, 3=up
+    var DX = [1, 0, -1, 0];
+    var DY = [0, 1, 0, -1];
+
+    // =================================================================
+    //  MAZE — classic Pac-Man layout
+    //  0=wall  1=dot  2=power pellet  3=empty path  4=ghost house interior
+    // =================================================================
+    var MAZE_TEMPLATE = [
+        "0000000000000000000000000000",  // 0
+        "0111111111111001111111111110",  // 1
+        "0100001000010000100001000010",  // 2
+        "0200001000010000100001000020",  // 3
+        "0100001000010000100001000010",  // 4
+        "0111111111111111111111111110",  // 5
+        "0100001001000000001001000010",  // 6
+        "0100001001000000001001000010",  // 7
+        "0111110011110000111100111110",  // 8
+        "0000001010000000000101000000",  // 9
+        "0000001010000000000101000000",  // 10
+        "0000001013333333333101000000",  // 11
+        "0000001010004444000101000000",  // 12
+        "0000001010004444000101000000",  // 13
+        "3333331113004444003111333333",  // 14 tunnel
+        "0000001010004444000101000000",  // 15
+        "0000001010000000000101000000",  // 16
+        "0000001013333333333101000000",  // 17
+        "0000001010000000000101000000",  // 18
+        "0111111111111001111111111110",  // 19
+        "0100001000010000100001000010",  // 20
+        "0200011000010000100001100020",  // 21
+        "0110011111111111111111100110",  // 22
+        "0010010010000000000100100100",  // 23
+        "0010010010000000000100100100",  // 24
+        "0111110111110000111110111110",  // 25
+        "0100000000010000100000000010",  // 26
+        "0100000000010000100000000010",  // 27
+        "0111111111111111111111111110",  // 28
+        "0000000000000000000000000000",  // 29
+        "0000000000000000000000000000"   // 30
+    ];
+
+    var maze = [];
+    var totalDots = 0;
+    var dotsEaten = 0;
+
+    function initMaze() {
+        maze = [];
+        totalDots = 0;
+        dotsEaten = 0;
+        for (var r = 0; r < ROWS; r++) {
+            maze[r] = [];
+            for (var c = 0; c < COLS; c++) {
+                var v = parseInt(MAZE_TEMPLATE[r][c]);
+                maze[r][c] = v;
+                if (v === 1 || v === 2) totalDots++;
+            }
+        }
+    }
+
+    function isWall(c, r) {
+        if (r < 0 || r >= ROWS) return true;
+        if (c < 0 || c >= COLS) {
+            return r !== 14; // tunnel row wraps
+        }
+        return maze[r][c] === 0 || maze[r][c] === 4;
+    }
+
+    function wrapCol(c) {
+        if (c < 0) return COLS - 1;
+        if (c >= COLS) return 0;
+        return c;
+    }
+
+    // =================================================================
+    //  PLAYER
+    // =================================================================
+    var player = {
+        col: 14, row: 22, dir: 2, nextDir: 2,
+        moveProgress: 0, alive: true,
+        mouthOpen: true, animTimer: 0,
+        poweredUp: false, powerTimer: 0, ghostsEatenThisPower: 0
+    };
+
+    // =================================================================
+    //  GHOSTS
+    // =================================================================
+    var GHOST_COLORS = ['#ff0000', '#ffb8ff', '#00ffff', '#ffb852'];
+    var GHOST_NAMES  = ['Blinky', 'Pinky', 'Inky', 'Clyde'];
+    var GHOST_SCATTER = [
+        { col: 25, row: 0 },   // Blinky top-right
+        { col: 2,  row: 0 },   // Pinky  top-left
+        { col: 27, row: 30 },  // Inky   bottom-right
+        { col: 0,  row: 30 }   // Clyde  bottom-left
+    ];
+
+    var ghosts = [];
+    var ghostMode = 'scatter';
+    var modeTimer = 0;
+    var modePhase = 0;
+    var MODE_DURATIONS = [7, 20, 7, 20, 5, 20, 5, -1];
+    var FRIGHT_BASE = 6;
+    var frightenedTimer = 0;
+    var frightenedFlashing = false;
+
+    function createGhost(i) {
+        var startCols = [13, 12, 14, 15];
+        var startRows = [11, 14, 14, 14];
+        return {
+            idx: i,
+            col: i === 0 ? 13 : startCols[i],
+            row: i === 0 ? 11 : startRows[i],
+            dir: 3, moveProgress: 0,
+            state: i === 0 ? 'active' : 'pen',
+            penTimer: i * 4 + 2,
+            eaten: false, returningHome: false,
+            targetCol: 0, targetRow: 0
+        };
+    }
+
+    function initGhosts() {
+        ghosts = [];
+        for (var i = 0; i < 4; i++) ghosts.push(createGhost(i));
+        ghostMode = 'scatter';
+        modeTimer = 0;
+        modePhase = 0;
+        frightenedTimer = 0;
+        frightenedFlashing = false;
+    }
+
+    // =================================================================
+    //  GAME STATE
+    // =================================================================
+    var score = 0, lives = 3, level = 1;
+    var gameOver = false, gameWon = false;
+    var deathTimer = 0, readyTimer = 0, levelCompleteTimer = 0;
+    var frameCount = 0;
+    var extraLifeAwarded = false;
+
+    function resetPositions() {
+        player.col = 14; player.row = 22;
+        player.dir = 2; player.nextDir = 2;
+        player.moveProgress = 0; player.alive = true;
+        player.poweredUp = false; player.powerTimer = 0;
+        player.ghostsEatenThisPower = 0;
+        initGhosts();
+    }
+
+    function resetLevel() {
+        initMaze();
+        resetPositions();
+        readyTimer = 2.0;
+    }
+
+    function startGame() {
+        score = 0; lives = 3; level = 1;
+        gameOver = false; gameWon = false;
+        deathTimer = 0; levelCompleteTimer = 0;
+        frameCount = 0; extraLifeAwarded = false;
+        resetLevel();
+    }
+
+    // =================================================================
+    //  GHOST AI — target selection
+    // =================================================================
+    function ghostTarget(g) {
+        if (g.returningHome) return { col: 13, row: 11 };
+        if (ghostMode === 'scatter' && !player.poweredUp) return GHOST_SCATTER[g.idx];
+
+        switch (g.idx) {
+            case 0: // Blinky — direct chase
+                return { col: player.col, row: player.row };
+            case 1: // Pinky — 4 tiles ahead
+                var tc = player.col + DX[player.dir] * 4;
+                var tr = player.row + DY[player.dir] * 4;
+                if (player.dir === 3) tc -= 4; // classic overflow bug
+                return { col: tc, row: tr };
+            case 2: // Inky — vector from Blinky through 2 ahead of player, doubled
+                var ac = player.col + DX[player.dir] * 2;
+                var ar = player.row + DY[player.dir] * 2;
+                return { col: ac + (ac - ghosts[0].col), row: ar + (ar - ghosts[0].row) };
+            case 3: // Clyde — chase if far, scatter if close
+                var d = Math.abs(player.col - g.col) + Math.abs(player.row - g.row);
+                return d > 8 ? { col: player.col, row: player.row } : GHOST_SCATTER[3];
+            default:
+                return { col: player.col, row: player.row };
+        }
+    }
+
+    function chooseDir(g) {
+        var t = ghostTarget(g);
+        g.targetCol = t.col; g.targetRow = t.row;
+        var reverse = (g.dir + 2) % 4;
+        var bestDir = -1, bestDist = 1e9;
+        for (var d = 0; d < 4; d++) {
+            if (d === reverse && !g.returningHome) continue;
+            var nc = wrapCol(g.col + DX[d]);
+            var nr = g.row + DY[d];
+            // Classic no-up restriction at certain intersections
+            if (d === 3 && !g.returningHome &&
+                (nr === 11 || nr === 23) && (nc === 12 || nc === 15)) continue;
+            if (isWall(nc, nr)) continue;
+            var dx = nc - t.col, dy = nr - t.row;
+            var dist = dx * dx + dy * dy;
+            if (dist < bestDist) { bestDist = dist; bestDir = d; }
+        }
+        if (bestDir < 0) {
+            for (var d2 = 0; d2 < 4; d2++) {
+                var nc2 = wrapCol(g.col + DX[d2]); var nr2 = g.row + DY[d2];
+                if (!isWall(nc2, nr2)) { bestDir = d2; break; }
+            }
+        }
+        return bestDir >= 0 ? bestDir : g.dir;
+    }
+
+    function chooseFrightDir(g) {
+        var rev = (g.dir + 2) % 4;
+        var opts = [];
+        for (var d = 0; d < 4; d++) {
+            if (d === rev) continue;
+            var nc = wrapCol(g.col + DX[d]); var nr = g.row + DY[d];
+            if (!isWall(nc, nr)) opts.push(d);
+        }
+        if (opts.length === 0) {
+            for (var d2 = 0; d2 < 4; d2++) {
+                var nc2 = wrapCol(g.col + DX[d2]); var nr2 = g.row + DY[d2];
+                if (!isWall(nc2, nr2)) opts.push(d2);
+            }
+        }
+        return opts.length ? opts[Math.floor(Math.random() * opts.length)] : g.dir;
+    }
+
+    // =================================================================
+    //  PLAYER AI
+    // =================================================================
+    var aiViz = { danger: null, path: [], target: null, ghostTargets: [] };
+
+    function bfs(sc, sr) {
+        var dist = [];
+        for (var r = 0; r < ROWS; r++) {
+            dist[r] = new Int16Array(COLS);
+            for (var c = 0; c < COLS; c++) dist[r][c] = -1;
+        }
+        dist[sr][sc] = 0;
+        var q = [sc, sr], qi = 0;
+        while (qi < q.length) {
+            var cc = q[qi++], cr = q[qi++];
+            for (var d = 0; d < 4; d++) {
+                var nc = wrapCol(cc + DX[d]), nr = cr + DY[d];
+                if (nr < 0 || nr >= ROWS || isWall(nc, nr) || dist[nr][nc] >= 0) continue;
+                dist[nr][nc] = dist[cr][cc] + 1;
+                q.push(nc, nr);
+            }
+        }
+        return dist;
+    }
+
+    function buildDanger() {
+        var danger = [];
+        for (var r = 0; r < ROWS; r++) {
+            danger[r] = new Float32Array(COLS);
+        }
+        for (var gi = 0; gi < 4; gi++) {
+            var g = ghosts[gi];
+            if (g.state !== 'active' || g.returningHome) continue;
+            if (player.poweredUp && !g.eaten) continue;
+            var gd = bfs(g.col, g.row);
+            for (var r2 = 0; r2 < ROWS; r2++) {
+                for (var c2 = 0; c2 < COLS; c2++) {
+                    var d = gd[r2][c2];
+                    if (d >= 0 && d <= 7) danger[r2][c2] += (8 - d) * 12;
+                }
+            }
+        }
+        return danger;
+    }
+
+    function pathBFS(sc, sr, ec, er) {
+        var prev = [];
+        for (var r = 0; r < ROWS; r++) { prev[r] = []; for (var c = 0; c < COLS; c++) prev[r][c] = null; }
+        var vis = [];
+        for (var r2 = 0; r2 < ROWS; r2++) { vis[r2] = new Uint8Array(COLS); }
+        vis[sr][sc] = 1;
+        var q = [sc, sr], qi = 0;
+        while (qi < q.length) {
+            var cc = q[qi++], cr = q[qi++];
+            if (cc === ec && cr === er) break;
+            for (var d = 0; d < 4; d++) {
+                var nc = wrapCol(cc + DX[d]), nr = cr + DY[d];
+                if (nr < 0 || nr >= ROWS || isWall(nc, nr) || vis[nr][nc]) continue;
+                vis[nr][nc] = 1;
+                prev[nr][nc] = { c: cc, r: cr };
+                q.push(nc, nr);
+            }
+        }
+        // reconstruct
+        var path = [];
+        var pc = ec, pr = er;
+        while (prev[pr] && prev[pr][pc]) {
+            path.unshift({ col: pc, row: pr });
+            var pp = prev[pr][pc];
+            pc = pp.c; pr = pp.r;
+        }
+        return path;
+    }
+
+    function aiDecide() {
+        var pDist = bfs(player.col, player.row);
+        var danger = buildDanger();
+        aiViz.danger = danger;
+        aiViz.ghostTargets = [];
+        for (var gi = 0; gi < 4; gi++) {
+            var g = ghosts[gi];
+            if (g.state === 'active') {
+                aiViz.ghostTargets.push({ col: g.targetCol, row: g.targetRow, color: GHOST_COLORS[gi] });
+            }
+        }
+
+        // Power-up mode: chase frightened ghosts
+        if (player.poweredUp) {
+            var bestG = null, bestGD = 1e9;
+            for (var gi2 = 0; gi2 < 4; gi2++) {
+                var g2 = ghosts[gi2];
+                if (g2.state !== 'active' || g2.returningHome || g2.eaten) continue;
+                var gdd = pDist[g2.row] ? pDist[g2.row][g2.col] : -1;
+                if (gdd >= 0 && gdd < bestGD) { bestGD = gdd; bestG = g2; }
+            }
+            if (bestG && bestGD < 20) {
+                var p = pathBFS(player.col, player.row, bestG.col, bestG.row);
+                aiViz.path = p;
+                aiViz.target = { col: bestG.col, row: bestG.row };
+                if (p.length > 0) return dirTo(player.col, player.row, p[0].col, p[0].row);
+            }
+        }
+
+        // Normal: score all dots
+        var bestTarget = null, bestScore = -1e9;
+        for (var r = 0; r < ROWS; r++) {
+            for (var c = 0; c < COLS; c++) {
+                if (maze[r][c] !== 1 && maze[r][c] !== 2) continue;
+                var dd = pDist[r] ? pDist[r][c] : -1;
+                if (dd < 0) continue;
+                var s = 100 - dd * 3 - danger[r][c];
+                // Power pellet strategic bonus
+                if (maze[r][c] === 2) {
+                    var nearby = 0;
+                    for (var gi3 = 0; gi3 < 4; gi3++) {
+                        var g3 = ghosts[gi3];
+                        if (g3.state === 'active' && !g3.returningHome) {
+                            if (Math.abs(g3.col - c) + Math.abs(g3.row - r) < 10) nearby++;
+                        }
+                    }
+                    s += nearby * 25;
+                }
+                if (s > bestScore) { bestScore = s; bestTarget = { col: c, row: r }; }
+            }
+        }
+
+        if (!bestTarget) { aiViz.path = []; aiViz.target = null; return player.dir; }
+
+        var path = pathBFS(player.col, player.row, bestTarget.col, bestTarget.row);
+        aiViz.path = path;
+        aiViz.target = bestTarget;
+
+        if (path.length > 0) return dirTo(player.col, player.row, path[0].col, path[0].row);
+
+        // Fallback: safest adjacent
+        var safest = player.dir, safeDanger = 1e9;
+        for (var d = 0; d < 4; d++) {
+            var nc = wrapCol(player.col + DX[d]), nr = player.row + DY[d];
+            if (isWall(nc, nr)) continue;
+            var dn = danger[nr] ? danger[nr][nc] : 999;
+            if (dn < safeDanger) { safeDanger = dn; safest = d; }
+        }
+        return safest;
+    }
+
+    function dirTo(fc, fr, tc, tr) {
+        var dc = tc - fc, dr = tr - fr;
+        if (dc > 1) dc = -1;   // tunnel wrap
+        if (dc < -1) dc = 1;
+        for (var d = 0; d < 4; d++) {
+            if (DX[d] === dc && DY[d] === dr) return d;
+        }
+        return 0;
+    }
+
+    // =================================================================
+    //  UPDATE
+    // =================================================================
+    var BASE_SPEED = 0.09;
+
+    function update(dt) {
+        if (paused || gameOver) return;
+        if (readyTimer > 0) { readyTimer -= dt; return; }
+        if (deathTimer > 0) {
+            deathTimer -= dt;
+            if (deathTimer <= 0) {
+                lives--;
+                if (lives <= 0) { gameOver = true; }
+                else { resetPositions(); readyTimer = 1.5; }
+            }
+            return;
+        }
+        if (levelCompleteTimer > 0) {
+            levelCompleteTimer -= dt;
+            if (levelCompleteTimer <= 0) { level++; resetLevel(); }
+            return;
+        }
+
+        frameCount++;
+
+        // AI control
+        if (aiMode === 'rules' && player.alive && player.moveProgress < 0.15) {
+            player.nextDir = aiDecide();
+        }
+
+        var lvlMul = 1 + (level - 1) * 0.04;
+        var spd = BASE_SPEED * gameSpeed * lvlMul;
+
+        if (player.alive) updatePlayer(spd);
+        updateGhosts(spd, dt);
+
+        // Power timer
+        if (player.poweredUp) {
+            player.powerTimer -= dt;
+            frightenedTimer -= dt;
+            frightenedFlashing = frightenedTimer < (FRIGHT_BASE * 0.3);
+            if (player.powerTimer <= 0) {
+                player.poweredUp = false;
+                player.ghostsEatenThisPower = 0;
+                for (var i = 0; i < 4; i++) {
+                    if (ghosts[i].state === 'active' && !ghosts[i].returningHome) ghosts[i].eaten = false;
+                }
+            }
+        }
+
+        // Ghost mode timer
+        if (!player.poweredUp) {
+            modeTimer += dt;
+            var dur = MODE_DURATIONS[modePhase];
+            if (dur > 0 && modeTimer >= dur) {
+                modeTimer = 0;
+                modePhase = Math.min(modePhase + 1, MODE_DURATIONS.length - 1);
+                ghostMode = (modePhase % 2 === 0) ? 'scatter' : 'chase';
+                for (var gi = 0; gi < 4; gi++) {
+                    if (ghosts[gi].state === 'active' && !ghosts[gi].returningHome) {
+                        ghosts[gi].dir = (ghosts[gi].dir + 2) % 4;
+                    }
+                }
+            }
+        }
+
+        // Animation
+        player.animTimer += dt * gameSpeed;
+        if (player.animTimer > 0.08) { player.animTimer = 0; player.mouthOpen = !player.mouthOpen; }
+
+        checkCollisions();
+
+        // Extra life at 10000
+        if (!extraLifeAwarded && score >= 10000) {
+            extraLifeAwarded = true;
+            lives++;
+            DinoSounds.reached();
+        }
+    }
+
+    function updatePlayer(spd) {
+        // Try changing direction
+        var nc = wrapCol(player.col + DX[player.nextDir]);
+        var nr = player.row + DY[player.nextDir];
+        if (!isWall(nc, nr) && player.moveProgress < 0.15) {
+            player.dir = player.nextDir;
+        }
+
+        var nextC = wrapCol(player.col + DX[player.dir]);
+        var nextR = player.row + DY[player.dir];
+
+        if (!isWall(nextC, nextR)) {
+            player.moveProgress += spd;
+            if (player.moveProgress >= 1.0) {
+                player.moveProgress = 0;
+                player.col = nextC;
+                player.row = nextR;
+
+                // Eat dot
+                if (player.col >= 0 && player.col < COLS && player.row >= 0 && player.row < ROWS) {
+                    var t = maze[player.row][player.col];
+                    if (t === 1) {
+                        maze[player.row][player.col] = 3;
+                        score += 10; dotsEaten++;
+                        DinoSounds.press();
+                    } else if (t === 2) {
+                        maze[player.row][player.col] = 3;
+                        score += 50; dotsEaten++;
+                        activatePower();
+                        DinoSounds.reached();
+                    }
+                }
+                if (dotsEaten >= totalDots) levelCompleteTimer = 2.0;
+            }
+        } else {
+            player.moveProgress = 0;
+        }
+    }
+
+    function activatePower() {
+        player.poweredUp = true;
+        var dur = Math.max(2, FRIGHT_BASE - (level - 1) * 0.5);
+        player.powerTimer = dur;
+        frightenedTimer = dur;
+        player.ghostsEatenThisPower = 0;
+        frightenedFlashing = false;
+        for (var i = 0; i < 4; i++) {
+            if (ghosts[i].state === 'active' && !ghosts[i].returningHome) {
+                ghosts[i].dir = (ghosts[i].dir + 2) % 4;
+                ghosts[i].eaten = false;
+            }
+        }
+    }
+
+    function updateGhosts(spd, dt) {
+        for (var i = 0; i < 4; i++) {
+            var g = ghosts[i];
+
+            if (g.state === 'pen') {
+                g.penTimer -= dt * gameSpeed;
+                if (g.penTimer <= 0) {
+                    g.state = 'leaving';
+                    g.col = 13; g.row = 14; g.dir = 3; g.moveProgress = 0;
+                }
+                continue;
+            }
+
+            if (g.state === 'leaving') {
+                g.moveProgress += spd * 0.6;
+                if (g.moveProgress >= 1.0) {
+                    g.moveProgress = 0;
+                    g.row--;
+                    if (g.row <= 11) {
+                        g.row = 11; g.state = 'active'; g.dir = 2;
+                    }
+                }
+                continue;
+            }
+
+            // Active
+            var gs = spd;
+            if (player.poweredUp && !g.eaten && !g.returningHome) gs *= 0.5;
+            if (g.returningHome) gs *= 2;
+
+            g.moveProgress += gs;
+            if (g.moveProgress >= 1.0) {
+                g.moveProgress = 0;
+                g.col = wrapCol(g.col + DX[g.dir]);
+                g.row += DY[g.dir];
+
+                // Returned home?
+                if (g.returningHome && g.row >= 12 && g.row <= 15 && g.col >= 12 && g.col <= 15) {
+                    g.returningHome = false; g.eaten = false;
+                    g.state = 'leaving'; g.col = 13; g.row = 14; g.dir = 3; g.moveProgress = 0;
+                    continue;
+                }
+
+                // Choose next direction
+                if (g.returningHome) {
+                    g.dir = chooseDir(g);
+                } else if (player.poweredUp && !g.eaten) {
+                    g.dir = chooseFrightDir(g);
+                } else {
+                    g.dir = chooseDir(g);
+                }
+            }
+        }
+    }
+
+    function checkCollisions() {
+        for (var i = 0; i < 4; i++) {
+            var g = ghosts[i];
+            if (g.state !== 'active' || g.returningHome) continue;
+            var px = player.col + DX[player.dir] * player.moveProgress;
+            var py = player.row + DY[player.dir] * player.moveProgress;
+            var gx = g.col + DX[g.dir] * g.moveProgress;
+            var gy = g.row + DY[g.dir] * g.moveProgress;
+            var dx = Math.abs(px - gx), dy = Math.abs(py - gy);
+            if (dx > COLS / 2) dx = COLS - dx;
+            if (dx < 0.7 && dy < 0.7) {
+                if (player.poweredUp && !g.eaten) {
+                    g.eaten = true; g.returningHome = true;
+                    player.ghostsEatenThisPower++;
+                    score += 200 * Math.pow(2, player.ghostsEatenThisPower - 1);
+                    DinoSounds.hit();
+                } else if (!g.eaten) {
+                    player.alive = false; deathTimer = 1.5;
+                    DinoSounds.hit();
+                }
+            }
+        }
+    }
+
+    // =================================================================
+    //  RENDERING
+    // =================================================================
+    var pelletPulse = 0;
+
+    function render() {
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, CW, CH);
+
+        drawMaze();
+        drawDots();
+        if (vizEnabled && aiMode === 'rules') drawViz();
+        if (deathTimer <= 0 && levelCompleteTimer <= 0) {
+            drawGhosts();
+            if (player.alive) drawPlayer();
+        } else if (deathTimer > 0) {
+            drawPlayer();
+        }
+        drawHUD();
+
+        if (readyTimer > 0) {
+            ctx.fillStyle = '#ffff00';
+            ctx.font = 'bold 14px monospace';
+            ctx.textAlign = 'center';
+            ctx.fillText('READY!', CW / 2, MAZE_Y + 17 * TILE + TILE / 2 + 4);
+        }
+
+        if (gameOver) {
+            ctx.fillStyle = 'rgba(0,0,0,0.65)';
+            ctx.fillRect(0, 0, CW, CH);
+            ctx.fillStyle = '#ff0000';
+            ctx.font = 'bold 26px monospace';
+            ctx.textAlign = 'center';
+            ctx.fillText('GAME OVER', CW / 2, CH / 2 - 10);
+            ctx.fillStyle = '#fff';
+            ctx.font = '14px monospace';
+            ctx.fillText('Score: ' + score + '  Level: ' + level, CW / 2, CH / 2 + 16);
+            ctx.fillText('Press R to restart', CW / 2, CH / 2 + 40);
+        }
+
+        pelletPulse += 0.06 * gameSpeed;
+    }
+
+    // --- Maze walls ---
+    function drawMaze() {
+        for (var r = 0; r < ROWS; r++) {
+            for (var c = 0; c < COLS; c++) {
+                var v = MAZE_TEMPLATE[r][c];
+                if (v !== '0' && v !== '4') continue;
+                var px = MAZE_X + c * TILE;
+                var py = MAZE_Y + r * TILE;
+
+                ctx.fillStyle = v === '4' ? '#1a1a3a' : '#0d2847';
+                ctx.fillRect(px, py, TILE, TILE);
+
+                // Draw glowing edges where wall meets path
+                ctx.strokeStyle = '#4488cc';
+                ctx.lineWidth = 1;
+                for (var d = 0; d < 4; d++) {
+                    var nc = c + DX[d], nr = r + DY[d];
+                    if (nc < 0 || nc >= COLS || nr < 0 || nr >= ROWS) continue;
+                    var nv = MAZE_TEMPLATE[nr][nc];
+                    if (nv === '0' || nv === '4') continue;
+                    ctx.beginPath();
+                    switch (d) {
+                        case 0: ctx.moveTo(px + TILE, py); ctx.lineTo(px + TILE, py + TILE); break;
+                        case 1: ctx.moveTo(px, py + TILE); ctx.lineTo(px + TILE, py + TILE); break;
+                        case 2: ctx.moveTo(px, py); ctx.lineTo(px, py + TILE); break;
+                        case 3: ctx.moveTo(px, py); ctx.lineTo(px + TILE, py); break;
+                    }
+                    ctx.stroke();
+                }
+            }
+        }
+        // Ghost pen gate (top of house, cols 12-15)
+        ctx.fillStyle = '#ffb8ff';
+        ctx.fillRect(MAZE_X + 12 * TILE, MAZE_Y + 12 * TILE - 1, TILE * 4, 2);
+    }
+
+    // --- Dots ---
+    function drawDots() {
+        for (var r = 0; r < ROWS; r++) {
+            for (var c = 0; c < COLS; c++) {
+                var px = MAZE_X + c * TILE + TILE / 2;
+                var py = MAZE_Y + r * TILE + TILE / 2;
+                if (maze[r][c] === 1) {
+                    ctx.fillStyle = '#f0dcc0';
+                    ctx.beginPath();
+                    ctx.arc(px, py, 1.5, 0, Math.PI * 2);
+                    ctx.fill();
+                } else if (maze[r][c] === 2) {
+                    var pulse = Math.sin(pelletPulse) * 0.3 + 0.7;
+                    ctx.fillStyle = 'rgba(255,220,140,' + pulse + ')';
+                    ctx.beginPath();
+                    ctx.arc(px, py, 4 * pulse, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.fillStyle = '#ffe8a0';
+                    ctx.beginPath();
+                    ctx.arc(px, py, 3 * pulse, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+        }
+    }
+
+    // --- Player ---
+    function drawPlayer() {
+        var px = MAZE_X + (player.col + DX[player.dir] * player.moveProgress) * TILE + TILE / 2;
+        var py = MAZE_Y + (player.row + DY[player.dir] * player.moveProgress) * TILE + TILE / 2;
+
+        if (deathTimer > 0) {
+            var t = deathTimer / 1.5;
+            ctx.fillStyle = '#ffdd00';
+            ctx.beginPath();
+            ctx.arc(px, py, Math.max(0, TILE * 0.6 * t), 0, Math.PI * 2);
+            ctx.fill();
+            return;
+        }
+
+        var sprite = player.mouthOpen ? SPRITES.TREX_RUN1 : SPRITES.TREX_RUN2;
+        var sz = TILE * 1.5;
+
+        ctx.save();
+        ctx.translate(px, py);
+        if (player.dir === 2) ctx.scale(-1, 1);
+        else if (player.dir === 3) ctx.rotate(-Math.PI / 2);
+        else if (player.dir === 1) ctx.rotate(Math.PI / 2);
+
+        ctx.drawImage(spriteImg, sprite.x, sprite.y, sprite.w, sprite.h,
+                      -sz / 2, -sz / 2, sz, sz);
+        // Yellow tint
+        ctx.globalCompositeOperation = 'source-atop';
+        ctx.fillStyle = 'rgba(255,220,0,0.3)';
+        ctx.fillRect(-sz / 2, -sz / 2, sz, sz);
+        ctx.globalCompositeOperation = 'source-over';
+
+        if (player.poweredUp) {
+            ctx.globalAlpha = 0.25 + Math.sin(frameCount * 0.2) * 0.15;
+            ctx.fillStyle = '#ffff00';
+            ctx.beginPath();
+            ctx.arc(0, 0, sz / 2 + 2, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalAlpha = 1;
+        }
+        ctx.restore();
+    }
+
+    // --- Ghosts ---
+    function drawGhosts() {
+        for (var i = 0; i < 4; i++) {
+            var g = ghosts[i];
+            if (g.state === 'pen') continue;
+            var gx = MAZE_X + (g.col + DX[g.dir] * g.moveProgress) * TILE + TILE / 2;
+            var gy = MAZE_Y + (g.row + DY[g.dir] * g.moveProgress) * TILE + TILE / 2;
+            var sz = TILE * 1.4;
+            var sp = (frameCount % 16 < 8) ? SPRITES.PTERO1 : SPRITES.PTERO2;
+
+            ctx.save();
+            ctx.translate(gx, gy);
+
+            if (g.returningHome) {
+                // Faint eyes-only
+                ctx.globalAlpha = 0.3;
+                ctx.drawImage(spriteImg, sp.x, sp.y, sp.w, sp.h, -sz / 2, -sz / 2, sz, sz);
+                ctx.restore();
+                continue;
+            }
+
+            ctx.drawImage(spriteImg, sp.x, sp.y, sp.w, sp.h, -sz / 2, -sz / 2, sz, sz);
+            ctx.globalCompositeOperation = 'source-atop';
+            if (player.poweredUp && !g.eaten) {
+                if (frightenedFlashing && Math.floor(frameCount / 5) % 2 === 0) {
+                    ctx.fillStyle = 'rgba(255,255,255,0.6)';
+                } else {
+                    ctx.fillStyle = 'rgba(50,50,200,0.6)';
+                }
+            } else {
+                ctx.fillStyle = GHOST_COLORS[i] + '99';
+            }
+            ctx.fillRect(-sz / 2, -sz / 2, sz, sz);
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.restore();
+        }
+    }
+
+    // --- HUD ---
+    function drawHUD() {
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 13px monospace';
+        ctx.textAlign = 'left';
+        ctx.fillText('SCORE ' + score, MAZE_X, 16);
+        ctx.textAlign = 'center';
+        ctx.fillText('LEVEL ' + level, CW / 2, 16);
+        ctx.textAlign = 'right';
+        var hearts = '';
+        for (var i = 0; i < lives - 1; i++) hearts += '\u2665 ';
+        ctx.fillStyle = '#ffdd00';
+        ctx.fillText(hearts, CW - MAZE_X, 16);
+
+        // Bottom info
+        ctx.fillStyle = '#6e6e73';
+        ctx.font = '10px monospace';
+        ctx.textAlign = 'left';
+        ctx.fillText('Dots ' + (totalDots - dotsEaten) + '/' + totalDots, MAZE_X, CH - 6);
+        if (aiMode === 'rules') {
+            ctx.fillStyle = '#0071e3';
+            ctx.fillText('AI', MAZE_X + 120, CH - 6);
+        }
+    }
+
+    // --- Viz ---
+    function drawViz() {
+        if (aiViz.danger) {
+            for (var r = 0; r < ROWS; r++) {
+                for (var c = 0; c < COLS; c++) {
+                    var d = aiViz.danger[r][c];
+                    if (d > 0) {
+                        ctx.fillStyle = 'rgba(255,0,0,' + Math.min(d / 80, 0.35) + ')';
+                        ctx.fillRect(MAZE_X + c * TILE, MAZE_Y + r * TILE, TILE, TILE);
+                    }
+                }
+            }
+        }
+        // AI path
+        if (aiViz.path && aiViz.path.length > 0) {
+            ctx.strokeStyle = 'rgba(0,255,0,0.5)';
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([3, 3]);
+            ctx.beginPath();
+            ctx.moveTo(MAZE_X + player.col * TILE + TILE / 2, MAZE_Y + player.row * TILE + TILE / 2);
+            for (var i = 0; i < Math.min(aiViz.path.length, 20); i++) {
+                var p = aiViz.path[i];
+                ctx.lineTo(MAZE_X + p.col * TILE + TILE / 2, MAZE_Y + p.row * TILE + TILE / 2);
+            }
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
+        // Target highlight
+        if (aiViz.target) {
+            var tx = MAZE_X + aiViz.target.col * TILE;
+            var ty = MAZE_Y + aiViz.target.row * TILE;
+            var pa = 0.3 + Math.sin(frameCount * 0.12) * 0.2;
+            ctx.fillStyle = 'rgba(0,255,0,' + pa + ')';
+            ctx.fillRect(tx, ty, TILE, TILE);
+            ctx.strokeStyle = '#00ff00'; ctx.lineWidth = 1;
+            ctx.strokeRect(tx + 1, ty + 1, TILE - 2, TILE - 2);
+        }
+        // Ghost target tiles
+        if (aiViz.ghostTargets) {
+            for (var gi = 0; gi < aiViz.ghostTargets.length; gi++) {
+                var gt = aiViz.ghostTargets[gi];
+                if (gt.col < 0 || gt.col >= COLS || gt.row < 0 || gt.row >= ROWS) continue;
+                var gx = MAZE_X + gt.col * TILE;
+                var gy = MAZE_Y + gt.row * TILE;
+                ctx.fillStyle = gt.color + '44';
+                ctx.fillRect(gx, gy, TILE, TILE);
+                ctx.strokeStyle = gt.color; ctx.lineWidth = 1;
+                ctx.strokeRect(gx, gy, TILE, TILE);
+            }
+        }
+    }
+
+    // =================================================================
+    //  INPUT
+    // =================================================================
+    var keyMap = {
+        ArrowLeft: 2, ArrowRight: 0, ArrowUp: 3, ArrowDown: 1,
+        a: 2, d: 0, w: 3, s: 1, A: 2, D: 0, W: 3, S: 1
+    };
+
+    document.addEventListener('keydown', function (e) {
+        if (e.key === 'r' || e.key === 'R') { restartGame(); e.preventDefault(); return; }
+        if (keyMap[e.key] !== undefined && aiMode === 'off') {
+            player.nextDir = keyMap[e.key];
+            e.preventDefault();
+        }
+    });
+
+    // Touch swipe
+    var touchX = 0, touchY = 0;
+    canvas.addEventListener('touchstart', function (e) {
+        touchX = e.touches[0].clientX; touchY = e.touches[0].clientY; e.preventDefault();
+    });
+    canvas.addEventListener('touchend', function (e) {
+        var dx = e.changedTouches[0].clientX - touchX;
+        var dy = e.changedTouches[0].clientY - touchY;
+        if (Math.abs(dx) + Math.abs(dy) < 10) return;
+        if (aiMode === 'off') {
+            player.nextDir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 0 : 2) : (dy > 0 ? 1 : 3);
+        }
+        e.preventDefault();
+    });
+
+    // =================================================================
+    //  GAME LOOP
+    // =================================================================
+    var lastTime = 0;
+
+    function gameLoop(time) {
+        var dt = Math.min((time - lastTime) / 1000, 0.05);
+        lastTime = time;
+        for (var s = 0; s < Math.max(1, Math.round(gameSpeed)); s++) update(dt);
+        render();
+        requestAnimationFrame(gameLoop);
+    }
+
+    // =================================================================
+    //  GLOBAL CONTROLS
+    // =================================================================
+    window.setMode = function (mode) {
+        aiMode = mode;
+        document.getElementById('human-btn').classList.toggle('active', mode === 'off');
+        document.getElementById('rules-btn').classList.toggle('active', mode === 'rules');
+    };
+
+    window.toggleViz = function () {
+        vizEnabled = !vizEnabled;
+        document.getElementById('viz-btn').classList.toggle('active', vizEnabled);
+    };
+
+    window.restartGame = function () { startGame(); };
+
+    window.togglePause = function () {
+        paused = !paused;
+        document.getElementById('pause-btn').textContent = paused ? 'Resume' : 'Pause';
+        document.getElementById('pause-btn').classList.toggle('active', paused);
+    };
+
+    window.setGameSpeed = function (v) {
+        gameSpeed = v;
+        document.getElementById('speed-label').textContent = v + 'x';
+    };
+
+    // =================================================================
+    //  START
+    // =================================================================
+    startGame();
+    requestAnimationFrame(function (t) { lastTime = t; gameLoop(t); });
+
+})();
+</script>
+</body>
+</html>

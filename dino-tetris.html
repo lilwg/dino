@@ -1,0 +1,1041 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DinoTetris</title>
+    <link rel="stylesheet" href="si-styles.css?v=2">
+    <script src="fs-toggle.js"></script>
+    <script src="dino-sounds.js"></script>
+    <style>
+        #game-canvas { width: 100%; height: auto; max-width: none !important; }
+    </style>
+</head>
+<body>
+    <img id="offline-resources-1x"
+         src="assets/default_100_percent/100-offline-sprite.png"
+         style="display:none;">
+
+    <div class="si-page" style="padding-bottom: 40px;">
+        <h1>DinoTetris</h1>
+        <p class="si-subtitle">Stack bones and dodge the extinction</p>
+
+        <!-- game -->
+        <div class="si-game-box">
+            <canvas id="game-canvas" width="600" height="500"></canvas>
+
+            <div class="si-controls" style="margin-top: 12px;">
+                <button class="si-btn active" id="human-btn" onclick="setMode('off')">Human</button>
+                <button class="si-btn" id="rules-btn" onclick="setMode('rules')">AI</button>
+                <button class="si-btn" id="viz-btn" onclick="toggleViz()">Viz</button>
+                <button class="si-btn" onclick="restartGame()">Restart</button>
+                <button class="si-btn" id="pause-btn" onclick="togglePause()">Pause</button>
+                <button class="si-btn" id="fs-btn" onclick="toggleFullscreen()">Fullscreen</button>
+                <label style="display:inline-flex;align-items:center;gap:4px;margin-left:8px;font-size:12px;color:#535353;">
+                    Speed <input type="range" id="speed-slider" min="1" max="8" step="1" value="1" style="width:80px;" oninput="setGameSpeed(parseFloat(this.value))">
+                    <span id="speed-label">1x</span>
+                </label>
+            </div>
+
+            <p class="si-help" style="text-align: center;">&larr; / A left &nbsp;|&nbsp; &rarr; / D right &nbsp;|&nbsp; &uarr; / W rotate &nbsp;|&nbsp; &darr; / S soft drop &nbsp;|&nbsp; Space hard drop &nbsp;|&nbsp; R restart</p>
+        </div>
+
+        <!-- how it works -->
+        <h2 style="margin-top: 16px;">How it works</h2>
+        <p class="si-prose">
+            The AI evaluates every possible placement for the current piece &mdash; all rotations and all horizontal positions &mdash; and scores each one using four classic Tetris heuristics: <em>aggregate height</em> (lower is better), <em>completed lines</em> (more is better), <em>holes</em> (fewer is better), and <em>bumpiness</em> (smoother is better). The weights are tuned to strongly penalize holes and height while rewarding line clears.
+        </p>
+        <p class="si-prose">
+            Tap <strong>Viz</strong> to watch the AI think. A green ghost outline shows the target placement. Column heights are drawn as bars along the bottom, holes are marked with red dots, and the top three candidate placements are shown as faint numbered outlines with their scores.
+        </p>
+
+        <p style="margin-top: 20px;">
+            <a href="/" style="color: #0071e3; font-size: 14px; text-decoration: none;">&larr; Back</a>
+        </p>
+    </div>
+
+    <!-- Hidden elements for JS compatibility -->
+    <div style="display:none">
+        <button id="dqn-btn"></button>
+        <input type="range" id="dqn-speed" min="1" max="500" value="100">
+        <span id="dqn-speed-val">100</span>
+        <span id="dqn-stats"></span>
+        <button id="dqn-train-btn"></button>
+        <button id="dqn-cached-btn"></button>
+        <div id="dqn-viz-box"><canvas id="dqn-chart" width="1" height="1"></canvas></div>
+    </div>
+
+<script>
+(function () {
+    'use strict';
+
+    // =====================================================================
+    //  CONSTANTS
+    // =====================================================================
+    var CW = 600, CH = 500;
+    var COLS = 10, ROWS = 20;
+    var CELL = 22;
+    var BOARD_X = 40, BOARD_Y = 30;
+    var BOARD_W = COLS * CELL, BOARD_H = ROWS * CELL;
+
+    // Sidebar positions
+    var SIDE_X = BOARD_X + BOARD_W + 30;
+    var PREVIEW_Y = BOARD_Y + 30;
+
+    // Dino-themed block colors (earthy/desert palette)
+    var PIECE_COLORS = {
+        I: '#c2956b',  // sandy tan
+        O: '#d4a853',  // golden sand
+        T: '#8b6f47',  // dark earth
+        S: '#6b8e5a',  // cactus green
+        Z: '#c06040',  // red rock
+        J: '#5a7a8a',  // slate blue-gray
+        L: '#b8860b'   // dark goldenrod
+    };
+    var PIECE_BORDERS = {
+        I: '#a07850',
+        O: '#b89040',
+        T: '#6e5535',
+        S: '#4e7040',
+        Z: '#a04830',
+        J: '#3e5a6a',
+        L: '#966e08'
+    };
+
+    // Tetromino definitions: each rotation as array of [row, col] offsets
+    var PIECES = {
+        I: [
+            [[0,0],[0,1],[0,2],[0,3]],
+            [[0,0],[1,0],[2,0],[3,0]],
+            [[0,0],[0,1],[0,2],[0,3]],
+            [[0,0],[1,0],[2,0],[3,0]]
+        ],
+        O: [
+            [[0,0],[0,1],[1,0],[1,1]],
+            [[0,0],[0,1],[1,0],[1,1]],
+            [[0,0],[0,1],[1,0],[1,1]],
+            [[0,0],[0,1],[1,0],[1,1]]
+        ],
+        T: [
+            [[0,0],[0,1],[0,2],[1,1]],
+            [[0,0],[1,0],[2,0],[1,1]],
+            [[1,0],[1,1],[1,2],[0,1]],
+            [[0,0],[1,0],[2,0],[1,-1]]
+        ],
+        S: [
+            [[0,1],[0,2],[1,0],[1,1]],
+            [[0,0],[1,0],[1,1],[2,1]],
+            [[0,1],[0,2],[1,0],[1,1]],
+            [[0,0],[1,0],[1,1],[2,1]]
+        ],
+        Z: [
+            [[0,0],[0,1],[1,1],[1,2]],
+            [[0,1],[1,0],[1,1],[2,0]],
+            [[0,0],[0,1],[1,1],[1,2]],
+            [[0,1],[1,0],[1,1],[2,0]]
+        ],
+        J: [
+            [[0,0],[1,0],[1,1],[1,2]],
+            [[0,0],[0,1],[1,0],[2,0]],
+            [[0,0],[0,1],[0,2],[1,2]],
+            [[0,0],[1,0],[2,0],[2,-1]]
+        ],
+        L: [
+            [[0,2],[1,0],[1,1],[1,2]],
+            [[0,0],[1,0],[2,0],[2,1]],
+            [[0,0],[0,1],[0,2],[1,0]],
+            [[0,0],[0,1],[1,1],[2,1]]
+        ]
+    };
+
+    var PIECE_NAMES = ['I','O','T','S','Z','J','L'];
+
+    // Wall kick data (SRS-lite): try offsets when rotation fails
+    var WALL_KICKS = [
+        [0, 0], [-1, 0], [1, 0], [0, -1], [-1, -1], [1, -1], [-2, 0], [2, 0]
+    ];
+
+    // =====================================================================
+    //  GAME STATE
+    // =====================================================================
+    var canvas = document.getElementById('game-canvas');
+    var ctx = canvas.getContext('2d', { willReadFrequently: true });
+    var spriteImg = document.getElementById('offline-resources-1x');
+
+    var gameSpeed = 1;
+    var aiMode = 'off';
+    var vizEnabled = false;
+    var paused = false;
+    var gameOver = false;
+
+    var board = [];       // ROWS x COLS, null or piece type char
+    var curPiece = null;  // { type, rot, row, col }
+    var nextPiece = null;
+    var score = 0;
+    var level = 1;
+    var lines = 0;
+    var dropTimer = 0;
+    var lockTimer = 0;
+    var lockDelay = 30;   // frames before locking
+    var bag = [];
+
+    // AI state
+    var aiTarget = null;   // { rot, col, score }
+    var aiStep = 0;
+    var aiCandidates = []; // top N for viz
+    var aiMoveTimer = 0;
+
+    // Line clear animation
+    var clearingRows = [];
+    var clearTimer = 0;
+    var CLEAR_ANIM_FRAMES = 16;
+
+    // Dino sprite coords
+    var SPRITES = {
+        TREX_RUN1: { x: 848 + 88, y: 2, w: 44, h: 47 },
+        TREX_RUN2: { x: 848 + 132, y: 2, w: 44, h: 47 },
+        CACTUS_SM: { x: 228, y: 2, w: 17, h: 35 }
+    };
+
+    // =====================================================================
+    //  BAG RANDOMIZER (7-bag)
+    // =====================================================================
+    function fillBag() {
+        bag = PIECE_NAMES.slice();
+        for (var i = bag.length - 1; i > 0; i--) {
+            var j = Math.floor(Math.random() * (i + 1));
+            var t = bag[i]; bag[i] = bag[j]; bag[j] = t;
+        }
+    }
+
+    function nextFromBag() {
+        if (bag.length === 0) fillBag();
+        return bag.pop();
+    }
+
+    // =====================================================================
+    //  BOARD HELPERS
+    // =====================================================================
+    function initBoard() {
+        board = [];
+        for (var r = 0; r < ROWS; r++) {
+            board[r] = [];
+            for (var c = 0; c < COLS; c++) board[r][c] = null;
+        }
+    }
+
+    function getCells(type, rot, row, col) {
+        var shape = PIECES[type][rot];
+        var cells = [];
+        for (var i = 0; i < shape.length; i++) {
+            cells.push([row + shape[i][0], col + shape[i][1]]);
+        }
+        return cells;
+    }
+
+    function isValid(type, rot, row, col) {
+        var cells = getCells(type, rot, row, col);
+        for (var i = 0; i < cells.length; i++) {
+            var r = cells[i][0], c = cells[i][1];
+            if (c < 0 || c >= COLS || r >= ROWS) return false;
+            if (r < 0) continue; // above board is ok
+            if (board[r][c] !== null) return false;
+        }
+        return true;
+    }
+
+    function lockPiece() {
+        var cells = getCells(curPiece.type, curPiece.rot, curPiece.row, curPiece.col);
+        for (var i = 0; i < cells.length; i++) {
+            var r = cells[i][0], c = cells[i][1];
+            if (r >= 0 && r < ROWS) board[r][c] = curPiece.type;
+        }
+        // Check for line clears
+        checkLines();
+    }
+
+    function checkLines() {
+        clearingRows = [];
+        for (var r = 0; r < ROWS; r++) {
+            var full = true;
+            for (var c = 0; c < COLS; c++) {
+                if (board[r][c] === null) { full = false; break; }
+            }
+            if (full) clearingRows.push(r);
+        }
+        if (clearingRows.length > 0) {
+            clearTimer = CLEAR_ANIM_FRAMES;
+            DinoSounds.hit();
+        }
+    }
+
+    function removeLines() {
+        // Sort descending so we remove from bottom up
+        clearingRows.sort(function(a, b) { return b - a; });
+        for (var i = 0; i < clearingRows.length; i++) {
+            board.splice(clearingRows[i], 1);
+            var emptyRow = [];
+            for (var c = 0; c < COLS; c++) emptyRow.push(null);
+            board.unshift(emptyRow);
+        }
+        // Scoring (NES-style)
+        var n = clearingRows.length;
+        var pts = [0, 100, 300, 500, 800];
+        score += (pts[n] || 800) * level;
+        lines += n;
+
+        // Level up every 10 lines
+        var newLevel = Math.floor(lines / 10) + 1;
+        if (newLevel > level) {
+            level = newLevel;
+            DinoSounds.reached();
+        }
+        clearingRows = [];
+        clearTimer = 0;
+    }
+
+    function getDropRow(type, rot, col) {
+        var row = -2;
+        while (isValid(type, rot, row + 1, col)) row++;
+        return row;
+    }
+
+    // =====================================================================
+    //  PIECE SPAWNING
+    // =====================================================================
+    function spawnPiece() {
+        if (nextPiece === null) nextPiece = nextFromBag();
+        curPiece = { type: nextPiece, rot: 0, row: -1, col: 3 };
+        nextPiece = nextFromBag();
+        dropTimer = 0;
+        lockTimer = 0;
+        aiTarget = null;
+        aiStep = 0;
+        aiMoveTimer = 0;
+
+        // Check if spawn position is valid
+        if (!isValid(curPiece.type, curPiece.rot, curPiece.row, curPiece.col)) {
+            // Try one row up
+            curPiece.row = -2;
+            if (!isValid(curPiece.type, curPiece.rot, curPiece.row, curPiece.col)) {
+                gameOver = true;
+            }
+        }
+    }
+
+    // =====================================================================
+    //  MOVEMENT
+    // =====================================================================
+    function moveLeft() {
+        if (!curPiece || gameOver || clearTimer > 0) return;
+        if (isValid(curPiece.type, curPiece.rot, curPiece.row, curPiece.col - 1)) {
+            curPiece.col--;
+            lockTimer = 0; // reset lock delay on move
+        }
+    }
+
+    function moveRight() {
+        if (!curPiece || gameOver || clearTimer > 0) return;
+        if (isValid(curPiece.type, curPiece.rot, curPiece.row, curPiece.col + 1)) {
+            curPiece.col++;
+            lockTimer = 0;
+        }
+    }
+
+    function rotate() {
+        if (!curPiece || gameOver || clearTimer > 0) return;
+        var newRot = (curPiece.rot + 1) % 4;
+        // Try wall kicks
+        for (var i = 0; i < WALL_KICKS.length; i++) {
+            var dc = WALL_KICKS[i][0], dr = WALL_KICKS[i][1];
+            if (isValid(curPiece.type, newRot, curPiece.row + dr, curPiece.col + dc)) {
+                curPiece.rot = newRot;
+                curPiece.col += dc;
+                curPiece.row += dr;
+                lockTimer = 0;
+                DinoSounds.press();
+                return;
+            }
+        }
+    }
+
+    function softDrop() {
+        if (!curPiece || gameOver || clearTimer > 0) return;
+        if (isValid(curPiece.type, curPiece.rot, curPiece.row + 1, curPiece.col)) {
+            curPiece.row++;
+            score += 1;
+            dropTimer = 0;
+        }
+    }
+
+    function hardDrop() {
+        if (!curPiece || gameOver || clearTimer > 0) return;
+        var dropped = 0;
+        while (isValid(curPiece.type, curPiece.rot, curPiece.row + 1, curPiece.col)) {
+            curPiece.row++;
+            dropped++;
+        }
+        score += dropped * 2;
+        lockPiece();
+        if (clearTimer === 0) spawnPiece();
+        DinoSounds.press();
+    }
+
+    // =====================================================================
+    //  AI HEURISTICS
+    // =====================================================================
+    function evaluateBoard(testBoard) {
+        var heights = [];
+        for (var c = 0; c < COLS; c++) {
+            var h = 0;
+            for (var r = 0; r < ROWS; r++) {
+                if (testBoard[r][c] !== null) { h = ROWS - r; break; }
+            }
+            heights.push(h);
+        }
+
+        var aggregateHeight = 0;
+        for (var i = 0; i < heights.length; i++) aggregateHeight += heights[i];
+
+        var completedLines = 0;
+        for (var r = 0; r < ROWS; r++) {
+            var full = true;
+            for (var c = 0; c < COLS; c++) {
+                if (testBoard[r][c] === null) { full = false; break; }
+            }
+            if (full) completedLines++;
+        }
+
+        var holes = 0;
+        for (var c = 0; c < COLS; c++) {
+            var blockFound = false;
+            for (var r = 0; r < ROWS; r++) {
+                if (testBoard[r][c] !== null) blockFound = true;
+                else if (blockFound) holes++;
+            }
+        }
+
+        var bumpiness = 0;
+        for (var i = 0; i < heights.length - 1; i++) {
+            bumpiness += Math.abs(heights[i] - heights[i + 1]);
+        }
+
+        // Weighted heuristic (tuned for good play)
+        return -0.51 * aggregateHeight
+             + 0.76 * completedLines
+             - 0.36 * holes
+             - 0.18 * bumpiness;
+    }
+
+    function simulatePlacement(type, rot, col) {
+        // Find drop position
+        var row = -2;
+        while (true) {
+            var cells = getCells(type, rot, row + 1, col);
+            var valid = true;
+            for (var i = 0; i < cells.length; i++) {
+                var r = cells[i][0], c = cells[i][1];
+                if (c < 0 || c >= COLS || r >= ROWS) { valid = false; break; }
+                if (r >= 0 && board[r][c] !== null) { valid = false; break; }
+            }
+            if (!valid) break;
+            row++;
+        }
+
+        // Check if position is above board entirely
+        var cells = getCells(type, rot, row, col);
+        var anyOnBoard = false;
+        for (var i = 0; i < cells.length; i++) {
+            if (cells[i][0] >= 0) { anyOnBoard = true; break; }
+        }
+        if (!anyOnBoard) return null;
+
+        // Create test board
+        var testBoard = [];
+        for (var r = 0; r < ROWS; r++) {
+            testBoard[r] = board[r].slice();
+        }
+
+        // Place piece
+        for (var i = 0; i < cells.length; i++) {
+            var r = cells[i][0], c = cells[i][1];
+            if (r >= 0 && r < ROWS && c >= 0 && c < COLS) {
+                testBoard[r][c] = type;
+            }
+        }
+
+        return { score: evaluateBoard(testBoard), row: row, testBoard: testBoard };
+    }
+
+    function computeAITarget() {
+        if (!curPiece) return;
+        var best = null;
+        var candidates = [];
+
+        var type = curPiece.type;
+        var rotations = type === 'O' ? 1 : (type === 'I' || type === 'S' || type === 'Z' ? 2 : 4);
+
+        for (var rot = 0; rot < rotations; rot++) {
+            // Determine valid column range for this rotation
+            var shape = PIECES[type][rot];
+            var minC = 99, maxC = -99;
+            for (var i = 0; i < shape.length; i++) {
+                if (shape[i][1] < minC) minC = shape[i][1];
+                if (shape[i][1] > maxC) maxC = shape[i][1];
+            }
+            var colMin = -minC;
+            var colMax = COLS - 1 - maxC;
+
+            for (var col = colMin; col <= colMax; col++) {
+                var result = simulatePlacement(type, rot, col);
+                if (result === null) continue;
+                var entry = { rot: rot, col: col, score: result.score, row: result.row };
+                candidates.push(entry);
+                if (best === null || result.score > best.score) {
+                    best = entry;
+                }
+            }
+        }
+
+        aiTarget = best;
+        // Sort candidates for viz (top 3)
+        candidates.sort(function(a, b) { return b.score - a.score; });
+        aiCandidates = candidates.slice(0, 3);
+    }
+
+    // =====================================================================
+    //  GAME LOOP
+    // =====================================================================
+    var frameCount = 0;
+    var lastTime = 0;
+    var accumulator = 0;
+    var FRAME_MS = 1000 / 60;
+
+    function getDropInterval() {
+        // NES-style speed curve: faster at higher levels
+        var base = Math.max(1, 48 - (level - 1) * 5);
+        return Math.max(1, Math.floor(base / gameSpeed));
+    }
+
+    function update() {
+        if (paused || gameOver) return;
+
+        // Handle line clear animation
+        if (clearTimer > 0) {
+            clearTimer--;
+            if (clearTimer === 0) {
+                removeLines();
+                spawnPiece();
+            }
+            return;
+        }
+
+        if (!curPiece) return;
+
+        // AI logic
+        if (aiMode === 'rules') {
+            if (!aiTarget) computeAITarget();
+            aiMoveTimer++;
+            var moveInterval = Math.max(1, Math.floor(3 / gameSpeed));
+
+            if (aiTarget && aiMoveTimer >= moveInterval) {
+                aiMoveTimer = 0;
+
+                // Rotate to target rotation
+                if (curPiece.rot !== aiTarget.rot) {
+                    rotate();
+                } else if (curPiece.col < aiTarget.col) {
+                    moveRight();
+                } else if (curPiece.col > aiTarget.col) {
+                    moveLeft();
+                } else {
+                    // In position: hard drop
+                    hardDrop();
+                    return;
+                }
+            }
+        }
+
+        // Gravity
+        dropTimer++;
+        var interval = getDropInterval();
+        if (dropTimer >= interval) {
+            dropTimer = 0;
+            if (isValid(curPiece.type, curPiece.rot, curPiece.row + 1, curPiece.col)) {
+                curPiece.row++;
+                lockTimer = 0;
+            } else {
+                // On ground: lock delay
+                lockTimer++;
+                if (lockTimer >= Math.max(1, Math.floor(lockDelay / gameSpeed))) {
+                    lockPiece();
+                    if (clearTimer === 0) spawnPiece();
+                }
+            }
+        } else {
+            // Check if piece is resting
+            if (!isValid(curPiece.type, curPiece.rot, curPiece.row + 1, curPiece.col)) {
+                lockTimer++;
+                if (lockTimer >= Math.max(1, Math.floor(lockDelay / gameSpeed))) {
+                    lockPiece();
+                    if (clearTimer === 0) spawnPiece();
+                }
+            }
+        }
+    }
+
+    // =====================================================================
+    //  RENDERING
+    // =====================================================================
+    function drawCell(x, y, type, alpha) {
+        var a = alpha || 1;
+        var color = PIECE_COLORS[type];
+        var border = PIECE_BORDERS[type];
+
+        ctx.globalAlpha = a;
+
+        // Main fill
+        ctx.fillStyle = color;
+        ctx.fillRect(x + 1, y + 1, CELL - 2, CELL - 2);
+
+        // Highlight (top-left)
+        ctx.fillStyle = 'rgba(255,255,255,0.25)';
+        ctx.fillRect(x + 1, y + 1, CELL - 2, 2);
+        ctx.fillRect(x + 1, y + 1, 2, CELL - 2);
+
+        // Shadow (bottom-right)
+        ctx.fillStyle = 'rgba(0,0,0,0.15)';
+        ctx.fillRect(x + 1, y + CELL - 3, CELL - 2, 2);
+        ctx.fillRect(x + CELL - 3, y + 1, 2, CELL - 2);
+
+        // Border
+        ctx.strokeStyle = border;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x + 0.5, y + 0.5, CELL - 1, CELL - 1);
+
+        // Bone-like texture: small inner circle
+        ctx.fillStyle = 'rgba(255,255,255,0.12)';
+        ctx.beginPath();
+        ctx.arc(x + CELL / 2, y + CELL / 2, 3, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.globalAlpha = 1;
+    }
+
+    function drawGhostCell(x, y, type) {
+        ctx.strokeStyle = PIECE_COLORS[type];
+        ctx.lineWidth = 2;
+        ctx.setLineDash([3, 3]);
+        ctx.strokeRect(x + 2, y + 2, CELL - 4, CELL - 4);
+        ctx.setLineDash([]);
+    }
+
+    function render() {
+        // Background: desert gradient
+        var grad = ctx.createLinearGradient(0, 0, 0, CH);
+        grad.addColorStop(0, '#f5e6d0');
+        grad.addColorStop(1, '#e8d5b8');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, CW, CH);
+
+        // Subtle ground line
+        ctx.fillStyle = '#d4b896';
+        ctx.fillRect(0, CH - 20, CW, 20);
+
+        // Small cactus decorations
+        if (spriteImg.complete && spriteImg.naturalWidth > 0) {
+            var cs = SPRITES.CACTUS_SM;
+            ctx.globalAlpha = 0.15;
+            ctx.drawImage(spriteImg, cs.x, cs.y, cs.w, cs.h, 10, CH - 20 - 25, cs.w * 0.7, cs.h * 0.7);
+            ctx.drawImage(spriteImg, cs.x, cs.y, cs.w, cs.h, CW - 25, CH - 20 - 25, cs.w * 0.7, cs.h * 0.7);
+            ctx.globalAlpha = 1;
+        }
+
+        // Board background
+        ctx.fillStyle = 'rgba(60, 45, 30, 0.08)';
+        ctx.fillRect(BOARD_X, BOARD_Y, BOARD_W, BOARD_H);
+
+        // Board border
+        ctx.strokeStyle = '#a08060';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(BOARD_X - 1, BOARD_Y - 1, BOARD_W + 2, BOARD_H + 2);
+
+        // Grid lines
+        ctx.strokeStyle = 'rgba(160, 128, 96, 0.12)';
+        ctx.lineWidth = 0.5;
+        for (var r = 1; r < ROWS; r++) {
+            ctx.beginPath();
+            ctx.moveTo(BOARD_X, BOARD_Y + r * CELL);
+            ctx.lineTo(BOARD_X + BOARD_W, BOARD_Y + r * CELL);
+            ctx.stroke();
+        }
+        for (var c = 1; c < COLS; c++) {
+            ctx.beginPath();
+            ctx.moveTo(BOARD_X + c * CELL, BOARD_Y);
+            ctx.lineTo(BOARD_X + c * CELL, BOARD_Y + BOARD_H);
+            ctx.stroke();
+        }
+
+        // Draw locked blocks
+        for (var r = 0; r < ROWS; r++) {
+            // Line clear flash effect
+            var clearing = false;
+            for (var k = 0; k < clearingRows.length; k++) {
+                if (clearingRows[k] === r) { clearing = true; break; }
+            }
+
+            for (var c = 0; c < COLS; c++) {
+                if (board[r][c] !== null) {
+                    var bx = BOARD_X + c * CELL;
+                    var by = BOARD_Y + r * CELL;
+                    if (clearing) {
+                        // Flash animation
+                        var flash = Math.sin(clearTimer * 0.5) > 0;
+                        if (flash) {
+                            ctx.fillStyle = '#fff';
+                            ctx.fillRect(bx, by, CELL, CELL);
+                        } else {
+                            drawCell(bx, by, board[r][c], 0.5);
+                        }
+                    } else {
+                        drawCell(bx, by, board[r][c]);
+                    }
+                }
+            }
+        }
+
+        // Draw ghost piece
+        if (curPiece && !gameOver && clearTimer === 0) {
+            var ghostRow = getDropRow(curPiece.type, curPiece.rot, curPiece.col);
+            if (ghostRow !== curPiece.row) {
+                var ghostCells = getCells(curPiece.type, curPiece.rot, ghostRow, curPiece.col);
+                for (var i = 0; i < ghostCells.length; i++) {
+                    var gr = ghostCells[i][0], gc = ghostCells[i][1];
+                    if (gr >= 0 && gr < ROWS) {
+                        drawGhostCell(BOARD_X + gc * CELL, BOARD_Y + gr * CELL, curPiece.type);
+                    }
+                }
+            }
+        }
+
+        // Draw current piece
+        if (curPiece && !gameOver && clearTimer === 0) {
+            var cells = getCells(curPiece.type, curPiece.rot, curPiece.row, curPiece.col);
+            for (var i = 0; i < cells.length; i++) {
+                var pr = cells[i][0], pc = cells[i][1];
+                if (pr >= 0 && pr < ROWS) {
+                    drawCell(BOARD_X + pc * CELL, BOARD_Y + pr * CELL, curPiece.type);
+                }
+            }
+        }
+
+        // ---- Viz mode overlays ----
+        if (vizEnabled && aiMode === 'rules' && aiCandidates.length > 0 && curPiece && !gameOver) {
+            // Draw top 3 candidates as faint outlines
+            for (var ci = Math.min(2, aiCandidates.length - 1); ci >= 0; ci--) {
+                var cand = aiCandidates[ci];
+                var candRow = getDropRow(curPiece.type, cand.rot, cand.col);
+                var candCells = getCells(curPiece.type, cand.rot, candRow, cand.col);
+
+                ctx.globalAlpha = ci === 0 ? 0.6 : 0.2;
+                ctx.strokeStyle = ci === 0 ? '#2ecc40' : '#888';
+                ctx.lineWidth = ci === 0 ? 3 : 1.5;
+                ctx.setLineDash(ci === 0 ? [] : [4, 4]);
+
+                for (var i = 0; i < candCells.length; i++) {
+                    var cr = candCells[i][0], cc = candCells[i][1];
+                    if (cr >= 0 && cr < ROWS) {
+                        ctx.strokeRect(
+                            BOARD_X + cc * CELL + 2,
+                            BOARD_Y + cr * CELL + 2,
+                            CELL - 4, CELL - 4
+                        );
+                    }
+                }
+                ctx.setLineDash([]);
+                ctx.globalAlpha = 1;
+
+                // Score label
+                if (candCells.length > 0) {
+                    var labelR = candRow;
+                    var labelC = cand.col;
+                    var lx = BOARD_X + (labelC + 1) * CELL;
+                    var ly = BOARD_Y + labelR * CELL - 3;
+                    if (ly < BOARD_Y + 12) ly = BOARD_Y + 12;
+                    ctx.font = '10px -apple-system, sans-serif';
+                    ctx.fillStyle = ci === 0 ? '#2ecc40' : '#888';
+                    ctx.globalAlpha = ci === 0 ? 0.9 : 0.5;
+                    ctx.fillText('#' + (ci + 1) + ': ' + cand.score.toFixed(2), lx, ly);
+                    ctx.globalAlpha = 1;
+                }
+            }
+
+            // Column height bars
+            for (var c = 0; c < COLS; c++) {
+                var h = 0;
+                for (var r = 0; r < ROWS; r++) {
+                    if (board[r][c] !== null) { h = ROWS - r; break; }
+                }
+                if (h > 0) {
+                    var barX = BOARD_X + c * CELL + 2;
+                    var barH = h * 2;
+                    var barY = BOARD_Y + BOARD_H + 4;
+                    ctx.fillStyle = 'rgba(46, 204, 64, 0.5)';
+                    ctx.fillRect(barX, barY, CELL - 4, barH);
+                }
+            }
+
+            // Hole markers
+            for (var c = 0; c < COLS; c++) {
+                var blockFound = false;
+                for (var r = 0; r < ROWS; r++) {
+                    if (board[r][c] !== null) blockFound = true;
+                    else if (blockFound) {
+                        ctx.fillStyle = 'rgba(220, 50, 50, 0.5)';
+                        ctx.beginPath();
+                        ctx.arc(
+                            BOARD_X + c * CELL + CELL / 2,
+                            BOARD_Y + r * CELL + CELL / 2,
+                            4, 0, Math.PI * 2
+                        );
+                        ctx.fill();
+                    }
+                }
+            }
+        }
+
+        // ---- Sidebar: Score, Level, Lines ----
+        ctx.fillStyle = '#4a3520';
+        ctx.font = 'bold 14px -apple-system, BlinkMacSystemFont, sans-serif';
+        ctx.fillText('SCORE', SIDE_X, BOARD_Y + 4);
+        ctx.font = '22px -apple-system, BlinkMacSystemFont, sans-serif';
+        ctx.fillText(score.toString(), SIDE_X, BOARD_Y + 28);
+
+        ctx.font = 'bold 14px -apple-system, BlinkMacSystemFont, sans-serif';
+        ctx.fillText('LEVEL', SIDE_X, BOARD_Y + 58);
+        ctx.font = '22px -apple-system, BlinkMacSystemFont, sans-serif';
+        ctx.fillText(level.toString(), SIDE_X, BOARD_Y + 82);
+
+        ctx.font = 'bold 14px -apple-system, BlinkMacSystemFont, sans-serif';
+        ctx.fillText('LINES', SIDE_X, BOARD_Y + 112);
+        ctx.font = '22px -apple-system, BlinkMacSystemFont, sans-serif';
+        ctx.fillText(lines.toString(), SIDE_X, BOARD_Y + 136);
+
+        // Next piece preview
+        ctx.font = 'bold 14px -apple-system, BlinkMacSystemFont, sans-serif';
+        ctx.fillStyle = '#4a3520';
+        ctx.fillText('NEXT', SIDE_X, PREVIEW_Y + 140);
+
+        if (nextPiece) {
+            var shape = PIECES[nextPiece][0];
+            // Center the preview
+            var minR = 99, maxR = -99, minC = 99, maxC = -99;
+            for (var i = 0; i < shape.length; i++) {
+                if (shape[i][0] < minR) minR = shape[i][0];
+                if (shape[i][0] > maxR) maxR = shape[i][0];
+                if (shape[i][1] < minC) minC = shape[i][1];
+                if (shape[i][1] > maxC) maxC = shape[i][1];
+            }
+            var pw = (maxC - minC + 1) * CELL;
+            var ph = (maxR - minR + 1) * CELL;
+            var previewBoxW = CELL * 4;
+            var previewBoxH = CELL * 3;
+            var ox = SIDE_X + (previewBoxW - pw) / 2;
+            var oy = PREVIEW_Y + 150 + (previewBoxH - ph) / 2;
+
+            // Preview background
+            ctx.fillStyle = 'rgba(60, 45, 30, 0.06)';
+            ctx.fillRect(SIDE_X - 2, PREVIEW_Y + 146, previewBoxW + 4, previewBoxH + 4);
+            ctx.strokeStyle = 'rgba(160, 128, 96, 0.3)';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(SIDE_X - 2, PREVIEW_Y + 146, previewBoxW + 4, previewBoxH + 4);
+
+            for (var i = 0; i < shape.length; i++) {
+                drawCell(
+                    ox + (shape[i][1] - minC) * CELL,
+                    oy + (shape[i][0] - minR) * CELL,
+                    nextPiece
+                );
+            }
+        }
+
+        // Mode indicator
+        ctx.font = '12px -apple-system, BlinkMacSystemFont, sans-serif';
+        ctx.fillStyle = '#888';
+        var modeText = aiMode === 'rules' ? 'AI playing' : 'Human';
+        ctx.fillText(modeText, SIDE_X, CH - 30);
+
+        // Dino runner at bottom
+        if (spriteImg.complete && spriteImg.naturalWidth > 0) {
+            var dinoFrame = Math.floor(frameCount / 8) % 2 === 0 ? SPRITES.TREX_RUN1 : SPRITES.TREX_RUN2;
+            var dinoScale = 0.6;
+            var dinoX = SIDE_X + 60;
+            var dinoY = CH - 20 - dinoFrame.h * dinoScale;
+            ctx.drawImage(spriteImg, dinoFrame.x, dinoFrame.y, dinoFrame.w, dinoFrame.h,
+                dinoX, dinoY, dinoFrame.w * dinoScale, dinoFrame.h * dinoScale);
+        }
+
+        // Game over overlay
+        if (gameOver) {
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+            ctx.fillRect(BOARD_X, BOARD_Y, BOARD_W, BOARD_H);
+            ctx.fillStyle = '#fff';
+            ctx.font = 'bold 28px -apple-system, BlinkMacSystemFont, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText('GAME OVER', BOARD_X + BOARD_W / 2, BOARD_Y + BOARD_H / 2 - 20);
+            ctx.font = '16px -apple-system, BlinkMacSystemFont, sans-serif';
+            ctx.fillText('Score: ' + score, BOARD_X + BOARD_W / 2, BOARD_Y + BOARD_H / 2 + 10);
+            ctx.fillText('Press R to restart', BOARD_X + BOARD_W / 2, BOARD_Y + BOARD_H / 2 + 36);
+            ctx.textAlign = 'left';
+        }
+
+        // Paused overlay
+        if (paused && !gameOver) {
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+            ctx.fillRect(BOARD_X, BOARD_Y, BOARD_W, BOARD_H);
+            ctx.fillStyle = '#fff';
+            ctx.font = 'bold 24px -apple-system, BlinkMacSystemFont, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText('PAUSED', BOARD_X + BOARD_W / 2, BOARD_Y + BOARD_H / 2);
+            ctx.textAlign = 'left';
+        }
+    }
+
+    function gameLoop(timestamp) {
+        if (!lastTime) lastTime = timestamp;
+        var dt = timestamp - lastTime;
+        lastTime = timestamp;
+
+        accumulator += dt;
+        var stepsPerFrame = Math.min(8, Math.ceil(gameSpeed));
+
+        while (accumulator >= FRAME_MS) {
+            accumulator -= FRAME_MS;
+            for (var s = 0; s < stepsPerFrame; s++) {
+                frameCount++;
+                update();
+            }
+        }
+
+        render();
+        requestAnimationFrame(gameLoop);
+    }
+
+    // =====================================================================
+    //  INPUT
+    // =====================================================================
+    var keys = {};
+
+    document.addEventListener('keydown', function (e) {
+        if (e.repeat) {
+            // Allow repeated left/right/down
+            if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') { moveLeft(); e.preventDefault(); return; }
+            if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') { moveRight(); e.preventDefault(); return; }
+            if (e.key === 'ArrowDown' || e.key === 's' || e.key === 'S') { softDrop(); e.preventDefault(); return; }
+            return;
+        }
+
+        if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') { moveLeft(); e.preventDefault(); }
+        else if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') { moveRight(); e.preventDefault(); }
+        else if (e.key === 'ArrowUp' || e.key === 'w' || e.key === 'W') { rotate(); e.preventDefault(); }
+        else if (e.key === 'ArrowDown' || e.key === 's' || e.key === 'S') { softDrop(); e.preventDefault(); }
+        else if (e.key === ' ') { hardDrop(); e.preventDefault(); }
+        else if (e.key === 'r' || e.key === 'R') { restartGame(); }
+    });
+
+    // Touch controls
+    var touchStartX = 0, touchStartY = 0, touchStartTime = 0;
+    canvas.addEventListener('touchstart', function (e) {
+        e.preventDefault();
+        var t = e.touches[0];
+        touchStartX = t.clientX;
+        touchStartY = t.clientY;
+        touchStartTime = Date.now();
+    }, { passive: false });
+
+    canvas.addEventListener('touchend', function (e) {
+        e.preventDefault();
+        var t = e.changedTouches[0];
+        var dx = t.clientX - touchStartX;
+        var dy = t.clientY - touchStartY;
+        var dt = Date.now() - touchStartTime;
+
+        if (Math.abs(dx) < 10 && Math.abs(dy) < 10 && dt < 200) {
+            // Tap = rotate
+            rotate();
+        } else if (Math.abs(dx) > Math.abs(dy)) {
+            if (dx > 30) moveRight();
+            else if (dx < -30) moveLeft();
+        } else {
+            if (dy > 30) hardDrop();
+            else if (dy < -30) rotate();
+        }
+    }, { passive: false });
+
+    // =====================================================================
+    //  GLOBAL CONTROLS
+    // =====================================================================
+    function startGame() {
+        initBoard();
+        score = 0;
+        level = 1;
+        lines = 0;
+        gameOver = false;
+        paused = false;
+        bag = [];
+        nextPiece = null;
+        clearingRows = [];
+        clearTimer = 0;
+        aiTarget = null;
+        aiCandidates = [];
+        spawnPiece();
+    }
+
+    window.setMode = function (mode) {
+        if (mode === 'off') {
+            aiMode = 'off';
+            document.getElementById('human-btn').classList.add('active');
+            document.getElementById('rules-btn').classList.remove('active');
+        } else if (mode === 'rules') {
+            aiMode = 'rules';
+            document.getElementById('rules-btn').classList.add('active');
+            document.getElementById('human-btn').classList.remove('active');
+            // Compute target immediately
+            computeAITarget();
+        }
+        DinoSounds.init();
+    };
+
+    window.toggleViz = function () {
+        vizEnabled = !vizEnabled;
+        var btn = document.getElementById('viz-btn');
+        if (vizEnabled) btn.classList.add('active');
+        else btn.classList.remove('active');
+    };
+
+    window.restartGame = function () {
+        startGame();
+        DinoSounds.init();
+    };
+
+    window.togglePause = function () {
+        paused = !paused;
+        var btn = document.getElementById('pause-btn');
+        btn.textContent = paused ? 'Resume' : 'Pause';
+    };
+
+    window.setGameSpeed = function (val) {
+        gameSpeed = val;
+        document.getElementById('speed-label').textContent = val + 'x';
+    };
+
+    // =====================================================================
+    //  INIT
+    // =====================================================================
+    startGame();
+    requestAnimationFrame(gameLoop);
+
+})();
+</script>
+</body>
+</html>
