@@ -188,7 +188,8 @@
                         bestAlien = a;
                     }
                 }
-                if (bestEdge) {
+                var colSpan = maxCol - minCol + 1;
+                if (bestEdge && colSpan > 3) {
                     target = bestEdge;
                     targetReason = 'edge';
                 } else if (bestDanger) {
