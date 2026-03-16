@@ -201,12 +201,19 @@ var CUBE_TOP_COLORS = [
     ['#ebebeb', '#3878c8', '#48c078'],   // lv 5-6: grey → blue → green
     ['#ebebeb', '#50b0d0', '#d06040']    // lv 7+:  grey → cyan → orange-red
 ];
+var CUBE_TOP_COLORS_INV = [
+    ['#141414', '#cf9f2f', '#cf4fcf'],
+    ['#141414', '#979757', '#2fb7bf'],
+    ['#141414', '#c78737', '#b73f87'],
+    ['#141414', '#af4f2f', '#2f9fbf']
+];
 
 function drawCube(c, cx, cy, state) {
     var hw = TILE_W / 2, hh = TILE_H / 2;
     var lv = arcadeLevel();
     var palIdx = lv <= 2 ? 0 : lv <= 4 ? 1 : lv <= 6 ? 2 : 3;
-    var topCol   = CUBE_TOP_COLORS[palIdx][state] || CUBE_TOP_COLORS[palIdx][0];
+    var topPal   = inverted ? CUBE_TOP_COLORS_INV[palIdx] : CUBE_TOP_COLORS[palIdx];
+    var topCol   = topPal[state] || topPal[0];
     // Round 4 of even levels (2, 4, 6, 8): invisible sides (flat diamonds like the arcade)
     var r4 = ((round - 1) % 4) === 3 && lv % 2 === 0;
     var leftCol  = r4 ? '#000' : '#a8a8a8';
@@ -232,7 +239,8 @@ function drawCubeTop(c, cx, cy, state) {
     var hw = TILE_W / 2, hh = TILE_H / 2;
     var lv = arcadeLevel();
     var palIdx = lv <= 2 ? 0 : lv <= 4 ? 1 : lv <= 6 ? 2 : 3;
-    var topCol = CUBE_TOP_COLORS[palIdx][state] || CUBE_TOP_COLORS[palIdx][0];
+    var pal = inverted ? CUBE_TOP_COLORS_INV[palIdx] : CUBE_TOP_COLORS[palIdx];
+    var topCol = pal[state] || pal[0];
     c.beginPath();
     c.moveTo(cx, cy - hh);
     c.lineTo(cx + hw, cy);
@@ -256,9 +264,9 @@ var levelWonTimer = 0;
 var roundStarted = false; // true after first player move — enemies frozen until then
 
 var score, hiScore, lives, hops;
-var bestHops = {};  // best (minimum) hops per arcade level + enemy mode, persisted
+var bestHops = {};  // best (minimum) hops per level-round + enemy mode, persisted
 var extraLifeGiven;
-function bestHopsKey() { return '' + arcadeLevel() + (enemiesEnabled ? '' : '-noE'); }
+function bestHopsKey() { return arcadeLevel() + '-' + ((round - 1) % 4 + 1) + (enemiesEnabled ? '' : '-noE'); }
 // round, player, enemies, cubeStates, discs, aiTour, aiTourIdx, aiBoardSig
 // are globals (declared before IIFE) shared with qbert-ai.js
 var frameCount;
@@ -280,7 +288,7 @@ var discRide    = null;  // { side, t, sx, sy, tx, ty } — player riding disc t
 
 // DIRS, DIR_KEYS, isValidPos, cubeAt, allColored, arcadeLevel, targetState,
 // nextCubeState, discConfig, bfsTo, boardSig, etc. loaded from qbert.js
-// AI functions (aiPickBestDir, buildTour, buildDangerMaps) from qbert-ai.js
+// AI functions (aiPickBestDir, buildDangerSet) from qbert-ai.js
 
 function checkExtraLife() {
     if (!extraLifeGiven && score >= 8000) {
@@ -365,7 +373,9 @@ function killPlayerVisual() {
     player.deathAnimTimer = 0;
     swearBubble = { x: player.px, y: player.py - 40, timer: 90 };
     lives--;
-    var deathInfo = 'DEATH Lv' + arcadeLevel() + '-' + ((round-1)%4+1) + ' @(' + player.row + ',' + player.col + ') lives=' + lives + ' hops=' + hops;
+    var scores = '';
+    for (var dk in aiMoveScores) scores += ' ' + dk + '=' + Math.round(aiMoveScores[dk]);
+    var deathInfo = 'DEATH Lv' + arcadeLevel() + '-' + ((round-1)%4+1) + ' @(' + player.row + ',' + player.col + ') dir=' + (aiBestDir || '?') + ' scores=[' + scores.trim() + '] lives=' + lives + ' hops=' + hops;
     for (var di = 0; di < enemies.length; di++) {
         var de = enemies[di];
         if (de.type !== 'spawn-timer') deathInfo += ' ' + de.type + '@(' + de.row + ',' + de.col + ')';
@@ -541,7 +551,7 @@ function tryMove(dirKey) {
 // (updateEnemies, updatePlayer, spawnEnemy, killPlayer, useDisc, checkPlayerEnemyCollision
 //  all removed — game logic now handled by qbert.js simulation functions)
 
-// ─── AI (uses aiPickBestDir, buildTour, buildDangerMaps from qbert-ai.js) ──
+// ─── AI (uses aiPickBestDir, buildDangerSet from qbert-ai.js) ──
 
 function computeAIMove() {
     var tgt = targetState();
@@ -563,47 +573,40 @@ function computeAIMove() {
         }
     }
 
-    // Build viz: tour to show remaining targets, BFS path for detail
-    if (boardSig() !== aiBoardSig || aiTour.length === 0) buildTour();
-    while (aiTourIdx < aiTour.length) {
-        var t = aiTour[aiTourIdx];
-        var tc = cubeAt(t.row, t.col);
-        if (tc && tc.state < tgt) break;
-        aiTourIdx++;
-    }
-
-    aiDetailPath = [];
+    // Build viz: dots on all unfinished cubes, path from player to tour target
     aiTourDots = [];
-    if (bestDir) {
+    aiDetailPath = [];
+    aiTourPath = [];
+    for (var vi = 0; vi < cubeStates.length; vi++)
+        if (cubeStates[vi].state < tgt) aiTourDots.push({ row: cubeStates[vi].row, col: cubeStates[vi].col });
+
+    if (bestDir && bestDir !== 'STAY') {
         var dd = DIRS[bestDir];
         var nr = player.row + dd.dr, nc = player.col + dd.dc;
         if (isValidPos(nr, nc)) {
-            aiDetailPath.push({ row: nr, col: nc });
-            if (aiTourIdx < aiTour.length) {
-                var target = aiTour[aiTourIdx];
-                var res = bfsTo(nr, nc, target.row, target.col);
-                if (res) {
-                    var pr = nr, pc = nc;
-                    for (var i = 0; i < res.path.length; i++) {
-                        var pd = DIRS[res.path[i]];
-                        pr += pd.dr; pc += pd.dc;
-                        aiDetailPath.push({ row: pr, col: pc });
+            // Use dynamicTourMove's BFS to find the target the AI is heading toward
+            var gs2 = simCloneGameState();
+            gs2.player.row = nr; gs2.player.col = nc;
+            // Find the nearest unfinished cube via BFS from landing tile
+            var vizTarget = null, vizBestDist = Infinity;
+            for (var vti = 0; vti < aiTourDots.length; vti++) {
+                var vr = bfsTo(nr, nc, aiTourDots[vti].row, aiTourDots[vti].col);
+                if (vr && vr.dist < vizBestDist) { vizBestDist = vr.dist; vizTarget = vti; }
+            }
+            // Build path: player → landing → BFS to target
+            aiTourPath.push({ row: player.row, col: player.col });
+            aiTourPath.push({ row: nr, col: nc });
+            if (vizTarget !== null) {
+                var vres = bfsTo(nr, nc, aiTourDots[vizTarget].row, aiTourDots[vizTarget].col);
+                if (vres) {
+                    var vpr = nr, vpc = nc;
+                    for (var vpi = 0; vpi < vres.path.length; vpi++) {
+                        var vpd = DIRS[vres.path[vpi]];
+                        vpr += vpd.dr; vpc += vpd.dc;
+                        aiTourPath.push({ row: vpr, col: vpc });
                     }
                 }
             }
-        }
-        for (var i = aiTourIdx; i < aiTour.length; i++)
-            aiTourDots.push({ row: aiTour[i].row, col: aiTour[i].col });
-    }
-
-    // Build ordered tour path for viz: player → next target → subsequent targets
-    aiTourPath = [];
-    if (aiTourIdx < aiTour.length) {
-        aiTourPath.push({ row: player.row, col: player.col });
-        var pr2 = player.row, pc2 = player.col;
-        for (var i = aiTourIdx; i < aiTour.length; i++) {
-            aiTourPath.push({ row: aiTour[i].row, col: aiTour[i].col });
-            pr2 = aiTour[i].row; pc2 = aiTour[i].col;
         }
     }
 
@@ -747,7 +750,7 @@ function update() {
                 levelWon = true;
                 levelWonTimer = 30;
                 DinoSounds.reached();
-                var lvKey = '' + arcadeLevel();
+                var lvKey = bestHopsKey();
                 if (!bestHops[lvKey] || hops < bestHops[lvKey]) {
                     bestHops[lvKey] = hops;
                     localStorage.setItem('dino-qbert-best-hops', JSON.stringify(bestHops));
@@ -821,8 +824,7 @@ function draw() {
     // Shade enemy collision faces red (debug/viz mode)
     if (debugEnemies || vizOn) drawEnemyCollisionFaces();
 
-    // Enemies and player (before inversion so they invert with scene, like dino-runner)
-    // White outline becomes black outline at night automatically
+    // Enemies and player (before inversion so they invert with scene)
     for (var i = 0; i < enemies.length; i++) drawEnemy(enemies[i]);
     drawPlayer();
 
@@ -856,23 +858,9 @@ function draw() {
     // Night inversion
     applyNight(ctx);
 
-    // Redraw cube top faces after inversion so their colors stay true at night
-    if (inverted) {
-        pyrCtx.clearRect(0, 0, pyrCvs.width, pyrCvs.height);
-        pyrCtx.save();
-        pyrCtx.scale(1 / PYR_SCALE, 1 / PYR_SCALE);
-        for (var rt = 0; rt < ROWS; rt++) {
-            for (var ct = 0; ct <= rt; ct++) {
-                var cubeT = cubeAt(rt, ct);
-                var posT  = cubeXY(rt, ct);
-                drawCubeTop(pyrCtx, posT.cx, posT.cy, cubeT ? cubeT.state : 0);
-            }
-        }
-        pyrCtx.restore();
-        ctx.imageSmoothingEnabled = false;
-        ctx.drawImage(pyrCvs, 0, 0, CW, CH);
-        ctx.imageSmoothingEnabled = true;
-    }
+    // Post-inversion: redraw cube tops with true colors, then redraw
+    // entities on top. Entities are drawn to a temp canvas, inverted to
+    // match the dark background, then composited over.
 
     // HUD (drawn post-inversion so it flips too, matching dino runner style)
     drawHUD();
