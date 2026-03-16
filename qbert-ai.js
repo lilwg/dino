@@ -23,85 +23,76 @@ function stompsNeeded(cubeState, lv) {
 }
 
 
-// MST-based tour cost — stable lower bound, no path-dependent noise.
-// On toggle levels, penalizes crossing completed cubes (each crossing
-// creates a revert = ~2 extra hops to fix later).
-function dijkstraWeighted(srcIdx, completedMask, penalty) {
-    var dist = new Array(POS_COUNT);
-    var visited = new Uint8Array(POS_COUNT);
-    for (var i = 0; i < POS_COUNT; i++) dist[i] = 999;
-    dist[srcIdx] = 0;
-    for (var iter = 0; iter < POS_COUNT; iter++) {
-        var u = -1, uDist = 999;
-        for (var i = 0; i < POS_COUNT; i++) {
-            if (!visited[i] && dist[i] < uDist) { uDist = dist[i]; u = i; }
-        }
-        if (u < 0) break;
-        visited[u] = 1;
-        var adj = posAdj[u];
-        for (var a = 0; a < adj.length; a++) {
-            var v = adj[a];
-            if (visited[v]) continue;
-            var cost = 1 + ((completedMask & (1 << v)) ? penalty : 0);
-            var newDist = dist[u] + cost;
-            if (newDist < dist[v]) dist[v] = newDist;
-        }
-    }
-    return dist;
-}
-
-function mstFromDistTable(allNodes, distTable) {
-    var n = allNodes.length;
-    if (n === 0) return 0;
-    var inMST = new Uint8Array(n);
-    var minEdge = new Array(n);
-    for (var i = 0; i < n; i++) minEdge[i] = 999;
-    minEdge[0] = 0;
-    var total = 0;
-    for (var iter = 0; iter < n; iter++) {
-        var u = -1, uCost = 999;
-        for (var i = 0; i < n; i++) {
-            if (!inMST[i] && minEdge[i] < uCost) { uCost = minEdge[i]; u = i; }
-        }
-        if (u < 0) break;
-        inMST[u] = 1;
-        total += uCost;
-        var uDists = distTable[u];
-        for (var i = 0; i < n; i++) {
-            if (inMST[i]) continue;
-            var d = uDists[allNodes[i]];
-            if (d < minEdge[i]) minEdge[i] = d;
-        }
-    }
-    return total;
-}
-
-function mstTourCost(startIdx, cubes, tgt, lv) {
-    var penalty = lv >= 3 ? 2 : 0;  // toggle: each completed cube crossing ≈ 2 extra hops
-    var completedMask = 0;
-    var nodes = [];
-    var extraStomps = 0;
+// Greedy nearest-neighbor tour cost with deterministic tie-breaking.
+// Tracks reverts on toggle levels. Ties broken by lowest position index
+// so the estimate is stable across similar starting positions.
+function greedyTourCost(startIdx, cubes, tgt, lv) {
+    var stomps = new Int8Array(POS_COUNT);
     for (var i = 0; i < cubes.length; i++) {
         var idx = posToIdx[cubes[i].row * ROWS + cubes[i].col];
-        var s = stompsNeeded(cubes[i].state, lv);
-        if (s > 0) {
-            nodes.push(idx);
-            extraStomps += 2 * (s - 1);
-        } else {
-            completedMask |= (1 << idx);
-        }
+        stomps[idx] = stompsNeeded(cubes[i].state, lv);
     }
-    if (nodes.length === 0) return 0;
-    var allNodes = [startIdx].concat(nodes);
-    var distTable = [];
-    for (var i = 0; i < allNodes.length; i++)
-        distTable.push(dijkstraWeighted(allNodes[i], completedMask, penalty));
-    return mstFromDistTable(allNodes, distTable) + extraStomps;
+
+    var isToggle = lv >= 3;
+    var curIdx = startIdx;
+    var totalHops = 0;
+
+    for (var iter = 0; iter < 200; iter++) {
+        // Find nearest unfinished cube; break ties by lowest index
+        var bestIdx = -1, bestDist = 999;
+        for (var i = 0; i < POS_COUNT; i++) {
+            if (stomps[i] > 0 && i !== curIdx) {
+                var d = distMatrix[curIdx * POS_COUNT + i];
+                if (d < bestDist || (d === bestDist && (bestIdx === -1 || i < bestIdx))) {
+                    bestDist = d; bestIdx = i;
+                }
+            }
+        }
+        if (bestIdx === -1) {
+            if (stomps[curIdx] > 0) totalHops += stomps[curIdx] * 2;
+            break;
+        }
+
+        // Walk shortest path, tracking reverts
+        totalHops += bestDist;
+        // Count completed cubes crossed on the shortest path (BFS)
+        if (isToggle && bestDist > 1) {
+            // BFS to find path and count reverts
+            var prev = new Int8Array(POS_COUNT);
+            for (var j = 0; j < POS_COUNT; j++) prev[j] = -1;
+            prev[curIdx] = curIdx;
+            var queue = [curIdx], qi = 0;
+            while (qi < queue.length) {
+                var u = queue[qi++];
+                if (u === bestIdx) break;
+                var adj = posAdj[u];
+                for (var a = 0; a < adj.length; a++) {
+                    var v = adj[a];
+                    if (prev[v] === -1) { prev[v] = u; queue.push(v); }
+                }
+            }
+            // Walk path and apply reverts
+            var path = [], pc = bestIdx;
+            while (pc !== curIdx) { path.push(pc); pc = prev[pc]; }
+            for (var p = path.length - 1; p >= 0; p--) {
+                var pos = path[p];
+                if (stomps[pos] > 0) stomps[pos]--;
+                else stomps[pos] = 1; // revert
+            }
+        } else {
+            // Direct neighbor or non-toggle: just stomp destination
+            if (stomps[bestIdx] > 0) stomps[bestIdx]--;
+            else if (isToggle) stomps[bestIdx] = 1;
+        }
+        curIdx = bestIdx;
+    }
+
+    return totalHops;
 }
 
 // Tour cost from a simulation state
 function simTourCost(gs) {
-    return mstTourCost(posToIdx[gs.player.row * ROWS + gs.player.col], gs.cubes, gs.tgt, gs.lv);
+    return greedyTourCost(posToIdx[gs.player.row * ROWS + gs.player.col], gs.cubes, gs.tgt, gs.lv);
 }
 
 // ─── Danger zone assessment ──────────────────────────────────────────────────
