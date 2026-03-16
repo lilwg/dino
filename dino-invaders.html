@@ -163,7 +163,6 @@
                 var DANGER_Y = 337 - margin;
                 var bestEdge = null, bestEdgeTtk = Infinity;
                 var bestDanger = null, bestDangerTtk = Infinity;
-                var bestAlien = null, bestTime = Infinity;
                 for (var i = 0; i < hittable.length; i++) {
                     var a = hittable[i];
                     var claimed = false;
@@ -183,10 +182,6 @@
                         bestDangerTtk = ttk;
                         bestDanger = a;
                     }
-                    if (ttk < bestTime) {
-                        bestTime = ttk;
-                        bestAlien = a;
-                    }
                 }
                 if (bestDanger) {
                     target = bestDanger;
@@ -194,9 +189,6 @@
                 } else if (bestEdge) {
                     target = bestEdge;
                     targetReason = 'edge';
-                } else if (bestAlien) {
-                    target = bestAlien;
-                    targetReason = 'fastest';
                 }
             }
 
@@ -339,8 +331,7 @@
         // Target crosshair — color by reason
         var targetColor = d.targetReason === 'danger' ? '#ff3b30'
                         : d.targetReason === 'ufo' ? '#ff9f0a'
-                        : d.targetReason === 'edge' ? '#5ac8fa'
-                        : '#30d158';
+                        : '#5ac8fa';
         if (d.targetX !== null) {
             ctx.strokeStyle = targetColor;
             ctx.globalAlpha = 0.5;
@@ -408,8 +399,7 @@
         var badgeColor = r.died ? '#ff3b30'
                        : d.targetReason === 'danger' ? '#ff3b30'
                        : d.targetReason === 'ufo' ? '#ff9f0a'
-                       : d.targetReason === 'edge' ? '#5ac8fa'
-                       : '#0071e3';
+                       : '#5ac8fa';
         var decLabel = ACTION_NAMES[d.chosenAction];
         if (r.killedTarget) decLabel += ' \u2713';
         if (r.died) decLabel += ' !';
