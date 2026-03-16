@@ -392,40 +392,6 @@ function aiTourInit() { aiLastRemaining = 99; aiNoProgressCount = 0; aiStayCount
 // On toggle levels (lv3+), uses cluster-based sweep planning:
 // finds connected components of unfinished cubes and targets the nearest
 // cluster's closest member, preferring paths that don't cross completed cubes.
-// Count how many valid moves a tile has (connectivity / escape routes)
-function tileDegree(row, col) {
-    var deg = 0;
-    for (var k = 0; k < 4; k++) {
-        var dk = DIRS[DIR_KEYS[k]];
-        if (isValidPos(row + dk.dr, col + dk.dc)) deg++;
-    }
-    return deg;
-}
-
-// Build enemy proximity cost map: tiles near dangerous enemies get extra cost.
-// Returns { "row,col": costPenalty }.
-function buildEnemyProximityMap(gs) {
-    var map = {};
-    for (var i = 0; i < gs.enemies.length; i++) {
-        var e = gs.enemies[i];
-        if (e.type === 'spawn-timer' || e.type === 'slick' || e.type === 'greenball') continue;
-        var pos = enemyEffectivePos(e);
-        var er = pos.row, ec = pos.col;
-        // Weight: coily is most dangerous, others less
-        var weight = e.type === 'coily' ? 4 : 2;
-        // Mark the enemy's tile and nearby tiles (Manhattan distance ≤ 2)
-        for (var r = Math.max(0, er - 2); r <= Math.min(ROWS - 1, er + 2); r++) {
-            for (var c = 0; c <= r; c++) {
-                var d = Math.abs(r - er) + Math.abs(c - ec);
-                if (d > 2) continue;
-                var key = r + ',' + c;
-                var pen = d === 0 ? weight * 2 : (d === 1 ? weight : Math.ceil(weight / 2));
-                map[key] = (map[key] || 0) + pen;
-            }
-        }
-    }
-    return map;
-}
 
 function dynamicTourMove(gs) {
     var lv = gs.lv;
@@ -445,13 +411,6 @@ function dynamicTourMove(gs) {
 
     var penalty = revertPenalty(lv, gs.cubes, tgt);
 
-    // Enemy proximity map — adds traversal cost near dangerous enemies
-    var hasCoily = false;
-    for (var ei = 0; ei < gs.enemies.length; ei++) {
-        if (gs.enemies[ei].type === 'coily') hasCoily = true;
-        if (gs.enemies[ei].type === 'egg' && ((gs.enemies[ei].hops || 0) >= 5 || gs.enemies[ei].willHatch)) hasCoily = true;
-    }
-    var enemyCost = (hasCoily || gs.enemies.length > 2) ? buildEnemyProximityMap(gs) : {};
 
     // On toggle levels, find connected clusters of unfinished cubes
     // and give bonus to targets in larger clusters (more sweep potential)
@@ -502,23 +461,6 @@ function dynamicTourMove(gs) {
 
         if (curKey !== startKey && unfinishedSet[curKey]) {
             var adjCost = cur.cost;
-            var isCorner = (cur.row === ROWS - 1 && (cur.col === 0 || cur.col === ROWS - 1));
-            var isBottom = cur.row >= ROWS - 2;
-            var isEdge = cur.col === 0 || cur.col === cur.row;
-            // Edge/corner bonus: stomp hard-to-reach tiles first.
-            // BUT reduce/flip bonus when enemies are active — escape routes matter.
-            if (hasCoily) {
-                // With enemies: PENALIZE low-connectivity targets
-                var deg = tileDegree(cur.row, cur.col);
-                if (deg <= 1) adjCost += 3;       // corners: strong penalty
-                else if (deg === 2) adjCost += 1;  // edges: mild penalty
-                // Interior tiles (deg 3-4) get no adjustment
-            } else {
-                // No enemies: keep original bonus (stomp edges early)
-                if (isCorner) adjCost -= 2;
-                else if (isBottom && isEdge) adjCost -= 1.5;
-                else if (isBottom || isEdge) adjCost -= 0.5;
-            }
             // Big bonus for zero-revert paths — reached without crossing completed cubes
             if (lv >= 3 && (reverts[curKey] || 0) === 0) adjCost -= 4;
             // Cluster bonus: prefer targets in larger connected groups (sweep-friendly)
@@ -536,8 +478,7 @@ function dynamicTourMove(gs) {
             var nk = nr + ',' + nc;
             var isCompleted = !!completedSet[nk];
             var moveCost = 1 + (isCompleted ? penalty : 0);
-            // Enemy proximity cost — routes around enemies instead of through them
-            if (enemyCost[nk]) moveCost += enemyCost[nk];
+
             // On toggle levels, penalize completed dead-end tiles
             if (isCompleted && lv >= 3) {
                 var isApex = (nr === 0 && nc === 0);
