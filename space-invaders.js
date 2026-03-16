@@ -137,7 +137,7 @@
         var canvas = document.createElement('canvas');
         canvas.width = w;
         canvas.height = h;
-        var ctx = canvas.getContext('2d');
+        var ctx = canvas.getContext('2d', { willReadFrequently: true });
         ctx.fillStyle = '#535353';
         // Arch shape
         ctx.fillRect(0, 8, w, h - 8);
