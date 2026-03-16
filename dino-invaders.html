@@ -103,7 +103,7 @@
         update: function (g) {
             var playerCx = g.player.x + 22;
 
-            // --- 1. TARGET SELECTION: UFO > lowest alien ---
+            // --- 1. TARGET SELECTION: UFO > fastest alien to kill ---
             var target = null;
             var targetReason = 'none';
 
@@ -111,23 +111,25 @@
                 target = { x: g.mystery.x, y: g.mystery.y, w: 40, h: 16, isMystery: true };
                 targetReason = 'ufo';
             } else {
-                var lowestAlien = null;
-                var lowestY = -1;
-                var closestDx = Infinity;
+                // Pick the alien with least estimated time to kill:
+                // frames to align horizontally + frames for bullet to reach it
+                var bestAlien = null;
+                var bestTime = Infinity;
                 for (var i = 0; i < g.aliens.length; i++) {
                     var a = g.aliens[i];
                     if (!a.alive) continue;
-                    var ay = a.y + a.h;
-                    var dx = Math.abs(a.x + a.w / 2 - playerCx);
-                    if (ay > lowestY || (ay === lowestY && dx < closestDx)) {
-                        lowestY = ay;
-                        closestDx = dx;
-                        lowestAlien = a;
+                    var alienCx = a.x + a.w / 2;
+                    var alignFrames = Math.abs(alienCx - playerCx) / 4; // PLAYER_SPEED=4
+                    var bulletFrames = (337 - a.y) / 6; // PLAYER_Y to alien / BULLET_SPEED=6
+                    var ttk = alignFrames + bulletFrames;
+                    if (ttk < bestTime) {
+                        bestTime = ttk;
+                        bestAlien = a;
                     }
                 }
-                if (lowestAlien) {
-                    target = lowestAlien;
-                    targetReason = 'lowest';
+                if (bestAlien) {
+                    target = bestAlien;
+                    targetReason = 'fastest';
                 }
             }
 
