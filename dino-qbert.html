@@ -67,7 +67,6 @@ var pyrCvs = document.createElement('canvas');
 pyrCvs.width  = CW / PYR_SCALE;   // 300
 pyrCvs.height = CH / PYR_SCALE;   // 220
 var pyrCtx = pyrCvs.getContext('2d');
-var nightEntCvs = null, nightEntCtx = null;
 
 // ─── Sprites ─────────────────────────────────────────────────────────────────
 var SPRITES = {
@@ -202,12 +201,19 @@ var CUBE_TOP_COLORS = [
     ['#ebebeb', '#3878c8', '#48c078'],   // lv 5-6: grey → blue → green
     ['#ebebeb', '#50b0d0', '#d06040']    // lv 7+:  grey → cyan → orange-red
 ];
+var CUBE_TOP_COLORS_INV = [
+    ['#141414', '#cf9f2f', '#cf4fcf'],
+    ['#141414', '#979757', '#2fb7bf'],
+    ['#141414', '#c78737', '#b73f87'],
+    ['#141414', '#af4f2f', '#2f9fbf']
+];
 
 function drawCube(c, cx, cy, state) {
     var hw = TILE_W / 2, hh = TILE_H / 2;
     var lv = arcadeLevel();
     var palIdx = lv <= 2 ? 0 : lv <= 4 ? 1 : lv <= 6 ? 2 : 3;
-    var topCol   = CUBE_TOP_COLORS[palIdx][state] || CUBE_TOP_COLORS[palIdx][0];
+    var topPal   = inverted ? CUBE_TOP_COLORS_INV[palIdx] : CUBE_TOP_COLORS[palIdx];
+    var topCol   = topPal[state] || topPal[0];
     // Round 4 of even levels (2, 4, 6, 8): invisible sides (flat diamonds like the arcade)
     var r4 = ((round - 1) % 4) === 3 && lv % 2 === 0;
     var leftCol  = r4 ? '#000' : '#a8a8a8';
@@ -233,7 +239,8 @@ function drawCubeTop(c, cx, cy, state) {
     var hw = TILE_W / 2, hh = TILE_H / 2;
     var lv = arcadeLevel();
     var palIdx = lv <= 2 ? 0 : lv <= 4 ? 1 : lv <= 6 ? 2 : 3;
-    var topCol = CUBE_TOP_COLORS[palIdx][state] || CUBE_TOP_COLORS[palIdx][0];
+    var pal = inverted ? CUBE_TOP_COLORS_INV[palIdx] : CUBE_TOP_COLORS[palIdx];
+    var topCol = pal[state] || pal[0];
     c.beginPath();
     c.moveTo(cx, cy - hh);
     c.lineTo(cx + hw, cy);
@@ -852,35 +859,6 @@ function draw() {
     // Post-inversion: redraw cube tops with true colors, then redraw
     // entities on top. Entities are drawn to a temp canvas, inverted to
     // match the dark background, then composited over.
-    if (inverted) {
-        pyrCtx.clearRect(0, 0, pyrCvs.width, pyrCvs.height);
-        pyrCtx.save();
-        pyrCtx.scale(1 / PYR_SCALE, 1 / PYR_SCALE);
-        for (var rt = 0; rt < ROWS; rt++) {
-            for (var ct = 0; ct <= rt; ct++) {
-                var cubeT = cubeAt(rt, ct);
-                var posT  = cubeXY(rt, ct);
-                drawCubeTop(pyrCtx, posT.cx, posT.cy, cubeT ? cubeT.state : 0);
-            }
-        }
-        pyrCtx.restore();
-        ctx.imageSmoothingEnabled = false;
-        ctx.drawImage(pyrCvs, 0, 0, CW, CH);
-        ctx.imageSmoothingEnabled = true;
-        // Entity redraw: draw to temp canvas, invert, composite
-        if (!nightEntCvs) {
-            nightEntCvs = document.createElement('canvas');
-            nightEntCvs.width = CW; nightEntCvs.height = CH;
-            nightEntCtx = nightEntCvs.getContext('2d');
-        }
-        nightEntCtx.clearRect(0, 0, CW, CH);
-        var savedCtx = ctx; ctx = nightEntCtx;
-        for (var ni = 0; ni < enemies.length; ni++) drawEnemy(enemies[ni]);
-        drawPlayer();
-        ctx = savedCtx;
-        applyNight(nightEntCtx);
-        ctx.drawImage(nightEntCvs, 0, 0);
-    }
 
     // HUD (drawn post-inversion so it flips too, matching dino runner style)
     drawHUD();
