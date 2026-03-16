@@ -409,7 +409,8 @@ function enemyPathCollides(e, playerTiles, frame, maxFrames, pDestR, pDestC, sm)
 }
 
 // Main entry: returns true if direction is safe from ALL possible nearby-enemy paths.
-function isExhaustiveSafe(gs, dir) {
+// skipCoily: if true, skip Coily (for hop-2 checks where hop-1 already validated Coily).
+function isExhaustiveSafe(gs, dir, skipCoily) {
     var playerTiles = computePlayerTiles(gs.player.row, gs.player.col, dir, gs.sm);
     if (!playerTiles) return true; // disc move — no on-grid collision possible
 
@@ -421,8 +422,9 @@ function isExhaustiveSafe(gs, dir) {
 
     for (var i = 0; i < gs.enemies.length; i++) {
         var e = gs.enemies[i];
-        // Skip non-threatening types
+        // Skip non-threatening types (and optionally Coily for hop-2 checks)
         if (e.type === 'spawn-timer' || e.type === 'slick' || e.type === 'greenball') continue;
+        if (skipCoily && e.type === 'coily') continue;
 
         // Effective position for distance check
         var er = e.jumping && e.jumpT >= 0.67 ? (e.destRow != null ? e.destRow : e.row) : e.row;
@@ -671,8 +673,14 @@ function unifiedPick(gs, coilyActive) {
                     }
                     if (!stateOk) { d2ok = false; break; }
                 }
-                // Hop-2 safety relies on MC (3 seeds × 10 states) — hop-1 exhaustive
-                // (with Coily) already catches direct collision risks.
+                // Exhaustive check on hop-2 (skip Coily — hop-1 exhaustive handles it).
+                // Only check first 6 hop1States for performance.
+                if (d2ok && d2dir !== 'STAY') {
+                    var maxExh = Math.min(hop1States.length, 6);
+                    for (var si2 = 0; si2 < maxExh; si2++) {
+                        if (!isExhaustiveSafe(hop1States[si2], d2dir, true)) { d2ok = false; break; }
+                    }
+                }
                 // Hop 3: verify at least one safe escape from hop-2 state (anti-cornering)
                 if (d2ok && hop2States.length > 0) {
                     var has3rdSafe = false;
