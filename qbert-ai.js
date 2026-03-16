@@ -653,13 +653,14 @@ function unifiedPick(gs, coilyActive) {
         else if (survived === SAMPLES && safe1[dir]) aiMoveScores[dir] = 10000 - (totalTC / survived);
         else aiMoveScores[dir] = (survived / SAMPLES) * 100 - 100;
 
-        // Hop 2: if hop 1 is safe and enemies exist, verify safe follow-up exists.
-        // Uses multiple MC samples per state + exhaustive enemy check for robustness.
+        // Hop 2+3: if hop 1 is safe and enemies exist, verify a safe 3-hop chain.
+        // Hop 2: MC (3 seeds) + exhaustive. Hop 3: MC only (avoids cornering).
         if (safe1[dir] && hasEnemies && dir !== 'STAY') {
             var has2ndSafe = false;
             for (var d2k = 0; d2k < DIR_KEYS_WITH_STAY.length; d2k++) {
                 var d2dir = DIR_KEYS_WITH_STAY[d2k];
                 var d2ok = true;
+                var hop2States = [];
                 // MC check: multiple seeds per hop1State for reliability
                 for (var si = 0; si < hop1States.length; si++) {
                     var stateOk = true;
@@ -667,6 +668,7 @@ function unifiedPick(gs, coilyActive) {
                         simSeed(k * 1000 + d2k * 100 + si * 10 + s2);
                         var d2c = simDeepClone(hop1States[si]);
                         if (!simStep(d2c, d2dir)) { stateOk = false; break; }
+                        else if (s2 === 0 && hop2States.length < 4) hop2States.push(d2c);
                     }
                     if (!stateOk) { d2ok = false; break; }
                 }
@@ -676,6 +678,21 @@ function unifiedPick(gs, coilyActive) {
                         if (!isExhaustiveSafe(hop1States[si2], d2dir)) { d2ok = false; break; }
                     }
                 }
+                // Hop 3: verify at least one safe escape from hop-2 state (anti-cornering)
+                if (d2ok && hop2States.length > 0) {
+                    var has3rdSafe = false;
+                    for (var d3k = 0; d3k < DIR_KEYS_WITH_STAY.length; d3k++) {
+                        var d3dir = DIR_KEYS_WITH_STAY[d3k];
+                        var d3ok = true;
+                        for (var si3 = 0; si3 < hop2States.length; si3++) {
+                            simSeed(k * 10000 + d2k * 1000 + d3k * 100 + si3);
+                            var d3c = simDeepClone(hop2States[si3]);
+                            if (!simStep(d3c, d3dir)) { d3ok = false; break; }
+                        }
+                        if (d3ok) { has3rdSafe = true; break; }
+                    }
+                    if (!has3rdSafe) d2ok = false;
+                }
                 if (d2ok && hop1States.length > 0) { has2ndSafe = true; break; }
             }
             safe2[dir] = has2ndSafe;
@@ -683,7 +700,7 @@ function unifiedPick(gs, coilyActive) {
                 aiMoveScores[dir] = -5000;
             }
         } else {
-            safe2[dir] = true;  // no enemies or STAY — skip hop 2 check
+            safe2[dir] = true;  // no enemies or STAY — skip hop 2+3 check
         }
     }
 
