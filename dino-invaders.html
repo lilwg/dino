@@ -156,17 +156,14 @@
                     if (alive[i].col > maxCol) maxCol = alive[i].col;
                 }
 
-                // Pick target: danger (near game-over) > fastest TTK (with edge bonus)
-                // Margin: 48px base + small scaling for speed/wave
+                // Priority: 1) edge column (tiebreak TTK) 2) danger (tiebreak TTK) 3) fastest TTK
                 var aliveCount = alive.length;
                 var wave = g.wave || 1;
                 var margin = 48 + Math.max(0, Math.floor((55 - aliveCount) * 0.5)) + Math.min(wave * 2, 24);
                 var DANGER_Y = 337 - margin;
-                var bestAlien = null;
-                var bestTime = Infinity;
-                var bestDanger = null;
-                var bestDangerY = -1;
-                var bestDangerTtk = Infinity;
+                var bestEdge = null, bestEdgeTtk = Infinity;
+                var bestDanger = null, bestDangerTtk = Infinity;
+                var bestAlien = null, bestTime = Infinity;
                 for (var i = 0; i < hittable.length; i++) {
                     var a = hittable[i];
                     var claimed = false;
@@ -178,22 +175,23 @@
                     var alignFrames = Math.abs(alienCx - playerCx) / 4;
                     var bulletFrames = (337 - a.y) / 6;
                     var ttk = alignFrames + bulletFrames;
-                    // Edge bonus: reduce TTK for outermost column aliens to narrow formation
-                    if (a.col === minCol || a.col === maxCol) ttk -= 15;
-                    // Danger: lowest Y first, TTK as tiebreaker for similar heights
-                    if (a.y + a.h >= DANGER_Y) {
-                        if (a.y > bestDangerY + 5 || (a.y >= bestDangerY - 5 && ttk < bestDangerTtk)) {
-                            bestDangerY = a.y;
-                            bestDangerTtk = ttk;
-                            bestDanger = a;
-                        }
+                    if ((a.col === minCol || a.col === maxCol) && ttk < bestEdgeTtk) {
+                        bestEdgeTtk = ttk;
+                        bestEdge = a;
+                    }
+                    if (a.y + a.h >= DANGER_Y && ttk < bestDangerTtk) {
+                        bestDangerTtk = ttk;
+                        bestDanger = a;
                     }
                     if (ttk < bestTime) {
                         bestTime = ttk;
                         bestAlien = a;
                     }
                 }
-                if (bestDanger) {
+                if (bestEdge) {
+                    target = bestEdge;
+                    targetReason = 'edge';
+                } else if (bestDanger) {
                     target = bestDanger;
                     targetReason = 'danger';
                 } else if (bestAlien) {
@@ -341,6 +339,7 @@
         // Target crosshair — color by reason
         var targetColor = d.targetReason === 'danger' ? '#ff3b30'
                         : d.targetReason === 'ufo' ? '#ff9f0a'
+                        : d.targetReason === 'edge' ? '#5ac8fa'
                         : '#30d158';
         if (d.targetX !== null) {
             ctx.strokeStyle = targetColor;
@@ -409,6 +408,7 @@
         var badgeColor = r.died ? '#ff3b30'
                        : d.targetReason === 'danger' ? '#ff3b30'
                        : d.targetReason === 'ufo' ? '#ff9f0a'
+                       : d.targetReason === 'edge' ? '#5ac8fa'
                        : '#0071e3';
         var decLabel = ACTION_NAMES[d.chosenAction];
         if (r.killedTarget) decLabel += ' \u2713';
