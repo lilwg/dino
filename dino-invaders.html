@@ -158,7 +158,7 @@
                 var bestAlien = null;
                 var bestTime = Infinity;
                 var bestDanger = null;
-                var lowestDangerY = -1;
+                var bestDangerTime = Infinity;
                 for (var i = 0; i < hittable.length; i++) {
                     var a = hittable[i];
                     var claimed = false;
@@ -166,14 +166,14 @@
                         if (claimedAliens[ci] === a) { claimed = true; break; }
                     }
                     if (claimed) continue;
-                    if (a.y + a.h >= DANGER_Y && a.y > lowestDangerY) {
-                        lowestDangerY = a.y;
-                        bestDanger = a;
-                    }
                     var alienCx = a.x + a.w / 2;
                     var alignFrames = Math.abs(alienCx - playerCx) / 4;
                     var bulletFrames = (337 - a.y) / 6;
                     var ttk = alignFrames + bulletFrames;
+                    if (a.y + a.h >= DANGER_Y && ttk < bestDangerTime) {
+                        bestDangerTime = ttk;
+                        bestDanger = a;
+                    }
                     if (ttk < bestTime) {
                         bestTime = ttk;
                         bestAlien = a;
