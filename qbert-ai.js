@@ -198,6 +198,190 @@ function buildDangerSet() {
     return danger;
 }
 
+// ─── Exhaustive nearby-enemy safety check ───────────────────────────────────
+// For enemies within a few tiles of the player's destination, enumerate ALL
+// possible movement paths instead of relying on MC sampling.  This catches
+// collisions that 20 random seeds can miss (e.g. ugg/wrongway approaching
+// from the side with a 12% collision probability → 8% MC miss rate).
+//
+// Approach: for each nearby non-deterministic enemy, recursively try both
+// direction choices at every hop and check frame-level collision with the
+// player.  With at most 2 hops per enemy per player jump, this is 2^2 = 4
+// paths per enemy — trivially fast.
+
+var EXHAUSTIVE_RADIUS = 5; // Manhattan-distance threshold for "nearby"
+
+// Precompute the player's collision tile at each frame during a jump.
+// Returns an array where index = frame number, value = {row,col} or null (immune).
+// Returns null for disc moves (player goes off-grid).
+function computePlayerTiles(pRow, pCol, dir, sm) {
+    if (dir === 'STAY') {
+        var maxWait = Math.ceil(1.0 / (PLAYER_JUMP_DUR * sm)) + 10;
+        var tiles = [];
+        for (var f = 0; f < maxWait; f++) tiles.push({ row: pRow, col: pCol });
+        return tiles;
+    }
+    var d = DIRS[dir];
+    var destR = pRow + d.dr, destC = pCol + d.dc;
+    if (!isValidPos(destR, destC)) return null; // disc move — skip
+    var jumpDur = PLAYER_JUMP_DUR * sm;
+    var tiles = [];
+    var jumpT = 0;
+    var landed = false;
+    for (var f = 0; f < 60; f++) {
+        if (!landed) {
+            jumpT += jumpDur;
+            if (jumpT >= 1) {
+                landed = true;
+                tiles.push({ row: destR, col: destC });
+                continue;
+            }
+            if (jumpT < 0.33) tiles.push({ row: pRow, col: pCol });
+            else if (jumpT >= 0.67) tiles.push({ row: destR, col: destC });
+            else tiles.push(null);
+        } else {
+            // One idle frame after landing (matches simStep post-landing check)
+            tiles.push({ row: destR, col: destC });
+            break;
+        }
+    }
+    return tiles;
+}
+
+// Lightweight clone of a single enemy for the exhaustive search tree
+function cloneEnemyLight(e) {
+    return {
+        type: e.type, row: e.row, col: e.col,
+        jumping: e.jumping, jumpT: e.jumpT, jumpDur: e.jumpDur,
+        destRow: e.destRow, destCol: e.destCol,
+        moveTimer: e.moveTimer, moveInterval: e.moveInterval,
+        hops: e.hops || 0, falling: e.falling || false,
+        willHatch: e.willHatch || false
+    };
+}
+
+// All possible move destinations for an enemy at a hop decision point.
+// Coily is deterministic (chases player), so returns exactly 1 choice.
+// Random enemies (ugg, wrongway, redball, egg) return 2 choices.
+function getEnemyMoveChoices(e, playerDestR, playerDestC) {
+    if (e.type === 'coily') {
+        var bestDist = Infinity, bestR = e.row, bestC = e.col;
+        for (var k = 0; k < 4; k++) {
+            var dk = DIRS[DIR_KEYS[k]];
+            var tr = e.row + dk.dr, tc = e.col + dk.dc;
+            if (!isValidPos(tr, tc)) continue;
+            var dist = Math.abs(playerDestR - tr) + Math.abs(playerDestC - tc);
+            if (dist < bestDist) { bestDist = dist; bestR = tr; bestC = tc; }
+        }
+        return [{ nr: bestR, nc: bestC }];
+    }
+    if (e.type === 'egg' || e.type === 'redball') {
+        return [{ nr: e.row + 1, nc: e.col }, { nr: e.row + 1, nc: e.col + 1 }];
+    }
+    if (e.type === 'ugg') {
+        return [{ nr: e.row - 1, nc: e.col - 1 }, { nr: e.row, nc: e.col - 1 }];
+    }
+    if (e.type === 'wrongway') {
+        return [{ nr: e.row - 1, nc: e.col }, { nr: e.row, nc: e.col + 1 }];
+    }
+    return [];
+}
+
+// Get the collision tile for an enemy (mirrors collisionTile in qbert.js)
+function enemyCollisionTile(e) {
+    if (!e.jumping) return { row: e.row, col: e.col };
+    if (e.jumpT < 0.33) return { row: e.row, col: e.col };
+    if (e.jumpT >= 0.67) return { row: e.destRow, col: e.destCol };
+    return null; // immune at apex
+}
+
+// Recursive search: can this single enemy collide with the player on ANY
+// possible path?  Branches at each move-decision point (2 choices per hop).
+// Returns true if any branch produces a collision.
+function enemyPathCollides(e, playerTiles, frame, maxFrames, pDestR, pDestC, sm) {
+    if (frame >= maxFrames || e.falling) return false;
+
+    // ── Advance enemy by one frame ──
+    if (e.jumping) {
+        e.jumpT += e.jumpDur;
+        if (e.jumpT >= 1) {
+            e.jumping = false;
+            e.row = e.destRow; e.col = e.destCol;
+            if (!isValidPos(e.row, e.col)) return false; // fell off
+            if (e.type === 'egg' && ((e.hops || 0) >= 6 || e.row >= ROWS - 1)) {
+                e.type = 'coily';
+                e.moveInterval = enemyMoveInterval('coily', sm);
+            }
+        }
+        // Collision check
+        var et = enemyCollisionTile(e);
+        var pt = playerTiles[frame];
+        if (et && pt && et.row === pt.row && et.col === pt.col) return true;
+        return enemyPathCollides(e, playerTiles, frame + 1, maxFrames, pDestR, pDestC, sm);
+    }
+
+    // ── Idle: tick move timer ──
+    e.moveTimer++;
+    if (e.moveTimer < e.moveInterval) {
+        // Not moving yet — check collision at current position
+        var pt2 = playerTiles[frame];
+        if (pt2 && pt2.row === e.row && pt2.col === e.col) return true;
+        return enemyPathCollides(e, playerTiles, frame + 1, maxFrames, pDestR, pDestC, sm);
+    }
+
+    // ── Move decision — BRANCH POINT ──
+    e.moveTimer = 0;
+    var choices = getEnemyMoveChoices(e, pDestR, pDestC);
+    for (var ci = 0; ci < choices.length; ci++) {
+        var ec = cloneEnemyLight(e);
+        ec.jumping = true;
+        ec.jumpT = 0;
+        ec.destRow = choices[ci].nr;
+        ec.destCol = choices[ci].nc;
+        ec.hops++;
+        if (!isValidPos(choices[ci].nr, choices[ci].nc)) ec.falling = true;
+        // Check collision right after starting jump (jumpT=0 < 0.33 → source tile)
+        var pt3 = playerTiles[frame];
+        if (pt3 && pt3.row === ec.row && pt3.col === ec.col) return true;
+        if (enemyPathCollides(ec, playerTiles, frame + 1, maxFrames, pDestR, pDestC, sm)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Main entry: returns true if direction is safe from ALL possible nearby-enemy paths.
+function isExhaustiveSafe(gs, dir) {
+    var playerTiles = computePlayerTiles(gs.player.row, gs.player.col, dir, gs.sm);
+    if (!playerTiles) return true; // disc move — no on-grid collision possible
+
+    var d = DIRS[dir];
+    var destR = dir === 'STAY' ? gs.player.row : gs.player.row + d.dr;
+    var destC = dir === 'STAY' ? gs.player.col : gs.player.col + d.dc;
+    var maxFrames = playerTiles.length;
+    var startFrame = Math.min(gs.freezeTimer || 0, maxFrames);
+
+    for (var i = 0; i < gs.enemies.length; i++) {
+        var e = gs.enemies[i];
+        // Skip non-threatening types and coily (deterministic — MC handles it perfectly)
+        if (e.type === 'spawn-timer' || e.type === 'slick' || e.type === 'greenball') continue;
+        if (e.type === 'coily') continue;
+
+        // Effective position for distance check
+        var er = e.jumping && e.jumpT >= 0.67 ? (e.destRow != null ? e.destRow : e.row) : e.row;
+        var ec2 = e.jumping && e.jumpT >= 0.67 ? (e.destCol != null ? e.destCol : e.col) : e.col;
+        var distDest = Math.abs(er - destR) + Math.abs(ec2 - destC);
+        var distSrc = Math.abs(er - gs.player.row) + Math.abs(ec2 - gs.player.col);
+        if (distDest > EXHAUSTIVE_RADIUS && distSrc > EXHAUSTIVE_RADIUS) continue;
+
+        var eClone = cloneEnemyLight(e);
+        if (enemyPathCollides(eClone, playerTiles, startFrame, maxFrames, destR, destC, gs.sm)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 // ─── Tour greedy planner ─────────────────────────────────────────────────────
 var aiTour = [], aiTourIdx = 0, aiBoardSig = '';
 var aiDetailPath = [], aiTourDots = [];
@@ -468,7 +652,7 @@ function unifiedPick(gs, coilyActive) {
                 var lc = simDeepClone(gs);
                 if (simStep(lc, lureDir)) lureSafe++;
             }
-            if (lureSafe === SAMPLES) { restoreRng(); return lureDir; }
+            if (lureSafe === SAMPLES && isExhaustiveSafe(gs, lureDir)) { restoreRng(); return lureDir; }
         }
     }
 
@@ -513,9 +697,23 @@ function unifiedPick(gs, coilyActive) {
             if (dir === 'STAY') tourCosts[dir] += 2;  // slight penalty for waiting
         }
 
+        // Exhaustive nearby-enemy check: MC may miss rare collision paths
+        // (e.g. ugg/wrongway with 12% hit probability → 8% miss rate at 20 samples).
+        // The exhaustive check enumerates ALL possible paths for nearby enemies.
+        // Skip for STAY: simStep's STAY exits early (coily hop cycle), exhaustive
+        // uses a longer fixed window → false positives.  MC handles STAY correctly.
+        if (safe1[dir] && hasEnemies && dir !== 'STAY') {
+            restoreRng();
+            if (!isExhaustiveSafe(gs, dir)) {
+                safe1[dir] = false;
+                hop1Surv[dir] = 0;
+            }
+        }
+
         // Export for viz
-        if (survived === 0) aiMoveScores[dir] = -10000;
-        else if (survived === SAMPLES) aiMoveScores[dir] = 10000 - (totalTC / survived);
+        if (!safe1[dir] && survived === SAMPLES) aiMoveScores[dir] = -8000; // exhaustive check blocked
+        else if (survived === 0) aiMoveScores[dir] = -10000;
+        else if (survived === SAMPLES && safe1[dir]) aiMoveScores[dir] = 10000 - (totalTC / survived);
         else aiMoveScores[dir] = (survived / SAMPLES) * 100 - 100;
 
         // Hop 2: if hop 1 is safe and enemies exist, verify at least one safe follow-up
