@@ -301,10 +301,12 @@
         var pcx = d.playerCx;
         var py = d.playerY;
 
-        // Target crosshair
+        // Target crosshair — color by reason
+        var targetColor = d.targetReason === 'danger' ? '#ff3b30'
+                        : d.targetReason === 'ufo' ? '#ff9f0a'
+                        : '#30d158';
         if (d.targetX !== null) {
-            var color = '#30d158';
-            ctx.strokeStyle = color;
+            ctx.strokeStyle = targetColor;
             ctx.globalAlpha = 0.5;
             ctx.setLineDash([4, 4]);
             ctx.lineWidth = 1;
@@ -320,11 +322,11 @@
             ctx.stroke();
         }
 
-        // Green dotted circle around the main target alien/UFO
+        // Dotted circle around the main target — color by reason
         if (d.target) {
             ctx.setLineDash([3, 3]);
             ctx.lineWidth = 1.5;
-            ctx.strokeStyle = '#30d158';
+            ctx.strokeStyle = targetColor;
             ctx.globalAlpha = 0.8;
             var t = d.target;
             var tcx = t.x + t.w / 2, tcy = t.y + t.h / 2;
@@ -379,7 +381,10 @@
 
         // Decision badge below player
         var r = d.simResults[d.chosenAction];
-        var badgeColor = r.died ? '#ff3b30' : (d.targetReason === 'ufo' ? '#ff9f0a' : '#0071e3');
+        var badgeColor = r.died ? '#ff3b30'
+                       : d.targetReason === 'danger' ? '#ff3b30'
+                       : d.targetReason === 'ufo' ? '#ff9f0a'
+                       : '#0071e3';
         var decLabel = ACTION_NAMES[d.chosenAction];
         if (r.killedTarget) decLabel += ' \u2713';
         if (r.died) decLabel += ' !';
