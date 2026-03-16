@@ -67,6 +67,7 @@ var pyrCvs = document.createElement('canvas');
 pyrCvs.width  = CW / PYR_SCALE;   // 300
 pyrCvs.height = CH / PYR_SCALE;   // 220
 var pyrCtx = pyrCvs.getContext('2d');
+var nightEntCvs = null, nightEntCtx = null;  // temp canvas for entity redraw at night
 
 // ─── Sprites ─────────────────────────────────────────────────────────────────
 var SPRITES = {
@@ -849,7 +850,9 @@ function draw() {
     // Night inversion
     applyNight(ctx);
 
-    // Redraw cube top faces after inversion so their colors stay true at night
+    // Redraw cube top faces after inversion so their colors stay true at night,
+    // then redraw entities on top so they aren't hidden behind cube faces.
+    // Entities are drawn to a temp canvas, inverted, then composited.
     if (inverted) {
         pyrCtx.clearRect(0, 0, pyrCvs.width, pyrCvs.height);
         pyrCtx.save();
@@ -865,6 +868,19 @@ function draw() {
         ctx.imageSmoothingEnabled = false;
         ctx.drawImage(pyrCvs, 0, 0, CW, CH);
         ctx.imageSmoothingEnabled = true;
+        // Redraw entities on a temp canvas, invert them, then composite
+        if (!nightEntCvs) {
+            nightEntCvs = document.createElement('canvas');
+            nightEntCvs.width = CW; nightEntCvs.height = CH;
+            nightEntCtx = nightEntCvs.getContext('2d');
+        }
+        nightEntCtx.clearRect(0, 0, CW, CH);
+        var savedCtx = ctx; ctx = nightEntCtx;
+        for (var ni = 0; ni < enemies.length; ni++) drawEnemy(enemies[ni]);
+        drawPlayer();
+        ctx = savedCtx;
+        applyNight(nightEntCtx);
+        ctx.drawImage(nightEntCvs, 0, 0);
     }
 
     // HUD (drawn post-inversion so it flips too, matching dino runner style)
