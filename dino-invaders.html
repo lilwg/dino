@@ -103,12 +103,15 @@
         update: function (g) {
             var playerCx = g.player.x + 22;
 
-            // --- 1. TARGET SELECTION: danger > edge > UFO ---
+            // --- 1. TARGET SELECTION: UFO > lowest TTK among hittable aliens ---
             var target = null;
             var targetReason = 'none';
             var claimedAliens = [];
 
-            {
+            if (g.mystery) {
+                target = { x: g.mystery.x, y: g.mystery.y, w: 40, h: 16, isMystery: true };
+                targetReason = 'ufo';
+            } else {
                 // Find hittable aliens — an alien is hittable if no other alive
                 // alien is below it with overlapping x (bullet hits lowest first)
                 var alive = [];
@@ -122,7 +125,6 @@
                     for (var j = 0; j < alive.length; j++) {
                         var b = alive[j];
                         if (b === a) continue;
-                        // b blocks a if b is lower (higher y) and x ranges overlap
                         if (b.y > a.y && b.x < a.x + a.w && b.x + b.w > a.x) {
                             blocked = true; break;
                         }
@@ -130,11 +132,10 @@
                     if (!blocked) hittable.push(a);
                 }
 
-                // Find which hittable aliens all in-flight bullets will hit
-                var claimedAliens = [];
-                for (var bi = 0; bi < g.bullets.length; bi++) {
-                    var bx = g.bullets[bi].x + 1.5;
-                    var by = g.bullets[bi].y;
+                // Skip aliens a bullet is already heading toward
+                if (g.bullets.length > 0) {
+                    var bx = g.bullets[0].x + 1.5;
+                    var by = g.bullets[0].y;
                     var bestHitY = -1;
                     var bestHit = null;
                     for (var i = 0; i < hittable.length; i++) {
@@ -146,24 +147,9 @@
                     if (bestHit) claimedAliens.push(bestHit);
                 }
 
-                // Find outermost alive columns to prioritize edge aliens
-                var minCol = 99, maxCol = -1;
-                for (var i = 0; i < alive.length; i++) {
-                    if (alive[i].col < minCol) minCol = alive[i].col;
-                    if (alive[i].col > maxCol) maxCol = alive[i].col;
-                }
-
-                // Priority: danger > UFO > edge (wide) or pure TTK (narrow)
-                var aliveCount = alive.length;
-                var wave = g.wave || 1;
-                var dp = window._dangerParams || { base: 48, aliveScale: 1.0, waveScale: 2, waveCap: 24 };
-                var margin = dp.base + Math.max(0, Math.floor((55 - aliveCount) * dp.aliveScale)) + Math.min(wave * dp.waveScale, dp.waveCap);
-                var DANGER_Y = 337 - margin;
-                var colSpan = maxCol - minCol + 1;
-                var useEdge = colSpan > 4;
-                var bestEdge = null, bestEdgeTtk = Infinity;
-                var bestTtk = null, bestTtkVal = Infinity;
-                var bestDanger = null, bestDangerTtk = Infinity;
+                // Pick the hittable alien with lowest TTK
+                var bestAlien = null;
+                var bestTime = Infinity;
                 for (var i = 0; i < hittable.length; i++) {
                     var a = hittable[i];
                     var claimed = false;
@@ -175,30 +161,13 @@
                     var alignFrames = Math.abs(alienCx - playerCx) / 4;
                     var bulletFrames = (337 - a.y) / 6;
                     var ttk = alignFrames + bulletFrames;
-                    if ((a.col === minCol || a.col === maxCol) && ttk < bestEdgeTtk) {
-                        bestEdgeTtk = ttk;
-                        bestEdge = a;
-                    }
-                    if (ttk < bestTtkVal) {
-                        bestTtkVal = ttk;
-                        bestTtk = a;
-                    }
-                    if (a.y + a.h >= DANGER_Y && ttk < bestDangerTtk) {
-                        bestDangerTtk = ttk;
-                        bestDanger = a;
+                    if (ttk < bestTime) {
+                        bestTime = ttk;
+                        bestAlien = a;
                     }
                 }
-                if (bestDanger) {
-                    target = bestDanger;
-                    targetReason = 'danger';
-                } else if (g.mystery) {
-                    target = { x: g.mystery.x, y: g.mystery.y, w: 40, h: 16, isMystery: true };
-                    targetReason = 'ufo';
-                } else if (useEdge && bestEdge) {
-                    target = bestEdge;
-                    targetReason = 'edge';
-                } else if (bestTtk) {
-                    target = bestTtk;
+                if (bestAlien) {
+                    target = bestAlien;
                     targetReason = 'fastest';
                 }
             }
@@ -340,10 +309,7 @@
         var py = d.playerY;
 
         // Target crosshair — color by reason
-        var targetColor = d.targetReason === 'danger' ? '#ff3b30'
-                        : d.targetReason === 'ufo' ? '#ff9f0a'
-                        : d.targetReason === 'edge' ? '#5ac8fa'
-                        : '#30d158';
+        var targetColor = d.targetReason === 'ufo' ? '#ff9f0a' : '#30d158';
         if (d.targetX !== null) {
             ctx.strokeStyle = targetColor;
             ctx.globalAlpha = 0.5;
@@ -436,9 +402,7 @@
         // Decision badge below player
         var r = d.simResults[d.chosenAction];
         var badgeColor = r.died ? '#ff3b30'
-                       : d.targetReason === 'danger' ? '#ff3b30'
                        : d.targetReason === 'ufo' ? '#ff9f0a'
-                       : d.targetReason === 'edge' ? '#5ac8fa'
                        : '#0071e3';
         var decLabel = ACTION_NAMES[d.chosenAction];
         if (r.killedTarget) decLabel += ' \u2713';
