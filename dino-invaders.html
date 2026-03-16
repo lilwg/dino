@@ -199,19 +199,6 @@
             }
 
             if (this._vizEnabled) {
-                // Compute TTK for all claimed + target for opacity ordering
-                var allTargets = [];
-                for (var ci = 0; ci < claimedAliens.length; ci++) {
-                    var ca = claimedAliens[ci];
-                    var caTtk = Math.abs(ca.x + ca.w / 2 - playerCx) / 4 + (337 - ca.y) / 6;
-                    allTargets.push({ alien: ca, ttk: caTtk });
-                }
-                if (target && !target.isMystery) {
-                    var tTtk = Math.abs(target.x + target.w / 2 - playerCx) / 4 + (337 - target.y) / 6;
-                    allTargets.push({ alien: target, ttk: tTtk });
-                }
-                allTargets.sort(function(a, b) { return a.ttk - b.ttk; });
-
                 this._vizData = {
                     playerX: g.player.x,
                     playerY: g.player.y,
@@ -219,9 +206,9 @@
                     targetX: target ? target.x + target.w / 2 : null,
                     targetReason: targetReason,
                     target: target,
+                    claimed: claimedAliens.length > 0 ? claimedAliens[0] : null,
                     chosenAction: bestAction,
-                    simResults: simResults,
-                    allTargets: allTargets
+                    simResults: simResults
                 };
             }
 
@@ -353,31 +340,27 @@
             ctx.stroke();
         }
 
-        // Green circles on all targets (claimed + next) with TTK-ordered opacity
-        if (d.allTargets) {
+        // Circle on claimed alien (bullet heading toward it) — faded green
+        if (d.claimed) {
             ctx.setLineDash([3, 3]);
             ctx.lineWidth = 1.5;
-            for (var ti = 0; ti < d.allTargets.length; ti++) {
-                var ta = d.allTargets[ti].alien;
-                var tcx2 = ta.x + ta.w / 2, tcy2 = ta.y + ta.h / 2;
-                var tr2 = Math.max(ta.w, ta.h) / 2 + 5;
-                // First in TTK order = most opaque, fades with each
-                var opacity = Math.max(0.25, 0.9 - ti * 0.25);
-                ctx.strokeStyle = (ta === d.target && d.targetReason === 'danger') ? '#ff3b30' : '#30d158';
-                ctx.globalAlpha = opacity;
-                ctx.beginPath();
-                ctx.arc(tcx2, tcy2, tr2, 0, Math.PI * 2);
-                ctx.stroke();
-            }
+            ctx.strokeStyle = '#30d158';
+            ctx.globalAlpha = 0.4;
+            var ca = d.claimed;
+            var cacx = ca.x + ca.w / 2, cacy = ca.y + ca.h / 2;
+            var car = Math.max(ca.w, ca.h) / 2 + 5;
+            ctx.beginPath();
+            ctx.arc(cacx, cacy, car, 0, Math.PI * 2);
+            ctx.stroke();
             ctx.setLineDash([]);
         }
 
-        // Dotted circle around UFO target
-        if (d.target && d.target.isMystery) {
+        // Circle on next target (what we're moving toward) — bright
+        if (d.target) {
             ctx.setLineDash([3, 3]);
             ctx.lineWidth = 1.5;
             ctx.strokeStyle = targetColor;
-            ctx.globalAlpha = 0.8;
+            ctx.globalAlpha = 0.85;
             var t = d.target;
             var tcx = t.x + t.w / 2, tcy = t.y + t.h / 2;
             var tr = Math.max(t.w, t.h) / 2 + 5;
