@@ -24,12 +24,15 @@ function stompsNeeded(cubeState, lv) {
 
 
 // Dijkstra from srcIdx with penalty for stepping on completed cubes.
-// Returns {dist: Float64Array, prev: Int8Array} for path reconstruction.
-function dijkstraFrom(srcIdx, stomps, penalty) {
+// discSources: optional array of idx that have a 1-hop disc edge to apex (idx 0).
+// Returns {dist, prev, usedDisc} — usedDisc[v] is the disc source idx if shortest
+// path to v used a disc, else -1.
+function dijkstraFrom(srcIdx, stomps, penalty, discSources) {
     var dist = new Float64Array(POS_COUNT);
     var prev = new Int8Array(POS_COUNT);
     var visited = new Uint8Array(POS_COUNT);
-    for (var i = 0; i < POS_COUNT; i++) { dist[i] = 999; prev[i] = -1; }
+    var usedDisc = new Int8Array(POS_COUNT);
+    for (var i = 0; i < POS_COUNT; i++) { dist[i] = 999; prev[i] = -1; usedDisc[i] = -1; }
     dist[srcIdx] = 0; prev[srcIdx] = srcIdx;
     for (var iter = 0; iter < POS_COUNT; iter++) {
         var u = -1, uDist = 999;
@@ -42,37 +45,57 @@ function dijkstraFrom(srcIdx, stomps, penalty) {
         for (var a = 0; a < adj.length; a++) {
             var v = adj[a];
             if (visited[v]) continue;
-            // Penalty for stepping onto a completed cube (will need to re-fix it)
             var cost = 1 + (stomps[v] === 0 ? penalty : 0);
             var nd = dist[u] + cost;
-            if (nd < dist[v]) { dist[v] = nd; prev[v] = u; }
+            if (nd < dist[v]) { dist[v] = nd; prev[v] = u; usedDisc[v] = usedDisc[u]; }
+        }
+        // Disc edge: from disc-adjacent cube to apex (idx 0) in 1 hop
+        if (discSources) {
+            for (var d = 0; d < discSources.length; d++) {
+                if (discSources[d] >= 0 && u === discSources[d] && !visited[0]) {
+                    var cost = 1 + (stomps[0] === 0 ? penalty : 0);
+                    var nd = dist[u] + cost;
+                    if (nd < dist[0]) {
+                        dist[0] = nd; prev[0] = u;
+                        usedDisc[0] = d; // track which disc index was used
+                    }
+                }
+            }
         }
     }
-    return {dist: dist, prev: prev};
+    return {dist: dist, prev: prev, usedDisc: usedDisc};
 }
 
 // Greedy nearest-neighbor tour cost with deterministic tie-breaking.
 // On toggle levels, uses Dijkstra to route around completed cubes.
 // Ties broken by lowest position index for stability.
-function greedyTourCost(startIdx, cubes, tgt, lv) {
+function greedyTourCost(startIdx, cubes, tgt, lv, discs) {
     var stomps = new Int8Array(POS_COUNT);
     for (var i = 0; i < cubes.length; i++) {
         var idx = posToIdx[cubes[i].row * ROWS + cubes[i].col];
         stomps[idx] = stompsNeeded(cubes[i].state, lv);
     }
 
+    // Build disc source list: cube positions adjacent to active discs
+    var discSources = [];
+    if (discs) {
+        for (var di = 0; di < discs.length; di++) {
+            var disc = discs[di];
+            if (!disc.active) continue;
+            var dCol = disc.side === 0 ? 0 : disc.row;
+            discSources.push(posToIdx[disc.row * ROWS + dCol]);
+        }
+    }
+
     var isToggle = lv >= 3;
-    // Penalty: each completed cube crossed costs ~2 extra hops to re-fix
-    var REVERT_PENALTY = 2;
+    var REVERT_PENALTY = isToggle ? 2 : 0;
     var curIdx = startIdx;
     var totalHops = 0;
 
     for (var iter = 0; iter < 200; iter++) {
         if (isToggle) {
-            // Dijkstra from current position, penalizing completed cubes
-            var dijk = dijkstraFrom(curIdx, stomps, REVERT_PENALTY);
+            var dijk = dijkstraFrom(curIdx, stomps, REVERT_PENALTY, discSources);
 
-            // Find nearest unfinished cube by weighted distance; ties → lowest index
             var bestIdx = -1, bestDist = 999;
             for (var i = 0; i < POS_COUNT; i++) {
                 if (stomps[i] > 0 && i !== curIdx) {
@@ -87,10 +110,16 @@ function greedyTourCost(startIdx, cubes, tgt, lv) {
                 break;
             }
 
-            // Walk the Dijkstra path (avoids completed cubes), count real hops
+            // Consume the disc if the path to bestIdx used one
+            var discIdx = dijk.usedDisc[bestIdx];
+            if (discIdx >= 0 && discIdx < discSources.length) {
+                discSources[discIdx] = -1; // mark consumed, don't splice (indices are stable)
+            }
+
+            // Walk the Dijkstra path, count real hops
             var path = [], pc = bestIdx;
             while (pc !== curIdx) { path.push(pc); pc = dijk.prev[pc]; }
-            totalHops += path.length; // actual hop count (unweighted)
+            totalHops += path.length;
 
             // Apply stomps along path; fix reverts immediately (never leave debt)
             for (var p = path.length - 1; p >= 0; p--) {
@@ -98,18 +127,23 @@ function greedyTourCost(startIdx, cubes, tgt, lv) {
                 if (stomps[pos] > 0) {
                     stomps[pos]--;
                 } else {
-                    // Crossed a completed cube: charge 2 hops to fix it on the spot
                     totalHops += 2;
-                    // stomps[pos] stays 0 — it's fixed, no debt left behind
                 }
             }
             curIdx = bestIdx;
         } else {
-            // Non-toggle: use precomputed BFS distances
+            // Non-toggle: use precomputed BFS distances, consider disc shortcuts
             var bestIdx = -1, bestDist = 999;
+            var APEX = 0;
             for (var i = 0; i < POS_COUNT; i++) {
                 if (stomps[i] > 0 && i !== curIdx) {
                     var d = distMatrix[curIdx * POS_COUNT + i];
+                    for (var ds = 0; ds < discSources.length; ds++) {
+                        if (discSources[ds] < 0) continue; // consumed
+                        var dd = distMatrix[curIdx * POS_COUNT + discSources[ds]] + 1
+                               + distMatrix[APEX * POS_COUNT + i];
+                        if (dd < d) d = dd;
+                    }
                     if (d < bestDist || (d === bestDist && (bestIdx === -1 || i < bestIdx))) {
                         bestDist = d; bestIdx = i;
                     }
@@ -119,6 +153,16 @@ function greedyTourCost(startIdx, cubes, tgt, lv) {
                 if (stomps[curIdx] > 0) totalHops += stomps[curIdx] * 2;
                 break;
             }
+            // Check if a disc was used for this leg and consume it
+            var directDist = distMatrix[curIdx * POS_COUNT + bestIdx];
+            var usedDs = -1;
+            for (var ds = 0; ds < discSources.length; ds++) {
+                if (discSources[ds] < 0) continue; // consumed
+                var dd = distMatrix[curIdx * POS_COUNT + discSources[ds]] + 1
+                       + distMatrix[APEX * POS_COUNT + bestIdx];
+                if (dd < directDist) { directDist = dd; usedDs = ds; }
+            }
+            if (usedDs >= 0) discSources[usedDs] = -1; // mark consumed
             totalHops += bestDist;
             stomps[bestIdx]--;
             curIdx = bestIdx;
@@ -130,7 +174,7 @@ function greedyTourCost(startIdx, cubes, tgt, lv) {
 
 // Tour cost from a simulation state
 function simTourCost(gs) {
-    return greedyTourCost(posToIdx[gs.player.row * ROWS + gs.player.col], gs.cubes, gs.tgt, gs.lv);
+    return greedyTourCost(posToIdx[gs.player.row * ROWS + gs.player.col], gs.cubes, gs.tgt, gs.lv, gs.discs);
 }
 
 // ─── Danger zone assessment ──────────────────────────────────────────────────
