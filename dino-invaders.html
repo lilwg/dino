@@ -93,7 +93,7 @@
     // ═══════════════════════════════════════════════════════════════
     var simGame = new SpaceInvadersGame(document.createElement('canvas'), { primary: false });
 
-    var SIM_STEPS = 20; // short enough that fixed-action assumption holds
+    var SIM_STEPS = 80; // enough for bullet to cross the screen
 
     var invadersSimAI = {
         enabled: false,
@@ -207,18 +207,6 @@
                 }
             }
 
-            // Determine which hittable alien the player is currently aligned with
-            var alignedAlien = null;
-            var bulletX = g.player.x + 22; // bullet center x
-            var bestAlignY = -1;
-            for (var i = 0; i < hittable.length; i++) {
-                var a = hittable[i];
-                if (bulletX >= a.x && bulletX <= a.x + a.w && a.y > bestAlignY) {
-                    bestAlignY = a.y;
-                    alignedAlien = a;
-                }
-            }
-
             if (this._vizEnabled) {
                 this._vizData = {
                     playerX: g.player.x,
@@ -228,7 +216,6 @@
                     targetReason: targetReason,
                     target: target,
                     claimed: claimedAliens.length > 0 ? claimedAliens[0] : null,
-                    aligned: alignedAlien,
                     chosenAction: bestAction,
                     simResults: simResults
                 };
@@ -290,34 +277,18 @@
                 scoreGain = simGame.score - startScore;
             }
 
-            // Scoring: survival > alignment with target > kills are a bonus
+            // Scoring: survival (death penalty) > kill target > any kill > proximity
             var score = 0;
             if (died) score -= 10000;
             if (killedTarget) score += 500;
             score += scoreGain * 10;
+            // Penalize wasted shots (fired but killed nothing — likely hit a bunker)
             var fires = (action === 2 || action === 3 || action === 4);
-            // Reward firing when aligned with any hittable alien, bonus for target
-            if (fires) {
-                var playerBulletCx = simGame.player.x + 22;
-                var alignedWithAny = false;
-                var alignedWithTarget = false;
-                for (var ai2 = 0; ai2 < simGame.aliens.length; ai2++) {
-                    var sa = simGame.aliens[ai2];
-                    if (!sa.alive) continue;
-                    if (playerBulletCx >= sa.x && playerBulletCx <= sa.x + sa.w) {
-                        alignedWithAny = true;
-                        if (targetIdx >= 0 && ai2 === targetIdx) alignedWithTarget = true;
-                        break;
-                    }
-                }
-                if (alignedWithTarget) score += 300;
-                else if (alignedWithAny) score += 100;
-                else score -= 30;
-            }
+            if (fires && scoreGain === 0) score -= 50;
             if (target) {
-                var targetCx2 = target.x + target.w / 2;
+                var targetCx = target.x + target.w / 2;
                 var finalCx = simGame.player.x + 22;
-                score -= Math.abs(finalCx - targetCx2) * 0.1;
+                score -= Math.abs(finalCx - targetCx) * 0.1;
             }
 
             // Record which aliens were killed during this sim
@@ -408,26 +379,46 @@
             ctx.setLineDash([]);
         }
 
-        // Grey circle on the alien the player is currently aligned with (kill prediction)
-        if (d.aligned) {
-            var isTarget = d.target && !d.target.isMystery && d.aligned.row === d.target.row && d.aligned.col === d.target.col;
-            var isClaimed = d.claimed && d.aligned.row === d.claimed.row && d.aligned.col === d.claimed.col;
-            if (!isTarget && !isClaimed) {
-                ctx.setLineDash([3, 3]);
-                ctx.lineWidth = 1.5;
-                ctx.strokeStyle = '#8e8e93';
-                ctx.globalAlpha = 0.5;
-                var aa = d.aligned;
-                var aacx = aa.x + aa.w / 2, aacy = aa.y + aa.h / 2;
-                var aar = Math.max(aa.w, aa.h) / 2 + 4;
-                ctx.beginPath();
-                ctx.arc(aacx, aacy, aar, 0, Math.PI * 2);
-                ctx.stroke();
-                ctx.setLineDash([]);
-            }
-        }
-
+        // Grey circles on opportunistic kills (not the target or claimed alien)
         var chosen = d.simResults[d.chosenAction];
+        if (chosen.killedAliens.length > 0) {
+            ctx.setLineDash([3, 3]);
+            ctx.lineWidth = 1.5;
+            ctx.strokeStyle = '#8e8e93';
+            ctx.globalAlpha = 0.45;
+            for (var i = 0; i < game.aliens.length; i++) {
+                var a = game.aliens[i];
+                if (!a.alive) continue;
+                // Skip target and claimed — they already have circles
+                if (d.target && !d.target.isMystery && a.row === d.target.row && a.col === d.target.col) continue;
+                if (d.claimed && a.row === d.claimed.row && a.col === d.claimed.col) continue;
+                var isKilled = false;
+                for (var k = 0; k < chosen.killedAliens.length; k++) {
+                    if (chosen.killedAliens[k].row === a.row && chosen.killedAliens[k].col === a.col) {
+                        isKilled = true; break;
+                    }
+                }
+                if (!isKilled) continue;
+                var acx = a.x + a.w / 2, acy = a.y + a.h / 2;
+                var ar = Math.max(a.w, a.h) / 2 + 4;
+                ctx.beginPath();
+                ctx.arc(acx, acy, ar, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+            ctx.setLineDash([]);
+        }
+        // Grey circle on mystery if it's an opportunistic kill
+        if (chosen.killedMystery && game.mystery && !(d.target && d.target.isMystery)) {
+            ctx.setLineDash([3, 3]);
+            ctx.lineWidth = 1.5;
+            ctx.strokeStyle = '#8e8e93';
+            ctx.globalAlpha = 0.45;
+            var mx = game.mystery.x + 20, my = game.mystery.y + 8;
+            ctx.beginPath();
+            ctx.arc(mx, my, 24, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
 
 
         // Decision badge below player
