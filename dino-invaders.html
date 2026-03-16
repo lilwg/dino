@@ -149,7 +149,14 @@
                     if (bestHit) claimedAliens.push(bestHit);
                 }
 
-                // Pick target: danger (near game-over) > fastest TTK
+                // Find outermost alive columns to prioritize edge aliens
+                var minCol = 99, maxCol = -1;
+                for (var i = 0; i < alive.length; i++) {
+                    if (alive[i].col < minCol) minCol = alive[i].col;
+                    if (alive[i].col > maxCol) maxCol = alive[i].col;
+                }
+
+                // Pick target: danger (near game-over) > fastest TTK (with edge bonus)
                 // Margin: 48px base + small scaling for speed/wave
                 var aliveCount = alive.length;
                 var wave = g.wave || 1;
@@ -171,6 +178,8 @@
                     var alignFrames = Math.abs(alienCx - playerCx) / 4;
                     var bulletFrames = (337 - a.y) / 6;
                     var ttk = alignFrames + bulletFrames;
+                    // Edge bonus: reduce TTK for outermost column aliens to narrow formation
+                    if (a.col === minCol || a.col === maxCol) ttk -= 15;
                     // Danger: lowest Y first, TTK as tiebreaker for similar heights
                     if (a.y + a.h >= DANGER_Y) {
                         if (a.y > bestDangerY + 5 || (a.y >= bestDangerY - 5 && ttk < bestDangerTtk)) {
