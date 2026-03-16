@@ -69,7 +69,7 @@ function dijkstraFrom(srcIdx, stomps, penalty, discSources) {
 // Greedy nearest-neighbor tour cost with deterministic tie-breaking.
 // On toggle levels, uses Dijkstra to route around completed cubes.
 // Ties broken by lowest position index for stability.
-function greedyTourCost(startIdx, cubes, tgt, lv, discs) {
+function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts) {
     var stomps = new Int8Array(POS_COUNT);
     for (var i = 0; i < cubes.length; i++) {
         var idx = posToIdx[cubes[i].row * ROWS + cubes[i].col];
@@ -100,6 +100,8 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs) {
             for (var i = 0; i < POS_COUNT; i++) {
                 if (stomps[i] > 0 && i !== curIdx) {
                     var d = dijk.dist[i];
+                    // Deprioritize frequently-reverted cubes — go to fresh ones first
+                    if (revertCounts && revertCounts[i] > 1) d += (revertCounts[i] - 1) * 3;
                     if (d < bestDist || (d === bestDist && (bestIdx === -1 || i < bestIdx))) {
                         bestDist = d; bestIdx = i;
                     }
@@ -174,7 +176,7 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs) {
 
 // Tour cost from a simulation state
 function simTourCost(gs) {
-    return greedyTourCost(posToIdx[gs.player.row * ROWS + gs.player.col], gs.cubes, gs.tgt, gs.lv, gs.discs);
+    return greedyTourCost(posToIdx[gs.player.row * ROWS + gs.player.col], gs.cubes, gs.tgt, gs.lv, gs.discs, aiRevertCounts);
 }
 
 // ─── Danger zone assessment ──────────────────────────────────────────────────
@@ -468,7 +470,14 @@ function isExhaustiveSafe(gs, dir) {
 var aiTour = [], aiTourIdx = 0, aiBoardSig = '';
 var aiDetailPath = [], aiTourDots = [];
 
-function aiTourInit() { aiLastRemaining = 99; aiNoProgressCount = 0; aiStayCount = 0; aiSamePosCount = 0; aiPosHistory = []; }
+var aiRevertCounts = new Int8Array(POS_COUNT); // per-cube revert counter for toggle levels
+var aiPrevCubeStates = null; // previous cube states to detect reverts
+
+function aiTourInit() {
+    aiLastRemaining = 99; aiNoProgressCount = 0; aiStayCount = 0; aiSamePosCount = 0; aiPosHistory = [];
+    aiRevertCounts = new Int8Array(POS_COUNT);
+    aiPrevCubeStates = null;
+}
 
 // Dijkstra tour planner — nearest unfinished cube via weighted BFS
 // On toggle levels (lv3+), uses cluster-based sweep planning:
@@ -864,6 +873,21 @@ function aiPickBestDir() {
     } else {
         aiNoProgressCount++;
     }
+
+    // Track cube reverts on toggle levels — detect which cubes keep getting churned
+    if (gs.lv >= 3 && aiPrevCubeStates) {
+        for (var ri = 0; ri < gs.cubes.length; ri++) {
+            var cube = gs.cubes[ri];
+            if (aiPrevCubeStates[ri] >= tgt && cube.state < tgt) {
+                // This cube was completed but got reverted
+                var ridx = posToIdx[cube.row * ROWS + cube.col];
+                if (ridx >= 0) aiRevertCounts[ridx] = Math.min(aiRevertCounts[ridx] + 1, 10);
+            }
+        }
+    }
+    // Save current states for next comparison
+    aiPrevCubeStates = new Int8Array(gs.cubes.length);
+    for (var si = 0; si < gs.cubes.length; si++) aiPrevCubeStates[si] = gs.cubes[si].state;
 
     var result = unifiedPick(gs, coilyActive);
 
