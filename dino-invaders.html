@@ -111,11 +111,32 @@
                 target = { x: g.mystery.x, y: g.mystery.y, w: 40, h: 16, isMystery: true };
                 targetReason = 'ufo';
             } else {
-                // Pick the alien with least estimated time to kill:
-                // frames to align horizontally + frames for bullet to reach it
+                // If a bullet is in flight, predict which alien it will hit
+                // so we can skip it and target the next best
+                var claimedIdx = -1;
+                if (g.bullets.length > 0) {
+                    var bx = g.bullets[0].x + 1.5; // bullet center x
+                    var by = g.bullets[0].y;
+                    var bestHitY = -1;
+                    for (var i = 0; i < g.aliens.length; i++) {
+                        var a = g.aliens[i];
+                        if (!a.alive) continue;
+                        // Will bullet pass through this alien's x range?
+                        if (bx >= a.x && bx <= a.x + a.w && a.y + a.h > by) {
+                            // Lowest alien in the bullet's path (first one it'll hit)
+                            if (a.y > bestHitY) {
+                                bestHitY = a.y;
+                                claimedIdx = i;
+                            }
+                        }
+                    }
+                }
+
+                // Pick the alien with least estimated time to kill
                 var bestAlien = null;
                 var bestTime = Infinity;
                 for (var i = 0; i < g.aliens.length; i++) {
+                    if (i === claimedIdx) continue; // bullet already heading for this one
                     var a = g.aliens[i];
                     if (!a.alive) continue;
                     var alienCx = a.x + a.w / 2;
