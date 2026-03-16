@@ -103,72 +103,31 @@
         update: function (g) {
             var playerCx = g.player.x + 22;
 
-            // --- 1. TARGET SELECTION: UFO > lowest TTK among hittable aliens ---
+            // --- 1. TARGET SELECTION: UFO > lowest alien ---
             var target = null;
             var targetReason = 'none';
-            var claimedAliens = [];
 
             if (g.mystery) {
                 target = { x: g.mystery.x, y: g.mystery.y, w: 40, h: 16, isMystery: true };
                 targetReason = 'ufo';
             } else {
-                // Find hittable aliens — an alien is hittable if no other alive
-                // alien is below it with overlapping x (bullet hits lowest first)
-                var alive = [];
+                var lowestAlien = null;
+                var lowestY = -1;
+                var closestDx = Infinity;
                 for (var i = 0; i < g.aliens.length; i++) {
-                    if (g.aliens[i].alive) alive.push(g.aliens[i]);
-                }
-                var hittable = [];
-                for (var i = 0; i < alive.length; i++) {
-                    var a = alive[i];
-                    var blocked = false;
-                    for (var j = 0; j < alive.length; j++) {
-                        var b = alive[j];
-                        if (b === a) continue;
-                        if (b.y > a.y && b.x < a.x + a.w && b.x + b.w > a.x) {
-                            blocked = true; break;
-                        }
-                    }
-                    if (!blocked) hittable.push(a);
-                }
-
-                // Skip aliens a bullet is already heading toward
-                if (g.bullets.length > 0) {
-                    var bx = g.bullets[0].x + 1.5;
-                    var by = g.bullets[0].y;
-                    var bestHitY = -1;
-                    var bestHit = null;
-                    for (var i = 0; i < hittable.length; i++) {
-                        var a = hittable[i];
-                        if (bx >= a.x && bx <= a.x + a.w && a.y + a.h > by) {
-                            if (a.y > bestHitY) { bestHitY = a.y; bestHit = a; }
-                        }
-                    }
-                    if (bestHit) claimedAliens.push(bestHit);
-                }
-
-                // Pick the hittable alien with lowest TTK
-                var bestAlien = null;
-                var bestTime = Infinity;
-                for (var i = 0; i < hittable.length; i++) {
-                    var a = hittable[i];
-                    var claimed = false;
-                    for (var ci = 0; ci < claimedAliens.length; ci++) {
-                        if (claimedAliens[ci] === a) { claimed = true; break; }
-                    }
-                    if (claimed) continue;
-                    var alienCx = a.x + a.w / 2;
-                    var alignFrames = Math.abs(alienCx - playerCx) / 4;
-                    var bulletFrames = (337 - a.y) / 6;
-                    var ttk = alignFrames + bulletFrames;
-                    if (ttk < bestTime) {
-                        bestTime = ttk;
-                        bestAlien = a;
+                    var a = g.aliens[i];
+                    if (!a.alive) continue;
+                    var ay = a.y + a.h;
+                    var dx = Math.abs(a.x + a.w / 2 - playerCx);
+                    if (ay > lowestY || (ay === lowestY && dx < closestDx)) {
+                        lowestY = ay;
+                        closestDx = dx;
+                        lowestAlien = a;
                     }
                 }
-                if (bestAlien) {
-                    target = bestAlien;
-                    targetReason = 'fastest';
+                if (lowestAlien) {
+                    target = lowestAlien;
+                    targetReason = 'lowest';
                 }
             }
 
@@ -195,7 +154,6 @@
                     targetX: target ? target.x + target.w / 2 : null,
                     targetReason: targetReason,
                     target: target,
-                    claimed: claimedAliens.length > 0 ? claimedAliens[0] : null,
                     chosenAction: bestAction,
                     simResults: simResults
                 };
@@ -308,10 +266,10 @@
         var pcx = d.playerCx;
         var py = d.playerY;
 
-        // Target crosshair — color by reason
-        var targetColor = d.targetReason === 'ufo' ? '#ff9f0a' : '#30d158';
+        // Target crosshair
         if (d.targetX !== null) {
-            ctx.strokeStyle = targetColor;
+            var color = '#30d158';
+            ctx.strokeStyle = color;
             ctx.globalAlpha = 0.5;
             ctx.setLineDash([4, 4]);
             ctx.lineWidth = 1;
@@ -327,27 +285,12 @@
             ctx.stroke();
         }
 
-        // Circle on claimed alien (bullet heading toward it) — faded green
-        if (d.claimed) {
-            ctx.setLineDash([3, 3]);
-            ctx.lineWidth = 1.5;
-            ctx.strokeStyle = '#30d158';
-            ctx.globalAlpha = 0.4;
-            var ca = d.claimed;
-            var cacx = ca.x + ca.w / 2, cacy = ca.y + ca.h / 2;
-            var car = Math.max(ca.w, ca.h) / 2 + 5;
-            ctx.beginPath();
-            ctx.arc(cacx, cacy, car, 0, Math.PI * 2);
-            ctx.stroke();
-            ctx.setLineDash([]);
-        }
-
-        // Circle on next target (what we're moving toward) — bright
+        // Green dotted circle around the main target alien/UFO
         if (d.target) {
             ctx.setLineDash([3, 3]);
             ctx.lineWidth = 1.5;
-            ctx.strokeStyle = targetColor;
-            ctx.globalAlpha = 0.85;
+            ctx.strokeStyle = '#30d158';
+            ctx.globalAlpha = 0.8;
             var t = d.target;
             var tcx = t.x + t.w / 2, tcy = t.y + t.h / 2;
             var tr = Math.max(t.w, t.h) / 2 + 5;
@@ -357,7 +300,7 @@
             ctx.setLineDash([]);
         }
 
-        // Grey circles on opportunistic kills (not the target or claimed alien)
+        // Gray dotted circles around aliens the chosen action would kill (opportunistic)
         var chosen = d.simResults[d.chosenAction];
         if (chosen.killedAliens.length > 0) {
             ctx.setLineDash([3, 3]);
@@ -367,9 +310,9 @@
             for (var i = 0; i < game.aliens.length; i++) {
                 var a = game.aliens[i];
                 if (!a.alive) continue;
-                // Skip target and claimed — they already have circles
+                // Skip the main target (already has green crosshair)
                 if (d.target && !d.target.isMystery && a.row === d.target.row && a.col === d.target.col) continue;
-                if (d.claimed && a.row === d.claimed.row && a.col === d.claimed.col) continue;
+                // Only circle if this alien is in the killed list
                 var isKilled = false;
                 for (var k = 0; k < chosen.killedAliens.length; k++) {
                     if (chosen.killedAliens[k].row === a.row && chosen.killedAliens[k].col === a.col) {
@@ -378,14 +321,14 @@
                 }
                 if (!isKilled) continue;
                 var acx = a.x + a.w / 2, acy = a.y + a.h / 2;
-                var ar = Math.max(a.w, a.h) / 2 + 4;
+                var r = Math.max(a.w, a.h) / 2 + 4;
                 ctx.beginPath();
-                ctx.arc(acx, acy, ar, 0, Math.PI * 2);
+                ctx.arc(acx, acy, r, 0, Math.PI * 2);
                 ctx.stroke();
             }
             ctx.setLineDash([]);
         }
-        // Grey circle on mystery if it's an opportunistic kill
+        // Gray circle on mystery if it's an opportunistic kill (not main target)
         if (chosen.killedMystery && game.mystery && !(d.target && d.target.isMystery)) {
             ctx.setLineDash([3, 3]);
             ctx.lineWidth = 1.5;
@@ -401,9 +344,7 @@
 
         // Decision badge below player
         var r = d.simResults[d.chosenAction];
-        var badgeColor = r.died ? '#ff3b30'
-                       : d.targetReason === 'ufo' ? '#ff9f0a'
-                       : '#0071e3';
+        var badgeColor = r.died ? '#ff3b30' : (d.targetReason === 'ufo' ? '#ff9f0a' : '#0071e3');
         var decLabel = ACTION_NAMES[d.chosenAction];
         if (r.killedTarget) decLabel += ' \u2713';
         if (r.died) decLabel += ' !';
