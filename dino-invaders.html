@@ -156,7 +156,8 @@
                 // Priority: danger > UFO > edge (wide) or pure TTK (narrow)
                 var aliveCount = alive.length;
                 var wave = g.wave || 1;
-                var margin = 48 + Math.max(0, Math.floor((55 - aliveCount) * 0.5)) + Math.min(wave * 2, 24);
+                var dp = window._dangerParams || { base: 48, aliveScale: 1.0, waveScale: 2, waveCap: 24 };
+                var margin = dp.base + Math.max(0, Math.floor((55 - aliveCount) * dp.aliveScale)) + Math.min(wave * dp.waveScale, dp.waveCap);
                 var DANGER_Y = 337 - margin;
                 var colSpan = maxCol - minCol + 1;
                 var useEdge = colSpan > 4;
