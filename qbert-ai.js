@@ -655,9 +655,10 @@ function unifiedPick(gs, coilyActive) {
 
         // Hop 2+3: if hop 1 is safe and enemies exist, verify a safe 3-hop chain.
         // Hop 2: MC (3 seeds) + exhaustive. Hop 3: MC only (avoids cornering).
-        // STAY included: enemies move during STAY, must verify safe follow-up exists.
-        if (safe1[dir] && hasEnemies) {
-            var has2ndSafe = false;
+        // When Coily is active, require 2+ safe hop-2 directions to ensure escape routes.
+        if (safe1[dir] && hasEnemies && dir !== 'STAY') {
+            var safeD2Count = 0;
+            var minSafeD2 = coilyActive ? 2 : 1;
             for (var d2k = 0; d2k < DIR_KEYS_WITH_STAY.length; d2k++) {
                 var d2dir = DIR_KEYS_WITH_STAY[d2k];
                 var d2ok = true;
@@ -694,14 +695,15 @@ function unifiedPick(gs, coilyActive) {
                     }
                     if (!has3rdSafe) d2ok = false;
                 }
-                if (d2ok && hop1States.length > 0) { has2ndSafe = true; break; }
+                if (d2ok && hop1States.length > 0) safeD2Count++;
+                if (safeD2Count >= minSafeD2) break;
             }
-            safe2[dir] = has2ndSafe;
-            if (!has2ndSafe) {
+            safe2[dir] = (safeD2Count >= minSafeD2);
+            if (!safe2[dir]) {
                 aiMoveScores[dir] = -5000;
             }
         } else {
-            safe2[dir] = true;  // no enemies — skip hop 2+3 check
+            safe2[dir] = true;  // no enemies or STAY — skip hop 2+3 check
         }
     }
 
@@ -941,7 +943,7 @@ function aiPickBestDir() {
     // Break stuck STAY loops
     if (result === 'STAY') {
         aiStayCount++;
-        if (aiStayCount >= 3) {
+        if (aiStayCount >= 5) {
             var bestAlt = null, bestAltScore = -Infinity;
             for (var k = 0; k < DIR_KEYS.length; k++) {
                 if (simCanMove(gs, DIR_KEYS[k])) {
