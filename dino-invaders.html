@@ -132,13 +132,22 @@
                     }
                 }
 
-                // Pick the alien with least estimated time to kill
+                // Pick target: prioritize aliens about to end the game,
+                // otherwise fastest to kill
+                var DANGER_Y = 337 - 36; // 3 drops (36px) from game over
                 var bestAlien = null;
                 var bestTime = Infinity;
+                var bestDanger = null;
+                var lowestDangerY = -1;
                 for (var i = 0; i < g.aliens.length; i++) {
                     if (i === claimedIdx) continue; // bullet already heading for this one
                     var a = g.aliens[i];
                     if (!a.alive) continue;
+                    // Track the most dangerous alien (lowest, near game-over line)
+                    if (a.y + a.h >= DANGER_Y && a.y > lowestDangerY) {
+                        lowestDangerY = a.y;
+                        bestDanger = a;
+                    }
                     var alienCx = a.x + a.w / 2;
                     var alignFrames = Math.abs(alienCx - playerCx) / 4; // PLAYER_SPEED=4
                     var bulletFrames = (337 - a.y) / 6; // PLAYER_Y to alien / BULLET_SPEED=6
@@ -148,7 +157,10 @@
                         bestAlien = a;
                     }
                 }
-                if (bestAlien) {
+                if (bestDanger) {
+                    target = bestDanger;
+                    targetReason = 'danger';
+                } else if (bestAlien) {
                     target = bestAlien;
                     targetReason = 'fastest';
                 }
