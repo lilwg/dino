@@ -421,9 +421,8 @@ function isExhaustiveSafe(gs, dir) {
 
     for (var i = 0; i < gs.enemies.length; i++) {
         var e = gs.enemies[i];
-        // Skip non-threatening types and coily (deterministic — MC handles it perfectly)
+        // Skip non-threatening types
         if (e.type === 'spawn-timer' || e.type === 'slick' || e.type === 'greenball') continue;
-        if (e.type === 'coily') continue;
 
         // Effective position for distance check
         var er = e.jumping && e.jumpT >= 0.67 ? (e.destRow != null ? e.destRow : e.row) : e.row;
