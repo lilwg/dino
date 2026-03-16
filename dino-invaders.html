@@ -132,29 +132,35 @@
                     if (!blocked) hittable.push(a);
                 }
 
-                // If a bullet is in flight, find which hittable alien it will hit
-                var claimedAlien = null;
-                if (g.bullets.length > 0) {
-                    var bx = g.bullets[0].x + 1.5;
-                    var by = g.bullets[0].y;
+                // Find which hittable aliens all in-flight bullets will hit
+                var claimedAliens = [];
+                for (var bi = 0; bi < g.bullets.length; bi++) {
+                    var bx = g.bullets[bi].x + 1.5;
+                    var by = g.bullets[bi].y;
                     var bestHitY = -1;
+                    var bestHit = null;
                     for (var i = 0; i < hittable.length; i++) {
                         var a = hittable[i];
                         if (bx >= a.x && bx <= a.x + a.w && a.y + a.h > by) {
-                            if (a.y > bestHitY) { bestHitY = a.y; claimedAlien = a; }
+                            if (a.y > bestHitY) { bestHitY = a.y; bestHit = a; }
                         }
                     }
+                    if (bestHit) claimedAliens.push(bestHit);
                 }
 
                 // Pick target: danger (near game-over) > fastest TTK
-                var DANGER_Y = 337 - 36;
+                var DANGER_Y = 337 - 72; // 6 drops from game over
                 var bestAlien = null;
                 var bestTime = Infinity;
                 var bestDanger = null;
                 var lowestDangerY = -1;
                 for (var i = 0; i < hittable.length; i++) {
                     var a = hittable[i];
-                    if (a === claimedAlien) continue;
+                    var claimed = false;
+                    for (var ci = 0; ci < claimedAliens.length; ci++) {
+                        if (claimedAliens[ci] === a) { claimed = true; break; }
+                    }
+                    if (claimed) continue;
                     if (a.y + a.h >= DANGER_Y && a.y > lowestDangerY) {
                         lowestDangerY = a.y;
                         bestDanger = a;
@@ -193,6 +199,19 @@
             }
 
             if (this._vizEnabled) {
+                // Compute TTK for all claimed + target for opacity ordering
+                var allTargets = [];
+                for (var ci = 0; ci < claimedAliens.length; ci++) {
+                    var ca = claimedAliens[ci];
+                    var caTtk = Math.abs(ca.x + ca.w / 2 - playerCx) / 4 + (337 - ca.y) / 6;
+                    allTargets.push({ alien: ca, ttk: caTtk });
+                }
+                if (target && !target.isMystery) {
+                    var tTtk = Math.abs(target.x + target.w / 2 - playerCx) / 4 + (337 - target.y) / 6;
+                    allTargets.push({ alien: target, ttk: tTtk });
+                }
+                allTargets.sort(function(a, b) { return a.ttk - b.ttk; });
+
                 this._vizData = {
                     playerX: g.player.x,
                     playerY: g.player.y,
@@ -201,7 +220,8 @@
                     targetReason: targetReason,
                     target: target,
                     chosenAction: bestAction,
-                    simResults: simResults
+                    simResults: simResults,
+                    allTargets: allTargets
                 };
             }
 
@@ -333,8 +353,27 @@
             ctx.stroke();
         }
 
-        // Dotted circle around the main target — color by reason
-        if (d.target) {
+        // Green circles on all targets (claimed + next) with TTK-ordered opacity
+        if (d.allTargets) {
+            ctx.setLineDash([3, 3]);
+            ctx.lineWidth = 1.5;
+            for (var ti = 0; ti < d.allTargets.length; ti++) {
+                var ta = d.allTargets[ti].alien;
+                var tcx2 = ta.x + ta.w / 2, tcy2 = ta.y + ta.h / 2;
+                var tr2 = Math.max(ta.w, ta.h) / 2 + 5;
+                // First in TTK order = most opaque, fades with each
+                var opacity = Math.max(0.25, 0.9 - ti * 0.25);
+                ctx.strokeStyle = (ta === d.target && d.targetReason === 'danger') ? '#ff3b30' : '#30d158';
+                ctx.globalAlpha = opacity;
+                ctx.beginPath();
+                ctx.arc(tcx2, tcy2, tr2, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+            ctx.setLineDash([]);
+        }
+
+        // Dotted circle around UFO target
+        if (d.target && d.target.isMystery) {
             ctx.setLineDash([3, 3]);
             ctx.lineWidth = 1.5;
             ctx.strokeStyle = targetColor;
