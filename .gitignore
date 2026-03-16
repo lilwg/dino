@@ -42,3 +42,4 @@ tsp-twophase
 !tsp-exact.c
 !tsp-twophase.c
 !sat-qbert.py
+test-results/
