@@ -655,10 +655,8 @@ function unifiedPick(gs, coilyActive) {
 
         // Hop 2+3: if hop 1 is safe and enemies exist, verify a safe 3-hop chain.
         // Hop 2: MC (3 seeds) + exhaustive. Hop 3: MC only (avoids cornering).
-        // When Coily is active, require 2+ safe hop-2 directions to ensure escape routes.
         if (safe1[dir] && hasEnemies && dir !== 'STAY') {
-            var safeD2Count = 0;
-            var minSafeD2 = coilyActive ? 2 : 1;
+            var has2ndSafe = false;
             for (var d2k = 0; d2k < DIR_KEYS_WITH_STAY.length; d2k++) {
                 var d2dir = DIR_KEYS_WITH_STAY[d2k];
                 var d2ok = true;
@@ -695,11 +693,10 @@ function unifiedPick(gs, coilyActive) {
                     }
                     if (!has3rdSafe) d2ok = false;
                 }
-                if (d2ok && hop1States.length > 0) safeD2Count++;
-                if (safeD2Count >= minSafeD2) break;
+                if (d2ok && hop1States.length > 0) { has2ndSafe = true; break; }
             }
-            safe2[dir] = (safeD2Count >= minSafeD2);
-            if (!safe2[dir]) {
+            safe2[dir] = has2ndSafe;
+            if (!has2ndSafe) {
                 aiMoveScores[dir] = -5000;
             }
         } else {
@@ -728,13 +725,43 @@ function unifiedPick(gs, coilyActive) {
         }
     }
 
-    // Pick safe direction with lowest tour cost
+    // Pick safe direction with lowest adjusted tour cost.
+    // When Coily is active, penalize low-mobility destinations (edges/corners)
+    // to reduce cornering risk.
+    var coilyR = -1, coilyC = -1;
+    if (coilyActive) {
+        for (var cei = 0; cei < gs.enemies.length; cei++) {
+            var ce = gs.enemies[cei];
+            if (ce.type === 'coily' || (ce.type === 'egg' && ((ce.hops || 0) >= 5 || ce.willHatch))) {
+                var cep = enemyEffectivePos(ce);
+                coilyR = cep.row; coilyC = cep.col;
+                break;
+            }
+        }
+    }
     var bestDir = null, bestCost = Infinity;
     for (var fk = 0; fk < DIR_KEYS_WITH_STAY.length; fk++) {
         var fd = DIR_KEYS_WITH_STAY[fk];
         if (!safe1[fd] || !safe2[fd]) continue;
         var fc = tourCosts[fd];
-        if (fc !== undefined && fc < bestCost) { bestCost = fc; bestDir = fd; }
+        if (fc === undefined) continue;
+        if (coilyR >= 0 && fd !== 'STAY') {
+            var fdd = DIRS[fd];
+            var fdR = gs.player.row + fdd.dr, fdC = gs.player.col + fdd.dc;
+            // Count escape routes from destination
+            var exits = 0;
+            for (var ek = 0; ek < DIR_KEYS.length; ek++) {
+                var edk = DIRS[DIR_KEYS[ek]];
+                if (isValidPos(fdR + edk.dr, fdC + edk.dc)) exits++;
+            }
+            var coilyDist = Math.abs(fdR - coilyR) + Math.abs(fdC - coilyC);
+            // Penalize low-mobility tiles when Coily is nearby
+            if (exits <= 2 && coilyDist <= 4) fc += 5;
+            else if (exits <= 2) fc += 2;
+            // Slight penalty for being very close to Coily
+            if (coilyDist <= 1) fc += 3;
+        }
+        if (fc < bestCost) { bestCost = fc; bestDir = fd; }
     }
     if (bestDir) { restoreRng(); return bestDir; }
 
@@ -943,7 +970,7 @@ function aiPickBestDir() {
     // Break stuck STAY loops
     if (result === 'STAY') {
         aiStayCount++;
-        if (aiStayCount >= 5) {
+        if (aiStayCount >= 3) {
             var bestAlt = null, bestAltScore = -Infinity;
             for (var k = 0; k < DIR_KEYS.length; k++) {
                 if (simCanMove(gs, DIR_KEYS[k])) {
