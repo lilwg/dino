@@ -392,6 +392,41 @@ function aiTourInit() { aiLastRemaining = 99; aiNoProgressCount = 0; aiStayCount
 // On toggle levels (lv3+), uses cluster-based sweep planning:
 // finds connected components of unfinished cubes and targets the nearest
 // cluster's closest member, preferring paths that don't cross completed cubes.
+// Count how many valid moves a tile has (connectivity / escape routes)
+function tileDegree(row, col) {
+    var deg = 0;
+    for (var k = 0; k < 4; k++) {
+        var dk = DIRS[DIR_KEYS[k]];
+        if (isValidPos(row + dk.dr, col + dk.dc)) deg++;
+    }
+    return deg;
+}
+
+// Build enemy proximity cost map: tiles near dangerous enemies get extra cost.
+// Returns { "row,col": costPenalty }.
+function buildEnemyProximityMap(gs) {
+    var map = {};
+    for (var i = 0; i < gs.enemies.length; i++) {
+        var e = gs.enemies[i];
+        if (e.type === 'spawn-timer' || e.type === 'slick' || e.type === 'greenball') continue;
+        var pos = enemyEffectivePos(e);
+        var er = pos.row, ec = pos.col;
+        // Weight: coily is most dangerous, others less
+        var weight = e.type === 'coily' ? 4 : 2;
+        // Mark the enemy's tile and nearby tiles (Manhattan distance ≤ 2)
+        for (var r = Math.max(0, er - 2); r <= Math.min(ROWS - 1, er + 2); r++) {
+            for (var c = 0; c <= r; c++) {
+                var d = Math.abs(r - er) + Math.abs(c - ec);
+                if (d > 2) continue;
+                var key = r + ',' + c;
+                var pen = d === 0 ? weight * 2 : (d === 1 ? weight : Math.ceil(weight / 2));
+                map[key] = (map[key] || 0) + pen;
+            }
+        }
+    }
+    return map;
+}
+
 function dynamicTourMove(gs) {
     var lv = gs.lv;
     var tgt = gs.tgt;
@@ -409,6 +444,14 @@ function dynamicTourMove(gs) {
     if (unfinished.length === 0) return null;
 
     var penalty = revertPenalty(lv, gs.cubes, tgt);
+
+    // Enemy proximity map — adds traversal cost near dangerous enemies
+    var hasCoily = false;
+    for (var ei = 0; ei < gs.enemies.length; ei++) {
+        if (gs.enemies[ei].type === 'coily') hasCoily = true;
+        if (gs.enemies[ei].type === 'egg' && ((gs.enemies[ei].hops || 0) >= 5 || gs.enemies[ei].willHatch)) hasCoily = true;
+    }
+    var enemyCost = (hasCoily || gs.enemies.length > 2) ? buildEnemyProximityMap(gs) : {};
 
     // On toggle levels, find connected clusters of unfinished cubes
     // and give bonus to targets in larger clusters (more sweep potential)
@@ -462,9 +505,20 @@ function dynamicTourMove(gs) {
             var isCorner = (cur.row === ROWS - 1 && (cur.col === 0 || cur.col === ROWS - 1));
             var isBottom = cur.row >= ROWS - 2;
             var isEdge = cur.col === 0 || cur.col === cur.row;
-            if (isCorner) adjCost -= 2;
-            else if (isBottom && isEdge) adjCost -= 1.5;
-            else if (isBottom || isEdge) adjCost -= 0.5;
+            // Edge/corner bonus: stomp hard-to-reach tiles first.
+            // BUT reduce/flip bonus when enemies are active — escape routes matter.
+            if (hasCoily) {
+                // With enemies: PENALIZE low-connectivity targets
+                var deg = tileDegree(cur.row, cur.col);
+                if (deg <= 1) adjCost += 3;       // corners: strong penalty
+                else if (deg === 2) adjCost += 1;  // edges: mild penalty
+                // Interior tiles (deg 3-4) get no adjustment
+            } else {
+                // No enemies: keep original bonus (stomp edges early)
+                if (isCorner) adjCost -= 2;
+                else if (isBottom && isEdge) adjCost -= 1.5;
+                else if (isBottom || isEdge) adjCost -= 0.5;
+            }
             // Big bonus for zero-revert paths — reached without crossing completed cubes
             if (lv >= 3 && (reverts[curKey] || 0) === 0) adjCost -= 4;
             // Cluster bonus: prefer targets in larger connected groups (sweep-friendly)
@@ -482,6 +536,8 @@ function dynamicTourMove(gs) {
             var nk = nr + ',' + nc;
             var isCompleted = !!completedSet[nk];
             var moveCost = 1 + (isCompleted ? penalty : 0);
+            // Enemy proximity cost — routes around enemies instead of through them
+            if (enemyCost[nk]) moveCost += enemyCost[nk];
             // On toggle levels, penalize completed dead-end tiles
             if (isCompleted && lv >= 3) {
                 var isApex = (nr === 0 && nc === 0);
@@ -637,6 +693,7 @@ function unifiedPick(gs, coilyActive) {
     function restoreRng() { simRng = savedRng; }
 
     var tourDir = dynamicTourMove(gs);
+    aiLastTourDir = tourDir;
 
     // MC samples for safety validation — enough to catch random enemy moves
     var hasEnemies = gs.enemies.length > 0;
@@ -739,6 +796,8 @@ function unifiedPick(gs, coilyActive) {
         }
     }
 
+    aiLastHop1Surv = hop1Surv;
+
     // Slick pursuit on toggle levels — catch them if adjacent and safe
     if (gs.lv >= 3) {
         for (var si2 = 0; si2 < gs.enemies.length; si2++) {
@@ -790,6 +849,8 @@ function unifiedPick(gs, coilyActive) {
 
 // ─── Main entry point ────────────────────────────────────────────────────────
 var aiMoveScores = {};  // exported per-direction scores for viz
+var aiLastTourDir = null;  // last tour direction from unifiedPick
+var aiLastHop1Surv = {};   // last hop-1 survival rates from unifiedPick
 var aiMode = 0;         // 0 = no AI, 1 = unified (always set to 1 now)
 var aiStayCount = 0;    // consecutive STAY decisions — used to break stuck loops
 var aiLastPos = '';     // last position key — used to detect oscillation
@@ -919,9 +980,11 @@ function aiPickBestDir() {
         }
     }
 
-    // No-progress breaker: if we've made many moves without reducing remaining cubes,
-    // force a move toward an unfinished cube even if it means crossing completed ones
-    if (gs.lv >= 3 && aiNoProgressCount > 10 && result !== 'STAY') {
+    // No-progress breaker: escalating urgency when stuck without reducing remaining cubes.
+    // Phase 1 (>10 moves): try to land on adjacent unfinished cube (safe only)
+    // Phase 2 (>20 moves): use tour direction even if not immediately on unfinished cube
+    // Phase 3 (>30 moves): accept highest-survival move toward progress (relax 100% safety)
+    if (aiNoProgressCount > 10 && result !== 'STAY') {
         var dd3 = DIRS[result];
         var dr3 = gs.player.row + dd3.dr, dc3 = gs.player.col + dd3.dc;
         var destIsUnf3 = false;
@@ -931,7 +994,7 @@ function aiPickBestDir() {
             }
         }
         if (!destIsUnf3) {
-            // Current move doesn't land on unfinished cube — find one that does
+            // Phase 1: find adjacent unfinished cube with safe move
             var bestProgDir = null, bestProgScore = -Infinity;
             for (var pk = 0; pk < DIR_KEYS.length; pk++) {
                 if (!simCanMove(gs, DIR_KEYS[pk])) continue;
@@ -947,6 +1010,25 @@ function aiPickBestDir() {
                         break;
                     }
                 }
+            }
+            // Phase 2 (>20): use tour direction if safe — it routes around enemies now
+            if (!bestProgDir && aiNoProgressCount > 20 && aiLastTourDir !== null) {
+                var tsc = aiMoveScores[aiLastTourDir];
+                if (tsc !== undefined && tsc >= 0) bestProgDir = aiLastTourDir;
+            }
+            // Phase 3 (>30): accept highest-survival move (relax 100% requirement)
+            if (!bestProgDir && aiNoProgressCount > 30) {
+                var bestSurvProg = -1, bestSurvProgDir = null;
+                for (var pk3 = 0; pk3 < DIR_KEYS.length; pk3++) {
+                    if (!simCanMove(gs, DIR_KEYS[pk3])) continue;
+                    var pk3d = DIRS[DIR_KEYS[pk3]];
+                    if (!isValidPos(gs.player.row + pk3d.dr, gs.player.col + pk3d.dc)) continue;
+                    var pk3surv = aiLastHop1Surv[DIR_KEYS[pk3]];
+                    if (pk3surv !== undefined && pk3surv > bestSurvProg) {
+                        bestSurvProg = pk3surv; bestSurvProgDir = DIR_KEYS[pk3];
+                    }
+                }
+                if (bestSurvProgDir && bestSurvProg > 0.5) bestProgDir = bestSurvProgDir;
             }
             if (bestProgDir) { result = bestProgDir; aiNoProgressCount = 0; aiPosHistory.length = 0; }
         }
