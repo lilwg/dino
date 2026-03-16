@@ -653,16 +653,28 @@ function unifiedPick(gs, coilyActive) {
         else if (survived === SAMPLES && safe1[dir]) aiMoveScores[dir] = 10000 - (totalTC / survived);
         else aiMoveScores[dir] = (survived / SAMPLES) * 100 - 100;
 
-        // Hop 2+3: if hop 1 is safe and enemies exist, verify safe follow-up chain
+        // Hop 2: if hop 1 is safe and enemies exist, verify safe follow-up exists.
+        // Uses multiple MC samples per state + exhaustive enemy check for robustness.
         if (safe1[dir] && hasEnemies && dir !== 'STAY') {
             var has2ndSafe = false;
             for (var d2k = 0; d2k < DIR_KEYS_WITH_STAY.length; d2k++) {
                 var d2dir = DIR_KEYS_WITH_STAY[d2k];
                 var d2ok = true;
+                // MC check: multiple seeds per hop1State for reliability
                 for (var si = 0; si < hop1States.length; si++) {
-                    simSeed(k * 1000 + d2k * 100 + si);
-                    var d2c = simDeepClone(hop1States[si]);
-                    if (!simStep(d2c, d2dir)) { d2ok = false; break; }
+                    var stateOk = true;
+                    for (var s2 = 0; s2 < 3; s2++) {
+                        simSeed(k * 1000 + d2k * 100 + si * 10 + s2);
+                        var d2c = simDeepClone(hop1States[si]);
+                        if (!simStep(d2c, d2dir)) { stateOk = false; break; }
+                    }
+                    if (!stateOk) { d2ok = false; break; }
+                }
+                // Exhaustive check on hop-2: catch rare enemy paths MC misses
+                if (d2ok && d2dir !== 'STAY') {
+                    for (var si2 = 0; si2 < hop1States.length; si2++) {
+                        if (!isExhaustiveSafe(hop1States[si2], d2dir)) { d2ok = false; break; }
+                    }
                 }
                 if (d2ok && hop1States.length > 0) { has2ndSafe = true; break; }
             }
@@ -831,11 +843,6 @@ function aiPickBestDir() {
                     // At level 3+: avoid alternatives that revert completed cubes
                     if (completedCubes[aKey]) continue;
                     if (asc !== undefined && asc > altScore) { altScore = asc; altDir = DIR_KEYS[ak]; }
-                    else if (asc === undefined) {
-                        simRng = createSeededRng(ak * 7919);
-                        var vc = simDeepClone(gs);
-                        if (simStep(vc, DIR_KEYS[ak]) && !altDir) altDir = DIR_KEYS[ak];
-                    }
                 }
                 // If no non-reverting alternative, allow reverting ones (but still not recent)
                 if (!altDir) {
@@ -899,19 +906,15 @@ function aiPickBestDir() {
                     }
                 }
             }
-            // Phase 3 (>30): accept highest-survival move (relax 100% requirement)
+            // Phase 3 (>30): pick any safe move (still requires 100% safety — never gamble)
             if (!bestProgDir && aiNoProgressCount > 30) {
-                var bestSurvProg = -1, bestSurvProgDir = null;
                 for (var pk3 = 0; pk3 < DIR_KEYS.length; pk3++) {
                     if (!simCanMove(gs, DIR_KEYS[pk3])) continue;
-                    var pk3d = DIRS[DIR_KEYS[pk3]];
-                    if (!isValidPos(gs.player.row + pk3d.dr, gs.player.col + pk3d.dc)) continue;
-                    var pk3surv = aiLastHop1Surv[DIR_KEYS[pk3]];
-                    if (pk3surv !== undefined && pk3surv > bestSurvProg) {
-                        bestSurvProg = pk3surv; bestSurvProgDir = DIR_KEYS[pk3];
+                    var pk3sc = aiMoveScores[DIR_KEYS[pk3]];
+                    if (pk3sc !== undefined && pk3sc >= 0) {
+                        bestProgDir = DIR_KEYS[pk3]; break;
                     }
                 }
-                if (bestSurvProgDir && bestSurvProg > 0.5) bestProgDir = bestSurvProgDir;
             }
             if (bestProgDir) { result = bestProgDir; aiNoProgressCount = 0; aiPosHistory.length = 0; }
         }
@@ -928,10 +931,6 @@ function aiPickBestDir() {
                     if (sc !== undefined && sc < 0) continue;
                     if (sc !== undefined && sc > bestAltScore) {
                         bestAltScore = sc; bestAlt = DIR_KEYS[k];
-                    } else if (sc === undefined) {
-                        simRng = createSeededRng(k * 7919 + 5000);
-                        var vc2 = simDeepClone(gs);
-                        if (simStep(vc2, DIR_KEYS[k]) && !bestAlt) bestAlt = DIR_KEYS[k];
                     }
                 }
             }
