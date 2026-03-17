@@ -553,7 +553,6 @@ function initRound() {
     player.deathAnimTimer = 0;
     player.pendingDisc = null;
     player.fallOff = false;
-    player.falling = false;
 
     if (debugEnemies) {
         roundStarted = true;
@@ -601,15 +600,14 @@ function tryMove(dirKey) {
                 return;
             }
         }
-        // Fall off edge — start jump animation, die on landing
-        gs.player.jumpSrcRow = gs.player.row;
-        gs.player.jumpSrcCol = gs.player.col;
-        gs.player.jumping = true;
-        gs.player.jumpT = 0;
-        gs.player.jumpDur = 0.028 * (typeof speedMultiplier === 'function' ? speedMultiplier() : gs.sm);
-        gs.player.destRow = nr;
-        gs.player.destCol = nc;
-        gs.player.falling = true;
+        // Fall off edge — ballistic arc off-screen
+        var src = cubeXY(gs.player.row, gs.player.col);
+        var dst = cubeXY(nr, nc);
+        var dx = dst.cx - src.cx, dy = dst.cy - src.cy;
+        var hopFrames = 18;
+        player.fallOff = true;
+        player.fallVx = dx / hopFrames;
+        player.fallVy = dy / hopFrames - 4;  // upward launch
         DinoSounds.press();
         player.spriteFrame = 0; player.frameTimer = 0;
         return;
@@ -709,9 +707,10 @@ function update() {
         return;
     }
 
-    // Falling off board — gravity animation then death
+    // Falling off board — single ballistic arc then death
     if (player.fallOff) {
-        player.fallVy = (player.fallVy || 0) + 1.5;
+        player.fallVy += 0.55;
+        player.px += player.fallVx;
         player.py += player.fallVy;
         if (player.py > CH + 50) {
             player.fallOff = false;
@@ -787,15 +786,6 @@ function update() {
 
         // Handle landing
         if (result === 'landed') {
-            // Fell off edge — transition to gravity fall
-            if (gs.player.falling) {
-                gs.player.falling = false;
-                gs.player.fallOff = true;
-                gs.player.fallVy = 0;
-                // px/py already at the off-board destination from syncVisuals
-                syncVisuals();
-                return;
-            }
             simStompCube(gs, player.row, player.col);
             score += gs.score; gs.score = 0;
             checkExtraLife();

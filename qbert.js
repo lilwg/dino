@@ -567,7 +567,7 @@ function collisionTile(entity) {
 // Per-frame collision check: same tile = death (or catch for slick/greenball)
 // During freeze, enemies are harmless (can still catch slick/greenball).
 function simCheckCollision(gs) {
-    if (gs.player.dead || gs.player.falling) return;
+    if (gs.player.dead || gs.player.fallOff) return;
     var pt = collisionTile(gs.player);
     if (!pt) return; // player at apex, immune
     for (var i = 0; i < gs.enemies.length; i++) {
