@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic (peel routing)
-var AI_VERSION = 'v13.4';
+var AI_VERSION = 'v13.5';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -474,20 +474,21 @@ function unifiedPick(gs) {
         } else {
             safe1[dir] = isExhaustiveSafe(gs, dir);
         }
-        hop1Surv[dir] = safe1[dir] ? 1 : 0;
-
-        // Generate future states for hop-2/3 chain check
+        // MC sampling for future states and fallback survival ranking
         var hop1States = [];
-        if (safe1[dir]) {
-            for (var s = 0; s < 4; s++) {
-                simSeed(k * 100 + s);
-                var child = simDeepClone(gs);
-                if (simStep(child, dir) && hop1States.length < 4) hop1States.push(child);
+        var survived = 0;
+        for (var s = 0; s < 8; s++) {
+            simSeed(k * 100 + s);
+            var child = simDeepClone(gs);
+            if (simStep(child, dir)) {
+                survived++;
+                if (hop1States.length < 4) hop1States.push(child);
             }
         }
+        hop1Surv[dir] = safe1[dir] ? 1 : survived / 8;
 
         // Export for viz
-        aiMoveScores[dir] = safe1[dir] ? 10000 : -10000;
+        aiMoveScores[dir] = safe1[dir] ? 10000 : (survived > 0 ? survived * 100 - 1000 : -10000);
 
         // Hop 2+3 chain check (anti-cornering)
         if (safe1[dir] && hasEnemies && dir !== 'STAY') {
