@@ -1,0 +1,1397 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DinoFrogger</title>
+    <link rel="stylesheet" href="si-styles.css?v=2">
+    <script src="fs-toggle.js"></script>
+    <script src="dino-sounds.js"></script>
+    <style>
+        #game-canvas { width: 100%; height: auto; max-width: none !important; }
+    </style>
+</head>
+<body>
+    <img id="offline-resources-1x"
+         src="assets/default_100_percent/100-offline-sprite.png"
+         style="display:none;">
+
+    <div class="si-page" style="padding-bottom: 40px;">
+        <h1>DinoFrogger</h1>
+        <p class="si-subtitle">Hop across traffic and rivers to reach home</p>
+
+        <div class="si-game-box">
+            <canvas id="game-canvas" width="600" height="460"></canvas>
+
+            <div class="si-controls" style="margin-top: 12px;">
+                <button class="si-btn active" id="human-btn" onclick="setMode('off')">Human</button>
+                <button class="si-btn" id="rules-btn" onclick="setMode('rules')">AI</button>
+                <button class="si-btn" id="viz-btn" onclick="toggleViz()">Viz</button>
+                <button class="si-btn" onclick="restartGame()">Restart</button>
+                <button class="si-btn" id="pause-btn" onclick="togglePause()">Pause</button>
+                <button class="si-btn" id="fs-btn" onclick="toggleFullscreen()">Fullscreen</button>
+                <label style="display:inline-flex;align-items:center;gap:4px;margin-left:8px;font-size:12px;color:#535353;">
+                    Speed <input type="range" id="speed-slider" min="1" max="8" step="1" value="1" style="width:80px;" oninput="setGameSpeed(parseFloat(this.value))">
+                    <span id="speed-label">1x</span>
+                </label>
+            </div>
+
+            <p class="si-help" style="text-align: center;">&uarr; / W forward &nbsp;|&nbsp; &darr; / S back &nbsp;|&nbsp; &larr; / A left &nbsp;|&nbsp; &rarr; / D right &nbsp;|&nbsp; R restart</p>
+        </div>
+
+        <h2 style="margin-top: 16px;">How it works</h2>
+        <p class="si-prose">
+            The AI uses a lane-by-lane gap analysis. For traffic lanes, it projects vehicle positions forward and finds windows where the player can safely hop through. For river lanes, it identifies the nearest log or non-diving turtle group and times its jump to land on a safe platform. It always prefers forward progress but will move sideways or wait when no safe forward path exists.
+        </p>
+        <p class="si-prose">
+            Tap <strong>Viz</strong> to see the AI&rsquo;s thinking: green highlights show safe zones in each lane, red zones mark danger areas, and a dashed line traces the planned path. Yellow circles mark target landing spots on logs and turtles. The AI scores each possible move (up, down, left, right, wait) and picks the highest-scoring option, balancing safety with forward progress and timer pressure.
+        </p>
+
+        <p style="margin-top: 20px;">
+            <a href="/" style="color: #0071e3; font-size: 14px; text-decoration: none;">&larr; Back</a>
+        </p>
+    </div>
+
+    <!-- Hidden elements for JS compatibility -->
+    <div style="display:none">
+        <button id="dqn-btn"></button>
+        <input type="range" id="dqn-speed" min="1" max="500" value="100">
+        <span id="dqn-speed-val">100</span>
+        <span id="dqn-stats"></span>
+        <button id="dqn-train-btn"></button>
+        <button id="dqn-cached-btn"></button>
+        <div id="dqn-viz-box"><canvas id="dqn-chart" width="1" height="1"></canvas></div>
+    </div>
+
+<script>
+(function () {
+    'use strict';
+
+    // =================================================================
+    //  CONSTANTS & LAYOUT
+    // =================================================================
+    var CW = 600, CH = 460;
+    var CELL = 40;           // grid cell size
+    var COLS = 15;           // 600 / 40
+    var ROWS = 13;           // game rows (0=home, 1-5=river, 6=safe, 7-11=road, 12=start)
+    var TOP_Y = 20;          // offset from canvas top to row 0
+    var HUD_H = 20;          // bottom HUD area
+
+    var gameSpeed = 1;
+    var paused = false;
+    var aiMode = 'off';
+    var vizEnabled = false;
+
+    // Sprite sheet references
+    var SPRITES = {
+        TREX_RUN1: { x: 936, y: 2, w: 44, h: 47 },
+        TREX_RUN2: { x: 980, y: 2, w: 44, h: 47 },
+        TREX_IDLE: { x: 848, y: 2, w: 44, h: 47 },
+        PTERO1:    { x: 134, y: 2, w: 46, h: 40 },
+        PTERO2:    { x: 180, y: 2, w: 46, h: 40 },
+        CACTUS_SM: { x: 228, y: 2, w: 17, h: 35 }
+    };
+    var spriteImg = document.getElementById('offline-resources-1x');
+
+    var canvas = document.getElementById('game-canvas');
+    var ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+    // =================================================================
+    //  GAME STATE
+    // =================================================================
+    var player, lives, score, level, highScore;
+    var homeSlots;            // 5 home slots: { filled: bool, bonusActive: bool, bonusTimer: number }
+    var timer, timerMax;      // countdown timer
+    var vehicles;             // traffic objects
+    var riverObjs;            // logs and turtles
+    var gameOver, gameWin;
+    var deathTimer, deathX, deathY;
+    var winTimer;
+    var inputQueue;           // queue of pending moves
+    var hopAnim;              // { fromX, fromY, toX, toY, t, duration }
+    var furthestRow;          // track furthest row for scoring
+    var animTime;             // global animation clock
+
+    // Vehicle / river lane definitions per level
+    // Each lane: { row, dir, speed, objects: [{x, w, type}] }
+    var ROAD_ROWS = [11, 10, 9, 8, 7];    // bottom to top
+    var RIVER_ROWS = [5, 4, 3, 2, 1];     // bottom to top
+
+    // Home slot positions (5 evenly spaced)
+    var HOME_POSITIONS = [1, 4, 7, 10, 13]; // column positions
+
+    // Colors
+    var COL_ROAD = '#333333';
+    var COL_ROAD_LINE = '#cccccc';
+    var COL_RIVER = '#1a5fb4';
+    var COL_SAFE = '#2d7d46';
+    var COL_HOME_BG = '#0d3b1e';
+    var COL_HOME_OPEN = '#1a5fb4';
+
+    // =================================================================
+    //  INIT
+    // =================================================================
+    function initGame() {
+        score = score || 0;   // preserve score across levels on win
+        highScore = highScore || 0;
+        if (gameWin) {
+            // level complete - keep score
+        } else {
+            score = 0;
+            level = 1;
+            lives = 3;
+        }
+        timer = 30;
+        timerMax = 30;
+        gameOver = false;
+        gameWin = false;
+        deathTimer = 0;
+        winTimer = 0;
+        animTime = 0;
+        inputQueue = [];
+        hopAnim = null;
+        furthestRow = 12;
+
+        player = { col: 7, row: 12 };
+
+        homeSlots = [];
+        for (var i = 0; i < 5; i++) {
+            homeSlots.push({ filled: false, bonusActive: false, bonusTimer: 0 });
+        }
+
+        initLanes();
+    }
+
+    function fullRestart() {
+        score = 0;
+        level = 1;
+        lives = 3;
+        highScore = highScore || 0;
+        initGame();
+    }
+
+    function initLanes() {
+        vehicles = [];
+        riverObjs = [];
+
+        var speedMult = 1 + (level - 1) * 0.15;
+
+        // Road lanes (rows 7-11, from top to bottom)
+        var roadDefs = [
+            { row: 7,  dir: -1, speed: 55,  vehs: [{ w: 80, type: 'truck', color: '#7b68ee' }], gap: 220 },
+            { row: 8,  dir: 1,  speed: 70,  vehs: [{ w: 40, type: 'car', color: '#e74c3c' }], gap: 140 },
+            { row: 9,  dir: -1, speed: 45,  vehs: [{ w: 40, type: 'car', color: '#f1c40f' }], gap: 180 },
+            { row: 10, dir: 1,  speed: 80,  vehs: [{ w: 40, type: 'car', color: '#3498db' }], gap: 120 },
+            { row: 11, dir: -1, speed: 35,  vehs: [{ w: 70, type: 'truck', color: '#95a5a6' }], gap: 200 }
+        ];
+
+        for (var i = 0; i < roadDefs.length; i++) {
+            var def = roadDefs[i];
+            var count = Math.ceil(CW / def.gap) + 2;
+            for (var j = 0; j < count; j++) {
+                var vw = def.vehs[0].w;
+                vehicles.push({
+                    row: def.row,
+                    x: j * def.gap + (def.dir > 0 ? 0 : CW * 0.1),
+                    w: vw,
+                    h: CELL - 8,
+                    dir: def.dir,
+                    speed: def.speed * speedMult,
+                    type: def.vehs[0].type,
+                    color: def.vehs[0].color
+                });
+            }
+        }
+
+        // River lanes (rows 1-5, from top to bottom)
+        var riverDefs = [
+            { row: 1, dir: -1, speed: 30, objType: 'log',    w: 120, gap: 200 },
+            { row: 2, dir: 1,  speed: 50, objType: 'turtle',  w: 90,  gap: 170, dives: true },
+            { row: 3, dir: -1, speed: 40, objType: 'log',    w: 160, gap: 250 },
+            { row: 4, dir: 1,  speed: 35, objType: 'turtle',  w: 90,  gap: 180, dives: level >= 2 },
+            { row: 5, dir: -1, speed: 55, objType: 'log',    w: 80,  gap: 160 }
+        ];
+
+        for (var ri = 0; ri < riverDefs.length; ri++) {
+            var rd = riverDefs[ri];
+            var cnt = Math.ceil(CW / rd.gap) + 2;
+            for (var rj = 0; rj < cnt; rj++) {
+                riverObjs.push({
+                    row: rd.row,
+                    x: rj * rd.gap,
+                    w: rd.w,
+                    h: CELL - 4,
+                    dir: rd.dir,
+                    speed: rd.speed * speedMult,
+                    type: rd.objType,
+                    dives: rd.dives || false,
+                    diveTimer: rd.dives ? Math.random() * 6 : 0,
+                    diving: false,
+                    divePhase: 0   // 0=surface, 1=sinking, 2=underwater, 3=rising
+                });
+            }
+        }
+
+        // Randomly activate bonus flies in home slots
+        scheduleBonuses();
+    }
+
+    function scheduleBonuses() {
+        for (var i = 0; i < homeSlots.length; i++) {
+            if (!homeSlots[i].filled) {
+                homeSlots[i].bonusTimer = 5 + Math.random() * 15;
+                homeSlots[i].bonusActive = false;
+            }
+        }
+    }
+
+    // =================================================================
+    //  PLAYER POSITION HELPERS
+    // =================================================================
+    function playerPixelX() {
+        return player.col * CELL;
+    }
+    function playerPixelY() {
+        return TOP_Y + player.row * CELL;
+    }
+    function rowY(row) {
+        return TOP_Y + row * CELL;
+    }
+
+    // =================================================================
+    //  INPUT HANDLING
+    // =================================================================
+    var keysDown = {};
+
+    document.addEventListener('keydown', function (e) {
+        if (e.repeat) return;
+        keysDown[e.key] = true;
+
+        if (gameOver) {
+            if (e.key === 'r' || e.key === 'R') fullRestart();
+            return;
+        }
+        if (e.key === 'r' || e.key === 'R') { fullRestart(); return; }
+
+        var dir = null;
+        if (e.key === 'ArrowUp' || e.key === 'w' || e.key === 'W') dir = 'up';
+        else if (e.key === 'ArrowDown' || e.key === 's' || e.key === 'S') dir = 'down';
+        else if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') dir = 'left';
+        else if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') dir = 'right';
+
+        if (dir && aiMode === 'off') {
+            e.preventDefault();
+            inputQueue.push(dir);
+        }
+    });
+
+    document.addEventListener('keyup', function (e) {
+        delete keysDown[e.key];
+    });
+
+    // Touch support
+    var touchStartX, touchStartY;
+    canvas.addEventListener('touchstart', function (e) {
+        e.preventDefault();
+        var t = e.touches[0];
+        touchStartX = t.clientX;
+        touchStartY = t.clientY;
+    }, { passive: false });
+
+    canvas.addEventListener('touchend', function (e) {
+        e.preventDefault();
+        if (gameOver) { fullRestart(); return; }
+        if (aiMode !== 'off') return;
+        var t = e.changedTouches[0];
+        var dx = t.clientX - touchStartX;
+        var dy = t.clientY - touchStartY;
+        var threshold = 15;
+        if (Math.abs(dx) < threshold && Math.abs(dy) < threshold) {
+            inputQueue.push('up');
+        } else if (Math.abs(dx) > Math.abs(dy)) {
+            inputQueue.push(dx > 0 ? 'right' : 'left');
+        } else {
+            inputQueue.push(dy > 0 ? 'down' : 'up');
+        }
+    }, { passive: false });
+
+    // =================================================================
+    //  MOVEMENT
+    // =================================================================
+    function tryMove(dir) {
+        if (hopAnim || deathTimer > 0 || gameOver) return false;
+
+        var newCol = player.col;
+        var newRow = player.row;
+
+        if (dir === 'up') newRow--;
+        else if (dir === 'down') newRow++;
+        else if (dir === 'left') newCol--;
+        else if (dir === 'right') newCol++;
+
+        // Bounds checking
+        if (newCol < 0 || newCol >= COLS) return false;
+        if (newRow < 0 || newRow > 12) return false;
+        if (dir === 'down' && newRow > 12) return false;
+
+        // Start hop animation
+        hopAnim = {
+            fromX: player.col * CELL,
+            fromY: TOP_Y + player.row * CELL,
+            toX: newCol * CELL,
+            toY: TOP_Y + newRow * CELL,
+            t: 0,
+            duration: 0.12
+        };
+        player.col = newCol;
+        player.row = newRow;
+
+        // Score forward progress
+        if (newRow < furthestRow) {
+            score += 10 * (furthestRow - newRow);
+            furthestRow = newRow;
+        }
+
+        if (typeof DinoSounds !== 'undefined') DinoSounds.play('jump');
+        return true;
+    }
+
+    // =================================================================
+    //  COLLISION & DEATH
+    // =================================================================
+    function killPlayer() {
+        if (deathTimer > 0) return;
+        deathTimer = 1.0;
+        deathX = playerPixelX();
+        deathY = playerPixelY();
+        lives--;
+        if (typeof DinoSounds !== 'undefined') DinoSounds.play('hit');
+        if (lives <= 0) {
+            gameOver = true;
+            if (score > highScore) highScore = score;
+        }
+    }
+
+    function respawnPlayer() {
+        player.col = 7;
+        player.row = 12;
+        furthestRow = 12;
+        hopAnim = null;
+        timer = timerMax;
+        inputQueue = [];
+    }
+
+    function checkHomeSlot() {
+        if (player.row !== 0) return false;
+
+        // Check if landing in a valid home slot
+        for (var i = 0; i < HOME_POSITIONS.length; i++) {
+            var hcol = HOME_POSITIONS[i];
+            if (Math.abs(player.col - hcol) <= 1) {
+                if (homeSlots[i].filled) {
+                    // Already filled = death
+                    killPlayer();
+                    return true;
+                }
+                // Fill the slot
+                homeSlots[i].filled = true;
+                var bonus = 50;
+                // Time bonus
+                bonus += Math.floor(timer) * 10;
+                // Fly bonus
+                if (homeSlots[i].bonusActive) {
+                    bonus += 200;
+                    homeSlots[i].bonusActive = false;
+                }
+                score += bonus;
+                if (typeof DinoSounds !== 'undefined') DinoSounds.play('score');
+
+                // Check if all slots filled
+                var allFilled = true;
+                for (var j = 0; j < homeSlots.length; j++) {
+                    if (!homeSlots[j].filled) { allFilled = false; break; }
+                }
+                if (allFilled) {
+                    // Level complete
+                    winTimer = 2.0;
+                    gameWin = true;
+                    score += 1000;
+                    level++;
+                } else {
+                    // Respawn for next slot
+                    respawnPlayer();
+                }
+                return true;
+            }
+        }
+
+        // Landed in row 0 but not in a valid slot opening = death
+        killPlayer();
+        return true;
+    }
+
+    function getPlayerWorldX() {
+        if (hopAnim) {
+            var t = Math.min(hopAnim.t / hopAnim.duration, 1);
+            return hopAnim.fromX + (hopAnim.toX - hopAnim.fromX) * t;
+        }
+        return player.col * CELL;
+    }
+
+    function checkVehicleCollision() {
+        if (player.row < 7 || player.row > 11) return;
+        var px = getPlayerWorldX() + CELL * 0.15;
+        var pw = CELL * 0.7;
+        var py = rowY(player.row);
+
+        for (var i = 0; i < vehicles.length; i++) {
+            var v = vehicles[i];
+            if (v.row !== player.row) continue;
+            // AABB overlap
+            if (px + pw > v.x && px < v.x + v.w) {
+                killPlayer();
+                return;
+            }
+        }
+    }
+
+    function checkRiverCollision() {
+        if (player.row < 1 || player.row > 5) return;
+        if (hopAnim) return; // don't check during hop
+
+        var px = getPlayerWorldX();
+        var onSomething = false;
+
+        for (var i = 0; i < riverObjs.length; i++) {
+            var obj = riverObjs[i];
+            if (obj.row !== player.row) continue;
+            if (obj.diving && obj.divePhase === 2) continue; // underwater
+
+            var objLeft = obj.x;
+            var objRight = obj.x + obj.w;
+            var pCenter = px + CELL * 0.5;
+
+            if (pCenter > objLeft && pCenter < objRight) {
+                onSomething = true;
+                break;
+            }
+        }
+
+        if (!onSomething) {
+            killPlayer();
+        }
+    }
+
+    function movePlayerWithRiver(dt) {
+        if (player.row < 1 || player.row > 5) return;
+        if (hopAnim) return;
+
+        for (var i = 0; i < riverObjs.length; i++) {
+            var obj = riverObjs[i];
+            if (obj.row !== player.row) continue;
+            if (obj.diving && obj.divePhase === 2) continue;
+
+            var px = player.col * CELL + CELL * 0.5;
+            if (px > obj.x && px < obj.x + obj.w) {
+                // Ride the object
+                var moveAmt = obj.speed * obj.dir * dt;
+                var newPixelX = player.col * CELL + moveAmt;
+                player.col = newPixelX / CELL;
+
+                // Check if pushed off screen
+                if (player.col * CELL < -CELL || player.col * CELL > CW) {
+                    killPlayer();
+                }
+                return;
+            }
+        }
+    }
+
+    // =================================================================
+    //  UPDATE
+    // =================================================================
+    function update(dt) {
+        animTime += dt;
+
+        if (winTimer > 0) {
+            winTimer -= dt;
+            if (winTimer <= 0) {
+                initGame();
+            }
+            return;
+        }
+
+        if (deathTimer > 0) {
+            deathTimer -= dt;
+            if (deathTimer <= 0) {
+                if (!gameOver) {
+                    respawnPlayer();
+                }
+            }
+            return;
+        }
+
+        if (gameOver) return;
+
+        // Update hop animation
+        if (hopAnim) {
+            hopAnim.t += dt;
+            if (hopAnim.t >= hopAnim.duration) {
+                hopAnim = null;
+
+                // Post-hop checks
+                if (player.row === 0) {
+                    checkHomeSlot();
+                    return;
+                }
+                checkVehicleCollision();
+                if (deathTimer > 0) return;
+                checkRiverCollision();
+                if (deathTimer > 0) return;
+            }
+        }
+
+        // Process input queue
+        if (!hopAnim && inputQueue.length > 0) {
+            var dir = inputQueue.shift();
+            tryMove(dir);
+        }
+
+        // AI
+        if (aiMode === 'rules' && !hopAnim) {
+            aiUpdate();
+        }
+
+        // Update vehicles
+        for (var i = 0; i < vehicles.length; i++) {
+            var v = vehicles[i];
+            v.x += v.speed * v.dir * dt;
+            // Wrap around
+            if (v.dir > 0 && v.x > CW + 50) v.x = -v.w - 50;
+            if (v.dir < 0 && v.x < -v.w - 50) v.x = CW + 50;
+        }
+
+        // Update river objects
+        for (var ri = 0; ri < riverObjs.length; ri++) {
+            var obj = riverObjs[ri];
+            obj.x += obj.speed * obj.dir * dt;
+            // Wrap
+            if (obj.dir > 0 && obj.x > CW + 50) obj.x = -obj.w - 50;
+            if (obj.dir < 0 && obj.x < -obj.w - 50) obj.x = CW + 50;
+
+            // Dive cycle for turtles
+            if (obj.dives) {
+                obj.diveTimer -= dt;
+                if (obj.diveTimer <= 0) {
+                    obj.divePhase = (obj.divePhase + 1) % 4;
+                    if (obj.divePhase === 0) obj.diveTimer = 3 + Math.random() * 4;      // surface
+                    else if (obj.divePhase === 1) obj.diveTimer = 0.5;  // sinking
+                    else if (obj.divePhase === 2) obj.diveTimer = 1.5 + Math.random() * 1.5;  // underwater
+                    else obj.diveTimer = 0.5;  // rising
+                }
+            }
+        }
+
+        // Move player with river current
+        movePlayerWithRiver(dt);
+
+        // Check collisions continuously (not just on hop)
+        if (!hopAnim && deathTimer <= 0) {
+            checkVehicleCollision();
+            if (deathTimer <= 0 && player.row >= 1 && player.row <= 5) {
+                checkRiverCollision();
+            }
+        }
+
+        // Timer countdown
+        timer -= dt * 0.4;  // roughly 30 seconds of real time at 1x
+        if (timer <= 0) {
+            timer = 0;
+            killPlayer();
+        }
+
+        // Bonus fly timers
+        for (var bi = 0; bi < homeSlots.length; bi++) {
+            if (!homeSlots[bi].filled && !homeSlots[bi].bonusActive) {
+                homeSlots[bi].bonusTimer -= dt;
+                if (homeSlots[bi].bonusTimer <= 0) {
+                    homeSlots[bi].bonusActive = true;
+                    homeSlots[bi].bonusTimer = 4 + Math.random() * 3; // how long it stays
+                }
+            } else if (homeSlots[bi].bonusActive) {
+                homeSlots[bi].bonusTimer -= dt;
+                if (homeSlots[bi].bonusTimer <= 0) {
+                    homeSlots[bi].bonusActive = false;
+                    homeSlots[bi].bonusTimer = 8 + Math.random() * 12;
+                }
+            }
+        }
+    }
+
+    // =================================================================
+    //  AI
+    // =================================================================
+    var aiCooldown = 0;
+    var aiVizData = null;
+
+    function aiUpdate() {
+        aiCooldown -= 1 / 60;
+        if (aiCooldown > 0) return;
+        aiCooldown = 0.15; // think every ~150ms
+
+        var bestDir = null;
+        var bestScore = -99999;
+        var scores = {};
+
+        var dirs = ['up', 'left', 'right', 'down', null]; // null = wait
+        var dirNames = ['up', 'left', 'right', 'down', 'wait'];
+
+        for (var di = 0; di < dirs.length; di++) {
+            var d = dirs[di];
+            var s = evaluateMove(d);
+            scores[dirNames[di]] = s;
+            if (s > bestScore) {
+                bestScore = s;
+                bestDir = d;
+            }
+        }
+
+        if (vizEnabled) {
+            aiVizData = {
+                scores: scores,
+                chosen: bestDir,
+                safeZones: computeSafeZones()
+            };
+        }
+
+        if (bestDir) {
+            inputQueue.push(bestDir);
+        }
+    }
+
+    function evaluateMove(dir) {
+        if (!dir) {
+            // Wait: check if current position is safe
+            return evaluatePosition(player.col, player.row) - 5; // slight penalty for waiting
+        }
+
+        var newCol = player.col;
+        var newRow = player.row;
+        if (dir === 'up') newRow--;
+        else if (dir === 'down') newRow++;
+        else if (dir === 'left') newCol--;
+        else if (dir === 'right') newCol++;
+
+        // Bounds
+        if (newCol < 0 || newCol >= COLS || newRow < 0 || newRow > 12) return -9999;
+        if (dir === 'down' && newRow > 12) return -9999;
+
+        return evaluatePosition(newCol, newRow);
+    }
+
+    function evaluatePosition(col, row) {
+        var sc = 0;
+        var px = col * CELL;
+
+        // Strong forward progress reward
+        sc += (12 - row) * 20;
+
+        // Timer pressure - prefer forward when timer is low
+        if (timer < 10) sc += (12 - row) * 10;
+
+        // Home row
+        if (row === 0) {
+            // Check if near an unfilled home slot
+            for (var i = 0; i < HOME_POSITIONS.length; i++) {
+                if (Math.abs(col - HOME_POSITIONS[i]) <= 1 && !homeSlots[i].filled) {
+                    sc += 500;
+                    if (homeSlots[i].bonusActive) sc += 300;
+                    return sc;
+                }
+            }
+            return -9999; // would die - not a valid slot
+        }
+
+        // Road safety
+        if (row >= 7 && row <= 11) {
+            var safe = true;
+            for (var vi = 0; vi < vehicles.length; vi++) {
+                var v = vehicles[vi];
+                if (v.row !== row) continue;
+                // Project vehicle position forward a bit
+                var futureX = v.x + v.speed * v.dir * 0.2;
+                if (px + CELL * 0.8 > futureX && px + CELL * 0.2 < futureX + v.w) {
+                    safe = false;
+                    break;
+                }
+                // Also check current position
+                if (px + CELL * 0.8 > v.x && px + CELL * 0.2 < v.x + v.w) {
+                    safe = false;
+                    break;
+                }
+            }
+            if (!safe) sc -= 5000;
+        }
+
+        // River safety
+        if (row >= 1 && row <= 5) {
+            var onObj = false;
+            for (var oi = 0; oi < riverObjs.length; oi++) {
+                var obj = riverObjs[oi];
+                if (obj.row !== row) continue;
+                if (obj.diving && (obj.divePhase === 2 || obj.divePhase === 1)) continue;
+
+                var pCenter = px + CELL * 0.5;
+                if (pCenter > obj.x + 5 && pCenter < obj.x + obj.w - 5) {
+                    onObj = true;
+                    // Prefer center of object
+                    var objCenter = obj.x + obj.w / 2;
+                    var distFromCenter = Math.abs(pCenter - objCenter);
+                    sc += 10 - distFromCenter * 0.05;
+                    // Penalty if object is about to dive
+                    if (obj.dives && obj.divePhase === 0 && obj.diveTimer < 1.5) {
+                        sc -= 100;
+                    }
+                    break;
+                }
+            }
+            if (!onObj) sc -= 5000;
+        }
+
+        // Safe zone bonus
+        if (row === 6 || row === 12) sc += 5;
+
+        // Prefer center of screen slightly
+        sc -= Math.abs(col - 7) * 0.5;
+
+        // Check proximity to unfilled home with bonus
+        if (row <= 5) {
+            for (var hi = 0; hi < HOME_POSITIONS.length; hi++) {
+                if (!homeSlots[hi].filled) {
+                    var dist = Math.abs(col - HOME_POSITIONS[hi]) + row;
+                    sc += Math.max(0, 20 - dist * 2);
+                    if (homeSlots[hi].bonusActive) sc += Math.max(0, 30 - dist * 3);
+                }
+            }
+        }
+
+        return sc;
+    }
+
+    function computeSafeZones() {
+        var zones = [];
+        // For each row, compute safe x-ranges
+        for (var row = 1; row <= 11; row++) {
+            var safeRanges = [];
+            if (row >= 7 && row <= 11) {
+                // Road: safe where no vehicles
+                for (var c = 0; c < COLS; c++) {
+                    var cx = c * CELL;
+                    var safe = true;
+                    for (var vi = 0; vi < vehicles.length; vi++) {
+                        var v = vehicles[vi];
+                        if (v.row !== row) continue;
+                        // Check current + near-future
+                        for (var ft = 0; ft < 0.4; ft += 0.1) {
+                            var fx = v.x + v.speed * v.dir * ft;
+                            if (cx + CELL * 0.8 > fx && cx + CELL * 0.2 < fx + v.w) {
+                                safe = false;
+                                break;
+                            }
+                        }
+                        if (!safe) break;
+                    }
+                    if (safe) safeRanges.push(c);
+                }
+            } else if (row >= 1 && row <= 5) {
+                // River: safe where logs/turtles are
+                for (var c2 = 0; c2 < COLS; c2++) {
+                    var cx2 = c2 * CELL + CELL * 0.5;
+                    for (var oi = 0; oi < riverObjs.length; oi++) {
+                        var obj = riverObjs[oi];
+                        if (obj.row !== row) continue;
+                        if (obj.diving && obj.divePhase >= 1 && obj.divePhase <= 2) continue;
+                        if (cx2 > obj.x && cx2 < obj.x + obj.w) {
+                            safeRanges.push(c2);
+                            break;
+                        }
+                    }
+                }
+            }
+            zones.push({ row: row, safeCols: safeRanges });
+        }
+        return zones;
+    }
+
+    // =================================================================
+    //  DRAW
+    // =================================================================
+    function draw() {
+        ctx.clearRect(0, 0, CW, CH);
+
+        // Background zones
+        drawBackground();
+
+        // Home slots
+        drawHomeSlots();
+
+        // River objects
+        drawRiverObjects();
+
+        // Vehicles
+        drawVehicles();
+
+        // Player
+        if (deathTimer <= 0 && !gameOver) {
+            drawPlayer();
+        } else if (deathTimer > 0) {
+            drawDeath();
+        }
+
+        // Filled home dinos
+        drawFilledHomes();
+
+        // AI Viz overlay
+        if (vizEnabled && aiVizData) {
+            drawViz();
+        }
+
+        // HUD
+        drawHUD();
+
+        // Game over overlay
+        if (gameOver) {
+            drawGameOver();
+        }
+
+        // Win overlay
+        if (winTimer > 0) {
+            drawWin();
+        }
+    }
+
+    function drawBackground() {
+        // Home row (row 0)
+        ctx.fillStyle = COL_HOME_BG;
+        ctx.fillRect(0, TOP_Y, CW, CELL);
+
+        // River (rows 1-5)
+        ctx.fillStyle = COL_RIVER;
+        ctx.fillRect(0, TOP_Y + CELL, CW, CELL * 5);
+
+        // Middle safe zone (row 6)
+        ctx.fillStyle = COL_SAFE;
+        ctx.fillRect(0, TOP_Y + CELL * 6, CW, CELL);
+
+        // Road (rows 7-11)
+        ctx.fillStyle = COL_ROAD;
+        ctx.fillRect(0, TOP_Y + CELL * 7, CW, CELL * 5);
+
+        // Road lane markings
+        ctx.strokeStyle = COL_ROAD_LINE;
+        ctx.setLineDash([12, 8]);
+        ctx.lineWidth = 1;
+        for (var r = 8; r <= 11; r++) {
+            var y = TOP_Y + r * CELL;
+            ctx.beginPath();
+            ctx.moveTo(0, y);
+            ctx.lineTo(CW, y);
+            ctx.stroke();
+        }
+        ctx.setLineDash([]);
+
+        // Start zone (row 12)
+        ctx.fillStyle = COL_SAFE;
+        ctx.fillRect(0, TOP_Y + CELL * 12, CW, CELL);
+    }
+
+    function drawHomeSlots() {
+        for (var i = 0; i < HOME_POSITIONS.length; i++) {
+            var hx = HOME_POSITIONS[i] * CELL;
+            // Draw opening
+            ctx.fillStyle = COL_HOME_OPEN;
+            ctx.fillRect(hx - 2, TOP_Y, CELL + 4, CELL);
+
+            // Green borders between slots
+            if (i < HOME_POSITIONS.length - 1) {
+                var nextX = HOME_POSITIONS[i + 1] * CELL;
+                ctx.fillStyle = COL_HOME_BG;
+                ctx.fillRect(hx + CELL + 2, TOP_Y, nextX - hx - CELL - 4, CELL);
+            }
+
+            // Bonus fly
+            if (homeSlots[i].bonusActive && !homeSlots[i].filled) {
+                var blink = Math.sin(animTime * 8) > 0;
+                if (blink) {
+                    ctx.fillStyle = '#ffff00';
+                    ctx.beginPath();
+                    ctx.arc(hx + CELL / 2, TOP_Y + CELL / 2, 4, 0, Math.PI * 2);
+                    ctx.fill();
+                    // small wings
+                    ctx.fillStyle = '#ffffff';
+                    ctx.beginPath();
+                    ctx.arc(hx + CELL / 2 - 4, TOP_Y + CELL / 2 - 3, 2, 0, Math.PI * 2);
+                    ctx.arc(hx + CELL / 2 + 4, TOP_Y + CELL / 2 - 3, 2, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+        }
+
+        // Fill edges of home row with dark green
+        ctx.fillStyle = COL_HOME_BG;
+        ctx.fillRect(0, TOP_Y, HOME_POSITIONS[0] * CELL - 2, CELL);
+        ctx.fillRect((HOME_POSITIONS[4] + 1) * CELL + 2, TOP_Y, CW - (HOME_POSITIONS[4] + 1) * CELL, CELL);
+    }
+
+    function drawRiverObjects() {
+        for (var i = 0; i < riverObjs.length; i++) {
+            var obj = riverObjs[i];
+            var y = TOP_Y + obj.row * CELL + 2;
+
+            if (obj.type === 'log') {
+                ctx.fillStyle = '#8B4513';
+                ctx.beginPath();
+                var r = 6;
+                var lx = obj.x, ly = y, lw = obj.w, lh = obj.h;
+                ctx.moveTo(lx + r, ly);
+                ctx.lineTo(lx + lw - r, ly);
+                ctx.quadraticCurveTo(lx + lw, ly, lx + lw, ly + r);
+                ctx.lineTo(lx + lw, ly + lh - r);
+                ctx.quadraticCurveTo(lx + lw, ly + lh, lx + lw - r, ly + lh);
+                ctx.lineTo(lx + r, ly + lh);
+                ctx.quadraticCurveTo(lx, ly + lh, lx, ly + lh - r);
+                ctx.lineTo(lx, ly + r);
+                ctx.quadraticCurveTo(lx, ly, lx + r, ly);
+                ctx.fill();
+
+                // Log details - rings
+                ctx.strokeStyle = '#6b3410';
+                ctx.lineWidth = 1;
+                for (var li = 1; li < Math.floor(lw / 25); li++) {
+                    ctx.beginPath();
+                    ctx.arc(lx + li * 25, ly + lh / 2, 5, 0, Math.PI * 2);
+                    ctx.stroke();
+                }
+
+                // Lighter top highlight
+                ctx.fillStyle = '#A0522D';
+                ctx.fillRect(lx + 4, ly + 2, lw - 8, 4);
+            } else if (obj.type === 'turtle') {
+                var alpha = 1;
+                if (obj.dives) {
+                    if (obj.divePhase === 1) alpha = 1 - (1 - obj.diveTimer / 0.5) * 0.8;
+                    else if (obj.divePhase === 2) alpha = 0.15;
+                    else if (obj.divePhase === 3) alpha = 0.2 + (1 - obj.diveTimer / 0.5) * 0.8;
+                }
+                ctx.globalAlpha = alpha;
+
+                var turtleCount = 3;
+                var turtleSpacing = obj.w / turtleCount;
+                for (var ti = 0; ti < turtleCount; ti++) {
+                    var tx = obj.x + ti * turtleSpacing + turtleSpacing / 2;
+                    var ty = y + obj.h / 2;
+
+                    // Body
+                    ctx.fillStyle = '#228B22';
+                    ctx.beginPath();
+                    ctx.arc(tx, ty, 12, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // Shell pattern
+                    ctx.fillStyle = '#006400';
+                    ctx.beginPath();
+                    ctx.arc(tx, ty, 8, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // Shell highlight
+                    ctx.fillStyle = '#32CD32';
+                    ctx.beginPath();
+                    ctx.arc(tx - 2, ty - 2, 3, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // Head
+                    ctx.fillStyle = '#228B22';
+                    ctx.beginPath();
+                    ctx.arc(tx + (obj.dir > 0 ? 10 : -10), ty, 4, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+                ctx.globalAlpha = 1;
+            }
+        }
+    }
+
+    function drawVehicles() {
+        for (var i = 0; i < vehicles.length; i++) {
+            var v = vehicles[i];
+            var vy = TOP_Y + v.row * CELL + 4;
+
+            ctx.fillStyle = v.color;
+
+            if (v.type === 'car') {
+                // Car body
+                roundRect(v.x, vy, v.w, v.h, 4);
+                ctx.fill();
+
+                // Windows
+                ctx.fillStyle = '#87CEEB';
+                var wx = v.dir > 0 ? v.x + v.w * 0.55 : v.x + v.w * 0.15;
+                ctx.fillRect(wx, vy + 3, v.w * 0.3, v.h * 0.4);
+
+                // Headlights
+                ctx.fillStyle = '#ffff88';
+                var hlx = v.dir > 0 ? v.x + v.w - 4 : v.x;
+                ctx.fillRect(hlx, vy + 4, 3, 5);
+                ctx.fillRect(hlx, vy + v.h - 9, 3, 5);
+
+                // Wheels
+                ctx.fillStyle = '#222';
+                ctx.fillRect(v.x + 6, vy + v.h - 3, 8, 4);
+                ctx.fillRect(v.x + v.w - 14, vy + v.h - 3, 8, 4);
+            } else {
+                // Truck body
+                roundRect(v.x, vy, v.w, v.h, 3);
+                ctx.fill();
+
+                // Cab
+                ctx.fillStyle = shadeColor(v.color, -30);
+                var cabW = 18;
+                var cabX = v.dir > 0 ? v.x + v.w - cabW : v.x;
+                ctx.fillRect(cabX, vy, cabW, v.h);
+
+                // Cab window
+                ctx.fillStyle = '#87CEEB';
+                ctx.fillRect(cabX + 3, vy + 3, cabW - 6, v.h * 0.4);
+
+                // Wheels
+                ctx.fillStyle = '#222';
+                ctx.fillRect(v.x + 6, vy + v.h - 3, 8, 4);
+                ctx.fillRect(v.x + v.w / 2 - 4, vy + v.h - 3, 8, 4);
+                ctx.fillRect(v.x + v.w - 14, vy + v.h - 3, 8, 4);
+            }
+        }
+    }
+
+    function drawPlayer() {
+        var px, py;
+        if (hopAnim) {
+            var t = Math.min(hopAnim.t / hopAnim.duration, 1);
+            // Smooth hop with arc
+            px = hopAnim.fromX + (hopAnim.toX - hopAnim.fromX) * t;
+            py = hopAnim.fromY + (hopAnim.toY - hopAnim.fromY) * t;
+            // Add arc for jump feel
+            py -= Math.sin(t * Math.PI) * 8;
+        } else {
+            px = player.col * CELL;
+            py = TOP_Y + player.row * CELL;
+        }
+
+        // Draw T-Rex sprite
+        var frame = Math.floor(animTime * 8) % 2 === 0 ? SPRITES.TREX_RUN1 : SPRITES.TREX_RUN2;
+        if (!hopAnim) frame = SPRITES.TREX_IDLE;
+
+        try {
+            ctx.drawImage(spriteImg,
+                frame.x, frame.y, frame.w, frame.h,
+                px + 4, py + 4, CELL - 8, CELL - 8);
+        } catch (e) {
+            // Fallback: green square
+            ctx.fillStyle = '#00ff00';
+            ctx.fillRect(px + 6, py + 6, CELL - 12, CELL - 12);
+        }
+    }
+
+    function drawDeath() {
+        // Expanding X pattern
+        var t = 1 - deathTimer;
+        var size = 8 + t * 12;
+        ctx.strokeStyle = '#ff0000';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(deathX + CELL / 2 - size, deathY + CELL / 2 - size);
+        ctx.lineTo(deathX + CELL / 2 + size, deathY + CELL / 2 + size);
+        ctx.moveTo(deathX + CELL / 2 + size, deathY + CELL / 2 - size);
+        ctx.lineTo(deathX + CELL / 2 - size, deathY + CELL / 2 + size);
+        ctx.stroke();
+    }
+
+    function drawFilledHomes() {
+        for (var i = 0; i < HOME_POSITIONS.length; i++) {
+            if (homeSlots[i].filled) {
+                var hx = HOME_POSITIONS[i] * CELL;
+                try {
+                    ctx.drawImage(spriteImg,
+                        SPRITES.TREX_IDLE.x, SPRITES.TREX_IDLE.y,
+                        SPRITES.TREX_IDLE.w, SPRITES.TREX_IDLE.h,
+                        hx + 6, TOP_Y + 6, CELL - 12, CELL - 12);
+                } catch (e) {
+                    ctx.fillStyle = '#00ff00';
+                    ctx.fillRect(hx + 8, TOP_Y + 8, CELL - 16, CELL - 16);
+                }
+            }
+        }
+    }
+
+    function drawHUD() {
+        var hudY = TOP_Y + CELL * 13 + 2;
+
+        // Score
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 13px monospace';
+        ctx.textAlign = 'left';
+        ctx.fillText('SCORE: ' + score, 10, hudY + 12);
+
+        // High score
+        ctx.textAlign = 'center';
+        ctx.fillText('HI: ' + highScore, CW / 2, hudY + 12);
+
+        // Lives
+        ctx.textAlign = 'right';
+        var livesStr = 'LIVES: ';
+        for (var i = 0; i < lives; i++) livesStr += '\u2665 ';
+        ctx.fillText(livesStr, CW - 80, hudY + 12);
+
+        // Level
+        ctx.fillText('L' + level, CW - 10, hudY + 12);
+
+        // Timer bar
+        var barY = hudY + 18;
+        var barW = CW - 20;
+        var pct = Math.max(0, timer / timerMax);
+        ctx.fillStyle = '#333';
+        ctx.fillRect(10, barY, barW, 8);
+        ctx.fillStyle = pct > 0.3 ? '#00cc00' : (pct > 0.15 ? '#cccc00' : '#cc0000');
+        ctx.fillRect(10, barY, barW * pct, 8);
+        ctx.strokeStyle = '#666';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(10, barY, barW, 8);
+
+        // TIME label
+        ctx.fillStyle = '#ffffff';
+        ctx.font = '9px monospace';
+        ctx.textAlign = 'left';
+        ctx.fillText('TIME', 10, barY + 20);
+    }
+
+    function drawGameOver() {
+        ctx.fillStyle = 'rgba(0,0,0,0.7)';
+        ctx.fillRect(0, 0, CW, CH);
+        ctx.fillStyle = '#ff4444';
+        ctx.font = 'bold 36px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText('GAME OVER', CW / 2, CH / 2 - 20);
+        ctx.fillStyle = '#ffffff';
+        ctx.font = '18px monospace';
+        ctx.fillText('Score: ' + score, CW / 2, CH / 2 + 15);
+        ctx.font = '14px monospace';
+        ctx.fillText('Press R or tap to restart', CW / 2, CH / 2 + 45);
+    }
+
+    function drawWin() {
+        ctx.fillStyle = 'rgba(0,100,0,0.6)';
+        ctx.fillRect(0, 0, CW, CH);
+        ctx.fillStyle = '#ffff00';
+        ctx.font = 'bold 30px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText('LEVEL ' + (level - 1) + ' COMPLETE!', CW / 2, CH / 2 - 10);
+        ctx.fillStyle = '#ffffff';
+        ctx.font = '16px monospace';
+        ctx.fillText('Score: ' + score, CW / 2, CH / 2 + 20);
+    }
+
+    function drawViz() {
+        if (!aiVizData) return;
+
+        // Draw safe zones
+        if (aiVizData.safeZones) {
+            for (var zi = 0; zi < aiVizData.safeZones.length; zi++) {
+                var zone = aiVizData.safeZones[zi];
+                for (var ci = 0; ci < zone.safeCols.length; ci++) {
+                    var col = zone.safeCols[ci];
+                    var zx = col * CELL;
+                    var zy = TOP_Y + zone.row * CELL;
+                    ctx.fillStyle = 'rgba(0, 255, 0, 0.15)';
+                    ctx.fillRect(zx, zy, CELL, CELL);
+                }
+            }
+
+            // Also highlight danger zones in road
+            for (var zi2 = 0; zi2 < aiVizData.safeZones.length; zi2++) {
+                var zone2 = aiVizData.safeZones[zi2];
+                if (zone2.row >= 7 && zone2.row <= 11) {
+                    var safeSet = {};
+                    for (var sc = 0; sc < zone2.safeCols.length; sc++) safeSet[zone2.safeCols[sc]] = true;
+                    for (var dc = 0; dc < COLS; dc++) {
+                        if (!safeSet[dc]) {
+                            ctx.fillStyle = 'rgba(255, 0, 0, 0.15)';
+                            ctx.fillRect(dc * CELL, TOP_Y + zone2.row * CELL, CELL, CELL);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Draw scores for each direction
+        if (aiVizData.scores) {
+            var px = player.col * CELL + CELL / 2;
+            var py = TOP_Y + player.row * CELL + CELL / 2;
+            var offsets = {
+                'up': { dx: 0, dy: -CELL },
+                'down': { dx: 0, dy: CELL },
+                'left': { dx: -CELL, dy: 0 },
+                'right': { dx: CELL, dy: 0 },
+                'wait': { dx: 0, dy: 0 }
+            };
+
+            for (var key in aiVizData.scores) {
+                var off = offsets[key];
+                if (!off) continue;
+                var sx = px + off.dx;
+                var sy = py + off.dy;
+                var isChosen = (key === (aiVizData.chosen || 'wait'));
+
+                ctx.fillStyle = isChosen ? 'rgba(0,255,0,0.8)' : 'rgba(255,255,255,0.5)';
+                ctx.beginPath();
+                ctx.arc(sx, sy, isChosen ? 6 : 4, 0, Math.PI * 2);
+                ctx.fill();
+
+                if (isChosen) {
+                    // Arrow from player to chosen direction
+                    ctx.strokeStyle = 'rgba(0,255,0,0.8)';
+                    ctx.setLineDash([4, 4]);
+                    ctx.lineWidth = 2;
+                    ctx.beginPath();
+                    ctx.moveTo(px, py);
+                    ctx.lineTo(sx, sy);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+                }
+            }
+
+            // Path planning: draw line toward nearest unfilled home
+            var targetHome = -1;
+            var bestDist = Infinity;
+            for (var hi = 0; hi < HOME_POSITIONS.length; hi++) {
+                if (!homeSlots[hi].filled) {
+                    var d = Math.abs(player.col - HOME_POSITIONS[hi]) + player.row;
+                    if (d < bestDist) {
+                        bestDist = d;
+                        targetHome = hi;
+                    }
+                }
+            }
+            if (targetHome >= 0) {
+                var tx = HOME_POSITIONS[targetHome] * CELL + CELL / 2;
+                var ty = TOP_Y + CELL / 2;
+                ctx.strokeStyle = 'rgba(255,255,0,0.4)';
+                ctx.setLineDash([6, 4]);
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(px, py);
+                ctx.lineTo(tx, ty);
+                ctx.stroke();
+                ctx.setLineDash([]);
+
+                // Target marker
+                ctx.strokeStyle = 'rgba(255,255,0,0.7)';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.arc(tx, ty, 10, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+        }
+    }
+
+    // =================================================================
+    //  HELPERS
+    // =================================================================
+    function roundRect(x, y, w, h, r) {
+        ctx.beginPath();
+        ctx.moveTo(x + r, y);
+        ctx.lineTo(x + w - r, y);
+        ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+        ctx.lineTo(x + w, y + h - r);
+        ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+        ctx.lineTo(x + r, y + h);
+        ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+        ctx.lineTo(x, y + r);
+        ctx.quadraticCurveTo(x, y, x + r, y);
+        ctx.closePath();
+    }
+
+    function shadeColor(hex, amt) {
+        var num = parseInt(hex.replace('#', ''), 16);
+        var r = Math.min(255, Math.max(0, (num >> 16) + amt));
+        var g = Math.min(255, Math.max(0, ((num >> 8) & 0x00FF) + amt));
+        var b = Math.min(255, Math.max(0, (num & 0x0000FF) + amt));
+        return '#' + (0x1000000 + r * 0x10000 + g * 0x100 + b).toString(16).slice(1);
+    }
+
+    // =================================================================
+    //  GAME LOOP
+    // =================================================================
+    var lastTime = 0;
+
+    function gameLoop(timestamp) {
+        var dt = (timestamp - lastTime) / 1000;
+        lastTime = timestamp;
+
+        // Clamp dt
+        if (dt > 0.1) dt = 0.1;
+        if (dt <= 0) dt = 1 / 60;
+
+        if (!paused) {
+            update(dt * gameSpeed);
+        }
+        draw();
+        requestAnimationFrame(gameLoop);
+    }
+
+    // =================================================================
+    //  GLOBAL CONTROL FUNCTIONS
+    // =================================================================
+    window.setMode = function (m) {
+        if (m === 'off') {
+            aiMode = 'off';
+            document.getElementById('human-btn').classList.add('active');
+            document.getElementById('rules-btn').classList.remove('active');
+        } else {
+            aiMode = 'rules';
+            document.getElementById('human-btn').classList.remove('active');
+            document.getElementById('rules-btn').classList.add('active');
+        }
+        inputQueue = [];
+    };
+
+    window.toggleViz = function () {
+        vizEnabled = !vizEnabled;
+        document.getElementById('viz-btn').classList.toggle('active', vizEnabled);
+        if (!vizEnabled) aiVizData = null;
+    };
+
+    window.restartGame = function () {
+        fullRestart();
+    };
+
+    window.togglePause = function () {
+        paused = !paused;
+        document.getElementById('pause-btn').textContent = paused ? 'Resume' : 'Pause';
+    };
+
+    window.setGameSpeed = function (v) {
+        gameSpeed = v;
+        document.getElementById('speed-label').textContent = v + 'x';
+    };
+
+    // =================================================================
+    //  START
+    // =================================================================
+    fullRestart();
+    requestAnimationFrame(function (t) {
+        lastTime = t;
+        requestAnimationFrame(gameLoop);
+    });
+
+})();
+</script>
+</body>
+</html>

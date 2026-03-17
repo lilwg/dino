@@ -8,9 +8,12 @@
     <style>
         .games-grid {
             display: grid;
-            grid-template-columns: repeat(2, 1fr);
+            grid-template-columns: repeat(3, 1fr);
             gap: 20px;
             margin: 24px 0;
+        }
+        @media (max-width: 800px) {
+            .games-grid { grid-template-columns: repeat(2, 1fr); }
         }
         @media (max-width: 560px) {
             .games-grid { grid-template-columns: 1fr; }
@@ -118,6 +121,27 @@
                 <h3>DinoPacman</h3>
                 <div class="genre">Maze chase</div>
                 <p>Chomp dots and outrun the pterodactyls.</p>
+            </a>
+
+            <a class="game-card" href="dino-galaga.html">
+                <canvas width="70" height="62" data-sprites='[{"x":936,"y":2,"w":44,"h":47,"offsetX":13,"offsetY":30,"scale":0.4}]' data-extras='[{"type":"circle","cx":15,"cy":12,"r":4,"color":"#ff4444"},{"type":"circle","cx":35,"cy":8,"r":4,"color":"#ff4444"},{"type":"circle","cx":55,"cy":12,"r":4,"color":"#ff4444"},{"type":"circle","cx":25,"cy":20,"r":4,"color":"#4488ff"},{"type":"circle","cx":45,"cy":20,"r":4,"color":"#4488ff"},{"type":"rect","x":33,"y":45,"w":4,"h":10,"color":"#ffdd00"}]'></canvas>
+                <h3>DinoGalaga</h3>
+                <div class="genre">Formation shooter</div>
+                <p>Blast diving pterodactyls and rescue captured ships.</p>
+            </a>
+
+            <a class="game-card" href="dino-frogger.html">
+                <canvas width="70" height="62" data-sprites='[{"x":936,"y":2,"w":44,"h":47,"offsetX":13,"offsetY":30,"scale":0.35}]' data-extras='[{"type":"rect","x":0,"y":0,"w":70,"h":20,"color":"#2255aa"},{"type":"rect","x":5,"y":5,"w":25,"h":6,"color":"#8B4513"},{"type":"rect","x":40,"y":12,"w":20,"h":6,"color":"#8B4513"},{"type":"rect","x":0,"y":20,"w":70,"h":5,"color":"#338833"},{"type":"rect","x":0,"y":25,"w":70,"h":20,"color":"#333"},{"type":"rect","x":10,"y":28,"w":18,"h":8,"color":"#cc3333"},{"type":"rect","x":48,"y":33,"w":14,"h":7,"color":"#3366cc"}]'></canvas>
+                <h3>DinoFrogger</h3>
+                <div class="genre">Road crosser</div>
+                <p>Hop through traffic and ride logs across the river.</p>
+            </a>
+
+            <a class="game-card" href="dino-centipede.html">
+                <canvas width="70" height="62" data-sprites='[{"x":936,"y":2,"w":44,"h":47,"offsetX":13,"offsetY":20,"scale":0.4}]' data-extras='[{"type":"circle","cx":35,"cy":8,"r":5,"color":"#ff4400"},{"type":"circle","cx":45,"cy":8,"r":4,"color":"#ff8800"},{"type":"circle","cx":54,"cy":8,"r":4,"color":"#ff8800"},{"type":"circle","cx":62,"cy":12,"r":4,"color":"#ff8800"},{"type":"circle","cx":62,"cy":20,"r":4,"color":"#ff8800"},{"type":"circle","cx":15,"cy":20,"r":5,"color":"#4a8c3f"},{"type":"circle","cx":45,"cy":30,"r":5,"color":"#4a8c3f"},{"type":"circle","cx":55,"cy":45,"r":5,"color":"#4a8c3f"}]'></canvas>
+                <h3>DinoCentipede</h3>
+                <div class="genre">Track-ball shooter</div>
+                <p>Blast the centipede before it reaches the desert floor.</p>
             </a>
         </div>
 

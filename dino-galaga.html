@@ -1,0 +1,1212 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DinoGalaga</title>
+    <link rel="stylesheet" href="si-styles.css?v=2">
+    <style>#game-canvas { width: 100%; height: auto; max-width: none !important; }</style>
+</head>
+<body>
+    <img id="offline-resources-1x" src="assets/default_100_percent/100-offline-sprite.png" style="display:none;">
+    <div class="si-page" style="padding-bottom: 40px;">
+        <h1>DinoGalaga</h1>
+        <p class="si-subtitle">Battle waves of pterodactyls in classic arcade formation</p>
+        <div class="si-game-box">
+            <canvas id="game-canvas" width="600" height="460"></canvas>
+            <div class="si-controls" style="margin-top:12px;">
+                <button class="si-btn active" id="human-btn" onclick="setMode('off')">Human</button>
+                <button class="si-btn" id="rules-btn" onclick="setMode('ai')">AI</button>
+                <button class="si-btn" id="viz-btn" onclick="toggleViz()">Viz</button>
+                <button class="si-btn" onclick="restartGame()">Restart</button>
+                <button class="si-btn" id="pause-btn" onclick="togglePause()">Pause</button>
+                <button class="si-btn" id="fs-btn" onclick="toggleFullscreen()">Fullscreen</button>
+                <label style="display:inline-flex;align-items:center;gap:4px;margin-left:8px;font-size:12px;color:#535353;">
+                    Speed <input type="range" id="speed-slider" min="1" max="8" step="1" value="1" style="width:80px;" oninput="setGameSpeed(parseFloat(this.value))">
+                    <span id="speed-label">1x</span>
+                </label>
+            </div>
+            <p class="si-help" style="text-align:center;">&larr; / &rarr; move &nbsp;|&nbsp; Space fire &nbsp;|&nbsp; R restart &nbsp;|&nbsp; Touch: drag &amp; tap</p>
+        </div>
+        <h2 style="margin-top:16px;">How it works</h2>
+        <p class="si-prose">DinoGalaga recreates the 1981 Namco classic. Pterodactyl enemies fly in from off-screen in sweeping formation patterns, then settle into a grid at the top. Once in formation they periodically dive-bomb the player in curved swooping paths, firing bullets. Boss enemies (large cacti) require two hits to destroy and can capture your ship &mdash; recapture it for dual-fire power. Every few stages a Challenging Stage sends waves of non-attacking enemies for bonus points.</p>
+        <p class="si-prose">The AI uses a rule-based targeting system: it identifies the lowest and nearest enemy, moves to align horizontally, and fires when lined up. It continuously scans for incoming enemy bullets and dodges laterally when threatened. Enable <strong>Viz</strong> to see the AI&rsquo;s targeting line (green), danger zones around enemy bullets (red circles), and the current target highlight.</p>
+        <p style="margin-top:20px;"><a href="/" style="color:#0071e3;font-size:14px;text-decoration:none;">&larr; Back</a></p>
+    </div>
+<script src="fs-toggle.js"></script>
+<script src="dino-sounds.js"></script>
+<script>
+(function(){
+'use strict';
+
+// ─── Setup ───────────────────────────────────────────────────────────────────
+var CW = 600, CH = 460;
+var canvas = document.getElementById('game-canvas');
+var ctx = canvas.getContext('2d', { willReadFrequently: true });
+var spr = document.getElementById('offline-resources-1x');
+
+// Sprite definitions
+var TREX_RUN = [{ x:936, y:2, w:44, h:47 }, { x:980, y:2, w:44, h:47 }];
+var TREX_IDLE = { x:848, y:2, w:44, h:47 };
+var PTERO = [{ x:134, y:2, w:46, h:40 }, { x:180, y:2, w:46, h:40 }];
+var CACTUS_SM = { x:228, y:2, w:17, h:35 };
+var CACTUS_LG = { x:332, y:2, w:25, h:50 };
+
+// ─── Constants ───────────────────────────────────────────────────────────────
+var PLAYER_W = 30, PLAYER_H = 32;
+var PLAYER_Y = CH - 50;
+var PLAYER_SPEED = 4;
+var BULLET_SPEED = 7;
+var MAX_PLAYER_BULLETS = 2;
+var ENEMY_W = 28, ENEMY_H = 24;
+var BOSS_W = 22, BOSS_H = 36;
+var ENEMY_BULLET_SPEED = 3.5;
+var FORMATION_TOP = 50;
+var FORMATION_COLS = 10;
+var FORMATION_ROWS = 5;
+var FORMATION_SPACEX = 42;
+var FORMATION_SPACEY = 34;
+var ENTRY_SPEED = 3.5;
+var DIVE_SPEED = 3;
+
+// ─── State ───────────────────────────────────────────────────────────────────
+var gameSpeed = 1;
+var gs, score, hiScore, lives, stage, tick;
+var player, playerBullets, enemyBullets, enemies, explosions;
+var aiMode = 'off', aiViz = false, aiVizData = null;
+var paused = false;
+var keys = {};
+var capturedShip = null;
+var dualFire = false;
+var entryQueue = [];
+var entryTimer = 0;
+var diveTimer = 0;
+var formationDir = 1;
+var formationOffX = 0;
+var formationShiftTimer = 0;
+var challengeStage = false;
+var challengeKills = 0;
+var challengeTotal = 0;
+var stageCleared = false;
+var stageClearTimer = 0;
+var animFrame = 0;
+var animTimer = 0;
+var extraLifeAt30k = false;
+var extraLifeAt70k = false;
+var isTouchDevice = ('ontouchstart' in window || navigator.maxTouchPoints > 0);
+var touchX = null;
+
+hiScore = parseInt(localStorage.getItem('dino-galaga-hi')) || 0;
+
+// ─── Enemy types ─────────────────────────────────────────────────────────────
+var TYPE_BEE = 0;      // basic pterodactyl, row 3-4
+var TYPE_BUTTERFLY = 1; // mid pterodactyl, row 1-2
+var TYPE_BOSS = 2;      // boss cactus, row 0
+
+// Points: [in formation, diving]
+var POINTS = [
+    [50, 100],    // bee
+    [80, 160],    // butterfly
+    [150, 400]    // boss
+];
+
+// ─── Helper ──────────────────────────────────────────────────────────────────
+function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
+function dist(ax, ay, bx, by) { var dx = ax - bx, dy = ay - by; return Math.sqrt(dx * dx + dy * dy); }
+function lerp(a, b, t) { return a + (b - a) * t; }
+
+// ─── Bezier path for diving ──────────────────────────────────────────────────
+function makeDivePath(startX, startY, targetX, targetY) {
+    // Create a swooping S-curve path from formation to below screen and back
+    var points = [];
+    var midX = startX + (Math.random() - 0.5) * 200;
+    var midY = (startY + targetY) * 0.5;
+    var cp1x = startX + (Math.random() - 0.5) * 150;
+    var cp1y = startY + 80;
+    var cp2x = targetX + (Math.random() - 0.5) * 150;
+    var cp2y = targetY - 80;
+    // Bezier from start -> control points -> target -> below screen -> loop back to formation
+    var steps = 120;
+    for (var i = 0; i <= steps; i++) {
+        var t = i / steps;
+        if (t < 0.5) {
+            // Dive down
+            var t2 = t * 2;
+            var x = bezierPt(startX, cp1x, cp2x, targetX, t2);
+            var y = bezierPt(startY, cp1y, cp2y, CH + 40, t2);
+            points.push({ x: x, y: y });
+        } else {
+            // Loop back up to formation
+            var t2 = (t - 0.5) * 2;
+            var x = lerp(targetX + (Math.random() > 0.5 ? 100 : -100), startX, t2);
+            var y = lerp(CH + 40, startY, t2);
+            points.push({ x: x, y: y });
+        }
+    }
+    return points;
+}
+
+function bezierPt(p0, p1, p2, p3, t) {
+    var u = 1 - t;
+    return u * u * u * p0 + 3 * u * u * t * p1 + 3 * u * t * t * p2 + t * t * t * p3;
+}
+
+// ─── Entry paths (fly-in patterns) ──────────────────────────────────────────
+function makeEntryPath(targetX, targetY, pattern, index) {
+    var points = [];
+    var steps = 80;
+    var startX, startY, cp1x, cp1y, cp2x, cp2y;
+
+    if (pattern === 0) {
+        // Fly in from top-left in arc
+        startX = -30;
+        startY = CH * 0.3;
+        cp1x = CW * 0.2;
+        cp1y = -40;
+        cp2x = CW * 0.6;
+        cp2y = CH * 0.15;
+    } else if (pattern === 1) {
+        // Fly in from top-right in arc
+        startX = CW + 30;
+        startY = CH * 0.3;
+        cp1x = CW * 0.8;
+        cp1y = -40;
+        cp2x = CW * 0.4;
+        cp2y = CH * 0.15;
+    } else if (pattern === 2) {
+        // Fly in from bottom-left looping up
+        startX = -30;
+        startY = CH * 0.7;
+        cp1x = CW * 0.3;
+        cp1y = CH + 50;
+        cp2x = CW * 0.5;
+        cp2y = CH * 0.1;
+    } else {
+        // Fly in from bottom-right looping up
+        startX = CW + 30;
+        startY = CH * 0.7;
+        cp1x = CW * 0.7;
+        cp1y = CH + 50;
+        cp2x = CW * 0.5;
+        cp2y = CH * 0.1;
+    }
+
+    for (var i = 0; i <= steps; i++) {
+        var t = i / steps;
+        var x = bezierPt(startX, cp1x, cp2x, targetX, t);
+        var y = bezierPt(startY, cp1y, cp2y, targetY, t);
+        points.push({ x: x, y: y });
+    }
+    return points;
+}
+
+// ─── Challenge stage entry paths ─────────────────────────────────────────────
+function makeChallengeEntryPath(wave, index, total) {
+    var points = [];
+    var steps = 100;
+    var startX, startY;
+    if (wave % 2 === 0) {
+        startX = -30;
+        startY = CH * 0.4;
+    } else {
+        startX = CW + 30;
+        startY = CH * 0.4;
+    }
+    var centerX = CW / 2;
+    var exitX = wave % 2 === 0 ? CW + 30 : -30;
+    for (var i = 0; i <= steps; i++) {
+        var t = i / steps;
+        var angle = t * Math.PI * 2 + (index / total) * Math.PI * 0.3;
+        var spiralR = 80 * (1 - t * 0.5);
+        var baseX = lerp(startX, exitX, t);
+        var baseY = lerp(startY, -40, t);
+        if (t < 0.7) {
+            baseX = lerp(startX, centerX, t / 0.7);
+            baseY = lerp(startY, CH * 0.3, t / 0.7);
+            points.push({
+                x: baseX + Math.cos(angle) * spiralR,
+                y: baseY + Math.sin(angle) * spiralR * 0.5
+            });
+        } else {
+            // Fly off screen
+            var t2 = (t - 0.7) / 0.3;
+            points.push({
+                x: lerp(centerX, exitX, t2),
+                y: lerp(CH * 0.3, -40, t2)
+            });
+        }
+    }
+    return points;
+}
+
+// ─── Init ────────────────────────────────────────────────────────────────────
+function initGame() {
+    score = 0;
+    lives = 3;
+    stage = 1;
+    tick = 0;
+    dualFire = false;
+    capturedShip = null;
+    extraLifeAt30k = false;
+    extraLifeAt70k = false;
+    animFrame = 0;
+    animTimer = 0;
+    initStage();
+    gs = 'playing';
+}
+
+function initStage() {
+    player = { x: CW / 2 - PLAYER_W / 2, y: PLAYER_Y, dead: false, deathTimer: 0, respawnTimer: 0 };
+    playerBullets = [];
+    enemyBullets = [];
+    enemies = [];
+    explosions = [];
+    entryQueue = [];
+    entryTimer = 0;
+    diveTimer = 0;
+    formationDir = 1;
+    formationOffX = 0;
+    formationShiftTimer = 0;
+    stageCleared = false;
+    stageClearTimer = 0;
+    challengeStage = (stage % 4 === 0);
+    challengeKills = 0;
+    challengeTotal = 0;
+
+    // Build enemy formation
+    buildFormation();
+}
+
+function buildFormation() {
+    // Row 0: bosses (TYPE_BOSS), 4 enemies
+    // Row 1-2: butterflies (TYPE_BUTTERFLY), 8 enemies each
+    // Row 3-4: bees (TYPE_BEE), 10 enemies each
+    var formDef = [
+        { type: TYPE_BOSS, count: 4, row: 0 },
+        { type: TYPE_BUTTERFLY, count: 8, row: 1 },
+        { type: TYPE_BUTTERFLY, count: 8, row: 2 },
+        { type: TYPE_BEE, count: 10, row: 3 },
+        { type: TYPE_BEE, count: 10, row: 4 }
+    ];
+
+    var patternIdx = 0;
+    var delay = 0;
+
+    for (var r = 0; r < formDef.length; r++) {
+        var def = formDef[r];
+        var count = def.count;
+        var offsetX = (FORMATION_COLS - count) / 2;
+
+        for (var c = 0; c < count; c++) {
+            var formX = (offsetX + c) * FORMATION_SPACEX + (CW - FORMATION_COLS * FORMATION_SPACEX) / 2 + FORMATION_SPACEX / 2;
+            var formY = FORMATION_TOP + def.row * FORMATION_SPACEY;
+
+            var enemy = {
+                type: def.type,
+                row: def.row,
+                col: c,
+                formX: formX,
+                formY: formY,
+                x: formX,
+                y: formY,
+                alive: true,
+                hp: def.type === TYPE_BOSS ? 2 : 1,
+                hit: false, // boss hit once
+                state: 'entering', // entering, formation, diving, captured
+                path: null,
+                pathIdx: 0,
+                entryDelay: delay,
+                fireTimer: 200 + Math.floor(Math.random() * 300),
+                hasCaptured: false // boss that captured player's ship
+            };
+
+            if (challengeStage) {
+                enemy.path = makeChallengeEntryPath(Math.floor(delay / 5) % 4, c, count);
+                enemy.pathIdx = 0;
+                challengeTotal++;
+            } else {
+                var pattern = patternIdx % 4;
+                enemy.path = makeEntryPath(formX, formY, pattern, c);
+                enemy.pathIdx = 0;
+            }
+
+            enemies.push(enemy);
+            delay += 3;
+        }
+        patternIdx++;
+    }
+}
+
+// ─── Player ──────────────────────────────────────────────────────────────────
+function updatePlayer() {
+    if (!player || player.dead) {
+        if (player && player.dead) {
+            player.deathTimer--;
+            if (player.deathTimer <= 0) {
+                if (lives > 0) {
+                    lives--;
+                    player.dead = false;
+                    player.x = CW / 2 - PLAYER_W / 2;
+                    player.y = PLAYER_Y;
+                    player.respawnTimer = 60;
+                } else {
+                    gs = 'gameover';
+                }
+            }
+        }
+        return;
+    }
+
+    if (player.respawnTimer > 0) {
+        player.respawnTimer--;
+        return;
+    }
+
+    // Movement
+    var moving = false;
+    if (aiMode === 'ai') {
+        var aiAction = computeAI();
+        if (aiAction.left) { player.x -= PLAYER_SPEED; moving = true; }
+        if (aiAction.right) { player.x += PLAYER_SPEED; moving = true; }
+        if (aiAction.fire) firePlayerBullet();
+    } else {
+        if (keys[37] || keys[65]) { player.x -= PLAYER_SPEED; moving = true; }
+        if (keys[39] || keys[68]) { player.x += PLAYER_SPEED; moving = true; }
+        if (keys[32]) firePlayerBullet();
+
+        // Touch control
+        if (touchX !== null) {
+            var diff = touchX - (player.x + PLAYER_W / 2);
+            if (Math.abs(diff) > 3) {
+                player.x += clamp(diff, -PLAYER_SPEED, PLAYER_SPEED);
+                moving = true;
+            }
+        }
+    }
+
+    player.x = clamp(player.x, 5, CW - PLAYER_W - 5);
+}
+
+function firePlayerBullet() {
+    if (playerBullets.length >= MAX_PLAYER_BULLETS) return;
+    // Cooldown check
+    if (player._fireCooldown && player._fireCooldown > 0) return;
+    player._fireCooldown = 8;
+
+    DinoSounds.press();
+
+    var cx = player.x + PLAYER_W / 2;
+    playerBullets.push({ x: cx - 2, y: player.y - 4, w: 4, h: 10 });
+
+    if (dualFire) {
+        playerBullets.push({ x: cx - 2 + 14, y: player.y - 4, w: 4, h: 10 });
+    }
+}
+
+// ─── Enemies ─────────────────────────────────────────────────────────────────
+function updateEnemies() {
+    var allInFormation = true;
+    var anyAlive = false;
+
+    // Formation sway
+    formationShiftTimer++;
+    if (formationShiftTimer >= 30) {
+        formationShiftTimer = 0;
+        formationOffX += formationDir * 4;
+        if (Math.abs(formationOffX) > 30) formationDir *= -1;
+    }
+
+    for (var i = 0; i < enemies.length; i++) {
+        var e = enemies[i];
+        if (!e.alive) continue;
+        anyAlive = true;
+
+        if (e.state === 'entering') {
+            if (e.entryDelay > 0) {
+                e.entryDelay--;
+                allInFormation = false;
+                continue;
+            }
+            if (e.path && e.pathIdx < e.path.length) {
+                e.x = e.path[e.pathIdx].x;
+                e.y = e.path[e.pathIdx].y;
+                e.pathIdx++;
+                allInFormation = false;
+            } else {
+                if (challengeStage) {
+                    // In challenge stage, enemies fly off and die
+                    e.alive = false;
+                    continue;
+                }
+                e.state = 'formation';
+                e.x = e.formX + formationOffX;
+                e.y = e.formY;
+            }
+        } else if (e.state === 'formation') {
+            e.x = e.formX + formationOffX;
+            e.y = e.formY;
+
+            // Fire timer
+            if (!challengeStage && !player.dead) {
+                e.fireTimer--;
+                if (e.fireTimer <= 0) {
+                    e.fireTimer = 150 + Math.floor(Math.random() * 250) - stage * 5;
+                    if (e.fireTimer < 60) e.fireTimer = 60;
+                    if (Math.random() < 0.3 + stage * 0.02) {
+                        enemyFire(e);
+                    }
+                }
+            }
+        } else if (e.state === 'diving') {
+            if (e.path && e.pathIdx < e.path.length) {
+                e.x = e.path[e.pathIdx].x;
+                e.y = e.path[e.pathIdx].y;
+                e.pathIdx++;
+
+                // Fire while diving
+                if (!challengeStage && !player.dead && Math.random() < 0.02 + stage * 0.003) {
+                    enemyFire(e);
+                }
+            } else {
+                // Return to formation
+                e.state = 'formation';
+                e.x = e.formX + formationOffX;
+                e.y = e.formY;
+            }
+        }
+    }
+
+    // Initiate dives
+    if (!challengeStage && !stageCleared) {
+        diveTimer--;
+        if (diveTimer <= 0) {
+            diveTimer = Math.max(30, 120 - stage * 8);
+            startDive();
+        }
+    }
+
+    // Check if stage cleared
+    if (!anyAlive && !stageCleared) {
+        stageCleared = true;
+        stageClearTimer = challengeStage ? 120 : 90;
+        DinoSounds.reached();
+    }
+}
+
+function startDive() {
+    // Pick a random formation enemy to dive
+    var candidates = [];
+    for (var i = 0; i < enemies.length; i++) {
+        if (enemies[i].alive && enemies[i].state === 'formation') {
+            candidates.push(enemies[i]);
+        }
+    }
+    if (candidates.length === 0) return;
+
+    var numDivers = Math.min(1 + Math.floor(stage / 3), 3);
+    for (var d = 0; d < numDivers && candidates.length > 0; d++) {
+        var idx = Math.floor(Math.random() * candidates.length);
+        var e = candidates[idx];
+        candidates.splice(idx, 1);
+
+        var targetX = player && !player.dead ? player.x + PLAYER_W / 2 : CW / 2;
+        e.state = 'diving';
+        e.path = makeDivePath(e.x, e.y, targetX, PLAYER_Y);
+        e.pathIdx = 0;
+
+        // Boss capture attempt
+        if (e.type === TYPE_BOSS && !e.hit && !capturedShip && !dualFire && Math.random() < 0.15) {
+            e.hasCaptured = true;
+        }
+    }
+}
+
+function enemyFire(e) {
+    if (!player || player.dead) return;
+    var dx = (player.x + PLAYER_W / 2) - e.x;
+    var dy = (player.y + PLAYER_H / 2) - e.y;
+    var d = Math.sqrt(dx * dx + dy * dy);
+    if (d < 1) return;
+    var speed = ENEMY_BULLET_SPEED + stage * 0.1;
+    if (speed > 5) speed = 5;
+    enemyBullets.push({
+        x: e.x,
+        y: e.y + 10,
+        vx: (dx / d) * speed,
+        vy: (dy / d) * speed
+    });
+}
+
+// ─── Bullets ─────────────────────────────────────────────────────────────────
+function updateBullets() {
+    // Player bullets
+    for (var i = playerBullets.length - 1; i >= 0; i--) {
+        playerBullets[i].y -= BULLET_SPEED;
+        if (playerBullets[i].y < -10) {
+            playerBullets.splice(i, 1);
+        }
+    }
+
+    // Enemy bullets
+    for (var i = enemyBullets.length - 1; i >= 0; i--) {
+        var b = enemyBullets[i];
+        b.x += b.vx;
+        b.y += b.vy;
+        if (b.y > CH + 10 || b.y < -10 || b.x < -10 || b.x > CW + 10) {
+            enemyBullets.splice(i, 1);
+        }
+    }
+
+    // Fire cooldown
+    if (player && player._fireCooldown > 0) player._fireCooldown--;
+}
+
+// ─── Collisions ──────────────────────────────────────────────────────────────
+function checkCollisions() {
+    // Player bullets vs enemies
+    for (var i = playerBullets.length - 1; i >= 0; i--) {
+        var b = playerBullets[i];
+        for (var j = 0; j < enemies.length; j++) {
+            var e = enemies[j];
+            if (!e.alive) continue;
+            var ew = e.type === TYPE_BOSS ? BOSS_W : ENEMY_W;
+            var eh = e.type === TYPE_BOSS ? BOSS_H : ENEMY_H;
+            if (b.x + b.w > e.x - ew / 2 && b.x < e.x + ew / 2 &&
+                b.y + b.h > e.y - eh / 2 && b.y < e.y + eh / 2) {
+                playerBullets.splice(i, 1);
+                e.hp--;
+                if (e.hp <= 0) {
+                    e.alive = false;
+                    var pts = POINTS[e.type][e.state === 'diving' ? 1 : 0];
+                    score += pts;
+                    addExplosion(e.x, e.y, pts);
+                    DinoSounds.hit();
+                    if (challengeStage) challengeKills++;
+
+                    // Check if this boss had captured our ship
+                    if (e.hasCaptured && capturedShip) {
+                        // Recapture! Grant dual fire
+                        dualFire = true;
+                        capturedShip = null;
+                    }
+                } else {
+                    // Boss hit once
+                    e.hit = true;
+                    DinoSounds.hit();
+                }
+                break;
+            }
+        }
+    }
+
+    // Enemy bullets vs player
+    if (player && !player.dead && player.respawnTimer <= 0) {
+        for (var i = enemyBullets.length - 1; i >= 0; i--) {
+            var b = enemyBullets[i];
+            if (b.x > player.x && b.x < player.x + PLAYER_W &&
+                b.y > player.y && b.y < player.y + PLAYER_H) {
+                enemyBullets.splice(i, 1);
+                killPlayer();
+                break;
+            }
+        }
+    }
+
+    // Diving enemies vs player (collision)
+    if (player && !player.dead && player.respawnTimer <= 0) {
+        for (var i = 0; i < enemies.length; i++) {
+            var e = enemies[i];
+            if (!e.alive || e.state !== 'diving') continue;
+            var ew = e.type === TYPE_BOSS ? BOSS_W : ENEMY_W;
+            var eh = e.type === TYPE_BOSS ? BOSS_H : ENEMY_H;
+            if (e.x + ew / 2 > player.x && e.x - ew / 2 < player.x + PLAYER_W &&
+                e.y + eh / 2 > player.y && e.y - eh / 2 < player.y + PLAYER_H) {
+                e.alive = false;
+                addExplosion(e.x, e.y, 0);
+                killPlayer();
+                break;
+            }
+
+            // Boss capture
+            if (e.hasCaptured && e.state === 'diving' && !capturedShip && !player.dead) {
+                var capDist = dist(e.x, e.y, player.x + PLAYER_W / 2, player.y + PLAYER_H / 2);
+                if (capDist < 35) {
+                    // Capture the player's ship!
+                    capturedShip = { x: e.x, y: e.y, bossIdx: i };
+                    e.hasCaptured = false;
+                    killPlayer();
+                    break;
+                }
+            }
+        }
+    }
+
+    // Check extra lives
+    if (!extraLifeAt30k && score >= 30000) {
+        extraLifeAt30k = true;
+        lives++;
+        DinoSounds.reached();
+    }
+    if (!extraLifeAt70k && score >= 70000) {
+        extraLifeAt70k = true;
+        lives++;
+        DinoSounds.reached();
+    }
+}
+
+function killPlayer() {
+    if (!player || player.dead) return;
+    player.dead = true;
+    player.deathTimer = 90;
+    addExplosion(player.x + PLAYER_W / 2, player.y + PLAYER_H / 2, 0);
+    if (dualFire) dualFire = false;
+}
+
+function addExplosion(x, y, pts) {
+    var particles = [];
+    for (var i = 0; i < 12; i++) {
+        var angle = (Math.PI * 2 / 12) * i;
+        var speed = 1 + Math.random() * 2;
+        particles.push({
+            x: x, y: y,
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed,
+            life: 20 + Math.floor(Math.random() * 15)
+        });
+    }
+    explosions.push({ x: x, y: y, pts: pts, particles: particles, timer: 35, showPts: pts > 0 });
+}
+
+function updateExplosions() {
+    for (var i = explosions.length - 1; i >= 0; i--) {
+        var ex = explosions[i];
+        ex.timer--;
+        for (var j = 0; j < ex.particles.length; j++) {
+            var p = ex.particles[j];
+            p.x += p.vx;
+            p.y += p.vy;
+            p.life--;
+        }
+        if (ex.timer <= 0) {
+            explosions.splice(i, 1);
+        }
+    }
+}
+
+// ─── Stage progression ──────────────────────────────────────────────────────
+function updateStageProgress() {
+    if (!stageCleared) return;
+    stageClearTimer--;
+    if (stageClearTimer <= 0) {
+        stage++;
+        initStage();
+    }
+}
+
+// ─── AI ──────────────────────────────────────────────────────────────────────
+function computeAI() {
+    var action = { left: false, right: false, fire: false };
+    if (!player || player.dead || player.respawnTimer > 0) return action;
+
+    var pcx = player.x + PLAYER_W / 2;
+    var pcy = player.y + PLAYER_H / 2;
+
+    // Find target: lowest/nearest enemy
+    var target = null;
+    var bestScore = -Infinity;
+
+    for (var i = 0; i < enemies.length; i++) {
+        var e = enemies[i];
+        if (!e.alive) continue;
+        if (e.state === 'entering' && e.entryDelay > 0) continue;
+        // Prefer lower enemies and enemies closer horizontally
+        var yScore = e.y * 2; // higher y = lower on screen = better target
+        var xDist = Math.abs(e.x - pcx);
+        var s = yScore - xDist * 0.5;
+        // Prioritize diving enemies (they're the most dangerous)
+        if (e.state === 'diving') s += 200;
+        if (s > bestScore) {
+            bestScore = s;
+            target = e;
+        }
+    }
+
+    // Dodge enemy bullets
+    var dodgeDir = 0;
+    var dangerZone = 60;
+    for (var i = 0; i < enemyBullets.length; i++) {
+        var b = enemyBullets[i];
+        if (b.vy <= 0) continue; // only worry about bullets coming down
+        var timeToReach = (player.y - b.y) / b.vy;
+        if (timeToReach < 0 || timeToReach > 30) continue;
+        var futureX = b.x + b.vx * timeToReach;
+        if (Math.abs(futureX - pcx) < dangerZone) {
+            dodgeDir = futureX > pcx ? -1 : 1;
+        }
+    }
+
+    // Also dodge diving enemies
+    for (var i = 0; i < enemies.length; i++) {
+        var e = enemies[i];
+        if (!e.alive || e.state !== 'diving') continue;
+        if (e.y > player.y - 80 && e.y < player.y + 20) {
+            if (Math.abs(e.x - pcx) < 50) {
+                dodgeDir = e.x > pcx ? -1 : 1;
+            }
+        }
+    }
+
+    if (dodgeDir !== 0) {
+        action.left = dodgeDir < 0;
+        action.right = dodgeDir > 0;
+    } else if (target) {
+        // Move toward target
+        var dx = target.x - pcx;
+        if (Math.abs(dx) > 8) {
+            action.left = dx < 0;
+            action.right = dx > 0;
+        }
+        // Fire when roughly aligned
+        if (Math.abs(dx) < 25) {
+            action.fire = true;
+        }
+    }
+
+    // Store viz data
+    if (aiViz) {
+        aiVizData = {
+            target: target,
+            dodgeDir: dodgeDir,
+            dangerBullets: []
+        };
+        for (var i = 0; i < enemyBullets.length; i++) {
+            var b = enemyBullets[i];
+            if (b.vy <= 0) continue;
+            var timeToReach = (player.y - b.y) / b.vy;
+            if (timeToReach > 0 && timeToReach < 30) {
+                aiVizData.dangerBullets.push({
+                    x: b.x + b.vx * timeToReach,
+                    y: player.y,
+                    bx: b.x, by: b.y
+                });
+            }
+        }
+    } else {
+        aiVizData = null;
+    }
+
+    return action;
+}
+
+// ─── Update ──────────────────────────────────────────────────────────────────
+function update() {
+    if (paused || gs !== 'playing') return;
+    tick++;
+    animTimer++;
+    if (animTimer >= 10) {
+        animTimer = 0;
+        animFrame = (animFrame + 1) % 2;
+    }
+
+    updatePlayer();
+    updateEnemies();
+    updateBullets();
+    checkCollisions();
+    updateExplosions();
+    updateStageProgress();
+
+    // Update hi score
+    if (score > hiScore) {
+        hiScore = score;
+        localStorage.setItem('dino-galaga-hi', hiScore);
+    }
+}
+
+// ─── Drawing ─────────────────────────────────────────────────────────────────
+function draw() {
+    // Background - dark space
+    ctx.fillStyle = '#0a0a2e';
+    ctx.fillRect(0, 0, CW, CH);
+
+    // Stars
+    ctx.fillStyle = '#ffffff';
+    for (var i = 0; i < 60; i++) {
+        // Deterministic stars based on index
+        var sx = ((i * 137 + 43) % CW);
+        var sy = ((i * 211 + 17 + tick * 0.1) % CH);
+        var size = (i % 3 === 0) ? 2 : 1;
+        ctx.fillRect(sx, sy, size, size);
+    }
+
+    if (gs === 'start') {
+        drawStartScreen();
+        return;
+    }
+
+    if (gs === 'gameover') {
+        drawGameplay();
+        drawGameOver();
+        return;
+    }
+
+    drawGameplay();
+
+    if (stageCleared) {
+        drawStageClear();
+    }
+}
+
+function drawStartScreen() {
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 36px -apple-system, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('DINO GALAGA', CW / 2, CH / 2 - 40);
+
+    ctx.font = '16px -apple-system, sans-serif';
+    ctx.fillStyle = '#8888cc';
+    ctx.fillText('Press Space or Tap to Start', CW / 2, CH / 2 + 10);
+
+    ctx.font = '13px -apple-system, sans-serif';
+    ctx.fillStyle = '#666699';
+    ctx.fillText('HI-SCORE: ' + hiScore, CW / 2, CH / 2 + 50);
+
+    // Draw some demo sprites
+    if (spr.complete) {
+        var s = PTERO[animFrame];
+        ctx.drawImage(spr, s.x, s.y, s.w, s.h, CW / 2 - 80, CH / 2 + 70, 36, 30);
+        ctx.drawImage(spr, s.x, s.y, s.w, s.h, CW / 2 + 40, CH / 2 + 70, 36, 30);
+        var t = TREX_RUN[animFrame];
+        ctx.drawImage(spr, t.x, t.y, t.w, t.h, CW / 2 - 15, CH / 2 + 90, PLAYER_W, PLAYER_H);
+    }
+}
+
+function drawGameplay() {
+    // Draw enemies
+    for (var i = 0; i < enemies.length; i++) {
+        var e = enemies[i];
+        if (!e.alive) continue;
+        if (e.state === 'entering' && e.entryDelay > 0) continue;
+
+        if (e.type === TYPE_BOSS) {
+            // Boss: large cactus
+            var bspr = CACTUS_LG;
+            if (e.hit) {
+                // Damaged boss - draw tinted
+                ctx.save();
+                ctx.globalAlpha = 0.7;
+                ctx.drawImage(spr, bspr.x, bspr.y, bspr.w, bspr.h,
+                    e.x - BOSS_W / 2, e.y - BOSS_H / 2, BOSS_W, BOSS_H);
+                ctx.globalAlpha = 1;
+                // Red overlay for damage
+                ctx.fillStyle = 'rgba(255,80,80,0.4)';
+                ctx.fillRect(e.x - BOSS_W / 2, e.y - BOSS_H / 2, BOSS_W, BOSS_H);
+                ctx.restore();
+            } else {
+                ctx.drawImage(spr, bspr.x, bspr.y, bspr.w, bspr.h,
+                    e.x - BOSS_W / 2, e.y - BOSS_H / 2, BOSS_W, BOSS_H);
+            }
+        } else {
+            // Regular enemy: pterodactyl
+            var frame = PTERO[animFrame];
+            var tint = e.type === TYPE_BUTTERFLY ? '#ff6666' : '#6666ff';
+
+            ctx.drawImage(spr, frame.x, frame.y, frame.w, frame.h,
+                e.x - ENEMY_W / 2, e.y - ENEMY_H / 2, ENEMY_W, ENEMY_H);
+
+            // Color tint overlay
+            ctx.fillStyle = e.type === TYPE_BUTTERFLY ? 'rgba(255,100,100,0.2)' : 'rgba(100,100,255,0.15)';
+            ctx.fillRect(e.x - ENEMY_W / 2, e.y - ENEMY_H / 2, ENEMY_W, ENEMY_H);
+        }
+    }
+
+    // Draw captured ship indicator
+    if (capturedShip) {
+        ctx.fillStyle = 'rgba(0,255,0,0.3)';
+        var cs = TREX_IDLE;
+        ctx.drawImage(spr, cs.x, cs.y, cs.w, cs.h,
+            capturedShip.x - PLAYER_W / 2, capturedShip.y - PLAYER_H / 2, PLAYER_W, PLAYER_H);
+    }
+
+    // Draw player
+    if (player && !player.dead) {
+        if (player.respawnTimer > 0 && (tick % 6 < 3)) {
+            // Blink during respawn
+        } else {
+            var ps = TREX_RUN[animFrame];
+            ctx.drawImage(spr, ps.x, ps.y, ps.w, ps.h,
+                player.x, player.y, PLAYER_W, PLAYER_H);
+
+            // Dual fire second ship
+            if (dualFire) {
+                ctx.drawImage(spr, ps.x, ps.y, ps.w, ps.h,
+                    player.x + 14, player.y, PLAYER_W, PLAYER_H);
+            }
+        }
+    }
+
+    // Draw player bullets
+    ctx.fillStyle = '#00ff88';
+    for (var i = 0; i < playerBullets.length; i++) {
+        var b = playerBullets[i];
+        ctx.fillRect(b.x, b.y, b.w, b.h);
+    }
+
+    // Draw enemy bullets
+    ctx.fillStyle = '#ff4444';
+    for (var i = 0; i < enemyBullets.length; i++) {
+        var b = enemyBullets[i];
+        ctx.beginPath();
+        ctx.arc(b.x, b.y, 3, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    // Draw explosions
+    for (var i = 0; i < explosions.length; i++) {
+        var ex = explosions[i];
+        for (var j = 0; j < ex.particles.length; j++) {
+            var p = ex.particles[j];
+            if (p.life <= 0) continue;
+            var alpha = p.life / 35;
+            ctx.fillStyle = 'rgba(255,' + Math.floor(150 + Math.random() * 105) + ',50,' + alpha + ')';
+            ctx.fillRect(p.x - 1, p.y - 1, 3, 3);
+        }
+        if (ex.showPts && ex.timer > 15) {
+            ctx.fillStyle = '#ffff00';
+            ctx.font = 'bold 12px -apple-system, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText(ex.pts, ex.x, ex.y - 10);
+        }
+    }
+
+    // Draw AI visualization
+    if (aiViz && aiVizData && player && !player.dead) {
+        drawAIViz();
+    }
+
+    // HUD
+    drawHUD();
+}
+
+function drawAIViz() {
+    var pcx = player.x + PLAYER_W / 2;
+    var pcy = player.y + PLAYER_H / 2;
+
+    // Target line
+    if (aiVizData.target) {
+        var t = aiVizData.target;
+        ctx.strokeStyle = 'rgba(0,255,0,0.6)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(pcx, pcy);
+        ctx.lineTo(t.x, t.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Target highlight
+        ctx.strokeStyle = 'rgba(0,255,0,0.8)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(t.x, t.y, 20, 0, Math.PI * 2);
+        ctx.stroke();
+    }
+
+    // Danger zones for incoming bullets
+    for (var i = 0; i < aiVizData.dangerBullets.length; i++) {
+        var db = aiVizData.dangerBullets[i];
+        ctx.strokeStyle = 'rgba(255,0,0,0.6)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(db.x, db.y, 40, 0, Math.PI * 2);
+        ctx.stroke();
+
+        // Line from bullet to predicted impact
+        ctx.strokeStyle = 'rgba(255,0,0,0.3)';
+        ctx.setLineDash([2, 2]);
+        ctx.beginPath();
+        ctx.moveTo(db.bx, db.by);
+        ctx.lineTo(db.x, db.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+    }
+
+    // Dodge direction indicator
+    if (aiVizData.dodgeDir !== 0) {
+        ctx.fillStyle = 'rgba(255,100,0,0.7)';
+        ctx.font = 'bold 14px -apple-system, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(aiVizData.dodgeDir < 0 ? 'DODGE <' : '> DODGE', pcx, pcy + 25);
+    }
+}
+
+function drawHUD() {
+    // Score
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '14px "Courier New", monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText('SCORE ' + pad(score, 6), 10, 22);
+
+    // Hi Score
+    ctx.textAlign = 'center';
+    ctx.fillText('HI ' + pad(hiScore, 6), CW / 2, 22);
+
+    // Stage
+    ctx.textAlign = 'right';
+    ctx.fillText('STAGE ' + stage, CW - 10, 22);
+
+    // Lives
+    ctx.textAlign = 'left';
+    for (var i = 0; i < lives; i++) {
+        if (spr.complete) {
+            var ls = TREX_IDLE;
+            ctx.drawImage(spr, ls.x, ls.y, ls.w, ls.h,
+                10 + i * 22, CH - 25, 18, 20);
+        }
+    }
+
+    // Challenge stage indicator
+    if (challengeStage) {
+        ctx.fillStyle = '#ffcc00';
+        ctx.font = 'bold 14px -apple-system, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('CHALLENGING STAGE', CW / 2, 42);
+    }
+}
+
+function drawStageClear() {
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 24px -apple-system, sans-serif';
+    ctx.textAlign = 'center';
+
+    if (challengeStage) {
+        ctx.fillText('STAGE ' + stage + ' CLEAR', CW / 2, CH / 2 - 30);
+        ctx.font = '16px -apple-system, sans-serif';
+        ctx.fillStyle = '#ffcc00';
+        ctx.fillText('Hits: ' + challengeKills + ' / ' + challengeTotal, CW / 2, CH / 2 + 5);
+        var bonus = challengeKills * 100;
+        if (challengeKills === challengeTotal) bonus *= 2;
+        ctx.fillText('Bonus: ' + bonus, CW / 2, CH / 2 + 30);
+        score += Math.floor(bonus / 90); // spread across clear timer frames
+    } else {
+        ctx.fillText('STAGE ' + stage + ' CLEAR', CW / 2, CH / 2 - 10);
+        ctx.font = '16px -apple-system, sans-serif';
+        ctx.fillStyle = '#88bbff';
+        ctx.fillText('Get Ready...', CW / 2, CH / 2 + 20);
+    }
+}
+
+function drawGameOver() {
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillRect(0, 0, CW, CH);
+
+    ctx.fillStyle = '#ff4444';
+    ctx.font = 'bold 32px -apple-system, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('GAME OVER', CW / 2, CH / 2 - 20);
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '16px -apple-system, sans-serif';
+    ctx.fillText('Score: ' + score + '  Stage: ' + stage, CW / 2, CH / 2 + 15);
+
+    ctx.font = '14px -apple-system, sans-serif';
+    ctx.fillStyle = '#8888cc';
+    ctx.fillText('Press Space or Tap to Restart', CW / 2, CH / 2 + 50);
+}
+
+function pad(n, len) {
+    var s = '' + n;
+    while (s.length < len) s = '0' + s;
+    return s;
+}
+
+// ─── Input ───────────────────────────────────────────────────────────────────
+document.addEventListener('keydown', function(e) {
+    keys[e.keyCode] = true;
+
+    if (e.keyCode === 32) { // Space
+        e.preventDefault();
+        if (gs === 'start') initGame();
+        else if (gs === 'gameover') initGame();
+    }
+    if (e.keyCode === 82) { // R
+        initGame();
+    }
+    if (e.keyCode === 80) { // P
+        paused = !paused;
+        document.getElementById('pause-btn').classList.toggle('active', paused);
+    }
+});
+document.addEventListener('keyup', function(e) { keys[e.keyCode] = false; });
+
+// Touch controls
+canvas.addEventListener('touchstart', function(e) {
+    e.preventDefault();
+    if (gs === 'start' || gs === 'gameover') { initGame(); return; }
+    var rect = canvas.getBoundingClientRect();
+    var scaleX = CW / rect.width;
+    touchX = (e.touches[0].clientX - rect.left) * scaleX;
+    // Tap to fire
+    if (gs === 'playing' && player && !player.dead) {
+        firePlayerBullet();
+    }
+}, { passive: false });
+
+canvas.addEventListener('touchmove', function(e) {
+    e.preventDefault();
+    var rect = canvas.getBoundingClientRect();
+    var scaleX = CW / rect.width;
+    touchX = (e.touches[0].clientX - rect.left) * scaleX;
+}, { passive: false });
+
+canvas.addEventListener('touchend', function(e) {
+    e.preventDefault();
+    touchX = null;
+}, { passive: false });
+
+// ─── Buttons ─────────────────────────────────────────────────────────────────
+window.setMode = function(m) {
+    aiMode = m === 'off' ? 'off' : 'ai';
+    document.getElementById('human-btn').classList.toggle('active', aiMode === 'off');
+    document.getElementById('rules-btn').classList.toggle('active', aiMode === 'ai');
+    if (aiMode === 'ai') {
+        aiViz = true;
+        document.getElementById('viz-btn').classList.add('active');
+    }
+    if (aiMode === 'ai' && (gs === 'start' || gs === 'gameover')) initGame();
+};
+window.setGameSpeed = function(v) {
+    gameSpeed = v;
+    document.getElementById('speed-label').textContent = v + 'x';
+};
+window.restartGame = function() { initGame(); };
+window.togglePause = function() {
+    paused = !paused;
+    document.getElementById('pause-btn').classList.toggle('active', paused);
+};
+window.toggleViz = function() {
+    aiViz = !aiViz;
+    document.getElementById('viz-btn').classList.toggle('active', aiViz);
+};
+
+// ─── Boot ────────────────────────────────────────────────────────────────────
+gs = 'start';
+score = 0;
+lives = 3;
+stage = 1;
+tick = 0;
+playerBullets = [];
+enemyBullets = [];
+enemies = [];
+explosions = [];
+
+function loop() {
+    for (var sp = 0; sp < gameSpeed; sp++) update();
+    draw();
+    requestAnimationFrame(loop);
+}
+loop();
+
+})();
+</script>
+</body>
+</html>

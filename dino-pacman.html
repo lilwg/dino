@@ -154,12 +154,14 @@
         }
     }
 
-    function isWall(c, r) {
+    function isWall(c, r, allowGhostHouse) {
         if (r < 0 || r >= ROWS) return true;
         if (c < 0 || c >= COLS) {
             return r !== 14; // tunnel row wraps
         }
-        return maze[r][c] === 0 || maze[r][c] === 4;
+        if (maze[r][c] === 0) return true;
+        if (maze[r][c] === 4 && !allowGhostHouse) return true;
+        return false;
     }
 
     function wrapCol(c) {
@@ -196,19 +198,40 @@
     var modePhase = 0;
     var MODE_DURATIONS = [7, 20, 7, 20, 5, 20, 5, -1];
     var FRIGHT_BASE = 6;
+    var FRIGHT_DURATIONS = [6, 5, 4, 3, 2, 5, 2, 2, 1, 5, 2, 1, 1, 3, 1, 1, 0, 1, 0, 0];
     var frightenedTimer = 0;
     var frightenedFlashing = false;
+
+    // Fruit bonuses
+    var FRUIT_DOTS = [30, 100];
+    var FRUIT_TYPES = [
+        { name: 'Cherry',      pts: 100,  color: '#ff0000' },  // Level 1
+        { name: 'Strawberry',  pts: 300,  color: '#ff4444' },  // Level 2
+        { name: 'Orange',      pts: 500,  color: '#ffaa00' },  // Level 3
+        { name: 'Apple',       pts: 700,  color: '#ff2222' },  // Level 4
+        { name: 'Melon',       pts: 1000, color: '#00cc00' },  // Level 5
+        { name: 'Galaxian',    pts: 2000, color: '#0088ff' },  // Level 6
+        { name: 'Bell',        pts: 3000, color: '#ffdd00' },  // Level 7
+        { name: 'Key',         pts: 5000, color: '#00cccc' }   // Level 8+
+    ];
+    var fruit = { active: false, col: 13, row: 17, timer: 0, type: 0, eaten: false, scoreTimer: 0, scorePts: 0 };
+    var fruitAppearances = 0;
+
+    var GHOST_DOT_LIMITS = [0, 0, 30, 60];
 
     function createGhost(i) {
         var startCols = [13, 12, 14, 15];
         var startRows = [11, 14, 14, 14];
+        var dotLimits = [0, 0, 30, 60];
+        if (level === 2) dotLimits = [0, 0, 15, 30];
+        if (level >= 3) dotLimits = [0, 0, 0, 0];
         return {
             idx: i,
             col: i === 0 ? 13 : startCols[i],
             row: i === 0 ? 11 : startRows[i],
             dir: 3, moveProgress: 0,
-            state: i === 0 ? 'active' : 'pen',
-            penTimer: i * 4 + 2,
+            state: i === 0 ? 'active' : (dotLimits[i] === 0 ? 'leaving' : 'pen'),
+            penDotLimit: dotLimits[i],
             eaten: false, returningHome: false,
             targetCol: 0, targetRow: 0
         };
@@ -232,6 +255,9 @@
     var deathTimer = 0, readyTimer = 0, levelCompleteTimer = 0;
     var frameCount = 0;
     var extraLifeAwarded = false;
+    var eatPause = 0;
+    var lastDotTime = 0;
+    var ghostScorePopup = { active: false, x: 0, y: 0, pts: 0, timer: 0 };
 
     function resetPositions() {
         player.col = 14; player.row = 22;
@@ -246,6 +272,10 @@
         initMaze();
         resetPositions();
         readyTimer = 2.0;
+        fruit = { active: false, col: 13, row: 17, timer: 0, type: 0, eaten: false, scoreTimer: 0, scorePts: 0 };
+        fruitAppearances = 0;
+        eatPause = 0;
+        lastDotTime = 0;
     }
 
     function startGame() {
@@ -253,6 +283,7 @@
         gameOver = false; gameWon = false;
         deathTimer = 0; levelCompleteTimer = 0;
         frameCount = 0; extraLifeAwarded = false;
+        ghostScorePopup = { active: false, x: 0, y: 0, pts: 0, timer: 0 };
         resetLevel();
     }
 
@@ -260,7 +291,7 @@
     //  GHOST AI — target selection
     // =================================================================
     function ghostTarget(g) {
-        if (g.returningHome) return { col: 13, row: 11 };
+        if (g.returningHome) return { col: 13, row: 14 };
         if (ghostMode === 'scatter' && !player.poweredUp) return GHOST_SCATTER[g.idx];
 
         switch (g.idx) {
@@ -288,6 +319,7 @@
         g.targetCol = t.col; g.targetRow = t.row;
         var reverse = (g.dir + 2) % 4;
         var bestDir = -1, bestDist = 1e9;
+        var allowHouse = g.returningHome;
         for (var d = 0; d < 4; d++) {
             if (d === reverse && !g.returningHome) continue;
             var nc = wrapCol(g.col + DX[d]);
@@ -295,7 +327,7 @@
             // Classic no-up restriction at certain intersections
             if (d === 3 && !g.returningHome &&
                 (nr === 11 || nr === 23) && (nc === 12 || nc === 15)) continue;
-            if (isWall(nc, nr)) continue;
+            if (isWall(nc, nr, allowHouse)) continue;
             var dx = nc - t.col, dy = nr - t.row;
             var dist = dx * dx + dy * dy;
             if (dist < bestDist) { bestDist = dist; bestDir = d; }
@@ -303,7 +335,7 @@
         if (bestDir < 0) {
             for (var d2 = 0; d2 < 4; d2++) {
                 var nc2 = wrapCol(g.col + DX[d2]); var nr2 = g.row + DY[d2];
-                if (!isWall(nc2, nr2)) { bestDir = d2; break; }
+                if (!isWall(nc2, nr2, allowHouse)) { bestDir = d2; break; }
             }
         }
         return bestDir >= 0 ? bestDir : g.dir;
@@ -514,7 +546,7 @@
         var lvlMul = 1 + (level - 1) * 0.04;
         var spd = BASE_SPEED * gameSpeed * lvlMul;
 
-        if (player.alive) updatePlayer(spd);
+        if (player.alive) updatePlayer(spd, dt);
         updateGhosts(spd, dt);
 
         // Power timer
@@ -553,6 +585,34 @@
 
         checkCollisions();
 
+        // Check fruit appearance
+        for (var fi = 0; fi < FRUIT_DOTS.length; fi++) {
+            if (dotsEaten >= FRUIT_DOTS[fi] && fruitAppearances <= fi && !fruit.active) {
+                fruit.active = true;
+                fruit.timer = 12 + Math.random() * 3;
+                fruit.type = Math.min(level - 1, FRUIT_TYPES.length - 1);
+                fruitAppearances = fi + 1;
+            }
+        }
+        if (fruit.active) {
+            fruit.timer -= dt;
+            if (fruit.timer <= 0) fruit.active = false;
+        }
+        if (fruit.scoreTimer > 0) fruit.scoreTimer -= dt;
+
+        // Check if player eats fruit
+        if (fruit.active && Math.abs(player.col - fruit.col) < 0.8 && Math.abs(player.row - fruit.row) < 0.8) {
+            var fruitInfo = FRUIT_TYPES[fruit.type];
+            score += fruitInfo.pts;
+            fruit.active = false;
+            fruit.scoreTimer = 2.0;
+            fruit.scorePts = fruitInfo.pts;
+            DinoSounds.reached();
+        }
+
+        // Ghost score popup timer
+        if (ghostScorePopup.timer > 0) ghostScorePopup.timer -= dt;
+
         // Extra life at 10000
         if (!extraLifeAwarded && score >= 10000) {
             extraLifeAwarded = true;
@@ -561,7 +621,10 @@
         }
     }
 
-    function updatePlayer(spd) {
+    function updatePlayer(spd, dt) {
+        // Dot eating pause
+        if (eatPause > 0) { eatPause -= dt; return; }
+
         // Try changing direction
         var nc = wrapCol(player.col + DX[player.nextDir]);
         var nr = player.row + DY[player.nextDir];
@@ -585,10 +648,14 @@
                     if (t === 1) {
                         maze[player.row][player.col] = 3;
                         score += 10; dotsEaten++;
+                        lastDotTime = Date.now();
+                        eatPause = 0.016; // 1 frame pause
                         DinoSounds.press();
                     } else if (t === 2) {
                         maze[player.row][player.col] = 3;
                         score += 50; dotsEaten++;
+                        lastDotTime = Date.now();
+                        eatPause = 0.05; // 3 frame pause
                         activatePower();
                         DinoSounds.reached();
                     }
@@ -601,8 +668,10 @@
     }
 
     function activatePower() {
+        var idx = Math.min(level - 1, FRIGHT_DURATIONS.length - 1);
+        var dur = FRIGHT_DURATIONS[idx];
+        if (dur === 0) { return; } // No fright on this level
         player.poweredUp = true;
-        var dur = Math.max(2, FRIGHT_BASE - (level - 1) * 0.5);
         player.powerTimer = dur;
         frightenedTimer = dur;
         player.ghostsEatenThisPower = 0;
@@ -620,8 +689,7 @@
             var g = ghosts[i];
 
             if (g.state === 'pen') {
-                g.penTimer -= dt * gameSpeed;
-                if (g.penTimer <= 0) {
+                if (dotsEaten >= g.penDotLimit || (lastDotTime > 0 && Date.now() - lastDotTime > 4000)) {
                     g.state = 'leaving';
                     g.col = 13; g.row = 14; g.dir = 3; g.moveProgress = 0;
                 }
@@ -642,8 +710,23 @@
 
             // Active
             var gs = spd;
-            if (player.poweredUp && !g.eaten && !g.returningHome) gs *= 0.5;
-            if (g.returningHome) gs *= 2;
+            if (player.poweredUp && !g.eaten && !g.returningHome) {
+                gs *= 0.5;
+            } else if (g.returningHome) {
+                gs *= 2;
+            } else if (g.idx === 0) {
+                // Cruise Elroy - Blinky speeds up when few dots remain
+                var remaining = totalDots - dotsEaten;
+                var elroy1 = Math.max(20, 10 + level * 5);
+                var elroy2 = Math.max(10, 5 + level * 2);
+                if (remaining <= elroy2) gs *= 1.15;
+                else if (remaining <= elroy1) gs *= 1.07;
+            }
+
+            // Tunnel slowdown
+            if (g.row === 14 && (g.col < 6 || g.col > 21) && !g.returningHome) {
+                gs *= 0.5;
+            }
 
             g.moveProgress += gs;
             if (g.moveProgress >= 1.0) {
@@ -684,7 +767,15 @@
                 if (player.poweredUp && !g.eaten) {
                     g.eaten = true; g.returningHome = true;
                     player.ghostsEatenThisPower++;
-                    score += 200 * Math.pow(2, player.ghostsEatenThisPower - 1);
+                    var ghostPts = 200 * Math.pow(2, player.ghostsEatenThisPower - 1);
+                    score += ghostPts;
+                    ghostScorePopup = {
+                        active: true,
+                        x: MAZE_X + g.col * TILE + TILE / 2,
+                        y: MAZE_Y + g.row * TILE,
+                        pts: ghostPts,
+                        timer: 1.0
+                    };
                     DinoSounds.hit();
                 } else if (!g.eaten) {
                     player.alive = false; deathTimer = 1.5;
@@ -705,9 +796,18 @@
 
         drawMaze();
         drawDots();
+        drawFruit();
         if (vizEnabled && aiMode === 'rules') drawViz();
         if (deathTimer <= 0 && levelCompleteTimer <= 0) {
             drawGhosts();
+            // Ghost score popup
+            if (ghostScorePopup.timer > 0) {
+                ctx.fillStyle = '#00ffff';
+                ctx.font = 'bold 10px monospace';
+                ctx.textAlign = 'center';
+                ctx.fillText(ghostScorePopup.pts.toString(), ghostScorePopup.x, ghostScorePopup.y);
+                ctx.textAlign = 'left';
+            }
             if (player.alive) drawPlayer();
         } else if (deathTimer > 0) {
             drawPlayer();
@@ -742,11 +842,11 @@
         for (var r = 0; r < ROWS; r++) {
             for (var c = 0; c < COLS; c++) {
                 var v = MAZE_TEMPLATE[r][c];
-                if (v !== '0' && v !== '4') continue;
+                if (v !== '0') continue; // Only draw walls, not ghost house
                 var px = MAZE_X + c * TILE;
                 var py = MAZE_Y + r * TILE;
 
-                ctx.fillStyle = v === '4' ? '#1a1a3a' : '#0d2847';
+                ctx.fillStyle = '#0d2847';
                 ctx.fillRect(px, py, TILE, TILE);
 
                 // Draw glowing edges where wall meets path
@@ -756,7 +856,7 @@
                     var nc = c + DX[d], nr = r + DY[d];
                     if (nc < 0 || nc >= COLS || nr < 0 || nr >= ROWS) continue;
                     var nv = MAZE_TEMPLATE[nr][nc];
-                    if (nv === '0' || nv === '4') continue;
+                    if (nv === '0') continue;
                     ctx.beginPath();
                     switch (d) {
                         case 0: ctx.moveTo(px + TILE, py); ctx.lineTo(px + TILE, py + TILE); break;
@@ -768,9 +868,15 @@
                 }
             }
         }
-        // Ghost pen gate (top of house, cols 12-15)
+        // Ghost pen outline
+        var penL = MAZE_X + 10 * TILE, penT = MAZE_Y + 12 * TILE;
+        var penW = 8 * TILE, penH = 4 * TILE;
+        ctx.strokeStyle = '#4488cc';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(penL + 0.5, penT + 0.5, penW - 1, penH - 1);
+        // Ghost pen gate (top of house, cols 13-14)
         ctx.fillStyle = '#ffb8ff';
-        ctx.fillRect(MAZE_X + 12 * TILE, MAZE_Y + 12 * TILE - 1, TILE * 4, 2);
+        ctx.fillRect(MAZE_X + 13 * TILE, MAZE_Y + 12 * TILE - 1, TILE * 2, 3);
     }
 
     // --- Dots ---
@@ -796,6 +902,74 @@
                     ctx.fill();
                 }
             }
+        }
+    }
+
+    // --- Fruit ---
+    function drawCactus(fx, fy, sz, color) {
+        // Cactus shape: main trunk + two arms
+        var hw = sz * 0.22; // half-width of trunk
+        var h = sz * 0.9;
+        // Main trunk
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(fx, fy - h / 2, hw, Math.PI, 0, false); // rounded top
+        ctx.lineTo(fx + hw, fy + h / 2);
+        ctx.lineTo(fx - hw, fy + h / 2);
+        ctx.closePath();
+        ctx.fill();
+        // Left arm
+        ctx.beginPath();
+        ctx.arc(fx - hw - sz * 0.15, fy - sz * 0.05, hw * 0.7, Math.PI, 0, false);
+        ctx.lineTo(fx - hw, fy + sz * 0.15);
+        ctx.lineTo(fx - hw - sz * 0.3, fy + sz * 0.15);
+        ctx.closePath();
+        ctx.fill();
+        // Right arm
+        ctx.beginPath();
+        ctx.arc(fx + hw + sz * 0.15, fy - sz * 0.18, hw * 0.7, Math.PI, 0, false);
+        ctx.lineTo(fx + hw + sz * 0.3, fy + sz * 0.02);
+        ctx.lineTo(fx + hw, fy + sz * 0.02);
+        ctx.closePath();
+        ctx.fill();
+    }
+
+    function drawFruit() {
+        if (fruit.active) {
+            var fx = MAZE_X + fruit.col * TILE + TILE / 2;
+            var fy = MAZE_Y + fruit.row * TILE + TILE / 2;
+            var fruitInfo = FRUIT_TYPES[fruit.type];
+            var pulse = 0.9 + Math.sin(pelletPulse * 3) * 0.1;
+            // Glow
+            ctx.globalAlpha = 0.3 * pulse;
+            ctx.fillStyle = '#44ff44';
+            ctx.beginPath();
+            ctx.arc(fx, fy, TILE * 0.9, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalAlpha = 1;
+            // Draw cactus
+            drawCactus(fx, fy, TILE * 1.4, '#33aa33');
+            // Darker detail lines
+            ctx.fillStyle = '#228822';
+            ctx.fillRect(fx - 0.5, fy - TILE * 0.4, 1, TILE * 0.6);
+            // Points label
+            ctx.fillStyle = '#ffdd00';
+            ctx.font = 'bold 8px monospace';
+            ctx.textAlign = 'center';
+            ctx.fillText(fruitInfo.pts.toString(), fx, fy + TILE + 3);
+            ctx.textAlign = 'left';
+        }
+        // Score popup
+        if (fruit.scoreTimer > 0) {
+            var sx = MAZE_X + fruit.col * TILE + TILE / 2;
+            var sy = MAZE_Y + fruit.row * TILE - 4;
+            ctx.fillStyle = '#fff';
+            ctx.font = 'bold 11px monospace';
+            ctx.textAlign = 'center';
+            ctx.globalAlpha = Math.min(1, fruit.scoreTimer);
+            ctx.fillText(fruit.scorePts.toString(), sx, sy);
+            ctx.globalAlpha = 1;
+            ctx.textAlign = 'left';
         }
     }
 
@@ -842,40 +1016,102 @@
     }
 
     // --- Ghosts ---
+    function drawGhostShape(x, y, r, color) {
+        // Classic Pac-Man ghost: dome top, straight sides, wavy skirt
+        var cy = y - r * 0.2; // dome center
+        var bottom = y + r * 0.75;
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        // Dome (top semicircle)
+        ctx.arc(x, cy, r, Math.PI, 0, false);
+        // Right side straight down to skirt
+        ctx.lineTo(x + r, bottom);
+        // Wavy skirt: 3 bumps across the bottom
+        var t = (frameCount % 20) / 20;
+        var skirtH = r * 0.28;
+        var nTeeth = 3;
+        var tw = (2 * r) / nTeeth;
+        for (var i = 0; i < nTeeth; i++) {
+            var bx = x + r - (i + 0.5) * tw;
+            var by = bottom + skirtH;
+            var ex = x + r - (i + 1) * tw;
+            ctx.lineTo(bx, by);
+            ctx.lineTo(ex, bottom);
+        }
+        // Left side back up
+        ctx.lineTo(x - r, cy);
+        ctx.closePath();
+        ctx.fill();
+    }
+
+    function drawGhostEyes(x, y, r, dir) {
+        var cy = y - r * 0.2;
+        var eyeOffX = r * 0.32;
+        var eyeRx = r * 0.2;
+        var eyeRy = r * 0.26;
+        var pupilR = r * 0.13;
+        var pupilDx = DX[dir] * r * 0.12;
+        var pupilDy = DY[dir] * r * 0.12;
+        for (var side = -1; side <= 1; side += 2) {
+            var ex = x + side * eyeOffX;
+            var ey = cy;
+            // White of eye (slightly oval)
+            ctx.fillStyle = '#fff';
+            ctx.beginPath();
+            ctx.ellipse(ex, ey, eyeRx, eyeRy, 0, 0, Math.PI * 2);
+            ctx.fill();
+            // Blue pupil
+            ctx.fillStyle = '#2233bb';
+            ctx.beginPath();
+            ctx.arc(ex + pupilDx, ey + pupilDy, pupilR, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    }
+
     function drawGhosts() {
         for (var i = 0; i < 4; i++) {
             var g = ghosts[i];
             if (g.state === 'pen') continue;
             var gx = MAZE_X + (g.col + DX[g.dir] * g.moveProgress) * TILE + TILE / 2;
             var gy = MAZE_Y + (g.row + DY[g.dir] * g.moveProgress) * TILE + TILE / 2;
-            var sz = TILE * 1.4;
-            var sp = (frameCount % 16 < 8) ? SPRITES.PTERO1 : SPRITES.PTERO2;
-
-            ctx.save();
-            ctx.translate(gx, gy);
+            var r = TILE * 0.65;
 
             if (g.returningHome) {
-                // Faint eyes-only
-                ctx.globalAlpha = 0.3;
-                ctx.drawImage(spriteImg, sp.x, sp.y, sp.w, sp.h, -sz / 2, -sz / 2, sz, sz);
-                ctx.restore();
+                // Eyes only
+                ctx.globalAlpha = 0.7;
+                drawGhostEyes(gx, gy, r, g.dir);
+                ctx.globalAlpha = 1;
                 continue;
             }
 
-            ctx.drawImage(spriteImg, sp.x, sp.y, sp.w, sp.h, -sz / 2, -sz / 2, sz, sz);
-            ctx.globalCompositeOperation = 'source-atop';
             if (player.poweredUp && !g.eaten) {
+                // Frightened: blue body, or flash white
                 if (frightenedFlashing && Math.floor(frameCount / 5) % 2 === 0) {
-                    ctx.fillStyle = 'rgba(255,255,255,0.6)';
+                    drawGhostShape(gx, gy, r, '#ffffff');
                 } else {
-                    ctx.fillStyle = 'rgba(50,50,200,0.6)';
+                    drawGhostShape(gx, gy, r, '#2222dd');
                 }
+                // Frightened face: small squinty eyes
+                var fcy = gy - r * 0.2;
+                ctx.fillStyle = '#ffcccc';
+                for (var side = -1; side <= 1; side += 2) {
+                    ctx.beginPath();
+                    ctx.arc(gx + side * r * 0.28, fcy, r * 0.1, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+                // Wavy frown
+                ctx.strokeStyle = '#ffcccc';
+                ctx.lineWidth = 1.5;
+                ctx.beginPath();
+                ctx.moveTo(gx - r * 0.4, gy + r * 0.25);
+                for (var m = -2; m <= 2; m++) {
+                    ctx.lineTo(gx + m * r * 0.2, gy + r * 0.25 + ((m % 2 === 0) ? r * 0.1 : -r * 0.1));
+                }
+                ctx.stroke();
             } else {
-                ctx.fillStyle = GHOST_COLORS[i] + '99';
+                drawGhostShape(gx, gy, r, GHOST_COLORS[i]);
+                drawGhostEyes(gx, gy, r, g.dir);
             }
-            ctx.fillRect(-sz / 2, -sz / 2, sz, sz);
-            ctx.globalCompositeOperation = 'source-over';
-            ctx.restore();
         }
     }
 
