@@ -46,7 +46,6 @@
 <script>
 // Globals shared with qbert-ai.js (must be declared before it loads)
 var round, player, enemies, cubeStates, discs;
-var aiTour, aiTourIdx, aiBoardSig;
 var gameSpeed = 1.0;  // global speed scale: 1.0 = normal arcade speed ("1x")
 var freezeTimer = 0;
 var enemiesEnabled = true;  // toggle via UI button
@@ -346,21 +345,14 @@ var score, hiScore, lives, hops;
 var bestHops = {};  // best (minimum) hops per level-round + enemy mode, persisted
 var nextExtraLife;
 function bestHopsKey() { return arcadeLevel() + '-' + ((round - 1) % 4 + 1) + (enemiesEnabled ? '' : '-noE'); }
-// round, player, enemies, cubeStates, discs, aiTour, aiTourIdx, aiBoardSig
-// are globals (declared before IIFE) shared with qbert-ai.js
+// round, player, enemies, cubeStates, discs are globals shared with qbert-ai.js
 var frameCount;
 var roundMsg;          // { text, timer }
 var swearBubble;       // { x, y, timer }
-var aiDetailPath = [];  // BFS steps to current tour target (valid Q*bert moves)
-var aiTourDots   = [];  // remaining tour centres — drawn as dots only (no lines)
-aiTour       = [];
-aiTourIdx    = 0;
-aiBoardSig   = '';
 // aiMoveScores and aiMode are declared in qbert-ai.js
 var aiBestDir    = null;
 var aiDangerTiles = {};    // tiles in danger set — drawn as red overlays
 var aiCoilyPred  = [];     // predicted Coily positions [{row,col}, ...] for 1-3 steps
-var aiTourPath   = [];     // ordered tour path [{row,col}, ...] — connected line
 var inputQueue  = [];
 var heldDir     = null;  // direction currently held by player
 var discRide    = null;  // { side, t, sx, sy, tx, ty } — player riding disc to top
@@ -551,12 +543,7 @@ function initRound() {
     roundMsg   = { text: 'LV ' + arcadeLevel() + ' ROUND ' + ((round - 1) % 4 + 1), timer: 90 };
     swearBubble = null;
     discRide    = null;
-    aiDetailPath = []; aiDangerTiles = {}; aiCoilyPred = []; aiTourPath = [];
-    aiTourDots   = [];
-    aiTour       = [];
-    aiTourInit();
-    aiTourIdx    = 0;
-    aiBoardSig   = '';
+    aiDangerTiles = {}; aiCoilyPred = [];
 
     // Add visual properties to player (sim doesn't use these)
     var sp = cubeXY(0, 0);
@@ -648,43 +635,6 @@ function computeAIMove() {
             for (var step = 1; step <= 3; step++) {
                 var fp = predictCoilyPos({ row: pos.row, col: pos.col }, player.row, player.col, step);
                 aiCoilyPred.push({ row: fp.row, col: fp.col, step: step });
-            }
-        }
-    }
-
-    // Build viz: dots on all unfinished cubes, path from player to tour target
-    aiTourDots = [];
-    aiDetailPath = [];
-    aiTourPath = [];
-    for (var vi = 0; vi < cubeStates.length; vi++)
-        if (cubeStates[vi].state < tgt) aiTourDots.push({ row: cubeStates[vi].row, col: cubeStates[vi].col });
-
-    if (bestDir && bestDir !== 'STAY') {
-        var dd = DIRS[bestDir];
-        var nr = player.row + dd.dr, nc = player.col + dd.dc;
-        if (isValidPos(nr, nc)) {
-            // Use dynamicTourMove's BFS to find the target the AI is heading toward
-            var gs2 = simCloneGameState();
-            gs2.player.row = nr; gs2.player.col = nc;
-            // Find the nearest unfinished cube via BFS from landing tile
-            var vizTarget = null, vizBestDist = Infinity;
-            for (var vti = 0; vti < aiTourDots.length; vti++) {
-                var vr = bfsTo(nr, nc, aiTourDots[vti].row, aiTourDots[vti].col);
-                if (vr && vr.dist < vizBestDist) { vizBestDist = vr.dist; vizTarget = vti; }
-            }
-            // Build path: player → landing → BFS to target
-            aiTourPath.push({ row: player.row, col: player.col });
-            aiTourPath.push({ row: nr, col: nc });
-            if (vizTarget !== null) {
-                var vres = bfsTo(nr, nc, aiTourDots[vizTarget].row, aiTourDots[vizTarget].col);
-                if (vres) {
-                    var vpr = nr, vpc = nc;
-                    for (var vpi = 0; vpi < vres.path.length; vpi++) {
-                        var vpd = DIRS[vres.path[vpi]];
-                        vpr += vpd.dr; vpc += vpd.dc;
-                        aiTourPath.push({ row: vpr, col: vpc });
-                    }
-                }
             }
         }
     }
@@ -1124,26 +1074,6 @@ function drawVizPath() {
             var col = layerColors[Math.min(layer, layerColors.length - 1)];
             ctx.fillStyle = col;
             ctx.fillText(deg.toString(), 0, 0);
-            ctx.restore();
-        }
-    }
-
-    // ── Tour path: numbered dots on remaining cubes (no lines) ──
-    if (aiTourPath.length >= 2) {
-        for (var j = 1; j < aiTourPath.length; j++) {
-            var tp = cubeXY(aiTourPath[j].row, aiTourPath[j].col);
-            // Warped dot on isometric cube top
-            ctx.beginPath();
-            ctx.ellipse(tp.cx, tp.cy, 5, 2.5, 0, 0, Math.PI * 2);
-            ctx.fillStyle = 'rgba(255,200,0,0.5)'; ctx.fill();
-            // Warped number text
-            ctx.save();
-            ctx.translate(tp.cx, tp.cy + 1);
-            ctx.scale(1, 0.5);
-            ctx.font = '7px monospace';
-            ctx.textAlign = 'center';
-            ctx.fillStyle = 'rgba(0,0,0,0.7)';
-            ctx.fillText(j.toString(), 0, 0);
             ctx.restore();
         }
     }

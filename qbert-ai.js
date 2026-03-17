@@ -1,16 +1,13 @@
-// qbert-ai.js — Q*bert AI logic  (v8 — sealed corner triangles)
-var AI_VERSION = 'v11-peel-routing';
+// qbert-ai.js — Q*bert AI logic (peel routing)
+var AI_VERSION = 'v12-peel-clean';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
 //
-// Unified AI: always tour-plan, validate safety via simulation.
-// No mode switching — Coily just means more safety samples.
-//
-// The AI uses the SAME simulation code as the game (simStep from qbert.js).
-// No separate collision model — what the AI predicts IS what the game does.
+// Algorithm: graph-peeling determines WHAT to complete next (outside-in),
+// BFS determines HOW to get there, MC simulation validates IF it's safe.
 
-// ─── Tour planning ───────────────────────────────────────────────────────────
+// ─── Stomps helper ──────────────────────────────────────────────────────────
 
 // How many stomps does a cube need to reach target state?
 function stompsNeeded(cubeState, lv) {
@@ -20,143 +17,6 @@ function stompsNeeded(cubeState, lv) {
     if (lv === 3) return cubeState === 0 ? 1 : 0;
     if (lv === 4) return cubeState === 0 ? 2 : (cubeState === 1 ? 1 : 0);
     return cubeState === 0 ? 2 : (cubeState === 1 ? 1 : 0);
-}
-
-
-// Dijkstra from srcIdx with penalty for stepping on completed cubes.
-// On toggle levels, completed cubes with no unfinished neighbors ("interior")
-// get a much higher penalty than frontier cubes.
-// discSources: optional array of idx that have a 1-hop disc edge to apex (idx 0).
-// Returns {dist, prev, usedDisc}.
-function dijkstraFrom(srcIdx, stomps, penalty, discSources) {
-    var dist = new Float64Array(POS_COUNT);
-    var prev = new Int8Array(POS_COUNT);
-    var visited = new Uint8Array(POS_COUNT);
-    var usedDisc = new Int8Array(POS_COUNT);
-    for (var i = 0; i < POS_COUNT; i++) { dist[i] = 999; prev[i] = -1; usedDisc[i] = -1; }
-    dist[srcIdx] = 0; prev[srcIdx] = srcIdx;
-    for (var iter = 0; iter < POS_COUNT; iter++) {
-        var u = -1, uDist = 999;
-        for (var i = 0; i < POS_COUNT; i++) {
-            if (!visited[i] && dist[i] < uDist) { uDist = dist[i]; u = i; }
-        }
-        if (u < 0) break;
-        visited[u] = 1;
-        var adj = posAdj[u];
-        for (var a = 0; a < adj.length; a++) {
-            var v = adj[a];
-            if (visited[v]) continue;
-            var cost = 1;
-            if (stomps[v] === 0 && penalty > 0) {
-                var onFrontier = false;
-                var adjV = posAdj[v];
-                for (var na = 0; na < adjV.length; na++) {
-                    if (stomps[adjV[na]] > 0) { onFrontier = true; break; }
-                }
-                cost += onFrontier ? penalty : penalty * 5;
-            }
-            var nd = dist[u] + cost;
-            if (nd < dist[v]) { dist[v] = nd; prev[v] = u; usedDisc[v] = usedDisc[u]; }
-        }
-        // Disc edge: from disc-adjacent cube to apex (idx 0) in 1 hop
-        if (discSources) {
-            for (var d = 0; d < discSources.length; d++) {
-                if (discSources[d] >= 0 && u === discSources[d] && !visited[0]) {
-                    var cost = 1 + (stomps[0] === 0 ? penalty : 0);
-                    var nd = dist[u] + cost;
-                    if (nd < dist[0]) {
-                        dist[0] = nd; prev[0] = u;
-                        usedDisc[0] = d;
-                    }
-                }
-            }
-        }
-    }
-    return {dist: dist, prev: prev, usedDisc: usedDisc};
-}
-
-// Greedy nearest-neighbor tour cost via Dijkstra.
-// On toggle levels (lv3+), penalizes routing through completed cubes and
-// models cascade reverts. On non-toggle levels, degenerates to BFS.
-function greedyTourCost(startIdx, cubes, tgt, lv, discs) {
-    var stomps = new Int8Array(POS_COUNT);
-    for (var i = 0; i < cubes.length; i++) {
-        var idx = posToIdx[cubes[i].row * ROWS + cubes[i].col];
-        stomps[idx] = stompsNeeded(cubes[i].state, lv);
-    }
-
-    var discSources = [];
-    if (discs) {
-        for (var di = 0; di < discs.length; di++) {
-            var disc = discs[di];
-            if (!disc.active) continue;
-            var dCol = disc.side === 0 ? 0 : disc.row;
-            discSources.push(posToIdx[disc.row * ROWS + dCol]);
-        }
-    }
-
-    var isToggle = lv >= 3;
-    var REVERT_PENALTY = isToggle ? 4 : 0;
-    var curIdx = startIdx;
-    var totalHops = 0;
-
-    for (var iter = 0; iter < 200; iter++) {
-        var dijk = dijkstraFrom(curIdx, stomps, REVERT_PENALTY, discSources);
-
-        var bestIdx = -1, bestDist = 999;
-        for (var i = 0; i < POS_COUNT; i++) {
-            if (stomps[i] > 0 && i !== curIdx) {
-                var d = dijk.dist[i];
-                // Peel-order bias: on toggle levels, prefer completing outer cubes
-                // first (bottom rows + edge cubes). This is the graph-peeling
-                // heuristic — complete leaves first, then work inward.
-                // Row bonus: 0.3/row, max 1.8 for bottom row.
-                // Edge bonus: edge cubes get slight extra priority.
-                if (isToggle) {
-                    var pos = idxToPos[i];
-                    var rowBonus = pos[0] * 0.3;
-                    var edgeDist = Math.min(pos[1], pos[0] - pos[1]);
-                    d -= rowBonus - edgeDist * 0.1;
-                }
-                if (d < bestDist || (d === bestDist && (bestIdx === -1 || i < bestIdx))) {
-                    bestDist = d; bestIdx = i;
-                }
-            }
-        }
-        if (bestIdx === -1) {
-            if (stomps[curIdx] > 0) totalHops += stomps[curIdx] * 2;
-            break;
-        }
-
-        // Consume disc if path used one
-        var discIdx = dijk.usedDisc[bestIdx];
-        if (discIdx >= 0 && discIdx < discSources.length) {
-            discSources[discIdx] = -1;
-        }
-
-        // Walk the Dijkstra path, count real hops
-        var path = [], pc = bestIdx;
-        while (pc !== curIdx) { path.push(pc); pc = dijk.prev[pc]; }
-        totalHops += path.length;
-
-        // Apply stomps; on toggle levels, reverted cubes become new targets
-        for (var p = path.length - 1; p >= 0; p--) {
-            var pos = path[p];
-            if (stomps[pos] > 0) {
-                stomps[pos]--;
-            } else if (isToggle) {
-                stomps[pos] = lv >= 5 ? 2 : 1;
-            }
-        }
-        curIdx = bestIdx;
-    }
-
-    return totalHops;
-}
-
-// Tour cost from a simulation state
-function simTourCost(gs) {
-    return greedyTourCost(posToIdx[gs.player.row * ROWS + gs.player.col], gs.cubes, gs.tgt, gs.lv, gs.discs);
 }
 
 // ─── Danger zone assessment ──────────────────────────────────────────────────
@@ -217,7 +77,6 @@ function buildDangerSet() {
         if (e.type === 'egg' || e.type === 'redball') {
             if (isValidPos(er + 1, ec)) danger[(er + 1) + ',' + ec] = true;
             if (isValidPos(er + 1, ec + 1)) danger[(er + 1) + ',' + (ec + 1)] = true;
-            // Egg about to hatch into Coily — mark all adjacent tiles dangerous
             if (e.type === 'egg' && ((e.hops || 0) >= 4 || e.willHatch)) {
                 for (var ek = 0; ek < DIR_KEYS.length; ek++) {
                     var edk = DIRS[DIR_KEYS[ek]];
@@ -239,21 +98,9 @@ function buildDangerSet() {
 }
 
 // ─── Exhaustive nearby-enemy safety check ───────────────────────────────────
-// For enemies within a few tiles of the player's destination, enumerate ALL
-// possible movement paths instead of relying on MC sampling.  This catches
-// collisions that 20 random seeds can miss (e.g. ugg/wrongway approaching
-// from the side with a 12% collision probability → 8% MC miss rate).
-//
-// Approach: for each nearby non-deterministic enemy, recursively try both
-// direction choices at every hop and check frame-level collision with the
-// player.  With at most 2 hops per enemy per player jump, this is 2^2 = 4
-// paths per enemy — trivially fast.
 
-var EXHAUSTIVE_RADIUS = 5; // Manhattan-distance threshold for "nearby"
+var EXHAUSTIVE_RADIUS = 5;
 
-// Precompute the player's collision tile at each frame during a jump.
-// Returns an array where index = frame number, value = {row,col} or null (immune).
-// Returns null for disc moves (player goes off-grid).
 function computePlayerTiles(pRow, pCol, dir, sm) {
     if (dir === 'STAY') {
         var maxWait = Math.ceil(1.0 / (PLAYER_JUMP_DUR * sm)) + 10;
@@ -263,7 +110,7 @@ function computePlayerTiles(pRow, pCol, dir, sm) {
     }
     var d = DIRS[dir];
     var destR = pRow + d.dr, destC = pCol + d.dc;
-    if (!isValidPos(destR, destC)) return null; // disc move — skip
+    if (!isValidPos(destR, destC)) return null;
     var jumpDur = PLAYER_JUMP_DUR * sm;
     var tiles = [];
     var jumpT = 0;
@@ -280,7 +127,6 @@ function computePlayerTiles(pRow, pCol, dir, sm) {
             else if (jumpT >= 0.67) tiles.push({ row: destR, col: destC });
             else tiles.push(null);
         } else {
-            // One idle frame after landing (matches simStep post-landing check)
             tiles.push({ row: destR, col: destC });
             break;
         }
@@ -288,7 +134,6 @@ function computePlayerTiles(pRow, pCol, dir, sm) {
     return tiles;
 }
 
-// Lightweight clone of a single enemy for the exhaustive search tree
 function cloneEnemyLight(e) {
     return {
         type: e.type, row: e.row, col: e.col,
@@ -300,9 +145,6 @@ function cloneEnemyLight(e) {
     };
 }
 
-// All possible move destinations for an enemy at a hop decision point.
-// Coily is deterministic (chases player), so returns exactly 1 choice.
-// Random enemies (ugg, wrongway, redball, egg) return 2 choices.
 function getEnemyMoveChoices(e, playerDestR, playerDestC) {
     if (e.type === 'coily') {
         var bestDist = Infinity, bestR = e.row, bestC = e.col;
@@ -327,49 +169,40 @@ function getEnemyMoveChoices(e, playerDestR, playerDestC) {
     return [];
 }
 
-// Get the collision tile for an enemy (mirrors collisionTile in qbert.js)
 function enemyCollisionTile(e) {
     if (!e.jumping) return { row: e.row, col: e.col };
     if (e.jumpT < 0.33) return { row: e.row, col: e.col };
     if (e.jumpT >= 0.67) return { row: e.destRow, col: e.destCol };
-    return null; // immune at apex
+    return null;
 }
 
-// Recursive search: can this single enemy collide with the player on ANY
-// possible path?  Branches at each move-decision point (2 choices per hop).
-// Returns true if any branch produces a collision.
 function enemyPathCollides(e, playerTiles, frame, maxFrames, pDestR, pDestC, sm) {
     if (frame >= maxFrames || e.falling) return false;
 
-    // ── Advance enemy by one frame ──
     if (e.jumping) {
         e.jumpT += e.jumpDur;
         if (e.jumpT >= 1) {
             e.jumping = false;
             e.row = e.destRow; e.col = e.destCol;
-            if (!isValidPos(e.row, e.col)) return false; // fell off
+            if (!isValidPos(e.row, e.col)) return false;
             if (e.type === 'egg' && ((e.hops || 0) >= 6 || e.row >= ROWS - 1)) {
                 e.type = 'coily';
                 e.moveInterval = enemyMoveInterval('coily', sm);
             }
         }
-        // Collision check
         var et = enemyCollisionTile(e);
         var pt = playerTiles[frame];
         if (et && pt && et.row === pt.row && et.col === pt.col) return true;
         return enemyPathCollides(e, playerTiles, frame + 1, maxFrames, pDestR, pDestC, sm);
     }
 
-    // ── Idle: tick move timer ──
     e.moveTimer++;
     if (e.moveTimer < e.moveInterval) {
-        // Not moving yet — check collision at current position
         var pt2 = playerTiles[frame];
         if (pt2 && pt2.row === e.row && pt2.col === e.col) return true;
         return enemyPathCollides(e, playerTiles, frame + 1, maxFrames, pDestR, pDestC, sm);
     }
 
-    // ── Move decision — BRANCH POINT ──
     e.moveTimer = 0;
     var choices = getEnemyMoveChoices(e, pDestR, pDestC);
     for (var ci = 0; ci < choices.length; ci++) {
@@ -380,7 +213,6 @@ function enemyPathCollides(e, playerTiles, frame, maxFrames, pDestR, pDestC, sm)
         ec.destCol = choices[ci].nc;
         ec.hops++;
         if (!isValidPos(choices[ci].nr, choices[ci].nc)) ec.falling = true;
-        // Check collision right after starting jump (jumpT=0 < 0.33 → source tile)
         var pt3 = playerTiles[frame];
         if (pt3 && pt3.row === ec.row && pt3.col === ec.col) return true;
         if (enemyPathCollides(ec, playerTiles, frame + 1, maxFrames, pDestR, pDestC, sm)) {
@@ -390,10 +222,9 @@ function enemyPathCollides(e, playerTiles, frame, maxFrames, pDestR, pDestC, sm)
     return false;
 }
 
-// Main entry: returns true if direction is safe from ALL possible nearby-enemy paths.
 function isExhaustiveSafe(gs, dir) {
     var playerTiles = computePlayerTiles(gs.player.row, gs.player.col, dir, gs.sm);
-    if (!playerTiles) return true; // disc move — no on-grid collision possible
+    if (!playerTiles) return true;
 
     var d = DIRS[dir];
     var destR = dir === 'STAY' ? gs.player.row : gs.player.row + d.dr;
@@ -404,7 +235,6 @@ function isExhaustiveSafe(gs, dir) {
     for (var i = 0; i < gs.enemies.length; i++) {
         var e = gs.enemies[i];
 
-        // Check spawn-timers that will expire during this hop — enemy spawns mid-jump
         if (e.type === 'spawn-timer') {
             if (e.timer <= maxFrames) {
                 var ft = e.forcedType;
@@ -414,7 +244,6 @@ function isExhaustiveSafe(gs, dir) {
                         if (gs.enemies[ci].type === 'coily' || gs.enemies[ci].type === 'egg') { hasCoilyOrEgg = true; break; }
                     ft = hasCoilyOrEgg ? 'redball' : 'egg';
                 }
-                // Redballs and eggs spawn at row 1, col 0 or 1 — check both
                 if (ft === 'redball' || ft === 'egg') {
                     for (var sc = 0; sc < 2; sc++) {
                         for (var f = e.timer; f < maxFrames; f++) {
@@ -427,11 +256,9 @@ function isExhaustiveSafe(gs, dir) {
             continue;
         }
 
-        // Skip non-threatening types and Coily (deterministic — MC handles perfectly)
         if (e.type === 'slick' || e.type === 'greenball') continue;
         if (e.type === 'coily') continue;
 
-        // Effective position for distance check
         var er = e.jumping && e.jumpT >= 0.67 ? (e.destRow != null ? e.destRow : e.row) : e.row;
         var ec2 = e.jumping && e.jumpT >= 0.67 ? (e.destCol != null ? e.destCol : e.col) : e.col;
         var distDest = Math.abs(er - destR) + Math.abs(ec2 - destC);
@@ -446,46 +273,6 @@ function isExhaustiveSafe(gs, dir) {
     return true;
 }
 
-// ─── Tour greedy planner ─────────────────────────────────────────────────────
-var aiTour = [], aiTourIdx = 0, aiBoardSig = '';
-var aiDetailPath = [], aiTourDots = [];
-
-function aiTourInit() {
-    aiLastRemaining = 99; aiNoProgressCount = 0; aiStayCount = 0; aiSamePosCount = 0; aiPosHistory = [];
-}
-
-// ─── Sealed set: completed dead-end cubes ───────────────────────────────────
-// Only seal completed cubes that are dead ends (degree ≤ 1). These never need
-// to be revisited. Interior completed cubes stay open for routing — the AI
-// may need to traverse them to reach uncompleted cubes elsewhere.
-function computeSealedSet(gs) {
-    var sealed = new Uint8Array(POS_COUNT);
-    if (gs.lv < 3) return sealed;
-    for (var i = 0; i < gs.cubes.length; i++) {
-        var idx = posToIdx[gs.cubes[i].row * ROWS + gs.cubes[i].col];
-        if (stompsNeeded(gs.cubes[i].state, gs.lv) !== 0) continue;
-        if (posAdj[idx].length <= 1) sealed[idx] = 1;
-    }
-    return sealed;
-}
-
-// Is position (r,c) sealed?
-function isSealed(r, c, sealed) {
-    var idx = posToIdx[r * ROWS + c];
-    return idx >= 0 && sealed[idx] === 1;
-}
-
-// Would moving in `dir` enter a sealed cube from outside?
-// If player is already on a sealed cube, allow movement (escape).
-function entersSealed(gs, dir, sealed) {
-    if (dir === 'STAY') return false;
-    if (isSealed(gs.player.row, gs.player.col, sealed)) return false;
-    var d = DIRS[dir];
-    var nr = gs.player.row + d.dr, nc = gs.player.col + d.dc;
-    if (!isValidPos(nr, nc)) return false;
-    return isSealed(nr, nc, sealed);
-}
-
 // ─── Dynamic peel routing (toggle levels) ───────────────────────────────────
 // Maintains a "remaining" set across frames. Each frame:
 //   1. Compute peel layers on remaining subgraph
@@ -493,25 +280,19 @@ function entersSealed(gs, dir, sealed) {
 //   3. Target = closest uncompleted cube in lowest peel layer (BFS on remaining)
 //   4. Route toward target
 
-// Persistent remaining set — reset on round start / death
-var peelRemaining = null;  // Uint8Array, 1 = in remaining set
-var peelRound = -1;        // track which round we computed for
+var peelRemaining = null;
+var peelRound = -1;
 
-// Reset remaining set (all cubes included)
 function peelReset() {
     peelRemaining = new Uint8Array(POS_COUNT);
     for (var i = 0; i < POS_COUNT; i++) peelRemaining[i] = 1;
 }
 
-// Compute peel layers on the remaining subgraph.
-// Returns {layer: Int8Array, degree: Int8Array} where layer[i] and degree[i]
-// are only meaningful for cubes in the remaining set.
 function computePeelLayers(remaining) {
     var layer = new Int8Array(POS_COUNT);
     var degree = new Int8Array(POS_COUNT);
-    var initDegree = new Int8Array(POS_COUNT);  // preserved for viz
+    var initDegree = new Int8Array(POS_COUNT);
     var removed = new Uint8Array(POS_COUNT);
-    // Initialize degrees from remaining subgraph only
     for (var i = 0; i < POS_COUNT; i++) {
         if (!remaining[i]) { removed[i] = 1; continue; }
         var deg = 0;
@@ -550,21 +331,17 @@ function computePeelLayers(remaining) {
     return { layer: layer, degree: initDegree };
 }
 
-// Exported for viz: current peel layers and dynamic degrees
+// Exported for viz
 var PEEL_LAYER = null;
 var PEEL_DEGREE = null;
 
-// Compute target distance field for direction scoring.
-// Returns Float64Array of distances (999 = unreachable).
 function peelTargetDist(gs) {
-    // Ensure remaining set exists and matches current round
     var roundId = (gs.round || 0) * 1000 + (gs.lv || 0);
     if (!peelRemaining || peelRound !== roundId) {
         peelReset();
         peelRound = roundId;
     }
 
-    // Build stomps array
     var stomps = new Int8Array(POS_COUNT);
     for (var i = 0; i < gs.cubes.length; i++) {
         var idx = posToIdx[gs.cubes[i].row * ROWS + gs.cubes[i].col];
@@ -580,14 +357,12 @@ function peelTargetDist(gs) {
     var peel;
     for (var iter = 0; iter < POS_COUNT; iter++) {
         peel = computePeelLayers(peelRemaining);
-        // Find lowest layer
         var minLayer = 99;
         for (var i = 0; i < POS_COUNT; i++) {
             if (!peelRemaining[i]) continue;
             if (peel.layer[i] < minLayer) minLayer = peel.layer[i];
         }
         if (minLayer >= 99) break;
-        // Remove completed cubes from lowest layer
         var removedAny = false;
         for (var i = 0; i < POS_COUNT; i++) {
             if (!peelRemaining[i]) continue;
@@ -597,7 +372,7 @@ function peelTargetDist(gs) {
                 removedAny = true;
             }
         }
-        if (!removedAny) break;  // lowest layer has uncompleted cubes — done
+        if (!removedAny) break;
     }
 
     // Export for viz
@@ -630,7 +405,7 @@ function peelTargetDist(gs) {
         for (var a = 0; a < adj.length; a++) {
             var v = adj[a];
             if (dist[v] < 999) continue;
-            if (!peelRemaining[v]) continue;  // BFS on remaining set only
+            if (!peelRemaining[v]) continue;
             dist[v] = dist[u] + 1;
             queue.push(v);
         }
@@ -679,106 +454,7 @@ function simCanMove(gs, dirKey) {
     return false;
 }
 
-// ─── Disc lure evaluation ────────────────────────────────────────────────────
-
-function coilyLured(coily, disc) {
-    var exitRow = disc.row;
-    var lureR = exitRow - 1;
-    var lureC = disc.side === 0 ? 0 : exitRow;
-    var bestDir = null, bestDist = Infinity;
-    for (var k = 0; k < DIR_KEYS.length; k++) {
-        var dk = DIRS[DIR_KEYS[k]];
-        var nr = coily.row + dk.dr, nc = coily.col + dk.dc;
-        var dist = Math.abs(exitRow - 1 - nr) + Math.abs(lureC - nc);
-        if (dist < bestDist) { bestDist = dist; bestDir = { nr: nr, nc: nc }; }
-    }
-    return bestDir && !isValidPos(bestDir.nr, bestDir.nc);
-}
-
-function isSafeMove(dirKey) {
-    var d = DIRS[dirKey];
-    var nr = player.row + d.dr, nc = player.col + d.dc;
-    if (!isValidPos(nr, nc)) return true;
-    for (var i = 0; i < enemies.length; i++) {
-        var e = enemies[i];
-        if (e.type === 'spawn-timer' || e.type === 'slick' || e.type === 'greenball') continue;
-        var pos = enemyEffectivePos(e);
-        if (e.type === 'coily') {
-            // Coily's current position is dangerous
-            if (pos.row === nr && pos.col === nc) return false;
-            // Coily mid-jump landing tile is dangerous
-            if (e.destRow != null && e.destRow === nr && e.destCol === nc) return false;
-            // Check where Coily goes next (chases player's current pos)
-            var cp = predictCoilyNext(pos.row, pos.col, player.row, player.col);
-            if (cp.row === nr && cp.col === nc) return false;
-        } else {
-            if (pos.row === nr && pos.col === nc) return false;
-        }
-    }
-    return true;
-}
-
-function evalDiscLure() {
-    var coily = null;
-    for (var i = 0; i < enemies.length; i++) {
-        if (enemies[i].type === 'coily') {
-            var pos = enemyEffectivePos(enemies[i]);
-            coily = { row: pos.row, col: pos.col };
-            break;
-        }
-    }
-    if (!coily) return null;
-
-    var lv = arcadeLevel();
-
-    for (var di = 0; di < discs.length; di++) {
-        var disc = discs[di];
-        if (!disc.active) continue;
-        var discRow = disc.row;
-        var discCol = disc.side === 0 ? 0 : discRow;
-        var discDir = disc.side === 0 ? 'UL' : 'UR';
-
-        if (player.row === discRow && player.col === discCol) {
-            if (coilyLured(coily, disc)) return discDir;
-        }
-
-        var pathToDisc = bfsTo(player.row, player.col, discRow, discCol);
-        // Path toward disc for lure — but not too far, safety degrades over distance
-        // Level 5+: travel farther to lure Coily — peaceful windows are critical
-        var maxLureDist = lv >= 5 ? 6 : (lv >= 3 ? 4 : 3);
-        if (pathToDisc && pathToDisc.dist <= maxLureDist) {
-            // Verify the whole path is safe from Coily interception
-            var simCoilyR = coily.row, simCoilyC = coily.col;
-            var pathSafe = true;
-            var pr = player.row, pc = player.col;
-            for (var s = 0; s < pathToDisc.dist; s++) {
-                var dk = DIRS[pathToDisc.path[s]];
-                pr += dk.dr; pc += dk.dc;
-                // Coily chases player toward disc
-                var cp = predictCoilyNext(simCoilyR, simCoilyC, pr, pc);
-                // Check if Coily lands on or passes through our position
-                if ((cp.row === pr && cp.col === pc) ||
-                    (simCoilyR === pr && simCoilyC === pc)) {
-                    pathSafe = false; break;
-                }
-                simCoilyR = cp.row; simCoilyC = cp.col;
-            }
-            if (pathSafe && coilyLured({ row: simCoilyR, col: simCoilyC }, disc)) {
-                if (pathToDisc.path.length > 0 && isSafeMove(pathToDisc.path[0])) {
-                    return pathToDisc.path[0];
-                }
-            }
-        }
-    }
-    return null;
-}
-
-// ─── Scoring helpers (removed — safety is now handled by 2-hop MC simulation) ─
-
-// ─── Peel-routing AI: move toward highest-priority uncompleted cube ──────────
-// Philosophy: graph-peeling determines WHAT to complete next (outside-in),
-// BFS determines HOW to get there, MC simulation validates IF it's safe.
-// No tour-cost estimation — just peel target + shortest path + safety.
+// ─── Direction selection ─────────────────────────────────────────────────────
 
 function unifiedPick(gs, coilyActive) {
     var savedRng = simRng;
@@ -789,26 +465,10 @@ function unifiedPick(gs, coilyActive) {
     var hasEnemies = gs.enemies.length > 0;
     var SAMPLES = coilyActive ? 20 : (hasEnemies ? 12 : 4);
 
-    var seal = computeSealedSet(gs);
-
-    // Disc lure — use when Coily is active (skip on toggle levels: disc ride reverts apex)
-    if (coilyActive && gs.lv < 3) {
-        var lureDir = evalDiscLure();
-        if (lureDir && !entersSealed(gs, lureDir, seal)) {
-            var lureSafe = 0;
-            for (var ls = 0; ls < SAMPLES; ls++) {
-                simSeed(ls);
-                var lc = simDeepClone(gs);
-                if (simStep(lc, lureDir)) lureSafe++;
-            }
-            if (lureSafe === SAMPLES && isExhaustiveSafe(gs, lureDir)) { restoreRng(); return lureDir; }
-        }
-    }
-
     // ── Safety check for each direction (MC + exhaustive + hop-2/3 chain) ──
-    var safe1 = {};      // dir -> true if 100% survival on hop 1
-    var safe2 = {};      // dir -> true if at least one hop 2 option also survives
-    var hop1Surv = {};   // dir -> survival rate (for fallback)
+    var safe1 = {};
+    var safe2 = {};
+    var hop1Surv = {};
 
     for (var k = 0; k < DIR_KEYS_WITH_STAY.length; k++) {
         var dir = DIR_KEYS_WITH_STAY[k];
@@ -821,7 +481,7 @@ function unifiedPick(gs, coilyActive) {
             if (!isValidPos(dnr, dnc)) continue;
         }
 
-        // Hop 1: MC simulation — just check survival, no tour cost
+        // Hop 1: MC simulation
         var survived = 0;
         var hop1States = [];
         for (var s = 0; s < SAMPLES; s++) {
@@ -920,40 +580,16 @@ function unifiedPick(gs, coilyActive) {
         }
     }
 
-    aiLastHop1Surv = hop1Surv;
-
-    // Slick pursuit — catch them if adjacent and safe
-    if (gs.lv >= 3) {
-        for (var si2 = 0; si2 < gs.enemies.length; si2++) {
-            var se = gs.enemies[si2];
-            if (se.type !== 'slick') continue;
-            var spos = enemyEffectivePos(se);
-            for (var sk = 0; sk < DIR_KEYS.length; sk++) {
-                var sdk = DIRS[DIR_KEYS[sk]];
-                var snr = gs.player.row + sdk.dr, snc = gs.player.col + sdk.dc;
-                if (snr === spos.row && snc === spos.col) {
-                    if (safe1[DIR_KEYS[sk]] && safe2[DIR_KEYS[sk]] && seal[posToIdx[(gs.player.row + sdk.dr) * ROWS + (gs.player.col + sdk.dc)]] !== 1) {
-                        restoreRng(); return DIR_KEYS[sk];
-                    }
-                }
-            }
-        }
-    }
-
-    // ── Peel-based direction selection (toggle levels: dynamic peel) ──
+    // ── Peel-based direction selection ──
     var targetDist = (gs.lv >= 3) ? peelTargetDist(gs) : peelTargetDistSimple(gs);
 
     var bestDir = null, bestScore = Infinity;
-    var _dbgScores = {};
     for (var fk = 0; fk < DIR_KEYS.length; fk++) {
         var fd = DIR_KEYS[fk];
         var fdd = DIRS[fd];
         var lr = gs.player.row + fdd.dr, lc = gs.player.col + fdd.dc;
-        if (!isValidPos(lr, lc)) { _dbgScores[fd] = 'invalid'; continue; }
+        if (!isValidPos(lr, lc)) continue;
         var lidx = posToIdx[lr * ROWS + lc];
-        var _s1 = safe1[fd] ? 'safe' : 'UNSAFE';
-        var _s2 = safe2[fd] ? 'safe2' : 'UNSAFE2';
-        _dbgScores[fd] = 'dist=' + targetDist[lidx] + ' ' + _s1 + ' ' + _s2;
         if (!safe1[fd] || !safe2[fd]) continue;
         if (lidx < 0) continue;
 
@@ -962,7 +598,6 @@ function unifiedPick(gs, coilyActive) {
 
         if (score < bestScore) { bestScore = score; bestDir = fd; }
     }
-    console.log('PEEL pos=(' + gs.player.row + ',' + gs.player.col + ') pick=' + bestDir + ' scores:', JSON.stringify(_dbgScores));
     if (bestDir) { restoreRng(); return bestDir; }
 
     // No fully-safe option — prefer STAY, then best survival
@@ -981,20 +616,10 @@ function unifiedPick(gs, coilyActive) {
 }
 
 // ─── Main entry point ────────────────────────────────────────────────────────
-var aiMoveScores = {};  // exported per-direction scores for viz
-var aiLastTourCosts = {};  // last per-direction tour costs from unifiedPick
-var aiLastHop1Surv = {};   // last hop-1 survival rates from unifiedPick
-var aiMode = 0;         // 0 = no AI, 1 = unified (always set to 1 now)
-var aiStayCount = 0;    // consecutive STAY decisions — used to break stuck loops
-var aiLastPos = '';     // last position key — used to detect oscillation
-var aiSamePosCount = 0; // frames spent on same tile
-var aiLastRemaining = 99; // cubes remaining last time we checked
-var aiNoProgressCount = 0; // moves without reducing remaining cubes
-var aiPosHistory = [];  // recent position history for oscillation detection
-var AI_HISTORY_LEN = 12; // how many positions to track
+var aiMoveScores = {};
+var aiMode = 0;
 
 function aiPickBestDir() {
-    // Save game RNG — ALL AI simulation must use seeded RNG, never Math.random
     var savedGameRng = simRng;
 
     var coilyActive = false;
@@ -1007,109 +632,8 @@ function aiPickBestDir() {
     aiMoveScores = {};
     aiMode = 1;
 
-    // Track how long we've been on the same tile
-    var posKey = gs.player.row + ',' + gs.player.col;
-    if (posKey === aiLastPos) aiSamePosCount++;
-    else { aiSamePosCount = 0; aiLastPos = posKey; }
-
-    // Track progress: count remaining cubes
-    var tgt = gs.tgt;
-    var curRemaining = 0;
-    for (var ci = 0; ci < gs.cubes.length; ci++)
-        if (gs.cubes[ci].state < tgt) curRemaining++;
-    if (curRemaining < aiLastRemaining) {
-        aiLastRemaining = curRemaining;
-        aiNoProgressCount = 0;
-    } else if (gs.lv >= 3 && curRemaining > aiLastRemaining) {
-        // Toggle level: remaining went UP (we reverted cubes) — count faster
-        aiNoProgressCount += 2;
-    } else {
-        aiNoProgressCount++;
-    }
-
     var result = unifiedPick(gs, coilyActive);
 
-    // Track position history
-    aiPosHistory.push(posKey);
-    if (aiPosHistory.length > AI_HISTORY_LEN) aiPosHistory.shift();
-
-    // Fast oscillation break: detect A-B-A pattern and escape early before
-    // enemies can close in. The stuck breaker below waits too long (12+ moves).
-    // Skip on toggle levels — bouncing between two cubes is normal (2-stomp targets).
-    var h = aiPosHistory;
-    var hlen = h.length;
-    if (gs.lv < 3 && result !== 'STAY' && hlen >= 3 && h[hlen-1] === h[hlen-3] && h[hlen-1] !== h[hlen-2]) {
-        var od = DIRS[result];
-        var odKey = (gs.player.row + od.dr) + ',' + (gs.player.col + od.dc);
-        if (odKey === h[hlen-2]) {
-            // We'd go right back to where we just were — find a safe alternative
-            var oscAlt = null, oscScore = -Infinity;
-            for (var ok = 0; ok < DIR_KEYS.length; ok++) {
-                if (DIR_KEYS[ok] === result) continue;
-                if (!simCanMove(gs, DIR_KEYS[ok])) continue;
-                var osc = aiMoveScores[DIR_KEYS[ok]];
-                if (osc === undefined || osc < 0) continue;
-                if (osc > oscScore) { oscScore = osc; oscAlt = DIR_KEYS[ok]; }
-            }
-            if (oscAlt) { result = oscAlt; aiPosHistory.length = 0; }
-        }
-    }
-
-    // Stuck breaker: if no progress and looping in few unique positions,
-    // pick a safe unvisited direction toward an unfinished cube.
-    // On toggle levels, threshold is higher since bouncing is expected.
-    var stuckThreshold = gs.lv >= 3 ? 30 : 12;
-    if (aiNoProgressCount > stuckThreshold && result !== 'STAY') {
-        var dd = DIRS[result];
-        var dr = gs.player.row + dd.dr, dc = gs.player.col + dd.dc;
-        var destUnfinished = false;
-        for (var i = 0; i < gs.cubes.length; i++) {
-            if (gs.cubes[i].row === dr && gs.cubes[i].col === dc && gs.cubes[i].state < gs.tgt) {
-                destUnfinished = true; break;
-            }
-        }
-        if (!destUnfinished && aiPosHistory.length >= 6) {
-            var recent = {};
-            for (var ri = 0; ri < aiPosHistory.length; ri++) recent[aiPosHistory[ri]] = true;
-            var uniqueCount = 0;
-            for (var rk in recent) uniqueCount++;
-            if (uniqueCount <= 4) {
-                var bestAlt = null, bestAltScore = -Infinity;
-                for (var ak = 0; ak < DIR_KEYS.length; ak++) {
-                    if (!simCanMove(gs, DIR_KEYS[ak])) continue;
-                    var ad = DIRS[DIR_KEYS[ak]];
-                    var aKey = (gs.player.row + ad.dr) + ',' + (gs.player.col + ad.dc);
-                    if (recent[aKey]) continue;
-                    var asc = aiMoveScores[DIR_KEYS[ak]];
-                    if (asc === undefined || asc < 0) continue;
-                    if (asc > bestAltScore) { bestAltScore = asc; bestAlt = DIR_KEYS[ak]; }
-                }
-                if (bestAlt) { result = bestAlt; aiNoProgressCount = 0; aiPosHistory.length = 0; }
-            }
-        }
-    }
-
-    // Break stuck STAY loops
-    if (result === 'STAY') {
-        aiStayCount++;
-        if (aiStayCount >= 3) {
-            var bestAlt = null, bestAltScore = -Infinity;
-            for (var k = 0; k < DIR_KEYS.length; k++) {
-                if (simCanMove(gs, DIR_KEYS[k])) {
-                    var sc = aiMoveScores[DIR_KEYS[k]];
-                    if (sc !== undefined && sc < 0) continue;
-                    if (sc !== undefined && sc > bestAltScore) {
-                        bestAltScore = sc; bestAlt = DIR_KEYS[k];
-                    }
-                }
-            }
-            if (bestAlt) { result = bestAlt; aiStayCount = 0; }
-        }
-    } else {
-        aiStayCount = 0;
-    }
-
-    // Restore game RNG — must never leak seeded RNG into real game
     simRng = savedGameRng;
     return result;
 }
