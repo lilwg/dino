@@ -864,15 +864,9 @@ function unifiedPick(gs, coilyActive) {
     var peelTarget = findPeelTarget(stomps, aiStompCounts);
 
     // BFS from peel target, routing around sealed cubes (they're removed from graph)
-    var src = peelTarget >= 0 ? peelTarget : 0;
-    var targetDist = bfsFromIdx(src, seal);
+    var targetDist = bfsFromIdx(peelTarget >= 0 ? peelTarget : 0, seal);
     var curIdx = posToIdx[gs.player.row * ROWS + gs.player.col];
     var curDist = targetDist[curIdx];
-    // Fallback: if player is unreachable (trapped behind sealed), route through everything
-    if (curDist >= 999) {
-        targetDist = bfsFromIdx(src, null);
-        curDist = targetDist[curIdx];
-    }
     var bestDir = null, bestScore = Infinity;
     for (var fk = 0; fk < DIR_KEYS_WITH_STAY.length; fk++) {
         var fd = DIR_KEYS_WITH_STAY[fk];
