@@ -352,7 +352,7 @@
             furthestRow = newRow;
         }
 
-        if (typeof DinoSounds !== 'undefined') DinoSounds.play('jump');
+        if (typeof DinoSounds !== 'undefined') DinoSounds.press();
         return true;
     }
 
@@ -365,7 +365,7 @@
         deathX = playerPixelX();
         deathY = playerPixelY();
         lives--;
-        if (typeof DinoSounds !== 'undefined') DinoSounds.play('hit');
+        if (typeof DinoSounds !== 'undefined') DinoSounds.hit();
         if (lives <= 0) {
             gameOver = true;
             if (score > highScore) highScore = score;
@@ -404,7 +404,7 @@
                     homeSlots[i].bonusActive = false;
                 }
                 score += bonus;
-                if (typeof DinoSounds !== 'undefined') DinoSounds.play('score');
+                if (typeof DinoSounds !== 'undefined') DinoSounds.reached();
 
                 // Check if all slots filled
                 var allFilled = true;

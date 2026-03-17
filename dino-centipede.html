@@ -461,7 +461,7 @@
             y: player.y,
             vy: -500
         };
-        if (typeof DinoSounds !== 'undefined') DinoSounds.play('shoot');
+        if (typeof DinoSounds !== 'undefined') DinoSounds.press();
     }
 
     function updateBullet(dt) {
@@ -499,7 +499,7 @@
                     Math.abs(bullet.y - (seg.y + CELL_H / 2)) < CELL_H * 0.7) {
                     // Hit!
                     score += seg.isHead ? 100 : 10;
-                    if (typeof DinoSounds !== 'undefined') DinoSounds.play('hit');
+                    if (typeof DinoSounds !== 'undefined') DinoSounds.hit();
 
                     // Place mushroom at segment position
                     if (seg.row >= 0 && seg.row < ROWS && seg.col >= 0 && seg.col < COLS) {
@@ -532,7 +532,7 @@
                 if (dist < 60) score += 900;
                 else if (dist < 140) score += 600;
                 else score += 300;
-                if (typeof DinoSounds !== 'undefined') DinoSounds.play('hit');
+                if (typeof DinoSounds !== 'undefined') DinoSounds.hit();
                 spider = null;
                 spiderTimer = 3 + Math.random() * 4;
                 bullet = null;
@@ -544,7 +544,7 @@
         if (scorpion && scorpion.alive) {
             if (Math.abs(bullet.x - scorpion.x) < 15 && Math.abs(bullet.y - scorpion.y) < 18) {
                 score += 1000;
-                if (typeof DinoSounds !== 'undefined') DinoSounds.play('hit');
+                if (typeof DinoSounds !== 'undefined') DinoSounds.hit();
                 scorpion = null;
                 scorpionTimer = 8 + Math.random() * 12;
                 bullet = null;
@@ -558,7 +558,7 @@
                 flea.hits++;
                 if (flea.hits >= 2) {
                     score += 200;
-                    if (typeof DinoSounds !== 'undefined') DinoSounds.play('hit');
+                    if (typeof DinoSounds !== 'undefined') DinoSounds.hit();
                     flea = null;
                     fleaTimer = 3 + Math.random() * 5;
                 } else {
@@ -613,7 +613,7 @@
         player.alive = false;
         lives--;
         deathTimer = 1.5;
-        if (typeof DinoSounds !== 'undefined') DinoSounds.play('die');
+        if (typeof DinoSounds !== 'undefined') DinoSounds.hit();
         bullet = null;
     }
 
