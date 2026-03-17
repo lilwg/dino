@@ -866,11 +866,8 @@ function unifiedPick(gs, coilyActive) {
     var targetDist = bfsFromIdx(peelTarget >= 0 ? peelTarget : 0);
 
     // Pick safe direction closest to peel target
-    // Flat revert penalty for stepping on any completed cube (sealed or not).
-    // Peel order only affects target selection, not routing.
-    var revertCost = (gs.lv >= 5) ? 2 : 1;
-    var REVERT_PENALTY = 4 * revertCost;
-    var BACKTRACK_PENALTY = 3;
+    // Pure BFS routing — just head toward the target. No revert penalties needed;
+    // peel ordering handles what to target, BFS handles how to get there.
     var curIdx = posToIdx[gs.player.row * ROWS + gs.player.col];
     var curDist = targetDist[curIdx];
     var bestDir = null, bestScore = Infinity;
@@ -891,27 +888,10 @@ function unifiedPick(gs, coilyActive) {
         var score = targetDist[lidx];
         if (score >= 999) continue;
 
-        // Bonus for landing on an uncompleted cube — only when moving closer
-        if (stomps[lidx] > 0 && targetDist[lidx] < curDist) score -= 2;
+        // Bonus for landing on an uncompleted cube
+        if (stomps[lidx] > 0) score -= 2;
         // Extra bonus for landing on the peel target itself
         if (peelTarget >= 0 && lidx === peelTarget) score -= 3;
-
-        // Flat revert penalty for stepping on any completed cube
-        if (gs.lv >= 3 && fd !== 'STAY' && stomps[lidx] <= 0) {
-            score += REVERT_PENALTY;
-        }
-
-        // Backtrack penalty: discourage revisiting recent positions (prevents oscillation)
-        if (fd !== 'STAY' && aiPosHistory.length > 0) {
-            var destKey = lr + ',' + lc;
-            var lookback = Math.min(aiPosHistory.length, 4);
-            for (var bk = aiPosHistory.length - 1; bk >= aiPosHistory.length - lookback; bk--) {
-                if (aiPosHistory[bk] === destKey) {
-                    score += BACKTRACK_PENALTY;
-                    break;
-                }
-            }
-        }
 
         if (score < bestScore) { bestScore = score; bestDir = fd; }
     }
