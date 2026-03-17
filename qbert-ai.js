@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic (peel routing)
-var AI_VERSION = 'v13.7';
+var AI_VERSION = 'v13.8';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -591,14 +591,17 @@ function unifiedPick(gs) {
         if (bestDir) { restoreRng(); return bestDir; }
     }
 
-    // No fully-safe option — pick by survival, tie-break by routing
+    // No fully-safe option — pick by survival, tie-break by routing.
+    // STAY is last resort (lets enemies converge).
     var bestFallback = -Infinity, bestFallbackDir = null;
     for (var uk = 0; uk < DIR_KEYS_WITH_STAY.length; uk++) {
         var ud = DIR_KEYS_WITH_STAY[uk];
         if (hop1Surv[ud] === undefined) continue;
-        // Primary: survival rate (0-1). Secondary: prefer closer to target + incomplete cubes.
+        // Primary: survival rate (0-1). Secondary: routing score.
         var fallbackScore = hop1Surv[ud] * 1000;
-        if (ud !== 'STAY') {
+        if (ud === 'STAY') {
+            fallbackScore -= 50; // penalize staying still
+        } else {
             var udd = DIRS[ud];
             var fur = gs.player.row + udd.dr, fuc = gs.player.col + udd.dc;
             if (isValidPos(fur, fuc)) {
