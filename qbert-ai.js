@@ -586,6 +586,26 @@ function unifiedPick(gs, coilyActive) {
     }
     if (bestDir) { restoreRng(); return bestDir; }
 
+    // Peel BFS found no path (e.g. respawn at apex, separated from targets by
+    // removed cubes). Fall back to simple BFS on the full graph to reconnect.
+    if (gs.lv >= 3) {
+        targetDist = peelTargetDistSimple(gs);
+        bestDir = null; bestScore = Infinity;
+        for (var fk2 = 0; fk2 < DIR_KEYS.length; fk2++) {
+            var fd2 = DIR_KEYS[fk2];
+            var fdd2 = DIRS[fd2];
+            var lr2 = gs.player.row + fdd2.dr, lc2 = gs.player.col + fdd2.dc;
+            if (!isValidPos(lr2, lc2)) continue;
+            var lidx2 = posToIdx[lr2 * ROWS + lc2];
+            if (!safe1[fd2] || !safe2[fd2]) continue;
+            if (lidx2 < 0) continue;
+            var score2 = targetDist[lidx2];
+            if (score2 >= 999) continue;
+            if (score2 < bestScore) { bestScore = score2; bestDir = fd2; }
+        }
+        if (bestDir) { restoreRng(); return bestDir; }
+    }
+
     // No fully-safe option — prefer STAY, then best survival
     if (hop1Surv['STAY'] !== undefined && hop1Surv['STAY'] >= 1) {
         restoreRng(); return 'STAY';
