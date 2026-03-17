@@ -1324,8 +1324,11 @@ function drawHUD() {
         ctx.font = '600 13px "Courier New",monospace';
     }
 
-    // Top-right: lives, then score + hops below
-    for (var i = 0; i < lives; i++) {
+    // Top-right: lives (cap icons at 6, show +N for overflow)
+    var maxIcons = 6;
+    var showLives = Math.min(lives, maxIcons);
+    var overflow = lives - maxIcons;
+    for (var i = 0; i < showLives; i++) {
         if (spriteClean) {
             var sp = SPRITES.TREX_IDLE;
             var sc = 0.38;
@@ -1333,6 +1336,12 @@ function drawHUD() {
                 CW - 8 - (i + 1) * 20, 4,
                 sp.w * sc, sp.h * sc);
         }
+    }
+    if (overflow > 0) {
+        ctx.font = '600 11px "Courier New",monospace';
+        ctx.fillStyle = '#535353';
+        ctx.textAlign = 'right';
+        ctx.fillText('+' + overflow, CW - 8 - maxIcons * 20 - 2, 16);
     }
     ctx.textAlign = 'right';
     ctx.fillText(padScore(score), CW - 10, 34);
