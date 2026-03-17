@@ -24,9 +24,11 @@ function stompsNeeded(cubeState, lv) {
 
 
 // Dijkstra from srcIdx with penalty for stepping on completed cubes.
+// On toggle levels, completed cubes with no unfinished neighbors ("interior")
+// get a much higher penalty than frontier cubes — effectively building a wall
+// around completed regions so the AI never routes through them.
 // discSources: optional array of idx that have a 1-hop disc edge to apex (idx 0).
-// Returns {dist, prev, usedDisc} — usedDisc[v] is the disc source idx if shortest
-// path to v used a disc, else -1.
+// Returns {dist, prev, usedDisc}.
 function dijkstraFrom(srcIdx, stomps, penalty, discSources) {
     var dist = new Float64Array(POS_COUNT);
     var prev = new Int8Array(POS_COUNT);
@@ -45,7 +47,16 @@ function dijkstraFrom(srcIdx, stomps, penalty, discSources) {
         for (var a = 0; a < adj.length; a++) {
             var v = adj[a];
             if (visited[v]) continue;
-            var cost = 1 + (stomps[v] === 0 ? penalty : 0);
+            var cost = 1;
+            if (stomps[v] === 0 && penalty > 0) {
+                // Completed cube — is it frontier or interior wall?
+                var onFrontier = false;
+                var adjV = posAdj[v];
+                for (var na = 0; na < adjV.length; na++) {
+                    if (stomps[adjV[na]] > 0) { onFrontier = true; break; }
+                }
+                cost += onFrontier ? penalty : penalty * 5;
+            }
             var nd = dist[u] + cost;
             if (nd < dist[v]) { dist[v] = nd; prev[v] = u; usedDisc[v] = usedDisc[u]; }
         }
@@ -57,7 +68,7 @@ function dijkstraFrom(srcIdx, stomps, penalty, discSources) {
                     var nd = dist[u] + cost;
                     if (nd < dist[0]) {
                         dist[0] = nd; prev[0] = u;
-                        usedDisc[0] = d; // track which disc index was used
+                        usedDisc[0] = d;
                     }
                 }
             }
