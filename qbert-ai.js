@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic (peel routing)
-var AI_VERSION = 'v13.15';
+var AI_VERSION = 'v13.16';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -555,17 +555,6 @@ function unifiedPick(gs) {
     // ── Peel-based direction selection ──
     var targetDist = peelTargetDist(gs);
 
-    // Find Coily's effective position for routing penalty
-    var coilyR = -99, coilyC = -99;
-    for (var ci = 0; ci < gs.enemies.length; ci++) {
-        var ce = gs.enemies[ci];
-        if (ce.type === 'coily') {
-            coilyR = ce.jumping && ce.jumpT >= 0.5 ? ce.destRow : ce.row;
-            coilyC = ce.jumping && ce.jumpT >= 0.5 ? ce.destCol : ce.col;
-            break;
-        }
-    }
-
     var bestDir = null, bestScore = Infinity;
     for (var fk = 0; fk < DIR_KEYS.length; fk++) {
         var fd = DIR_KEYS[fk];
@@ -578,10 +567,6 @@ function unifiedPick(gs) {
 
         var score = targetDist[lidx];
         if (score >= 999) continue;
-
-        // Penalize moving closer to Coily — prefer routes that keep distance
-        var coilyDist = Math.abs(coilyR - lr) + Math.abs(coilyC - lc);
-        if (coilyDist <= 3) score += (4 - coilyDist) * 0.8;
 
         if (score < bestScore) { bestScore = score; bestDir = fd; }
     }
@@ -612,9 +597,6 @@ function unifiedPick(gs) {
             if (PEEL_LAYER && !peelRemaining[lidx2]) {
                 score2 += (maxLayer - PEEL_LAYER[lidx2]) * 0.1;
             }
-            // Coily proximity penalty
-            var coilyDist2 = Math.abs(coilyR - lr2) + Math.abs(coilyC - lc2);
-            if (coilyDist2 <= 3) score2 += (4 - coilyDist2) * 0.8;
             if (score2 < bestScore) { bestScore = score2; bestDir = fd2; }
         }
         if (bestDir) { restoreRng(); return bestDir; }
