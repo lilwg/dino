@@ -69,20 +69,11 @@ function dijkstraFrom(srcIdx, stomps, penalty, discSources) {
 // Greedy nearest-neighbor tour cost via Dijkstra.
 // On toggle levels (lv3+), penalizes routing through completed cubes and
 // models cascade reverts. On non-toggle levels, degenerates to BFS.
-//
-// Two human-inspired heuristics:
-// 1. Bottom-up bias: prefer lower/outer cubes when many remain (clear the
-//    dangerous bottom rows while the board is still quiet).
-// 2. Two-step tango: when current cube still needs stomps, stay and finish
-//    it before routing elsewhere (minimizes exposure from long laps).
 function greedyTourCost(startIdx, cubes, tgt, lv, discs) {
     var stomps = new Int8Array(POS_COUNT);
-    var totalStomps = 0;
     for (var i = 0; i < cubes.length; i++) {
         var idx = posToIdx[cubes[i].row * ROWS + cubes[i].col];
-        var s = stompsNeeded(cubes[i].state, lv);
-        stomps[idx] = s;
-        totalStomps += s;
+        stomps[idx] = stompsNeeded(cubes[i].state, lv);
     }
 
     var discSources = [];
@@ -100,44 +91,20 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs) {
     var curIdx = startIdx;
     var totalHops = 0;
 
-    // Bottom-up bias: scales with how full the board is (strong early, fades as cubes complete)
-    // Each row of depth gives a fractional discount to prefer deeper cubes
-    var fullness = totalStomps / (POS_COUNT * tgt); // 0=done, 1=all unfinished
-    var DEPTH_BONUS = fullness * 0.4; // up to 0.4 discount per row of depth
-
     for (var iter = 0; iter < 200; iter++) {
-        // Two-step tango: if current cube still needs stomps, finish it by
-        // bouncing to an adjacent cube and back (2 hops per remaining stomp).
-        // This is cheaper than routing away and coming back later.
-        if (stomps[curIdx] > 0) {
-            totalHops += stomps[curIdx] * 2; // leave + return per stomp
-            stomps[curIdx] = 0;
-            // Also stomp the adjacent cube we bounce through if it needs work
-            var adj = posAdj[curIdx];
-            for (var ai = 0; ai < adj.length; ai++) {
-                if (stomps[adj[ai]] > 0) {
-                    stomps[adj[ai]]--;
-                    totalHops--; // one of our bounces was productive
-                    break;
-                }
-            }
-            continue;
-        }
-
         var dijk = dijkstraFrom(curIdx, stomps, REVERT_PENALTY, discSources);
 
         var bestIdx = -1, bestDist = 999;
         for (var i = 0; i < POS_COUNT; i++) {
             if (stomps[i] > 0 && i !== curIdx) {
                 var d = dijk.dist[i];
-                // Bottom-up bias: discount deeper cubes proportional to board fullness
-                d -= idxToPos[i][0] * DEPTH_BONUS;
                 if (d < bestDist || (d === bestDist && (bestIdx === -1 || i < bestIdx))) {
                     bestDist = d; bestIdx = i;
                 }
             }
         }
         if (bestIdx === -1) {
+            if (stomps[curIdx] > 0) totalHops += stomps[curIdx] * 2;
             break;
         }
 
