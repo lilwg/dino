@@ -341,17 +341,24 @@ function simSpawnEnemy(gs, forcedType) {
     var spawnCol = Math.floor(simRng() * 2);
     var interval = enemyMoveInterval(type, gs.sm);
     if (type === 'ugg') {
-        gs.enemies.push({ type: 'ugg', row: ROWS-1, col: ROWS-1,
+        // Spawn one hop off-board, jump onto the board
+        var e = { type: 'ugg', row: ROWS-1, col: ROWS,
             jumping: false, jumpT: 0, jumpDur: ENEMY_JUMP_DUR * gs.sm,
-            moveTimer: 0, moveInterval: interval, destRow: null, destCol: null });
+            moveTimer: 0, moveInterval: interval, destRow: null, destCol: null };
+        simEnemyJumpTo(e, ROWS-1, ROWS-1, gs.sm);
+        gs.enemies.push(e);
     } else if (type === 'wrongway') {
-        gs.enemies.push({ type: 'wrongway', row: ROWS-1, col: 0,
+        // Spawn one hop off-board, jump onto the board
+        var e = { type: 'wrongway', row: ROWS-1, col: -1,
             jumping: false, jumpT: 0, jumpDur: ENEMY_JUMP_DUR * gs.sm,
-            moveTimer: 0, moveInterval: interval, destRow: null, destCol: null });
+            moveTimer: 0, moveInterval: interval, destRow: null, destCol: null };
+        simEnemyJumpTo(e, ROWS-1, 0, gs.sm);
+        gs.enemies.push(e);
     } else {
         gs.enemies.push({ type: type, row: 1, col: spawnCol, hops: 0,
             jumping: false, jumpT: 0, jumpDur: ENEMY_JUMP_DUR * gs.sm,
-            moveTimer: 0, moveInterval: interval, destRow: null, destCol: null });
+            moveTimer: 0, moveInterval: interval, destRow: null, destCol: null,
+            spawnDrop: 40 });
     }
 }
 
@@ -497,6 +504,9 @@ function simUpdateEnemies(gs) {
             continue; // don't tick move timer while jumping
         }
 
+        // Spawn drop: enemy falling from sky, don't move yet
+        if (e.spawnDrop > 0) { e.spawnDrop--; continue; }
+
         // Idle: tick move timer
         e.moveTimer++;
         if (e.moveTimer < e.moveInterval) continue;
@@ -573,6 +583,7 @@ function simCheckCollision(gs) {
     for (var i = 0; i < gs.enemies.length; i++) {
         var e = gs.enemies[i];
         if (e.type === 'spawn-timer') continue;
+        if (e.spawnDrop > 0) continue;
         var et = collisionTile(e);
         if (!et) continue; // enemy at apex, immune
         if (et.row === pt.row && et.col === pt.col) {

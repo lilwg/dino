@@ -141,7 +141,8 @@ function cloneEnemyLight(e) {
         destRow: e.destRow, destCol: e.destCol,
         moveTimer: e.moveTimer, moveInterval: e.moveInterval,
         hops: e.hops || 0, falling: e.falling || false,
-        willHatch: e.willHatch || false
+        willHatch: e.willHatch || false,
+        spawnDrop: e.spawnDrop || 0
     };
 }
 

@@ -418,7 +418,13 @@ function syncVisuals() {
         // Sprite animation
         e.frameTimer = (e.frameTimer || 0) + 1;
         if (e.frameTimer > 8) { e.frameTimer = 0; e.frame = (e.frame || 0) ^ 1; }
-        if (e.jumping) {
+        if (e.spawnDrop > 0) {
+            // Falling from above screen to landing position
+            var pos = cubeXY(e.row, e.col);
+            var t = 1 - e.spawnDrop / 40;
+            e.px = pos.cx;
+            e.py = -30 + (pos.cy + 30) * t * t;
+        } else if (e.jumping) {
             var srcR = e.jumpSrcRow != null ? e.jumpSrcRow : e.row;
             var srcC = e.jumpSrcCol != null ? e.jumpSrcCol : e.col;
             var dstR = e.destRow != null ? e.destRow : e.row;
