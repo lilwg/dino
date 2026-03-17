@@ -1,5 +1,5 @@
-// qbert-ai.js — Q*bert AI logic  (v6 — cascade-aware routing)
-var AI_VERSION = 'v6-cascade-routing';
+// qbert-ai.js — Q*bert AI logic  (v8 — revert guard)
+var AI_VERSION = 'v8-revert-guard';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -25,8 +25,7 @@ function stompsNeeded(cubeState, lv) {
 
 // Dijkstra from srcIdx with penalty for stepping on completed cubes.
 // On toggle levels, completed cubes with no unfinished neighbors ("interior")
-// get a much higher penalty than frontier cubes — effectively building a wall
-// around completed regions so the AI never routes through them.
+// get a much higher penalty than frontier cubes.
 // discSources: optional array of idx that have a 1-hop disc edge to apex (idx 0).
 // Returns {dist, prev, usedDisc}.
 function dijkstraFrom(srcIdx, stomps, penalty, discSources) {
@@ -49,7 +48,6 @@ function dijkstraFrom(srcIdx, stomps, penalty, discSources) {
             if (visited[v]) continue;
             var cost = 1;
             if (stomps[v] === 0 && penalty > 0) {
-                // Completed cube — is it frontier or interior wall?
                 var onFrontier = false;
                 var adjV = posAdj[v];
                 for (var na = 0; na < adjV.length; na++) {
@@ -445,6 +443,19 @@ function aiTourInit() {
     aiLastRemaining = 99; aiNoProgressCount = 0; aiStayCount = 0; aiSamePosCount = 0; aiPosHistory = [];
 }
 
+// Would moving in `dir` revert a completed cube? (toggle levels only)
+function wouldRevert(gs, dir) {
+    if (gs.lv < 3 || dir === 'STAY') return false;
+    var d = DIRS[dir];
+    var nr = gs.player.row + d.dr, nc = gs.player.col + d.dc;
+    if (!isValidPos(nr, nc)) return false;
+    for (var i = 0; i < gs.cubes.length; i++) {
+        if (gs.cubes[i].row === nr && gs.cubes[i].col === nc && gs.cubes[i].state >= gs.tgt)
+            return true;
+    }
+    return false;
+}
+
 // Dijkstra tour planner — nearest unfinished cube via weighted BFS
 // On toggle levels (lv3+), uses cluster-based sweep planning:
 // finds connected components of unfinished cubes and targets the nearest
@@ -581,7 +592,7 @@ function unifiedPick(gs, coilyActive) {
     // Disc lure — use when Coily is active
     if (coilyActive) {
         var lureDir = evalDiscLure();
-        if (lureDir) {
+        if (lureDir && !wouldRevert(gs, lureDir)) {
             var lureSafe = 0;
             for (var ls = 0; ls < SAMPLES; ls++) {
                 simSeed(ls);
@@ -759,7 +770,7 @@ function unifiedPick(gs, coilyActive) {
                 var sdk = DIRS[DIR_KEYS[sk]];
                 var snr = gs.player.row + sdk.dr, snc = gs.player.col + sdk.dc;
                 if (snr === spos.row && snc === spos.col) {
-                    if (safe1[DIR_KEYS[sk]] && safe2[DIR_KEYS[sk]]) {
+                    if (safe1[DIR_KEYS[sk]] && safe2[DIR_KEYS[sk]] && !wouldRevert(gs, DIR_KEYS[sk])) {
                         restoreRng(); return DIR_KEYS[sk];
                     }
                 }
@@ -767,15 +778,23 @@ function unifiedPick(gs, coilyActive) {
         }
     }
 
-    // Pick safe direction with lowest tour cost
+    // Pick safe direction with lowest tour cost.
+    // On toggle levels, prefer directions that don't revert completed cubes.
     var bestDir = null, bestCost = Infinity;
+    var bestRevertDir = null, bestRevertCost = Infinity;
     for (var fk = 0; fk < DIR_KEYS_WITH_STAY.length; fk++) {
         var fd = DIR_KEYS_WITH_STAY[fk];
         if (!safe1[fd] || !safe2[fd]) continue;
         var fc = tourCosts[fd];
-        if (fc !== undefined && fc < bestCost) { bestCost = fc; bestDir = fd; }
+        if (fc === undefined) continue;
+        if (wouldRevert(gs, fd)) {
+            if (fc < bestRevertCost) { bestRevertCost = fc; bestRevertDir = fd; }
+        } else {
+            if (fc < bestCost) { bestCost = fc; bestDir = fd; }
+        }
     }
     if (bestDir) { restoreRng(); return bestDir; }
+    if (bestRevertDir) { restoreRng(); return bestRevertDir; }
 
     // No fully-safe option — prefer STAY to wait for better timing
     // Only move if STAY itself has poor survival or we'd die anyway
@@ -917,6 +936,24 @@ function aiPickBestDir() {
         }
     } else {
         aiStayCount = 0;
+    }
+
+    // ── FINAL REVERT GUARD ──
+    // On toggle levels, if the chosen direction would revert a completed cube,
+    // find a non-revert alternative. Catches all overrides (oscillation/stuck breakers).
+    if (wouldRevert(gs, result)) {
+        var guardAlt = null, guardScore = -Infinity;
+        for (var gk = 0; gk < DIR_KEYS_WITH_STAY.length; gk++) {
+            var gd = DIR_KEYS_WITH_STAY[gk];
+            if (gd === result) continue;
+            if (!simCanMove(gs, gd)) continue;
+            if (wouldRevert(gs, gd)) continue;
+            var gsc = aiMoveScores[gd];
+            if (gsc === undefined) gsc = 0;
+            if (gsc > guardScore) { guardScore = gsc; guardAlt = gd; }
+        }
+        if (guardAlt) result = guardAlt;
+        else result = 'STAY';  // all moves revert — wait
     }
 
     // Restore game RNG — must never leak seeded RNG into real game
