@@ -706,14 +706,18 @@ function update() {
         player.deathTimer--;
         player.deathAnimTimer = (player.deathAnimTimer || 0) + 1;
         if (player.deathTimer <= 0 && !gameOver) {
-            // Respawn using simulation
+            // Respawn: enemy death → last cube; fall off → apex
+            var rr = (player.respawnRow != null) ? player.respawnRow : 0;
+            var rc = (player.respawnCol != null) ? player.respawnCol : 0;
             player.dead = false;
             swearBubble = null;
-            player.row = 0; player.col = 0;
+            player.row = rr; player.col = rc;
             player.jumping = false;
-            var sp = cubeXY(0, 0);
+            player.respawnRow = null; player.respawnCol = null;
+            gs.deathEnemy = null;
+            var sp = cubeXY(rr, rc);
             player.px = sp.cx; player.py = sp.cy;
-            simStompCube(gs, 0, 0);
+            simStompCube(gs, rr, rc);
             score += gs.score; gs.score = 0;
             // Clear non-spawn-timer enemies
             var kept = [];
@@ -745,6 +749,8 @@ function update() {
                 ' enemies=' + gs.enemies.map(function(e){return e.type+'@('+e.row+','+e.col+')'}).join(' '));
             gs.alive = true;
             gs.player.deathTimer = 100;
+            gs.player.respawnRow = gs.player.row;
+            gs.player.respawnCol = gs.player.col;
             killPlayerVisual();
             syncVisuals();
             return;
@@ -782,6 +788,8 @@ function update() {
                     ' enemies=' + gs.enemies.map(function(e){return e.type+'@('+e.row+','+e.col+')'}).join(' '));
                 gs.alive = true;
                 gs.player.deathTimer = 100;
+                gs.player.respawnRow = gs.player.row;
+                gs.player.respawnCol = gs.player.col;
                 killPlayerVisual();
                 syncVisuals();
                 return;
