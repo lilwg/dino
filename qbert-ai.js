@@ -541,20 +541,17 @@ function ensurePeelOrder() {
 }
 
 // Find the highest-priority uncompleted cube.
-// Sort: degeneracy (lower = more peripheral) → stomp count (fewer = fresher) → peel order (distance tiebreak)
+// Base priority is PEEL_ORDER (lower = more peripheral = handle first).
+// Stomp count penalizes heavily-visited cubes so the AI spreads to fresh areas.
+// Each previous stomp shifts effective priority by STOMP_WEIGHT peel-order slots.
+var STOMP_WEIGHT = 3;
 function findPeelTarget(stomps, stompCounts) {
     ensurePeelOrder();
-    var bestIdx = -1, bestDeg = 99, bestSc = 999999, bestOrd = POS_COUNT;
+    var bestIdx = -1, bestScore = Infinity;
     for (var i = 0; i < POS_COUNT; i++) {
         if (stomps[i] <= 0) continue;
-        var deg = PEEL_DEGREE[i];
-        var sc = stompCounts ? stompCounts[i] : 0;
-        var ord = PEEL_ORDER[i];
-        if (deg < bestDeg ||
-            (deg === bestDeg && sc < bestSc) ||
-            (deg === bestDeg && sc === bestSc && ord < bestOrd)) {
-            bestDeg = deg; bestSc = sc; bestOrd = ord; bestIdx = i;
-        }
+        var score = PEEL_ORDER[i] + (stompCounts ? stompCounts[i] * STOMP_WEIGHT : 0);
+        if (score < bestScore) { bestScore = score; bestIdx = i; }
     }
     return bestIdx;
 }
