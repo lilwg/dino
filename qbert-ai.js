@@ -87,7 +87,9 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs) {
     }
 
     var isToggle = lv >= 3;
-    var REVERT_PENALTY = isToggle ? 4 : 0;
+    // lv3-4: reverts cost 1 stomp to fix, moderate penalty avoids unnecessary detours
+    // lv5+:  reverts cost 2 stomps (full cycle back to 0), heavy penalty to avoid cascades
+    var REVERT_PENALTY = lv >= 5 ? 8 : (isToggle ? 4 : 0);
     var curIdx = startIdx;
     var totalHops = 0;
 
