@@ -1441,6 +1441,14 @@ function drawHUD() {
     // Round indicator center-top
     ctx.textAlign = 'center';
     ctx.fillText('LV ' + arcadeLevel() + '-' + ((round - 1) % 4 + 1), CW / 2, 18);
+
+    // AI version bottom-right
+    if (typeof AI_VERSION !== 'undefined') {
+        ctx.font = '9px "Courier New",monospace';
+        ctx.fillStyle = '#999';
+        ctx.textAlign = 'right';
+        ctx.fillText(AI_VERSION, CW - 4, CH - 4);
+    }
     ctx.textAlign = 'left';
 }
 
