@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic (peel routing)
-var AI_VERSION = 'v13.2';
+var AI_VERSION = 'v13.3';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -264,6 +264,9 @@ function isExhaustiveSafe(gs, dir) {
         }
 
         if (e.type === 'slick' || e.type === 'greenball') continue;
+
+        // Don't land on a tile where an enemy is dropping or sitting after drop
+        if (e.spawnDrop > 0 && e.row === destR && e.col === destC) return false;
 
         var er = e.jumping && e.jumpT >= 0.67 ? (e.destRow != null ? e.destRow : e.row) : e.row;
         var ec2 = e.jumping && e.jumpT >= 0.67 ? (e.destCol != null ? e.destCol : e.col) : e.col;

@@ -684,7 +684,7 @@ function simDeepClone(gs) {
                        destRow: e.destRow, destCol: e.destCol,
                        moveTimer: e.moveTimer, moveInterval: e.moveInterval,
                        falling: e.falling || false, willHatch: e.willHatch || false,
-                       hops: e.hops || 0 };
+                       hops: e.hops || 0, spawnDrop: e.spawnDrop || 0 };
             if (e.lureRow != null) { ens[i].lureRow = e.lureRow; ens[i].lureCol = e.lureCol; }
         }
     }
