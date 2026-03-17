@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic (peel routing)
-var AI_VERSION = 'v13.1';
+var AI_VERSION = 'v13.2';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -179,6 +179,12 @@ function enemyCollisionTile(e) {
 
 function enemyPathCollides(e, playerTiles, frame, maxFrames, pDestR, pDestC, sm) {
     if (frame >= maxFrames || e.falling) return false;
+
+    // Still dropping from sky — no collision, just tick down
+    if (e.spawnDrop > 0) {
+        e.spawnDrop--;
+        return enemyPathCollides(e, playerTiles, frame + 1, maxFrames, pDestR, pDestC, sm);
+    }
 
     if (e.jumping) {
         e.jumpT += e.jumpDur;

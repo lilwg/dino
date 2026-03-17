@@ -421,7 +421,7 @@ function syncVisuals() {
         if (e.spawnDrop > 0) {
             // Falling from above screen to landing position
             var pos = cubeXY(e.row, e.col);
-            var t = 1 - e.spawnDrop / 40;
+            var t = 1 - e.spawnDrop / 60;
             e.px = pos.cx;
             e.py = -30 + (pos.cy + 30) * t * t;
         } else if (e.jumping) {

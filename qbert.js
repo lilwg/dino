@@ -358,7 +358,7 @@ function simSpawnEnemy(gs, forcedType) {
         gs.enemies.push({ type: type, row: 1, col: spawnCol, hops: 0,
             jumping: false, jumpT: 0, jumpDur: ENEMY_JUMP_DUR * gs.sm,
             moveTimer: 0, moveInterval: interval, destRow: null, destCol: null,
-            spawnDrop: 40 });
+            spawnDrop: 60 });
     }
 }
 
