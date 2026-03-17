@@ -452,7 +452,15 @@ function killPlayerVisual() {
     lives--;
     var scores = '';
     for (var dk in aiMoveScores) scores += ' ' + dk + '=' + Math.round(aiMoveScores[dk]);
-    var deathInfo = 'DEATH Lv' + arcadeLevel() + '-' + ((round-1)%4+1) + ' @(' + player.row + ',' + player.col + ') killed_by=' + (gs.deathEnemy || 'fall') + ' dir=' + (aiBestDir || '?') + ' scores=[' + scores.trim() + '] lives=' + lives + ' hops=' + hops + ' frame=' + frameCount;
+    var pJump = gs.player.jumping ? ' pJump=(' + gs.player.row + ',' + gs.player.col + ')→(' + gs.player.destRow + ',' + gs.player.destCol + ' t=' + (gs.player.jumpT||0).toFixed(3) + ')' : ' pIdle=(' + gs.player.row + ',' + gs.player.col + ')';
+    var killerInfo = '';
+    if (gs.deathKiller) {
+        var dk = gs.deathKiller;
+        killerInfo = ' KILLER=' + dk.type + '@(' + dk.row + ',' + dk.col + ')' +
+            (dk.jumping ? '→(' + dk.destRow + ',' + dk.destCol + ' t=' + (dk.jumpT||0).toFixed(3) + ')' : '') +
+            ' eTile=(' + dk.et.row + ',' + dk.et.col + ') pTile=(' + dk.pt.row + ',' + dk.pt.col + ')';
+    }
+    var deathInfo = 'DEATH Lv' + arcadeLevel() + '-' + ((round-1)%4+1) + ' @(' + player.row + ',' + player.col + ') killed_by=' + (gs.deathEnemy || 'fall') + ' dir=' + (aiBestDir || '?') + ' scores=[' + scores.trim() + '] lives=' + lives + ' hops=' + hops + ' frame=' + frameCount + pJump + killerInfo;
     for (var di = 0; di < enemies.length; di++) {
         var de = enemies[di];
         if (de.type === 'spawn-timer') { deathInfo += ' spawn(' + (de.forcedType||'?') + ' t=' + de.timer + ')'; continue; }

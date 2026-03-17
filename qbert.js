@@ -601,6 +601,12 @@ function simCheckCollision(gs) {
                 gs.alive = false;
                 gs.player.dead = true;
                 gs.deathEnemy = e.type;
+                gs.deathKiller = { type: e.type, row: e.row, col: e.col,
+                    jumping: e.jumping, jumpT: e.jumpT,
+                    destRow: e.destRow, destCol: e.destCol,
+                    spawnDrop: e.spawnDrop || 0,
+                    et: { row: et.row, col: et.col },
+                    pt: { row: pt.row, col: pt.col } };
                 return;
             }
         }
