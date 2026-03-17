@@ -1,5 +1,5 @@
-// qbert-ai.js — Q*bert AI logic  (v2 — oscillation fix + revert penalty)
-var AI_VERSION = 'v5-routing-safety';
+// qbert-ai.js — Q*bert AI logic  (v6 — cascade-aware routing)
+var AI_VERSION = 'v6-cascade-routing';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -66,17 +66,16 @@ function dijkstraFrom(srcIdx, stomps, penalty, discSources) {
     return {dist: dist, prev: prev, usedDisc: usedDisc};
 }
 
-// Greedy nearest-neighbor tour cost with deterministic tie-breaking.
-// On toggle levels, uses Dijkstra to route around completed cubes.
-// Ties broken by lowest position index for stability.
-function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts) {
+// Greedy nearest-neighbor tour cost via Dijkstra.
+// On toggle levels (lv3+), penalizes routing through completed cubes and
+// models cascade reverts. On non-toggle levels, degenerates to BFS.
+function greedyTourCost(startIdx, cubes, tgt, lv, discs) {
     var stomps = new Int8Array(POS_COUNT);
     for (var i = 0; i < cubes.length; i++) {
         var idx = posToIdx[cubes[i].row * ROWS + cubes[i].col];
         stomps[idx] = stompsNeeded(cubes[i].state, lv);
     }
 
-    // Build disc source list: cube positions adjacent to active discs
     var discSources = [];
     if (discs) {
         for (var di = 0; di < discs.length; di++) {
@@ -93,84 +92,43 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts) {
     var totalHops = 0;
 
     for (var iter = 0; iter < 200; iter++) {
-        if (isToggle) {
-            var dijk = dijkstraFrom(curIdx, stomps, REVERT_PENALTY, discSources);
+        var dijk = dijkstraFrom(curIdx, stomps, REVERT_PENALTY, discSources);
 
-            var bestIdx = -1, bestDist = 999;
-            for (var i = 0; i < POS_COUNT; i++) {
-                if (stomps[i] > 0 && i !== curIdx) {
-                    var d = dijk.dist[i];
-                    // Deprioritize frequently-reverted cubes — go to fresh ones first
-                    if (revertCounts && revertCounts[i] > 1) d += (revertCounts[i] - 1) * 3;
-                    if (d < bestDist || (d === bestDist && (bestIdx === -1 || i < bestIdx))) {
-                        bestDist = d; bestIdx = i;
-                    }
+        var bestIdx = -1, bestDist = 999;
+        for (var i = 0; i < POS_COUNT; i++) {
+            if (stomps[i] > 0 && i !== curIdx) {
+                var d = dijk.dist[i];
+                if (d < bestDist || (d === bestDist && (bestIdx === -1 || i < bestIdx))) {
+                    bestDist = d; bestIdx = i;
                 }
             }
-            if (bestIdx === -1) {
-                if (stomps[curIdx] > 0) totalHops += stomps[curIdx] * 2;
-                break;
-            }
-
-            // Consume the disc if the path to bestIdx used one
-            var discIdx = dijk.usedDisc[bestIdx];
-            if (discIdx >= 0 && discIdx < discSources.length) {
-                discSources[discIdx] = -1; // mark consumed, don't splice (indices are stable)
-            }
-
-            // Walk the Dijkstra path, count real hops
-            var path = [], pc = bestIdx;
-            while (pc !== curIdx) { path.push(pc); pc = dijk.prev[pc]; }
-            totalHops += path.length;
-
-            // Apply stomps along path; reverted cubes become new targets
-            for (var p = path.length - 1; p >= 0; p--) {
-                var pos = path[p];
-                if (stomps[pos] > 0) {
-                    stomps[pos]--;
-                } else {
-                    // Walking through a completed cube reverts it — add back as target
-                    // so the tour properly models the cascade cost of fixing it later
-                    stomps[pos] = lv >= 5 ? 2 : 1;
-                }
-            }
-            curIdx = bestIdx;
-        } else {
-            // Non-toggle: use precomputed BFS distances, consider disc shortcuts
-            var bestIdx = -1, bestDist = 999;
-            var APEX = 0;
-            for (var i = 0; i < POS_COUNT; i++) {
-                if (stomps[i] > 0 && i !== curIdx) {
-                    var d = distMatrix[curIdx * POS_COUNT + i];
-                    for (var ds = 0; ds < discSources.length; ds++) {
-                        if (discSources[ds] < 0) continue; // consumed
-                        var dd = distMatrix[curIdx * POS_COUNT + discSources[ds]] + 1
-                               + distMatrix[APEX * POS_COUNT + i];
-                        if (dd < d) d = dd;
-                    }
-                    if (d < bestDist || (d === bestDist && (bestIdx === -1 || i < bestIdx))) {
-                        bestDist = d; bestIdx = i;
-                    }
-                }
-            }
-            if (bestIdx === -1) {
-                if (stomps[curIdx] > 0) totalHops += stomps[curIdx] * 2;
-                break;
-            }
-            // Check if a disc was used for this leg and consume it
-            var directDist = distMatrix[curIdx * POS_COUNT + bestIdx];
-            var usedDs = -1;
-            for (var ds = 0; ds < discSources.length; ds++) {
-                if (discSources[ds] < 0) continue; // consumed
-                var dd = distMatrix[curIdx * POS_COUNT + discSources[ds]] + 1
-                       + distMatrix[APEX * POS_COUNT + bestIdx];
-                if (dd < directDist) { directDist = dd; usedDs = ds; }
-            }
-            if (usedDs >= 0) discSources[usedDs] = -1; // mark consumed
-            totalHops += bestDist;
-            stomps[bestIdx]--;
-            curIdx = bestIdx;
         }
+        if (bestIdx === -1) {
+            if (stomps[curIdx] > 0) totalHops += stomps[curIdx] * 2;
+            break;
+        }
+
+        // Consume disc if path used one
+        var discIdx = dijk.usedDisc[bestIdx];
+        if (discIdx >= 0 && discIdx < discSources.length) {
+            discSources[discIdx] = -1;
+        }
+
+        // Walk the Dijkstra path, count real hops
+        var path = [], pc = bestIdx;
+        while (pc !== curIdx) { path.push(pc); pc = dijk.prev[pc]; }
+        totalHops += path.length;
+
+        // Apply stomps; on toggle levels, reverted cubes become new targets
+        for (var p = path.length - 1; p >= 0; p--) {
+            var pos = path[p];
+            if (stomps[pos] > 0) {
+                stomps[pos]--;
+            } else if (isToggle) {
+                stomps[pos] = lv >= 5 ? 2 : 1;
+            }
+        }
+        curIdx = bestIdx;
     }
 
     return totalHops;
@@ -178,7 +136,7 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts) {
 
 // Tour cost from a simulation state
 function simTourCost(gs) {
-    return greedyTourCost(posToIdx[gs.player.row * ROWS + gs.player.col], gs.cubes, gs.tgt, gs.lv, gs.discs, aiRevertCounts);
+    return greedyTourCost(posToIdx[gs.player.row * ROWS + gs.player.col], gs.cubes, gs.tgt, gs.lv, gs.discs);
 }
 
 // ─── Danger zone assessment ──────────────────────────────────────────────────
@@ -472,13 +430,8 @@ function isExhaustiveSafe(gs, dir) {
 var aiTour = [], aiTourIdx = 0, aiBoardSig = '';
 var aiDetailPath = [], aiTourDots = [];
 
-var aiRevertCounts = new Int8Array(POS_COUNT); // per-cube revert counter for toggle levels
-var aiPrevCubeStates = null; // previous cube states to detect reverts
-
 function aiTourInit() {
     aiLastRemaining = 99; aiNoProgressCount = 0; aiStayCount = 0; aiSamePosCount = 0; aiPosHistory = [];
-    aiRevertCounts = new Int8Array(POS_COUNT);
-    aiPrevCubeStates = null;
 }
 
 // Dijkstra tour planner — nearest unfinished cube via weighted BFS
@@ -876,157 +829,41 @@ function aiPickBestDir() {
         aiNoProgressCount++;
     }
 
-    // Track cube reverts on toggle levels — detect which cubes keep getting churned
-    if (gs.lv >= 3 && aiPrevCubeStates) {
-        for (var ri = 0; ri < gs.cubes.length; ri++) {
-            var cube = gs.cubes[ri];
-            if (aiPrevCubeStates[ri] >= tgt && cube.state < tgt) {
-                // This cube was completed but got reverted
-                var ridx = posToIdx[cube.row * ROWS + cube.col];
-                if (ridx >= 0) aiRevertCounts[ridx] = Math.min(aiRevertCounts[ridx] + 1, 10);
-            }
-        }
-    }
-    // Save current states for next comparison
-    aiPrevCubeStates = new Int8Array(gs.cubes.length);
-    for (var si = 0; si < gs.cubes.length; si++) aiPrevCubeStates[si] = gs.cubes[si].state;
-
     var result = unifiedPick(gs, coilyActive);
 
-    // Track position history for oscillation detection
+    // Track position history
     aiPosHistory.push(posKey);
     if (aiPosHistory.length > AI_HISTORY_LEN) aiPosHistory.shift();
 
-    // Detect oscillation: A-B-A or A-B-C-A-B-C patterns
-    // Skip override if result leads to an unfinished cube (tour planner's target)
-    var destIsUnfinished = false;
-    if (result !== 'STAY' && gs.lv >= 3) {
+    // Stuck breaker: if no progress and looping in few unique positions,
+    // pick a safe unvisited direction toward an unfinished cube
+    if (aiNoProgressCount > 12 && result !== 'STAY') {
         var dd = DIRS[result];
-        var ddr = gs.player.row + dd.dr, ddc = gs.player.col + dd.dc;
-        for (var dci = 0; dci < gs.cubes.length; dci++) {
-            if (gs.cubes[dci].row === ddr && gs.cubes[dci].col === ddc && gs.cubes[dci].state < gs.tgt) {
-                destIsUnfinished = true; break;
+        var dr = gs.player.row + dd.dr, dc = gs.player.col + dd.dc;
+        var destUnfinished = false;
+        for (var i = 0; i < gs.cubes.length; i++) {
+            if (gs.cubes[i].row === dr && gs.cubes[i].col === dc && gs.cubes[i].state < gs.tgt) {
+                destUnfinished = true; break;
             }
         }
-    }
-    if (result !== 'STAY' && !destIsUnfinished && aiPosHistory.length >= 3) {
-        var h = aiPosHistory;
-        var len = h.length;
-        var oscillating = false;
-        // A-B-A pattern (2-cycle)
-        if (len >= 3 && h[len-1] === h[len-3] && h[len-1] !== h[len-2]) oscillating = true;
-        // A-B-C-A-B-C pattern (3-cycle)
-        if (len >= 6 && h[len-1] === h[len-4] && h[len-2] === h[len-5] && h[len-3] === h[len-6]) oscillating = true;
-        // A-B-C-D-A-B-C-D pattern (4-cycle)
-        if (len >= 8 && h[len-1] === h[len-5] && h[len-2] === h[len-6] && h[len-3] === h[len-7] && h[len-4] === h[len-8]) oscillating = true;
-        // General: count unique tiles in recent history — if very few, we're looping
-        if (len >= 8) {
-            var uniqueTiles = {};
-            for (var ui = len - 8; ui < len; ui++) uniqueTiles[h[ui]] = true;
+        if (!destUnfinished && aiPosHistory.length >= 6) {
+            var recent = {};
+            for (var ri = 0; ri < aiPosHistory.length; ri++) recent[aiPosHistory[ri]] = true;
             var uniqueCount = 0;
-            for (var uk in uniqueTiles) uniqueCount++;
-            if (uniqueCount <= 3) oscillating = true;
-        }
-
-        if (oscillating) {
-            var d = DIRS[result];
-            var destKey = (gs.player.row + d.dr) + ',' + (gs.player.col + d.dc);
-            var recentTiles = {};
-            for (var ri = Math.max(0, len - 4); ri < len; ri++) recentTiles[h[ri]] = true;
-            if (recentTiles[destKey]) {
-                // Build completed cube set for revert avoidance
-                var completedCubes = {};
-                if (gs.lv >= 3) {
-                    for (var cci = 0; cci < gs.cubes.length; cci++)
-                        if (gs.cubes[cci].state >= gs.tgt) completedCubes[gs.cubes[cci].row + ',' + gs.cubes[cci].col] = true;
-                }
-                var altDir = null, altScore = -Infinity;
+            for (var rk in recent) uniqueCount++;
+            if (uniqueCount <= 4) {
+                var bestAlt = null, bestAltScore = -Infinity;
                 for (var ak = 0; ak < DIR_KEYS.length; ak++) {
-                    if (DIR_KEYS[ak] === result) continue;
                     if (!simCanMove(gs, DIR_KEYS[ak])) continue;
                     var ad = DIRS[DIR_KEYS[ak]];
                     var aKey = (gs.player.row + ad.dr) + ',' + (gs.player.col + ad.dc);
-                    if (recentTiles[aKey]) continue;
+                    if (recent[aKey]) continue;
                     var asc = aiMoveScores[DIR_KEYS[ak]];
-                    // Only accept moves with 100% survival (score >= 0)
-                    if (asc !== undefined && asc < 0) continue;
-                    // At level 3+: avoid alternatives that revert completed cubes
-                    if (completedCubes[aKey]) continue;
-                    if (asc !== undefined && asc > altScore) { altScore = asc; altDir = DIR_KEYS[ak]; }
+                    if (asc === undefined || asc < 0) continue;
+                    if (asc > bestAltScore) { bestAltScore = asc; bestAlt = DIR_KEYS[ak]; }
                 }
-                // If no non-reverting alternative, allow reverting ones (but still not recent)
-                if (!altDir) {
-                    for (var ak2 = 0; ak2 < DIR_KEYS.length; ak2++) {
-                        if (DIR_KEYS[ak2] === result) continue;
-                        if (!simCanMove(gs, DIR_KEYS[ak2])) continue;
-                        var ad2 = DIRS[DIR_KEYS[ak2]];
-                        var aKey2 = (gs.player.row + ad2.dr) + ',' + (gs.player.col + ad2.dc);
-                        if (recentTiles[aKey2]) continue;
-                        var asc2 = aiMoveScores[DIR_KEYS[ak2]];
-                        if (asc2 !== undefined && asc2 < 0) continue;
-                        if (asc2 !== undefined && asc2 > altScore) { altScore = asc2; altDir = DIR_KEYS[ak2]; }
-                    }
-                }
-                if (altDir) { result = altDir; aiPosHistory.length = 0; }
+                if (bestAlt) { result = bestAlt; aiNoProgressCount = 0; aiPosHistory.length = 0; }
             }
-        }
-    }
-
-    // No-progress breaker: escalating urgency when stuck without reducing remaining cubes.
-    // Phase 1 (>10 moves): try to land on adjacent unfinished cube (safe only)
-    // Phase 2 (>20 moves): use tour direction even if not immediately on unfinished cube
-    // Phase 3 (>30 moves): accept highest-survival move toward progress (relax 100% safety)
-    if (aiNoProgressCount > 10 && result !== 'STAY') {
-        var dd3 = DIRS[result];
-        var dr3 = gs.player.row + dd3.dr, dc3 = gs.player.col + dd3.dc;
-        var destIsUnf3 = false;
-        for (var ufi = 0; ufi < gs.cubes.length; ufi++) {
-            if (gs.cubes[ufi].row === dr3 && gs.cubes[ufi].col === dc3 && gs.cubes[ufi].state < gs.tgt) {
-                destIsUnf3 = true; break;
-            }
-        }
-        if (!destIsUnf3) {
-            // Phase 1: find adjacent unfinished cube with safe move
-            var bestProgDir = null, bestProgScore = -Infinity;
-            for (var pk = 0; pk < DIR_KEYS.length; pk++) {
-                if (!simCanMove(gs, DIR_KEYS[pk])) continue;
-                var pd = DIRS[DIR_KEYS[pk]];
-                var pnr = gs.player.row + pd.dr, pnc = gs.player.col + pd.dc;
-                if (!isValidPos(pnr, pnc)) continue;
-                for (var pui = 0; pui < gs.cubes.length; pui++) {
-                    if (gs.cubes[pui].row === pnr && gs.cubes[pui].col === pnc && gs.cubes[pui].state < gs.tgt) {
-                        var psc = aiMoveScores[DIR_KEYS[pk]];
-                        if (psc !== undefined && psc >= 0 && psc > bestProgScore) {
-                            bestProgScore = psc; bestProgDir = DIR_KEYS[pk];
-                        }
-                        break;
-                    }
-                }
-            }
-            // Phase 2 (>20): pick best safe direction by tour cost
-            if (!bestProgDir && aiNoProgressCount > 20) {
-                var bestTC = Infinity;
-                for (var pk2 = 0; pk2 < DIR_KEYS.length; pk2++) {
-                    var pk2sc = aiMoveScores[DIR_KEYS[pk2]];
-                    if (pk2sc !== undefined && pk2sc >= 0 && aiLastTourCosts[DIR_KEYS[pk2]] !== undefined) {
-                        if (aiLastTourCosts[DIR_KEYS[pk2]] < bestTC) {
-                            bestTC = aiLastTourCosts[DIR_KEYS[pk2]];
-                            bestProgDir = DIR_KEYS[pk2];
-                        }
-                    }
-                }
-            }
-            // Phase 3 (>30): pick any safe move (still requires 100% safety — never gamble)
-            if (!bestProgDir && aiNoProgressCount > 30) {
-                for (var pk3 = 0; pk3 < DIR_KEYS.length; pk3++) {
-                    if (!simCanMove(gs, DIR_KEYS[pk3])) continue;
-                    var pk3sc = aiMoveScores[DIR_KEYS[pk3]];
-                    if (pk3sc !== undefined && pk3sc >= 0) {
-                        bestProgDir = DIR_KEYS[pk3]; break;
-                    }
-                }
-            }
-            if (bestProgDir) { result = bestProgDir; aiNoProgressCount = 0; aiPosHistory.length = 0; }
         }
     }
 
