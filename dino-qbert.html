@@ -1438,7 +1438,7 @@ window.setMode = function (m) {
     if (m !== 'off') {
         inputQueue = [];
         heldDir = null;
-        if (!vizOn) toggleViz();  // auto-enable viz when AI activated
+        // viz stays off by default — user can toggle with Viz button
     }
 };
 
