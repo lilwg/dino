@@ -407,7 +407,7 @@ function peelTargetDist(gs, forceFullGraph) {
             var v = adj[a];
             if (dist[v] < 999) continue;
             if (!forceFullGraph && gs.lv >= 3 && !peelRemaining[v]) continue;
-            dist[v] = dist[u] + 1;
+            dist[v] = dist[u] + 1 + (stomps[v] <= 0 ? 0.1 : 0);
             queue.push(v);
         }
     }
