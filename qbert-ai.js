@@ -547,9 +547,9 @@ function findPeelTarget(stomps) {
     return bestIdx;
 }
 
-// BFS from sourceIdx to all reachable positions, avoiding sealed cubes.
+// BFS from sourceIdx to all reachable positions.
 // Returns distance array (999 = unreachable).
-function bfsFromIdx(sourceIdx, sealed) {
+function bfsFromIdx(sourceIdx) {
     var dist = new Float64Array(POS_COUNT);
     for (var i = 0; i < POS_COUNT; i++) dist[i] = 999;
     dist[sourceIdx] = 0;
@@ -561,7 +561,6 @@ function bfsFromIdx(sourceIdx, sealed) {
         for (var a = 0; a < adj.length; a++) {
             var v = adj[a];
             if (dist[v] < 999) continue;
-            if (sealed[v] === 1) continue;
             dist[v] = dist[u] + 1;
             queue.push(v);
         }
@@ -837,7 +836,7 @@ function unifiedPick(gs, coilyActive) {
                 var sdk = DIRS[DIR_KEYS[sk]];
                 var snr = gs.player.row + sdk.dr, snc = gs.player.col + sdk.dc;
                 if (snr === spos.row && snc === spos.col) {
-                    if (safe1[DIR_KEYS[sk]] && safe2[DIR_KEYS[sk]] && !entersSealed(gs, DIR_KEYS[sk], seal)) {
+                    if (safe1[DIR_KEYS[sk]] && safe2[DIR_KEYS[sk]] && seal[posToIdx[(gs.player.row + sdk.dr) * ROWS + (gs.player.col + sdk.dc)]] !== 1) {
                         restoreRng(); return DIR_KEYS[sk];
                     }
                 }
@@ -853,40 +852,23 @@ function unifiedPick(gs, coilyActive) {
         stomps[idx] = stompsNeeded(gs.cubes[i].state, gs.lv);
     }
     var peelTarget = findPeelTarget(stomps);
-    if (peelTarget < 0) { restoreRng(); return 'STAY'; }
 
-    // BFS from peel target to all positions (avoiding sealed)
-    var targetDist = bfsFromIdx(peelTarget, seal);
-
-    // Check if any safe non-reverting direction exists
-    var hasNonRevert = false;
-    if (gs.lv >= 3) {
-        for (var nrk = 0; nrk < DIR_KEYS.length; nrk++) {
-            var nrd = DIR_KEYS[nrk];
-            if (!safe1[nrd] || !safe2[nrd]) continue;
-            if (entersSealed(gs, nrd, seal)) continue;
-            var ndir = DIRS[nrd];
-            var nnr = gs.player.row + ndir.dr, nnc = gs.player.col + ndir.dc;
-            if (!isValidPos(nnr, nnc)) continue;
-            var nReverts = false;
-            for (var nci = 0; nci < gs.cubes.length; nci++) {
-                if (gs.cubes[nci].row === nnr && gs.cubes[nci].col === nnc && gs.cubes[nci].state >= gs.tgt) {
-                    nReverts = true; break;
-                }
-            }
-            if (!nReverts) { hasNonRevert = true; break; }
-        }
-    }
+    // BFS from peel target (or apex as fallback) to all positions
+    var targetDist = bfsFromIdx(peelTarget >= 0 ? peelTarget : 0);
 
     // Pick safe direction closest to peel target
-    var REVERT_MOVE_COST = 6;
+    // Sealed cubes get a soft penalty scaled by peel order:
+    //   low peel order (apex/edges) = high penalty (don't revert these)
+    //   high peel order (interior) = lower penalty (cheaper to traverse)
+    ensurePeelOrder();
+    var SEALED_BASE_COST = 4;
+    var SEALED_PEEL_SCALE = 0.15;
     var curIdx = posToIdx[gs.player.row * ROWS + gs.player.col];
     var curDist = targetDist[curIdx];
     var bestDir = null, bestScore = Infinity;
     for (var fk = 0; fk < DIR_KEYS_WITH_STAY.length; fk++) {
         var fd = DIR_KEYS_WITH_STAY[fk];
         if (!safe1[fd] || !safe2[fd]) continue;
-        if (entersSealed(gs, fd, seal)) continue;
 
         // Landing position
         var lr = gs.player.row, lc = gs.player.col;
@@ -904,13 +886,20 @@ function unifiedPick(gs, coilyActive) {
         // Bonus for landing on an uncompleted cube — only when moving closer
         if (stomps[lidx] > 0 && targetDist[lidx] < curDist) score -= 2;
         // Extra bonus for landing on the peel target itself
-        if (lidx === peelTarget) score -= 3;
+        if (peelTarget >= 0 && lidx === peelTarget) score -= 3;
 
-        // Soft revert penalty — only when a non-reverting option exists
-        if (hasNonRevert && fd !== 'STAY') {
+        // Sealed cube penalty — scaled by peel order so interior is cheaper to revert
+        // Low peel order (completed early = apex/edges) gets high penalty
+        // High peel order (completed late = interior) gets lower penalty
+        if (seal[lidx] === 1 && fd !== 'STAY') {
+            score += SEALED_BASE_COST + (POS_COUNT - PEEL_ORDER[lidx]) * SEALED_PEEL_SCALE;
+        }
+
+        // Revert penalty for stepping on completed (non-sealed) cubes
+        if (gs.lv >= 3 && fd !== 'STAY' && seal[lidx] !== 1) {
             for (var fci = 0; fci < gs.cubes.length; fci++) {
                 if (gs.cubes[fci].row === lr && gs.cubes[fci].col === lc && gs.cubes[fci].state >= gs.tgt) {
-                    score += REVERT_MOVE_COST;
+                    score += SEALED_BASE_COST;
                     break;
                 }
             }
@@ -1059,24 +1048,6 @@ function aiPickBestDir() {
         }
     } else {
         aiStayCount = 0;
-    }
-
-    // ── FINAL SEALED GUARD ──
-    // If the chosen direction enters a sealed corner triangle, override it.
-    // Catches oscillation/stuck breakers that might bypass unifiedPick's check.
-    var finalSeal = computeSealedSet(gs);
-    if (entersSealed(gs, result, finalSeal)) {
-        var guardAlt = null, guardScore = -Infinity;
-        for (var gk = 0; gk < DIR_KEYS_WITH_STAY.length; gk++) {
-            var gd = DIR_KEYS_WITH_STAY[gk];
-            if (gd === result) continue;
-            if (!simCanMove(gs, gd)) continue;
-            if (entersSealed(gs, gd, finalSeal)) continue;
-            var gsc = aiMoveScores[gd];
-            if (gsc === undefined) gsc = 0;
-            if (gsc > guardScore) { guardScore = gsc; guardAlt = gd; }
-        }
-        if (guardAlt) result = guardAlt;
     }
 
     // Restore game RNG — must never leak seeded RNG into real game
