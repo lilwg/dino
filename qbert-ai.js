@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic (peel routing)
-var AI_VERSION = 'v13.13';
+var AI_VERSION = 'v13.14';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -497,7 +497,7 @@ function unifiedPick(gs) {
                 if (hop1States.length < 4) hop1States.push(child);
             }
         }
-        hop1Surv[dir] = safe1[dir] ? 1 : survived / 8;
+        hop1Surv[dir] = safe1[dir] ? 1 : Math.min(survived / 8, 0.49);
 
         // Export for viz
         aiMoveScores[dir] = safe1[dir] ? 10000 : (survived > 0 ? survived * 100 - 1000 : -10000);
@@ -603,7 +603,9 @@ function unifiedPick(gs) {
     }
 
     // No safe movement direction — STAY if it's safe
-    if (safe1['STAY'] && safe2['STAY']) {
+    // Don't require safe2 here: delaying death is always better than
+    // choosing an exhaustive-unsafe direction that dies immediately.
+    if (safe1['STAY']) {
         restoreRng(); return 'STAY';
     }
 
