@@ -861,8 +861,11 @@ function unifiedPick(gs, coilyActive) {
     //   low peel order (apex/edges) = high penalty (don't revert these)
     //   high peel order (interior) = lower penalty (cheaper to traverse)
     ensurePeelOrder();
-    var SEALED_BASE_COST = 4;
-    var SEALED_PEEL_SCALE = 0.15;
+    // Revert cost: how many stomps wasted by reverting a completed cube
+    var revertCost = (gs.lv >= 5) ? 2 : 1;
+    var SEALED_BASE_COST = 4 * revertCost;
+    var SEALED_PEEL_SCALE = 0.15 * revertCost;
+    var BACKTRACK_PENALTY = 3;
     var curIdx = posToIdx[gs.player.row * ROWS + gs.player.col];
     var curDist = targetDist[curIdx];
     var bestDir = null, bestScore = Infinity;
@@ -900,6 +903,18 @@ function unifiedPick(gs, coilyActive) {
             for (var fci = 0; fci < gs.cubes.length; fci++) {
                 if (gs.cubes[fci].row === lr && gs.cubes[fci].col === lc && gs.cubes[fci].state >= gs.tgt) {
                     score += SEALED_BASE_COST;
+                    break;
+                }
+            }
+        }
+
+        // Backtrack penalty: discourage revisiting recent positions (prevents oscillation)
+        if (fd !== 'STAY' && aiPosHistory.length > 0) {
+            var destKey = lr + ',' + lc;
+            var lookback = Math.min(aiPosHistory.length, 4);
+            for (var bk = aiPosHistory.length - 1; bk >= aiPosHistory.length - lookback; bk--) {
+                if (aiPosHistory[bk] === destKey) {
+                    score += BACKTRACK_PENALTY;
                     break;
                 }
             }
