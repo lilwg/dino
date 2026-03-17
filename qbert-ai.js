@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic  (v8 — sealed corner triangles)
-var AI_VERSION = 'v10-peel-order';
+var AI_VERSION = 'v11-peel-routing';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -502,6 +502,47 @@ function entersSealed(gs, dir, sealed) {
     return isSealed(nr, nc, sealed);
 }
 
+// ─── Peel-order routing ─────────────────────────────────────────────────────
+// Peel priority: lower value = should be completed first.
+// Bottom corners (degree-1 dead ends) = 0, apex = highest.
+// This is the order of iterative leaf removal from the boundary inward.
+function peelPriority(row, col) {
+    return (ROWS - 1 - row) * ROWS + Math.min(col, row - col);
+}
+
+// Find the highest-priority (lowest peelPriority) uncompleted cube.
+function findPeelTarget(stomps) {
+    var bestIdx = -1, bestPrio = Infinity;
+    for (var i = 0; i < POS_COUNT; i++) {
+        if (stomps[i] <= 0) continue;
+        var pos = idxToPos[i];
+        var prio = peelPriority(pos[0], pos[1]);
+        if (prio < bestPrio) { bestPrio = prio; bestIdx = i; }
+    }
+    return bestIdx;
+}
+
+// BFS from sourceIdx to all reachable positions, avoiding sealed cubes.
+// Returns distance array (999 = unreachable).
+function bfsFromIdx(sourceIdx, sealed) {
+    var dist = new Float64Array(POS_COUNT);
+    for (var i = 0; i < POS_COUNT; i++) dist[i] = 999;
+    dist[sourceIdx] = 0;
+    var queue = [sourceIdx];
+    var head = 0;
+    while (head < queue.length) {
+        var u = queue[head++];
+        var adj = posAdj[u];
+        for (var a = 0; a < adj.length; a++) {
+            var v = adj[a];
+            if (dist[v] < 999) continue;
+            if (sealed[v] === 1) continue;
+            dist[v] = dist[u] + 1;
+            queue.push(v);
+        }
+    }
+    return dist;
+}
 
 // ─── Can-move check ──────────────────────────────────────────────────────────
 function simCanMove(gs, dirKey) {
@@ -614,10 +655,10 @@ function evalDiscLure() {
 
 // ─── Scoring helpers (removed — safety is now handled by 2-hop MC simulation) ─
 
-// ─── Route-first AI: plan optimal path, validate safety via 2-hop simulation ─
-// Philosophy: tour planner decides WHERE to go (optimal routing), simulation
-// validates IF it's safe (next 2 hops collision-free). If not safe, STAY.
-// No heuristic scoring — just routing + timing.
+// ─── Peel-routing AI: move toward highest-priority uncompleted cube ──────────
+// Philosophy: graph-peeling determines WHAT to complete next (outside-in),
+// BFS determines HOW to get there, MC simulation validates IF it's safe.
+// No tour-cost estimation — just peel target + shortest path + safety.
 
 function unifiedPick(gs, coilyActive) {
     var savedRng = simRng;
@@ -625,12 +666,9 @@ function unifiedPick(gs, coilyActive) {
     function simSeed(sampleIdx) { simRng = createSeededRng(baseSeed + sampleIdx * 9973); }
     function restoreRng() { simRng = savedRng; }
 
-
-    // MC samples for safety validation — enough to catch random enemy moves
     var hasEnemies = gs.enemies.length > 0;
     var SAMPLES = coilyActive ? 20 : (hasEnemies ? 12 : 4);
 
-    // Compute sealed corner triangles once for this decision
     var seal = computeSealedSet(gs);
 
     // Disc lure — use when Coily is active
@@ -647,12 +685,9 @@ function unifiedPick(gs, coilyActive) {
         }
     }
 
-    // ── Core: check each direction for 2-hop safety ──
-    // A direction is "safe" if hop 1 survives AND at least one follow-up hop 2 survives.
-
+    // ── Safety check for each direction (MC + exhaustive + hop-2/3 chain) ──
     var safe1 = {};      // dir -> true if 100% survival on hop 1
     var safe2 = {};      // dir -> true if at least one hop 2 option also survives
-    var tourCosts = {};  // dir -> avg tour cost after hop 1
     var hop1Surv = {};   // dir -> survival rate (for fallback)
 
     for (var k = 0; k < DIR_KEYS_WITH_STAY.length; k++) {
@@ -666,54 +701,26 @@ function unifiedPick(gs, coilyActive) {
             if (!isValidPos(dnr, dnc)) continue;
         }
 
-        // Never enter a completed dead-end cube (e.g. bottom corners) — no reason to visit
-        if (dir !== 'STAY') {
-            var dde = DIRS[dir];
-            var lr = gs.player.row + dde.dr, lc = gs.player.col + dde.dc;
-            if (isValidPos(lr, lc)) {
-                var lidx = posToIdx[lr * ROWS + lc];
-                if (lidx >= 0 && posAdj[lidx].length <= 1) {
-                    var cubeComplete = false;
-                    for (var ci = 0; ci < gs.cubes.length; ci++) {
-                        if (gs.cubes[ci].row === lr && gs.cubes[ci].col === lc && gs.cubes[ci].state >= gs.tgt) {
-                            cubeComplete = true; break;
-                        }
-                    }
-                    if (cubeComplete) continue;
-                }
-            }
-        }
-
-        // Hop 1: simulate this direction
-        var survived = 0, totalTC = 0;
-        var hop1States = [];  // save states for hop 2+ check
+        // Hop 1: MC simulation — just check survival, no tour cost
+        var survived = 0;
+        var hop1States = [];
         for (var s = 0; s < SAMPLES; s++) {
             simSeed(k * 100 + s);
             var child = simDeepClone(gs);
             var alive = simStep(child, dir);
             if (alive) {
                 survived++;
-                if (child.levelWon) totalTC -= 1000;
-                else totalTC += simTourCost(child);
                 if (hop1States.length < 10) hop1States.push(child);
             }
         }
 
         hop1Surv[dir] = survived / SAMPLES;
-        if (survived === SAMPLES) {
-            safe1[dir] = true;
-            tourCosts[dir] = totalTC / survived;
-            if (dir === 'STAY') tourCosts[dir] += 2;  // slight penalty for waiting
-        }
+        if (survived === SAMPLES) safe1[dir] = true;
 
-        // Exhaustive nearby-enemy check: MC may miss rare collision paths
-        // (e.g. ugg/wrongway with 12% hit probability → 8% miss rate at 20 samples).
-        // The exhaustive check enumerates ALL possible paths for nearby enemies.
+        // Exhaustive nearby-enemy check
         if (safe1[dir] && hasEnemies) {
             restoreRng();
             if (dir === 'STAY') {
-                // Short-window exhaustive for STAY: only check 1 enemy hop cycle
-                // (full window causes false positives from distant enemies).
                 var stayFrames = 10;
                 var stayTiles = [];
                 for (var sf = 0; sf < stayFrames; sf++) stayTiles.push({ row: gs.player.row, col: gs.player.col });
@@ -737,20 +744,18 @@ function unifiedPick(gs, coilyActive) {
         }
 
         // Export for viz
-        if (!safe1[dir] && survived === SAMPLES) aiMoveScores[dir] = -8000; // exhaustive check blocked
+        if (!safe1[dir] && survived === SAMPLES) aiMoveScores[dir] = -8000;
         else if (survived === 0) aiMoveScores[dir] = -10000;
-        else if (survived === SAMPLES && safe1[dir]) aiMoveScores[dir] = 10000 - (totalTC / survived);
+        else if (survived === SAMPLES && safe1[dir]) aiMoveScores[dir] = 10000;
         else aiMoveScores[dir] = (survived / SAMPLES) * 100 - 100;
 
-        // Hop 2+3: if hop 1 is safe and enemies exist, verify a safe 3-hop chain.
-        // Hop 2: MC (3 seeds) + exhaustive. Hop 3: MC only (avoids cornering).
+        // Hop 2+3 chain check (anti-cornering)
         if (safe1[dir] && hasEnemies && dir !== 'STAY') {
             var has2ndSafe = false;
             for (var d2k = 0; d2k < DIR_KEYS_WITH_STAY.length; d2k++) {
                 var d2dir = DIR_KEYS_WITH_STAY[d2k];
                 var d2ok = true;
                 var hop2States = [];
-                // MC check: multiple seeds per hop1State for reliability
                 for (var si = 0; si < hop1States.length; si++) {
                     var stateOk = true;
                     for (var s2 = 0; s2 < 3; s2++) {
@@ -761,13 +766,11 @@ function unifiedPick(gs, coilyActive) {
                     }
                     if (!stateOk) { d2ok = false; break; }
                 }
-                // Exhaustive check on hop-2: catch rare enemy paths MC misses
                 if (d2ok && d2dir !== 'STAY') {
                     for (var si2 = 0; si2 < hop1States.length; si2++) {
                         if (!isExhaustiveSafe(hop1States[si2], d2dir)) { d2ok = false; break; }
                     }
                 }
-                // Hop 3: verify at least one safe escape from hop-2 state (anti-cornering)
                 if (d2ok && hop2States.length > 0) {
                     var has3rdSafe = false;
                     for (var d3k = 0; d3k < DIR_KEYS_WITH_STAY.length; d3k++) {
@@ -785,26 +788,21 @@ function unifiedPick(gs, coilyActive) {
                 if (d2ok && hop1States.length > 0) { has2ndSafe = true; break; }
             }
             safe2[dir] = has2ndSafe;
-            if (!has2ndSafe) {
-                aiMoveScores[dir] = -5000;
-            }
+            if (!has2ndSafe) aiMoveScores[dir] = -5000;
         } else if (dir === 'STAY' && hasEnemies) {
-            // STAY is safe2 only if at least one movement direction passed safe1.
-            // Prevents sitting in danger zones while Coily closes in.
             var canEscape = false;
             for (var ek = 0; ek < DIR_KEYS.length; ek++) {
                 if (safe1[DIR_KEYS[ek]]) { canEscape = true; break; }
             }
             safe2[dir] = canEscape;
         } else {
-            safe2[dir] = true;  // no enemies — skip hop 2+3 check
+            safe2[dir] = true;
         }
     }
 
     aiLastHop1Surv = hop1Surv;
-    aiLastTourCosts = tourCosts;
 
-    // Slick pursuit on toggle levels — catch them if adjacent and safe
+    // Slick pursuit — catch them if adjacent and safe
     if (gs.lv >= 3) {
         for (var si2 = 0; si2 < gs.enemies.length; si2++) {
             var se = gs.enemies[si2];
@@ -822,21 +820,26 @@ function unifiedPick(gs, coilyActive) {
         }
     }
 
-    // Pick safe direction with lowest tour cost.
-    // Never enter a sealed corner triangle.
-    // Soft revert penalty: on toggle levels, add extra cost for stepping on
-    // completed cubes. This discourages reverts without being a hard wall
-    // (unlike sealed regions which completely block entry).
-    // Only apply penalty when a non-reverting direction exists — otherwise
-    // the AI gets stuck (e.g. at apex surrounded by completed cubes).
-    var REVERT_MOVE_COST = 6;
+    // ── Peel-based direction selection ──
+    // Build stomps array and find the peel target
+    var stomps = new Int8Array(POS_COUNT);
+    for (var i = 0; i < gs.cubes.length; i++) {
+        var idx = posToIdx[gs.cubes[i].row * ROWS + gs.cubes[i].col];
+        stomps[idx] = stompsNeeded(gs.cubes[i].state, gs.lv);
+    }
+    var peelTarget = findPeelTarget(stomps);
+    if (peelTarget < 0) { restoreRng(); return 'STAY'; }
+
+    // BFS from peel target to all positions (avoiding sealed)
+    var targetDist = bfsFromIdx(peelTarget, seal);
+
+    // Check if any safe non-reverting direction exists
     var hasNonRevert = false;
     if (gs.lv >= 3) {
         for (var nrk = 0; nrk < DIR_KEYS.length; nrk++) {
             var nrd = DIR_KEYS[nrk];
             if (!safe1[nrd] || !safe2[nrd]) continue;
             if (entersSealed(gs, nrd, seal)) continue;
-            if (tourCosts[nrd] === undefined) continue;
             var ndir = DIRS[nrd];
             var nnr = gs.player.row + ndir.dr, nnc = gs.player.col + ndir.dc;
             if (!isValidPos(nnr, nnc)) continue;
@@ -849,32 +852,51 @@ function unifiedPick(gs, coilyActive) {
             if (!nReverts) { hasNonRevert = true; break; }
         }
     }
-    var bestDir = null, bestCost = Infinity;
+
+    // Pick safe direction closest to peel target
+    var REVERT_MOVE_COST = 6;
+    var bestDir = null, bestScore = Infinity;
     for (var fk = 0; fk < DIR_KEYS_WITH_STAY.length; fk++) {
         var fd = DIR_KEYS_WITH_STAY[fk];
         if (!safe1[fd] || !safe2[fd]) continue;
         if (entersSealed(gs, fd, seal)) continue;
-        var fc = tourCosts[fd];
-        if (fc === undefined) continue;
+
+        // Landing position
+        var lr = gs.player.row, lc = gs.player.col;
+        if (fd !== 'STAY') {
+            var fdd = DIRS[fd];
+            lr += fdd.dr; lc += fdd.dc;
+            if (!isValidPos(lr, lc)) continue;
+        }
+        var lidx = posToIdx[lr * ROWS + lc];
+        if (lidx < 0) continue;
+
+        var score = targetDist[lidx];
+        if (score >= 999) continue;
+
+        // Bonus for landing on an uncompleted cube
+        if (stomps[lidx] > 0) score -= 2;
+        // Extra bonus for landing on the peel target itself
+        if (lidx === peelTarget) score -= 3;
+
         // Soft revert penalty — only when a non-reverting option exists
         if (hasNonRevert && fd !== 'STAY') {
-            var fdir = DIRS[fd];
-            var fnr = gs.player.row + fdir.dr, fnc = gs.player.col + fdir.dc;
-            if (isValidPos(fnr, fnc)) {
-                for (var fci = 0; fci < gs.cubes.length; fci++) {
-                    if (gs.cubes[fci].row === fnr && gs.cubes[fci].col === fnc && gs.cubes[fci].state >= gs.tgt) {
-                        fc += REVERT_MOVE_COST;
-                        break;
-                    }
+            for (var fci = 0; fci < gs.cubes.length; fci++) {
+                if (gs.cubes[fci].row === lr && gs.cubes[fci].col === lc && gs.cubes[fci].state >= gs.tgt) {
+                    score += REVERT_MOVE_COST;
+                    break;
                 }
             }
         }
-        if (fc < bestCost) { bestCost = fc; bestDir = fd; }
+
+        // STAY penalty
+        if (fd === 'STAY') score += 2;
+
+        if (score < bestScore) { bestScore = score; bestDir = fd; }
     }
     if (bestDir) { restoreRng(); return bestDir; }
 
-    // No fully-safe option — prefer STAY to wait for better timing
-    // Only move if STAY itself has poor survival or we'd die anyway
+    // No fully-safe option — prefer STAY, then best survival
     if (hop1Surv['STAY'] !== undefined && hop1Surv['STAY'] >= 1) {
         restoreRng(); return 'STAY';
     }
