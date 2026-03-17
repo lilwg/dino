@@ -821,8 +821,8 @@ function draw() {
     // AI viz path (before inversion — color elements excluded from inversion)
     if (vizOn) drawVizPath();
 
-    // Shade enemy collision faces red (debug/viz mode)
-    if (debugEnemies || vizOn) drawEnemyCollisionFaces();
+    // Shade enemy collision faces red (debug mode only)
+    if (debugEnemies) drawEnemyCollisionFaces();
 
     // Enemies and player (before inversion so they invert with scene)
     if (enemiesEnabled) for (var i = 0; i < enemies.length; i++) drawEnemy(enemies[i]);
@@ -959,10 +959,10 @@ function drawVizPath() {
             var g2 = Math.round(255 * t);
             var alpha = isBest ? 0.85 : 0.50;
 
-            // Draw circle indicator
+            // Draw circle indicator warped to isometric cube top
             var radius = isBest ? 8 : 6;
             ctx.beginPath();
-            ctx.arc(pt.cx, pt.cy, radius, 0, Math.PI * 2);
+            ctx.ellipse(pt.cx, pt.cy, radius, radius * 0.5, 0, 0, Math.PI * 2);
             ctx.fillStyle = 'rgba(' + r2 + ',' + g2 + ',0,' + alpha + ')';
             ctx.fill();
             if (isBest) {
@@ -971,16 +971,20 @@ function drawVizPath() {
                 ctx.stroke();
             }
 
-            // Draw value text — show tour cost for safe moves, survival % for unsafe
+            // Draw value text warped to isometric cube top
             var label;
             if (v <= -10000) label = 'DIE';
             else if (v >= 9000) label = 'WIN';
             else if (v >= 0) label = Math.round(10000 - v).toString();
             else label = Math.max(0, Math.round(v + 100)) + '%';
+            ctx.save();
+            ctx.translate(pt.cx, pt.cy - radius * 0.5 - 2);
+            ctx.scale(1, 0.5);
             ctx.font = '9px monospace';
             ctx.textAlign = 'center';
             ctx.fillStyle = isBest ? '#fff' : 'rgba(255,255,255,0.7)';
-            ctx.fillText(label, pt.cx, pt.cy - radius - 3);
+            ctx.fillText(label, 0, 0);
+            ctx.restore();
         }
 
         // Draw arrow from player to best move
@@ -1022,69 +1026,38 @@ function drawVizPath() {
         ctx.fill();
     }
 
-    // ── Tour path: connected line through remaining cubes ──
+    // ── Tour path: numbered dots on remaining cubes (no lines) ──
     if (aiTourPath.length >= 2) {
-        ctx.beginPath();
-        var tp0 = cubeXY(aiTourPath[0].row, aiTourPath[0].col);
-        ctx.moveTo(tp0.cx, tp0.cy);
         for (var j = 1; j < aiTourPath.length; j++) {
             var tp = cubeXY(aiTourPath[j].row, aiTourPath[j].col);
-            ctx.lineTo(tp.cx, tp.cy);
-        }
-        ctx.strokeStyle = 'rgba(255,200,0,0.35)';
-        ctx.lineWidth = 1.5;
-        ctx.setLineDash([4, 3]);
-        ctx.stroke();
-        ctx.setLineDash([]);
-
-        // Numbered dots at each tour stop
-        for (var j = 1; j < aiTourPath.length; j++) {
-            var tp = cubeXY(aiTourPath[j].row, aiTourPath[j].col);
+            // Warped dot on isometric cube top
             ctx.beginPath();
-            ctx.arc(tp.cx, tp.cy, 5, 0, Math.PI * 2);
+            ctx.ellipse(tp.cx, tp.cy, 5, 2.5, 0, 0, Math.PI * 2);
             ctx.fillStyle = 'rgba(255,200,0,0.5)'; ctx.fill();
+            // Warped number text
+            ctx.save();
+            ctx.translate(tp.cx, tp.cy + 1);
+            ctx.scale(1, 0.5);
             ctx.font = '7px monospace';
             ctx.textAlign = 'center';
             ctx.fillStyle = 'rgba(0,0,0,0.7)';
-            ctx.fillText(j.toString(), tp.cx, tp.cy + 2.5);
+            ctx.fillText(j.toString(), 0, 0);
+            ctx.restore();
         }
     }
 
-    // ── Coily predicted path: purple chain ──
+    // ── Coily predicted path: purple dots on cube tops ──
     if (aiCoilyPred.length > 0) {
-        // Find current Coily position to start the chain
-        var coilyStart = null;
-        for (var ei = 0; ei < enemies.length; ei++) {
-            if (enemies[ei].type === 'coily') {
-                var epos = enemyEffectivePos(enemies[ei]);
-                coilyStart = cubeXY(epos.row, epos.col);
-                break;
-            }
-        }
-        if (coilyStart) {
+        for (var j = 0; j < aiCoilyPred.length; j++) {
+            var cp = cubeXY(aiCoilyPred[j].row, aiCoilyPred[j].col);
+            var stepAlpha = 0.7 - j * 0.15;
+            // Warped dot on isometric cube top
             ctx.beginPath();
-            ctx.moveTo(coilyStart.cx, coilyStart.cy);
-            for (var j = 0; j < aiCoilyPred.length; j++) {
-                var cp = cubeXY(aiCoilyPred[j].row, aiCoilyPred[j].col);
-                ctx.lineTo(cp.cx, cp.cy);
-            }
-            ctx.strokeStyle = 'rgba(180,60,255,0.6)';
-            ctx.lineWidth = 2;
-            ctx.setLineDash([3, 2]);
+            ctx.ellipse(cp.cx, cp.cy, 5, 2.5, 0, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(180,60,255,' + stepAlpha + ')'; ctx.fill();
+            ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+            ctx.lineWidth = 1;
             ctx.stroke();
-            ctx.setLineDash([]);
-
-            // Dots at each predicted position with step number
-            for (var j = 0; j < aiCoilyPred.length; j++) {
-                var cp = cubeXY(aiCoilyPred[j].row, aiCoilyPred[j].col);
-                var stepAlpha = 0.7 - j * 0.15;
-                ctx.beginPath();
-                ctx.arc(cp.cx, cp.cy, 5, 0, Math.PI * 2);
-                ctx.fillStyle = 'rgba(180,60,255,' + stepAlpha + ')'; ctx.fill();
-                ctx.strokeStyle = 'rgba(255,255,255,0.5)';
-                ctx.lineWidth = 1;
-                ctx.stroke();
-            }
         }
     }
 

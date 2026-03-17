@@ -88,7 +88,7 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts) {
     }
 
     var isToggle = lv >= 3;
-    var REVERT_PENALTY = isToggle ? 2 : 0;
+    var REVERT_PENALTY = isToggle ? 4 : 0;
     var curIdx = startIdx;
     var totalHops = 0;
 
@@ -123,13 +123,15 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts) {
             while (pc !== curIdx) { path.push(pc); pc = dijk.prev[pc]; }
             totalHops += path.length;
 
-            // Apply stomps along path; fix reverts immediately (never leave debt)
+            // Apply stomps along path; reverted cubes become new targets
             for (var p = path.length - 1; p >= 0; p--) {
                 var pos = path[p];
                 if (stomps[pos] > 0) {
                     stomps[pos]--;
                 } else {
-                    totalHops += 2;
+                    // Walking through a completed cube reverts it — add back as target
+                    // so the tour properly models the cascade cost of fixing it later
+                    stomps[pos] = lv >= 5 ? 2 : 1;
                 }
             }
             curIdx = bestIdx;
