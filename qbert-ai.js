@@ -335,7 +335,7 @@ function computePeelLayers(remaining) {
 var PEEL_LAYER = null;
 var PEEL_DEGREE = null;
 
-function peelTargetDist(gs) {
+function peelTargetDist(gs, forceFullGraph) {
     var roundId = (gs.round || 0) * 1000 + (gs.lv || 0);
     if (!peelRemaining || peelRound !== roundId) {
         peelReset();
@@ -405,33 +405,7 @@ function peelTargetDist(gs) {
         for (var a = 0; a < adj.length; a++) {
             var v = adj[a];
             if (dist[v] < 999) continue;
-            if (!peelRemaining[v]) continue;
-            dist[v] = dist[u] + 1;
-            queue.push(v);
-        }
-    }
-    return dist;
-}
-
-// Simple target distance for non-toggle levels: BFS from nearest uncompleted cube
-function peelTargetDistSimple(gs) {
-    var dist = new Float64Array(POS_COUNT);
-    for (var i = 0; i < POS_COUNT; i++) dist[i] = 999;
-    var queue = [];
-    for (var i = 0; i < gs.cubes.length; i++) {
-        var idx = posToIdx[gs.cubes[i].row * ROWS + gs.cubes[i].col];
-        if (stompsNeeded(gs.cubes[i].state, gs.lv) > 0) {
-            dist[idx] = 0;
-            queue.push(idx);
-        }
-    }
-    var head = 0;
-    while (head < queue.length) {
-        var u = queue[head++];
-        var adj = posAdj[u];
-        for (var a = 0; a < adj.length; a++) {
-            var v = adj[a];
-            if (dist[v] < 999) continue;
+            if (!forceFullGraph && gs.lv >= 3 && !peelRemaining[v]) continue;
             dist[v] = dist[u] + 1;
             queue.push(v);
         }
@@ -567,7 +541,7 @@ function unifiedPick(gs, coilyActive) {
     }
 
     // ── Peel-based direction selection ──
-    var targetDist = (gs.lv >= 3) ? peelTargetDist(gs) : peelTargetDistSimple(gs);
+    var targetDist = peelTargetDist(gs);
 
     var bestDir = null, bestScore = Infinity;
     for (var fk = 0; fk < DIR_KEYS.length; fk++) {
@@ -589,7 +563,7 @@ function unifiedPick(gs, coilyActive) {
     // Peel BFS found no path (e.g. respawn at apex, separated from targets by
     // removed cubes). Fall back to simple BFS on the full graph to reconnect.
     if (gs.lv >= 3) {
-        targetDist = peelTargetDistSimple(gs);
+        targetDist = peelTargetDist(gs, true);
         bestDir = null; bestScore = Infinity;
         for (var fk2 = 0; fk2 < DIR_KEYS.length; fk2++) {
             var fd2 = DIR_KEYS[fk2];
