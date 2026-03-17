@@ -444,14 +444,7 @@ function simCanMove(gs, dirKey) {
     if (dirKey === 'STAY') return true;
     var d = DIRS[dirKey];
     var nr = gs.player.row + d.dr, nc = gs.player.col + d.dc;
-    if (isValidPos(nr, nc)) return true;
-    for (var di = 0; di < gs.discs.length; di++) {
-        var disc = gs.discs[di];
-        if (!disc.active) continue;
-        if (disc.side === 0 && dirKey === 'UL' && gs.player.col === 0 && gs.player.row === disc.row) return true;
-        if (disc.side === 1 && dirKey === 'UR' && gs.player.col === gs.player.row && gs.player.row === disc.row) return true;
-    }
-    return false;
+    return isValidPos(nr, nc);
 }
 
 // ─── Direction selection ─────────────────────────────────────────────────────
@@ -473,13 +466,6 @@ function unifiedPick(gs, coilyActive) {
     for (var k = 0; k < DIR_KEYS_WITH_STAY.length; k++) {
         var dir = DIR_KEYS_WITH_STAY[k];
         if (!simCanMove(gs, dir)) continue;
-
-        // Don't waste discs when there's no Coily
-        if (!coilyActive && dir !== 'STAY') {
-            var dd = DIRS[dir];
-            var dnr = gs.player.row + dd.dr, dnc = gs.player.col + dd.dc;
-            if (!isValidPos(dnr, dnc)) continue;
-        }
 
         // Hop 1: MC simulation
         var survived = 0;
