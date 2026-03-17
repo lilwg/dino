@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic  (v8 — sealed corner triangles)
-var AI_VERSION = 'v8-sealed-corners';
+var AI_VERSION = 'v9-human-heuristics';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -107,6 +107,10 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs) {
         for (var i = 0; i < POS_COUNT; i++) {
             if (stomps[i] > 0 && i !== curIdx) {
                 var d = dijk.dist[i];
+                // Bottom-up bias: on toggle levels, prefer completing lower cubes first.
+                // Row bonus makes bottom cubes appear closer for target selection,
+                // but real hop count is used for cost accumulation.
+                if (isToggle) d -= idxToPos[i][0] * 0.3;
                 if (d < bestDist || (d === bestDist && (bestIdx === -1 || i < bestIdx))) {
                     bestDist = d; bestIdx = i;
                 }
@@ -443,14 +447,13 @@ function aiTourInit() {
     aiLastRemaining = 99; aiNoProgressCount = 0; aiStayCount = 0; aiSamePosCount = 0; aiPosHistory = [];
 }
 
-// Compute sealed regions from game state. Sealed = completed & off-limits.
-// Grows from corners along edges:
-//   Corner triangles: triangular regions from bottom-left/right corners
-//   Left edge: contiguous completed cubes along col=0 from bottom up
-//   Right edge: contiguous completed cubes along col=row from bottom up
-//   Bottom row: contiguous completed cubes from each end toward center
+// Compute sealed corner triangles from game state. Sealed = completed & off-limits.
+// Only corner triangles: triangular regions of completed cubes growing from
+// bottom-left/right corners. These are the most critical zones to protect
+// because once sealed they're hard to reach and easy to accidentally revert.
+// Other completed cubes are protected by a soft revert penalty at move-choice level.
 function computeSealed(gs) {
-    var none = {triL: 0, triR: 0, edgeL: 0, edgeR: 0, botL: 0, botR: 0};
+    var none = {triL: 0, triR: 0};
     if (gs.lv < 3) return none;
     var stomps = new Int8Array(POS_COUNT);
     for (var i = 0; i < gs.cubes.length; i++) {
@@ -475,46 +478,13 @@ function computeSealed(gs) {
         if (chkR) sR = d;
     }
 
-    // Left edge (col=0, bottom up)
-    var eL = 0;
-    for (var r = ROWS - 1; r >= 1; r--) {
-        if (stomps[posToIdx[r * ROWS + 0]] !== 0) break;
-        eL++;
-    }
-    // Right edge (col=row, bottom up)
-    var eR = 0;
-    for (var r = ROWS - 1; r >= 1; r--) {
-        if (stomps[posToIdx[r * ROWS + r]] !== 0) break;
-        eR++;
-    }
-    // Bottom row from left
-    var bL = 0;
-    for (var c = 0; c < ROWS; c++) {
-        if (stomps[posToIdx[(ROWS-1) * ROWS + c]] !== 0) break;
-        bL++;
-    }
-    // Bottom row from right
-    var bR = 0;
-    for (var c = ROWS - 1; c >= 0; c--) {
-        if (stomps[posToIdx[(ROWS-1) * ROWS + c]] !== 0) break;
-        bR++;
-    }
-
-    return {triL: sL, triR: sR, edgeL: eL, edgeR: eR, botL: bL, botR: bR};
+    return {triL: sL, triR: sR};
 }
 
-// Is position (r,c) inside any sealed region?
+// Is position (r,c) inside a sealed corner triangle?
 function isSealed(r, c, seal) {
-    // Corner triangles
     if (seal.triL > 0 && r >= ROWS - seal.triL && c <= seal.triL + r - ROWS) return true;
     if (seal.triR > 0 && r >= ROWS - seal.triR && c >= ROWS - seal.triR) return true;
-    // Left edge (col=0)
-    if (seal.edgeL > 0 && c === 0 && r >= ROWS - seal.edgeL) return true;
-    // Right edge (col=row)
-    if (seal.edgeR > 0 && c === r && r >= ROWS - seal.edgeR) return true;
-    // Bottom row
-    if (seal.botL > 0 && r === ROWS - 1 && c < seal.botL) return true;
-    if (seal.botR > 0 && r === ROWS - 1 && c >= ROWS - seal.botR) return true;
     return false;
 }
 
@@ -857,13 +827,31 @@ function unifiedPick(gs, coilyActive) {
 
     // Pick safe direction with lowest tour cost.
     // Never enter a sealed corner triangle.
+    // Soft revert penalty: on toggle levels, add extra cost for stepping on
+    // completed cubes. This discourages reverts without being a hard wall
+    // (unlike sealed regions which completely block entry).
+    var REVERT_MOVE_COST = 6;
     var bestDir = null, bestCost = Infinity;
     for (var fk = 0; fk < DIR_KEYS_WITH_STAY.length; fk++) {
         var fd = DIR_KEYS_WITH_STAY[fk];
         if (!safe1[fd] || !safe2[fd]) continue;
         if (entersSealed(gs, fd, seal)) continue;
         var fc = tourCosts[fd];
-        if (fc !== undefined && fc < bestCost) { bestCost = fc; bestDir = fd; }
+        if (fc === undefined) continue;
+        // Soft revert penalty at move-choice level
+        if (gs.lv >= 3 && fd !== 'STAY') {
+            var fdir = DIRS[fd];
+            var fnr = gs.player.row + fdir.dr, fnc = gs.player.col + fdir.dc;
+            if (isValidPos(fnr, fnc)) {
+                for (var fci = 0; fci < gs.cubes.length; fci++) {
+                    if (gs.cubes[fci].row === fnr && gs.cubes[fci].col === fnc && gs.cubes[fci].state >= gs.tgt) {
+                        fc += REVERT_MOVE_COST;
+                        break;
+                    }
+                }
+            }
+        }
+        if (fc < bestCost) { bestCost = fc; bestDir = fd; }
     }
     if (bestDir) { restoreRng(); return bestDir; }
 
