@@ -1103,6 +1103,27 @@ function drawVizPath() {
         ctx.fill();
     }
 
+    // ── Peel order labels on every cube ──
+    if (typeof PEEL_ORDER !== 'undefined' && PEEL_ORDER) {
+        var vizSeal = null;
+        if (typeof computeSealedSet !== 'undefined') {
+            vizSeal = computeSealedSet(simCloneGameState());
+        }
+        for (var pi = 0; pi < POS_COUNT; pi++) {
+            var pp = idxToPos[pi];
+            var pt = cubeXY(pp[0], pp[1]);
+            var isSealed = vizSeal && vizSeal[pi] === 1;
+            ctx.save();
+            ctx.translate(pt.cx, pt.cy - 3);
+            ctx.scale(1, 0.5);
+            ctx.font = 'bold 9px monospace';
+            ctx.textAlign = 'center';
+            ctx.fillStyle = isSealed ? 'rgba(255,80,80,0.9)' : 'rgba(255,255,0,0.9)';
+            ctx.fillText(PEEL_ORDER[pi].toString(), 0, 0);
+            ctx.restore();
+        }
+    }
+
     // ── Tour path: numbered dots on remaining cubes (no lines) ──
     if (aiTourPath.length >= 2) {
         for (var j = 1; j < aiTourPath.length; j++) {
