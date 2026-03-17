@@ -728,7 +728,7 @@ function update() {
             startDiscRide(pd.side, pd.row);
         }
         // Enemies still tick during the jump
-        if (roundStarted) {
+        if (roundStarted && enemiesEnabled) {
             simUpdateEnemies(gs);
             enemies = gs.enemies;
             freezeTimer = gs.freezeTimer;
@@ -740,7 +740,7 @@ function update() {
     // Disc ride animation (visual only, enemies still tick in sim)
     if (discRide) {
         updateDiscRide();
-        if (roundStarted) {
+        if (roundStarted && enemiesEnabled) {
             simUpdateEnemies(gs);
             enemies = gs.enemies;
             freezeTimer = gs.freezeTimer;
@@ -782,7 +782,7 @@ function update() {
     // Normal frame: run simulation
     if (roundStarted) {
         var result = simUpdatePlayer(gs);
-        simUpdateEnemies(gs);
+        if (enemiesEnabled) simUpdateEnemies(gs);
         freezeTimer = gs.freezeTimer;
         enemies = gs.enemies; // array may change from spawns/removals
 
@@ -807,21 +807,8 @@ function update() {
             checkExtraLife();
             hops++;
 
-            // Collision on landing
-            if (enemiesEnabled) simCheckCollision(gs);
-            if (!gs.alive) {
-                console.log('DEATH ON LANDING: ' + (gs.deathEnemy||'?') + ' at (' + gs.player.row + ',' + gs.player.col + ')' +
-                    ' frame=' + frameCount + ' round=' + round + ' lv=' + arcadeLevel() +
-                    ' freezeTimer=' + gs.freezeTimer +
-                    ' enemies=' + gs.enemies.map(function(e){return e.type+'@('+e.row+','+e.col+')'}).join(' '));
-                gs.alive = true;
-                gs.player.deathTimer = 100;
-                killPlayerVisual();
-                syncVisuals();
-                return;
-            }
-
-            // Level complete?
+            // Level complete? Check BEFORE collision — completing the level
+            // should count even if an enemy kills you on the same frame.
             if (simAllColored(gs)) {
                 score += roundCompletionBonus();
                 score += unusedDiscBonus(gs.discs);
@@ -834,6 +821,20 @@ function update() {
                     bestHops[lvKey] = hops;
                     localStorage.setItem('dino-qbert-best-hops', JSON.stringify(bestHops));
                 }
+            }
+
+            // Collision on landing (skip if level already won)
+            if (!levelWon && enemiesEnabled) simCheckCollision(gs);
+            if (!gs.alive) {
+                console.log('DEATH ON LANDING: ' + (gs.deathEnemy||'?') + ' at (' + gs.player.row + ',' + gs.player.col + ')' +
+                    ' frame=' + frameCount + ' round=' + round + ' lv=' + arcadeLevel() +
+                    ' freezeTimer=' + gs.freezeTimer +
+                    ' enemies=' + gs.enemies.map(function(e){return e.type+'@('+e.row+','+e.col+')'}).join(' '));
+                gs.alive = true;
+                gs.player.deathTimer = 100;
+                killPlayerVisual();
+                syncVisuals();
+                return;
             }
         }
 
@@ -1545,6 +1546,11 @@ window.toggleEnemies = function () {
     var btn = document.getElementById('enemies-btn');
     btn.textContent = 'Enemies: ' + (enemiesEnabled ? 'On' : 'Off');
     btn.classList.toggle('active', enemiesEnabled);
+    // Clear all enemies when turning off so Slick/Sam stop reverting cubes
+    if (!enemiesEnabled && typeof gs !== 'undefined' && gs.enemies) {
+        gs.enemies = [];
+        enemies = gs.enemies;
+    }
 };
 
 window.setGameSpeed = function (v) {
