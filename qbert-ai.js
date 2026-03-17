@@ -866,14 +866,10 @@ function unifiedPick(gs, coilyActive) {
     var targetDist = bfsFromIdx(peelTarget >= 0 ? peelTarget : 0);
 
     // Pick safe direction closest to peel target
-    // Sealed cubes get a soft penalty scaled by peel order:
-    //   low peel order (apex/edges) = high penalty (don't revert these)
-    //   high peel order (interior) = lower penalty (cheaper to traverse)
-    ensurePeelOrder();
-    // Revert cost: how many stomps wasted by reverting a completed cube
+    // Flat revert penalty for stepping on any completed cube (sealed or not).
+    // Peel order only affects target selection, not routing.
     var revertCost = (gs.lv >= 5) ? 2 : 1;
-    var SEALED_BASE_COST = 4 * revertCost;
-    var SEALED_PEEL_SCALE = 0.15 * revertCost;
+    var REVERT_PENALTY = 4 * revertCost;
     var BACKTRACK_PENALTY = 3;
     var curIdx = posToIdx[gs.player.row * ROWS + gs.player.col];
     var curDist = targetDist[curIdx];
@@ -900,21 +896,9 @@ function unifiedPick(gs, coilyActive) {
         // Extra bonus for landing on the peel target itself
         if (peelTarget >= 0 && lidx === peelTarget) score -= 3;
 
-        // Sealed cube penalty — scaled by peel order so interior is cheaper to revert
-        // Low peel order (completed early = apex/edges) gets high penalty
-        // High peel order (completed late = interior) gets lower penalty
-        if (seal[lidx] === 1 && fd !== 'STAY') {
-            score += SEALED_BASE_COST + (POS_COUNT - PEEL_ORDER[lidx]) * SEALED_PEEL_SCALE;
-        }
-
-        // Revert penalty for stepping on completed (non-sealed) cubes
-        if (gs.lv >= 3 && fd !== 'STAY' && seal[lidx] !== 1) {
-            for (var fci = 0; fci < gs.cubes.length; fci++) {
-                if (gs.cubes[fci].row === lr && gs.cubes[fci].col === lc && gs.cubes[fci].state >= gs.tgt) {
-                    score += SEALED_BASE_COST;
-                    break;
-                }
-            }
+        // Flat revert penalty for stepping on any completed cube
+        if (gs.lv >= 3 && fd !== 'STAY' && stomps[lidx] <= 0) {
+            score += REVERT_PENALTY;
         }
 
         // Backtrack penalty: discourage revisiting recent positions (prevents oscillation)
