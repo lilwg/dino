@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic (peel routing)
-var AI_VERSION = 'v13.8';
+var AI_VERSION = 'v13.9';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -115,7 +115,8 @@ function computePlayerTiles(pRow, pCol, dir, sm) {
     var tiles = [];
     var jumpT = 0;
     var landed = false;
-    for (var f = 0; f < 60; f++) {
+    var idleFrames = 0;
+    for (var f = 0; f < 120; f++) {
         if (!landed) {
             jumpT += jumpDur;
             if (jumpT >= 1) {
@@ -128,7 +129,8 @@ function computePlayerTiles(pRow, pCol, dir, sm) {
             else tiles.push(null);
         } else {
             tiles.push({ row: destR, col: destC });
-            break;
+            idleFrames++;
+            if (idleFrames >= 30) break;
         }
     }
     return tiles;
