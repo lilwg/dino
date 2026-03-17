@@ -452,10 +452,13 @@ function killPlayerVisual() {
     lives--;
     var scores = '';
     for (var dk in aiMoveScores) scores += ' ' + dk + '=' + Math.round(aiMoveScores[dk]);
-    var deathInfo = 'DEATH Lv' + arcadeLevel() + '-' + ((round-1)%4+1) + ' @(' + player.row + ',' + player.col + ') dir=' + (aiBestDir || '?') + ' scores=[' + scores.trim() + '] lives=' + lives + ' hops=' + hops;
+    var deathInfo = 'DEATH Lv' + arcadeLevel() + '-' + ((round-1)%4+1) + ' @(' + player.row + ',' + player.col + ') killed_by=' + (gs.deathEnemy || 'fall') + ' dir=' + (aiBestDir || '?') + ' scores=[' + scores.trim() + '] lives=' + lives + ' hops=' + hops + ' frame=' + frameCount;
     for (var di = 0; di < enemies.length; di++) {
         var de = enemies[di];
-        if (de.type !== 'spawn-timer') deathInfo += ' ' + de.type + '@(' + de.row + ',' + de.col + ')';
+        if (de.type === 'spawn-timer') { deathInfo += ' spawn(' + (de.forcedType||'?') + ' t=' + de.timer + ')'; continue; }
+        deathInfo += ' ' + de.type + '@(' + de.row + ',' + de.col + ')';
+        if (de.jumping) deathInfo += '→(' + de.destRow + ',' + de.destCol + ' t=' + de.jumpT.toFixed(2) + ')';
+        if (de.spawnDrop > 0) deathInfo += '[drop=' + de.spawnDrop + ']';
     }
     console.log(deathInfo);
     if (!window._deathLog) window._deathLog = [];

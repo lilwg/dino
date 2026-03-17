@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic (peel routing)
-var AI_VERSION = 'v13.3';
+var AI_VERSION = 'v13.4';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -562,8 +562,14 @@ function unifiedPick(gs) {
 
     // Peel BFS found no path (e.g. respawn at apex, separated from targets by
     // removed cubes). Fall back to simple BFS on the full graph to reconnect.
+    // Prefer reverting high-layer (interior) cubes over low-layer (edge) cubes.
     if (gs.lv >= 3) {
         targetDist = peelTargetDist(gs, true);
+        var maxLayer = 0;
+        if (PEEL_LAYER) {
+            for (var pl = 0; pl < POS_COUNT; pl++)
+                if (PEEL_LAYER[pl] > maxLayer) maxLayer = PEEL_LAYER[pl];
+        }
         bestDir = null; bestScore = Infinity;
         for (var fk2 = 0; fk2 < DIR_KEYS.length; fk2++) {
             var fd2 = DIR_KEYS[fk2];
@@ -575,6 +581,10 @@ function unifiedPick(gs) {
             if (lidx2 < 0) continue;
             var score2 = targetDist[lidx2];
             if (score2 >= 999) continue;
+            // Penalize stepping on low-layer (edge) completed cubes — prefer reverting interior
+            if (PEEL_LAYER && !peelRemaining[lidx2]) {
+                score2 += (maxLayer - PEEL_LAYER[lidx2]) * 0.1;
+            }
             if (score2 < bestScore) { bestScore = score2; bestDir = fd2; }
         }
         if (bestDir) { restoreRng(); return bestDir; }
