@@ -406,7 +406,7 @@ function syncVisuals() {
             // Animate sprite
             player.frameTimer = (player.frameTimer || 0) + 1;
             if (player.frameTimer > 6) { player.frameTimer = 0; player.spriteFrame = (player.spriteFrame || 0) ^ 1; }
-        } else if (!player.dead) {
+        } else if (!player.dead && !player.fallOff) {
             var pos = cubeXY(player.row, player.col);
             player.px = pos.cx; player.py = pos.cy;
         }
@@ -552,6 +552,8 @@ function initRound() {
     player.facing = 'R';
     player.deathAnimTimer = 0;
     player.pendingDisc = null;
+    player.fallOff = false;
+    player.falling = false;
 
     if (debugEnemies) {
         roundStarted = true;
@@ -568,7 +570,7 @@ function initRound() {
 
 // ─── Player move (delegates to simulation) ──────────────────────────────────
 function tryMove(dirKey) {
-    if (debugEnemies || player.dead || player.jumping || gameOver || paused || discRide) return;
+    if (debugEnemies || player.dead || player.jumping || player.fallOff || gameOver || paused || discRide) return;
     var d = DIRS[dirKey]; if (!d) return;
     roundStarted = true;
 
@@ -707,6 +709,27 @@ function update() {
         return;
     }
 
+    // Falling off board — gravity animation then death
+    if (player.fallOff) {
+        player.fallVy = (player.fallVy || 0) + 1.5;
+        player.py += player.fallVy;
+        if (player.py > CH + 50) {
+            player.fallOff = false;
+            gs.alive = false;
+            gs.player.dead = true;
+            gs.player.deathTimer = 100;
+            killPlayerVisual();
+        }
+        // Enemies keep moving while player falls
+        if (roundStarted && enemiesEnabled) {
+            simUpdateEnemies(gs);
+            enemies = gs.enemies;
+            freezeTimer = gs.freezeTimer;
+        }
+        syncVisuals();
+        return;
+    }
+
     // Death state
     if (player.dead) {
         player.deathTimer--;
@@ -764,13 +787,12 @@ function update() {
 
         // Handle landing
         if (result === 'landed') {
-            // Fell off edge — die now that the jump animation is done
+            // Fell off edge — transition to gravity fall
             if (gs.player.falling) {
                 gs.player.falling = false;
-                gs.alive = false;
-                gs.player.dead = true;
-                gs.player.deathTimer = 100;
-                killPlayerVisual();
+                gs.player.fallOff = true;
+                gs.player.fallVy = 0;
+                // px/py already at the off-board destination from syncVisuals
                 syncVisuals();
                 return;
             }
@@ -837,7 +859,7 @@ function update() {
     syncVisuals();
 
     // Accept input / AI when player is ready
-    if (!player.jumping && !player.dead && !discRide && !levelWon) {
+    if (!player.jumping && !player.dead && !player.fallOff && !discRide && !levelWon) {
         if (gameMode === 'rules') {
             var dir = computeAIMove();
             if (dir === 'STAY') {
