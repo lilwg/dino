@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic (peel routing)
-var AI_VERSION = 'v13.9';
+var AI_VERSION = 'v13.10';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -593,8 +593,12 @@ function unifiedPick(gs) {
         if (bestDir) { restoreRng(); return bestDir; }
     }
 
+    // No safe movement direction — STAY if it's safe
+    if (safe1['STAY'] && safe2['STAY']) {
+        restoreRng(); return 'STAY';
+    }
+
     // No fully-safe option — pick by survival, tie-break by routing.
-    // STAY is last resort (lets enemies converge).
     var bestFallback = -Infinity, bestFallbackDir = null;
     for (var uk = 0; uk < DIR_KEYS_WITH_STAY.length; uk++) {
         var ud = DIR_KEYS_WITH_STAY[uk];
