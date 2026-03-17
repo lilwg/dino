@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic (peel routing)
-var AI_VERSION = 'v13.6';
+var AI_VERSION = 'v13.7';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -591,19 +591,29 @@ function unifiedPick(gs) {
         if (bestDir) { restoreRng(); return bestDir; }
     }
 
-    // No fully-safe option — prefer STAY, then best survival
-    if (hop1Surv['STAY'] !== undefined && hop1Surv['STAY'] >= 1) {
-        restoreRng(); return 'STAY';
-    }
-    var bestSurv = -1, bestSurvDir = null;
+    // No fully-safe option — pick by survival, tie-break by routing
+    var bestFallback = -Infinity, bestFallbackDir = null;
     for (var uk = 0; uk < DIR_KEYS_WITH_STAY.length; uk++) {
         var ud = DIR_KEYS_WITH_STAY[uk];
-        if (hop1Surv[ud] !== undefined && hop1Surv[ud] > bestSurv) {
-            bestSurv = hop1Surv[ud]; bestSurvDir = ud;
+        if (hop1Surv[ud] === undefined) continue;
+        // Primary: survival rate (0-1). Secondary: prefer closer to target + incomplete cubes.
+        var fallbackScore = hop1Surv[ud] * 1000;
+        if (ud !== 'STAY') {
+            var udd = DIRS[ud];
+            var fur = gs.player.row + udd.dr, fuc = gs.player.col + udd.dc;
+            if (isValidPos(fur, fuc)) {
+                var fuidx = posToIdx[fur * ROWS + fuc];
+                if (fuidx >= 0 && targetDist[fuidx] < 999) {
+                    fallbackScore -= targetDist[fuidx];
+                }
+            }
+        }
+        if (fallbackScore > bestFallback) {
+            bestFallback = fallbackScore; bestFallbackDir = ud;
         }
     }
     restoreRng();
-    return bestSurvDir || 'STAY';
+    return bestFallbackDir || 'STAY';
 }
 
 // ─── Main entry point ────────────────────────────────────────────────────────
