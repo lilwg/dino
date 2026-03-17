@@ -1107,23 +1107,22 @@ function drawVizPath() {
     if (typeof PEEL_LAYER !== 'undefined' && PEEL_LAYER) {
         // Layer colors: layer 0=red, 1=orange, 2=yellow, 3=green, 4=cyan, 5+=blue
         var layerColors = ['#ff4444', '#ff8800', '#ffdd00', '#44cc44', '#44cccc', '#4488ff', '#aa44ff'];
-        var vizSeal = null;
-        if (typeof computeSealedSet !== 'undefined') {
-            vizSeal = computeSealedSet(simCloneGameState());
-        }
+        var hasRemaining = typeof peelRemaining !== 'undefined' && peelRemaining;
+        var hasDegree = typeof PEEL_DEGREE !== 'undefined' && PEEL_DEGREE;
         for (var pi = 0; pi < POS_COUNT; pi++) {
+            // Skip cubes not in remaining set (already peeled off)
+            if (hasRemaining && !peelRemaining[pi]) continue;
             var pp = idxToPos[pi];
             var pt = cubeXY(pp[0], pp[1]);
-            var isSealed = vizSeal && vizSeal[pi] === 1;
             var layer = PEEL_LAYER[pi];
-            var deg = posAdj[pi].length;
+            var deg = hasDegree ? PEEL_DEGREE[pi] : posAdj[pi].length;
             ctx.save();
             ctx.translate(pt.cx, pt.cy + 1);
             ctx.scale(1, 0.5);
             ctx.font = 'bold 18px monospace';
             ctx.textAlign = 'center';
             var col = layerColors[Math.min(layer, layerColors.length - 1)];
-            ctx.fillStyle = isSealed ? 'rgba(128,128,128,0.7)' : col;
+            ctx.fillStyle = col;
             ctx.fillText(deg.toString(), 0, 0);
             ctx.restore();
         }

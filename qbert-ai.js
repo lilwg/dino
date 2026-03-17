@@ -486,77 +486,143 @@ function entersSealed(gs, dir, sealed) {
     return isSealed(nr, nc, sealed);
 }
 
-// ─── Peel-layer routing ─────────────────────────────────────────────────────
-// Batch graph peeling: iteratively remove ALL minimum-degree vertices at once.
-// Each batch is a "layer". Layer 0 = bottom corners (degree 1), layer 1 =
-// remaining bottom row + apex + edges that dropped to min degree, etc.
-// Cubes in the same layer have equal priority — the AI picks the closest one.
-var PEEL_LAYER = null;
-function ensurePeelLayer() {
-    if (PEEL_LAYER) return;
-    PEEL_LAYER = new Int8Array(POS_COUNT);
-    var degree = new Int8Array(POS_COUNT);
-    var removed = new Uint8Array(POS_COUNT);
-    for (var i = 0; i < POS_COUNT; i++) degree[i] = posAdj[i].length;
+// ─── Dynamic peel routing (toggle levels) ───────────────────────────────────
+// Maintains a "remaining" set across frames. Each frame:
+//   1. Compute peel layers on remaining subgraph
+//   2. Any completed cube in the lowest peel layer → remove from remaining, recompute
+//   3. Target = closest uncompleted cube in lowest peel layer (BFS on remaining)
+//   4. Route toward target
 
-    var remaining = POS_COUNT;
-    var layer = 0;
-    while (remaining > 0) {
-        // Find minimum degree among remaining nodes
+// Persistent remaining set — reset on round start / death
+var peelRemaining = null;  // Uint8Array, 1 = in remaining set
+var peelRound = -1;        // track which round we computed for
+
+// Reset remaining set (all cubes included)
+function peelReset() {
+    peelRemaining = new Uint8Array(POS_COUNT);
+    for (var i = 0; i < POS_COUNT; i++) peelRemaining[i] = 1;
+}
+
+// Compute peel layers on the remaining subgraph.
+// Returns {layer: Int8Array, degree: Int8Array} where layer[i] and degree[i]
+// are only meaningful for cubes in the remaining set.
+function computePeelLayers(remaining) {
+    var layer = new Int8Array(POS_COUNT);
+    var degree = new Int8Array(POS_COUNT);
+    var initDegree = new Int8Array(POS_COUNT);  // preserved for viz
+    var removed = new Uint8Array(POS_COUNT);
+    // Initialize degrees from remaining subgraph only
+    for (var i = 0; i < POS_COUNT; i++) {
+        if (!remaining[i]) { removed[i] = 1; continue; }
+        var deg = 0;
+        var adj = posAdj[i];
+        for (var a = 0; a < adj.length; a++) {
+            if (remaining[adj[a]]) deg++;
+        }
+        degree[i] = deg;
+        initDegree[i] = deg;
+    }
+    var count = 0;
+    for (var i = 0; i < POS_COUNT; i++) if (remaining[i]) count++;
+    var lay = 0;
+    while (count > 0) {
         var minDeg = 99;
         for (var i = 0; i < POS_COUNT; i++) {
             if (!removed[i] && degree[i] < minDeg) minDeg = degree[i];
         }
-        // Remove ALL nodes with this minimum degree (one batch = one layer)
         var batch = [];
         for (var i = 0; i < POS_COUNT; i++) {
             if (!removed[i] && degree[i] === minDeg) {
                 batch.push(i);
-                PEEL_LAYER[i] = layer;
+                layer[i] = lay;
                 removed[i] = 1;
-                remaining--;
+                count--;
             }
         }
-        // Update degrees of neighbors
         for (var b = 0; b < batch.length; b++) {
             var adj = posAdj[batch[b]];
             for (var a = 0; a < adj.length; a++) {
                 if (!removed[adj[a]]) degree[adj[a]]--;
             }
         }
-        layer++;
+        lay++;
     }
+    return { layer: layer, degree: initDegree };
 }
 
-// Find the closest uncompleted cube in the lowest incomplete peel layer.
-// playerIdx: current player position (for BFS distance tiebreaking within layer).
-function findPeelTarget(stomps, playerIdx) {
-    ensurePeelLayer();
-    // Find the lowest layer that still has uncompleted cubes
+// Exported for viz: current peel layers and dynamic degrees
+var PEEL_LAYER = null;
+var PEEL_DEGREE = null;
+
+// Compute target distance field for direction scoring.
+// Returns Float64Array of distances (999 = unreachable).
+function peelTargetDist(gs) {
+    // Ensure remaining set exists and matches current round
+    var roundId = (gs.round || 0) * 1000 + (gs.lv || 0);
+    if (!peelRemaining || peelRound !== roundId) {
+        peelReset();
+        peelRound = roundId;
+    }
+
+    // Build stomps array
+    var stomps = new Int8Array(POS_COUNT);
+    for (var i = 0; i < gs.cubes.length; i++) {
+        var idx = posToIdx[gs.cubes[i].row * ROWS + gs.cubes[i].col];
+        stomps[idx] = stompsNeeded(gs.cubes[i].state, gs.lv);
+    }
+
+    // Repair: if a removed cube got reverted (slick, etc.), add it back
+    for (var i = 0; i < POS_COUNT; i++) {
+        if (!peelRemaining[i] && stomps[i] > 0) peelRemaining[i] = 1;
+    }
+
+    // Iteratively: compute peel layers, remove completed cubes from lowest layer
+    var peel;
+    for (var iter = 0; iter < POS_COUNT; iter++) {
+        peel = computePeelLayers(peelRemaining);
+        // Find lowest layer
+        var minLayer = 99;
+        for (var i = 0; i < POS_COUNT; i++) {
+            if (!peelRemaining[i]) continue;
+            if (peel.layer[i] < minLayer) minLayer = peel.layer[i];
+        }
+        if (minLayer >= 99) break;
+        // Remove completed cubes from lowest layer
+        var removedAny = false;
+        for (var i = 0; i < POS_COUNT; i++) {
+            if (!peelRemaining[i]) continue;
+            if (peel.layer[i] !== minLayer) continue;
+            if (stomps[i] <= 0) {
+                peelRemaining[i] = 0;
+                removedAny = true;
+            }
+        }
+        if (!removedAny) break;  // lowest layer has uncompleted cubes — done
+    }
+
+    // Export for viz
+    PEEL_LAYER = peel.layer;
+    PEEL_DEGREE = peel.degree;
+
+    // Find lowest layer with uncompleted cubes
     var minLayer = 99;
     for (var i = 0; i < POS_COUNT; i++) {
+        if (!peelRemaining[i]) continue;
         if (stomps[i] <= 0) continue;
-        if (PEEL_LAYER[i] < minLayer) minLayer = PEEL_LAYER[i];
+        if (peel.layer[i] < minLayer) minLayer = peel.layer[i];
     }
-    if (minLayer >= 99) return -1;
-    // Among cubes in that layer, pick the closest to the player (BFS)
-    var playerDist = bfsFromIdx(playerIdx, null);
-    var bestIdx = -1, bestDist = 999;
-    for (var i = 0; i < POS_COUNT; i++) {
-        if (stomps[i] <= 0) continue;
-        if (PEEL_LAYER[i] !== minLayer) continue;
-        if (playerDist[i] < bestDist) { bestDist = playerDist[i]; bestIdx = i; }
-    }
-    return bestIdx;
-}
 
-// BFS from sourceIdx, treating sealed cubes as removed from the graph.
-// Returns distance array (999 = unreachable).
-function bfsFromIdx(sourceIdx, sealed) {
+    // Multi-source BFS from all uncompleted cubes in lowest layer, on remaining graph
     var dist = new Float64Array(POS_COUNT);
     for (var i = 0; i < POS_COUNT; i++) dist[i] = 999;
-    dist[sourceIdx] = 0;
-    var queue = [sourceIdx];
+    if (minLayer >= 99) return dist;
+    var queue = [];
+    for (var i = 0; i < POS_COUNT; i++) {
+        if (peelRemaining[i] && stomps[i] > 0 && peel.layer[i] === minLayer) {
+            dist[i] = 0;
+            queue.push(i);
+        }
+    }
     var head = 0;
     while (head < queue.length) {
         var u = queue[head++];
@@ -564,7 +630,33 @@ function bfsFromIdx(sourceIdx, sealed) {
         for (var a = 0; a < adj.length; a++) {
             var v = adj[a];
             if (dist[v] < 999) continue;
-            if (sealed && sealed[v] === 1) continue;
+            if (!peelRemaining[v]) continue;  // BFS on remaining set only
+            dist[v] = dist[u] + 1;
+            queue.push(v);
+        }
+    }
+    return dist;
+}
+
+// Simple target distance for non-toggle levels: BFS from nearest uncompleted cube
+function peelTargetDistSimple(gs) {
+    var dist = new Float64Array(POS_COUNT);
+    for (var i = 0; i < POS_COUNT; i++) dist[i] = 999;
+    var queue = [];
+    for (var i = 0; i < gs.cubes.length; i++) {
+        var idx = posToIdx[gs.cubes[i].row * ROWS + gs.cubes[i].col];
+        if (stompsNeeded(gs.cubes[i].state, gs.lv) > 0) {
+            dist[idx] = 0;
+            queue.push(idx);
+        }
+    }
+    var head = 0;
+    while (head < queue.length) {
+        var u = queue[head++];
+        var adj = posAdj[u];
+        for (var a = 0; a < adj.length; a++) {
+            var v = adj[a];
+            if (dist[v] < 999) continue;
             dist[v] = dist[u] + 1;
             queue.push(v);
         }
@@ -848,41 +940,22 @@ function unifiedPick(gs, coilyActive) {
         }
     }
 
-    // ── Peel-based direction selection ──
-    // Build stomps array and find the peel target
-    var stomps = new Int8Array(POS_COUNT);
-    for (var i = 0; i < gs.cubes.length; i++) {
-        var idx = posToIdx[gs.cubes[i].row * ROWS + gs.cubes[i].col];
-        stomps[idx] = stompsNeeded(gs.cubes[i].state, gs.lv);
-    }
-    var curIdx = posToIdx[gs.player.row * ROWS + gs.player.col];
-    var peelTarget = findPeelTarget(stomps, curIdx);
+    // ── Peel-based direction selection (toggle levels: dynamic peel) ──
+    var targetDist = (gs.lv >= 3) ? peelTargetDist(gs) : peelTargetDistSimple(gs);
 
-    // BFS from peel target, routing around sealed dead-end cubes
-    var targetDist = bfsFromIdx(peelTarget >= 0 ? peelTarget : 0, seal);
-    var curDist = targetDist[curIdx];
     var bestDir = null, bestScore = Infinity;
-    for (var fk = 0; fk < DIR_KEYS_WITH_STAY.length; fk++) {
-        var fd = DIR_KEYS_WITH_STAY[fk];
+    for (var fk = 0; fk < DIR_KEYS.length; fk++) {
+        var fd = DIR_KEYS[fk];
         if (!safe1[fd] || !safe2[fd]) continue;
 
-        // Landing position
-        var lr = gs.player.row, lc = gs.player.col;
-        if (fd !== 'STAY') {
-            var fdd = DIRS[fd];
-            lr += fdd.dr; lc += fdd.dc;
-            if (!isValidPos(lr, lc)) continue;
-        }
+        var fdd = DIRS[fd];
+        var lr = gs.player.row + fdd.dr, lc = gs.player.col + fdd.dc;
+        if (!isValidPos(lr, lc)) continue;
         var lidx = posToIdx[lr * ROWS + lc];
         if (lidx < 0) continue;
 
         var score = targetDist[lidx];
         if (score >= 999) continue;
-
-        // Bonus for landing on an uncompleted cube
-        if (stomps[lidx] > 0) score -= 2;
-        // Extra bonus for landing on the peel target itself
-        if (peelTarget >= 0 && lidx === peelTarget) score -= 3;
 
         if (score < bestScore) { bestScore = score; bestDir = fd; }
     }
