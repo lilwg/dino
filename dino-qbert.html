@@ -1114,7 +1114,7 @@ function drawVizPath() {
             var pt = cubeXY(pp[0], pp[1]);
             var isSealed = vizSeal && vizSeal[pi] === 1;
             ctx.save();
-            ctx.translate(pt.cx, pt.cy + 5);
+            ctx.translate(pt.cx, pt.cy + 1);
             ctx.scale(1, 0.5);
             ctx.font = 'bold 18px monospace';
             ctx.textAlign = 'center';
