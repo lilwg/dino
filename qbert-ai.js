@@ -452,6 +452,7 @@ var aiDetailPath = [], aiTourDots = [];
 
 function aiTourInit() {
     aiLastRemaining = 99; aiNoProgressCount = 0; aiStayCount = 0; aiSamePosCount = 0; aiPosHistory = [];
+    aiStompCounts = null; aiStompRound = -1; aiStompLv = -1;
 }
 
 // ─── Generalized graph-peeling seal ─────────────────────────────────────────
@@ -508,9 +509,11 @@ function entersSealed(gs, dir, sealed) {
 // This gives the correct peel order where degree-2 nodes (bottom corners,
 // edges, AND the apex) are all peeled early.
 var PEEL_ORDER = null;
+var PEEL_DEGREE = null;  // degree at which each node was removed (degeneracy)
 function ensurePeelOrder() {
     if (PEEL_ORDER) return;
     PEEL_ORDER = new Int8Array(POS_COUNT);
+    PEEL_DEGREE = new Int8Array(POS_COUNT);
     var degree = new Int8Array(POS_COUNT);
     var removed = new Uint8Array(POS_COUNT);
     for (var i = 0; i < POS_COUNT; i++) degree[i] = posAdj[i].length;
@@ -528,6 +531,7 @@ function ensurePeelOrder() {
         }
         if (minIdx < 0) break;
         PEEL_ORDER[minIdx] = order;
+        PEEL_DEGREE[minIdx] = minDeg;
         removed[minIdx] = 1;
         var adj = posAdj[minIdx];
         for (var a = 0; a < adj.length; a++) {
@@ -536,13 +540,21 @@ function ensurePeelOrder() {
     }
 }
 
-// Find the highest-priority (lowest PEEL_ORDER) uncompleted cube.
-function findPeelTarget(stomps) {
+// Find the highest-priority uncompleted cube.
+// Sort: degeneracy (lower = more peripheral) → stomp count (fewer = fresher) → peel order (distance tiebreak)
+function findPeelTarget(stomps, stompCounts) {
     ensurePeelOrder();
-    var bestIdx = -1, bestOrder = POS_COUNT;
+    var bestIdx = -1, bestDeg = 99, bestSc = 999999, bestOrd = POS_COUNT;
     for (var i = 0; i < POS_COUNT; i++) {
         if (stomps[i] <= 0) continue;
-        if (PEEL_ORDER[i] < bestOrder) { bestOrder = PEEL_ORDER[i]; bestIdx = i; }
+        var deg = PEEL_DEGREE[i];
+        var sc = stompCounts ? stompCounts[i] : 0;
+        var ord = PEEL_ORDER[i];
+        if (deg < bestDeg ||
+            (deg === bestDeg && sc < bestSc) ||
+            (deg === bestDeg && sc === bestSc && ord < bestOrd)) {
+            bestDeg = deg; bestSc = sc; bestOrd = ord; bestIdx = i;
+        }
     }
     return bestIdx;
 }
@@ -851,7 +863,7 @@ function unifiedPick(gs, coilyActive) {
         var idx = posToIdx[gs.cubes[i].row * ROWS + gs.cubes[i].col];
         stomps[idx] = stompsNeeded(gs.cubes[i].state, gs.lv);
     }
-    var peelTarget = findPeelTarget(stomps);
+    var peelTarget = findPeelTarget(stomps, aiStompCounts);
 
     // BFS from peel target (or apex as fallback) to all positions
     var targetDist = bfsFromIdx(peelTarget >= 0 ? peelTarget : 0);
@@ -951,6 +963,9 @@ var aiLastRemaining = 99; // cubes remaining last time we checked
 var aiNoProgressCount = 0; // moves without reducing remaining cubes
 var aiPosHistory = [];  // recent position history for oscillation detection
 var AI_HISTORY_LEN = 12; // how many positions to track
+var aiStompCounts = null; // per-position stomp count for peel target tiebreaking
+var aiStompRound = -1;    // round when stomp counts were last reset
+var aiStompLv = -1;       // level when stomp counts were last reset
 
 function aiPickBestDir() {
     // Save game RNG — ALL AI simulation must use seeded RNG, never Math.random
@@ -966,8 +981,20 @@ function aiPickBestDir() {
     aiMoveScores = {};
     aiMode = 1;
 
-    // Track how long we've been on the same tile
+    // Track stomp counts per position (reset on new round/level)
     var posKey = gs.player.row + ',' + gs.player.col;
+    if (!aiStompCounts || gs.lv !== aiStompLv || gs.round !== aiStompRound) {
+        aiStompCounts = new Int32Array(POS_COUNT);
+        aiStompLv = gs.lv;
+        aiStompRound = gs.round;
+    }
+    if (posKey !== aiLastPos) {
+        // Player just landed on a new cube — count the stomp
+        var curIdx = posToIdx[gs.player.row * ROWS + gs.player.col];
+        if (curIdx >= 0) aiStompCounts[curIdx]++;
+    }
+
+    // Track how long we've been on the same tile
     if (posKey === aiLastPos) aiSamePosCount++;
     else { aiSamePosCount = 0; aiLastPos = posKey; }
 
