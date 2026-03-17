@@ -944,14 +944,17 @@ function unifiedPick(gs, coilyActive) {
     var targetDist = (gs.lv >= 3) ? peelTargetDist(gs) : peelTargetDistSimple(gs);
 
     var bestDir = null, bestScore = Infinity;
+    var _dbgScores = {};
     for (var fk = 0; fk < DIR_KEYS.length; fk++) {
         var fd = DIR_KEYS[fk];
-        if (!safe1[fd] || !safe2[fd]) continue;
-
         var fdd = DIRS[fd];
         var lr = gs.player.row + fdd.dr, lc = gs.player.col + fdd.dc;
-        if (!isValidPos(lr, lc)) continue;
+        if (!isValidPos(lr, lc)) { _dbgScores[fd] = 'invalid'; continue; }
         var lidx = posToIdx[lr * ROWS + lc];
+        var _s1 = safe1[fd] ? 'safe' : 'UNSAFE';
+        var _s2 = safe2[fd] ? 'safe2' : 'UNSAFE2';
+        _dbgScores[fd] = 'dist=' + targetDist[lidx] + ' ' + _s1 + ' ' + _s2;
+        if (!safe1[fd] || !safe2[fd]) continue;
         if (lidx < 0) continue;
 
         var score = targetDist[lidx];
@@ -959,6 +962,7 @@ function unifiedPick(gs, coilyActive) {
 
         if (score < bestScore) { bestScore = score; bestDir = fd; }
     }
+    console.log('PEEL pos=(' + gs.player.row + ',' + gs.player.col + ') pick=' + bestDir + ' scores:', JSON.stringify(_dbgScores));
     if (bestDir) { restoreRng(); return bestDir; }
 
     // No fully-safe option — prefer STAY, then best survival
