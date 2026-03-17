@@ -545,12 +545,15 @@ function ensurePeelOrder() {
 // Stomp count penalizes heavily-visited cubes so the AI spreads to fresh areas.
 // Each previous stomp shifts effective priority by STOMP_WEIGHT peel-order slots.
 var STOMP_WEIGHT = 3;
-function findPeelTarget(stomps, stompCounts) {
+function findPeelTarget(stomps, stompCounts, tgt) {
     ensurePeelOrder();
     var bestIdx = -1, bestScore = Infinity;
     for (var i = 0; i < POS_COUNT; i++) {
         if (stomps[i] <= 0) continue;
-        var score = PEEL_ORDER[i] + (stompCounts ? stompCounts[i] * STOMP_WEIGHT : 0);
+        // Only penalize excess stomps beyond what's needed to complete.
+        // On lv5 (tgt=2), a cube stomped once is half-done, not "visited".
+        var excess = stompCounts ? Math.max(0, stompCounts[i] - tgt) : 0;
+        var score = PEEL_ORDER[i] + excess * STOMP_WEIGHT;
         if (score < bestScore) { bestScore = score; bestIdx = i; }
     }
     return bestIdx;
@@ -861,7 +864,7 @@ function unifiedPick(gs, coilyActive) {
         var idx = posToIdx[gs.cubes[i].row * ROWS + gs.cubes[i].col];
         stomps[idx] = stompsNeeded(gs.cubes[i].state, gs.lv);
     }
-    var peelTarget = findPeelTarget(stomps, aiStompCounts);
+    var peelTarget = findPeelTarget(stomps, aiStompCounts, gs.tgt);
 
     // BFS from peel target, routing around sealed cubes (they're removed from graph)
     var targetDist = bfsFromIdx(peelTarget >= 0 ? peelTarget : 0, seal);
