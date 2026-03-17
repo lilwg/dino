@@ -915,9 +915,6 @@ function draw() {
     // Discs
     drawDiscs();
 
-    // AI viz path (before inversion — color elements excluded from inversion)
-    if (vizOn) drawVizPath();
-
     // Shade enemy collision faces red (debug mode only)
     if (debugEnemies) drawEnemyCollisionFaces();
 
@@ -954,6 +951,9 @@ function draw() {
 
     // Night inversion
     applyNight(ctx);
+
+    // AI viz (drawn post-inversion so colors stay correct at night)
+    if (vizOn) drawVizPath();
 
     // Post-inversion: redraw cube tops with true colors, then redraw
     // entities on top. Entities are drawn to a temp canvas, inverted to
