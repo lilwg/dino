@@ -599,11 +599,17 @@ function tryMove(dirKey) {
                 return;
             }
         }
-        // Fall off edge — death
-        gs.alive = false;
-        gs.player.dead = true;
-        gs.player.deathTimer = 100;
-        killPlayerVisual();
+        // Fall off edge — start jump animation, die on landing
+        gs.player.jumpSrcRow = gs.player.row;
+        gs.player.jumpSrcCol = gs.player.col;
+        gs.player.jumping = true;
+        gs.player.jumpT = 0;
+        gs.player.jumpDur = 0.028 * (typeof speedMultiplier === 'function' ? speedMultiplier() : gs.sm);
+        gs.player.destRow = nr;
+        gs.player.destCol = nc;
+        gs.player.falling = true;
+        DinoSounds.press();
+        player.spriteFrame = 0; player.frameTimer = 0;
         return;
     }
 
@@ -758,6 +764,16 @@ function update() {
 
         // Handle landing
         if (result === 'landed') {
+            // Fell off edge — die now that the jump animation is done
+            if (gs.player.falling) {
+                gs.player.falling = false;
+                gs.alive = false;
+                gs.player.dead = true;
+                gs.player.deathTimer = 100;
+                killPlayerVisual();
+                syncVisuals();
+                return;
+            }
             simStompCube(gs, player.row, player.col);
             score += gs.score; gs.score = 0;
             checkExtraLife();
