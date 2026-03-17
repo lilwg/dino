@@ -672,7 +672,17 @@ function unifiedPick(gs, coilyActive) {
     var seal = computeSealedSet(gs);
 
     // Disc lure — use when Coily is active
-    if (coilyActive) {
+    // On toggle levels, skip if apex is at target: disc ride stomps apex, reverting it.
+    var apexComplete = false;
+    if (gs.lv >= 3) {
+        for (var ai = 0; ai < gs.cubes.length; ai++) {
+            if (gs.cubes[ai].row === 0 && gs.cubes[ai].col === 0) {
+                apexComplete = gs.cubes[ai].state >= gs.tgt;
+                break;
+            }
+        }
+    }
+    if (coilyActive && !apexComplete) {
         var lureDir = evalDiscLure();
         if (lureDir && !entersSealed(gs, lureDir, seal)) {
             var lureSafe = 0;
