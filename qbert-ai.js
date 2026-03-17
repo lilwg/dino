@@ -443,17 +443,22 @@ function aiTourInit() {
     aiLastRemaining = 99; aiNoProgressCount = 0; aiStayCount = 0; aiSamePosCount = 0; aiPosHistory = [];
 }
 
-// Compute sealed corner triangle depths from game state.
-// Left triangle depth d: all cubes with row >= ROWS-d, col <= d+row-ROWS are completed.
-// Right triangle depth d: all cubes with row >= ROWS-d, col >= ROWS-d are completed.
-// Returns {left, right} depths (0 = nothing sealed).
-function sealedTriangles(gs) {
-    if (gs.lv < 3) return {left: 0, right: 0};
+// Compute sealed regions from game state. Sealed = completed & off-limits.
+// Grows from corners along edges:
+//   Corner triangles: triangular regions from bottom-left/right corners
+//   Left edge: contiguous completed cubes along col=0 from bottom up
+//   Right edge: contiguous completed cubes along col=row from bottom up
+//   Bottom row: contiguous completed cubes from each end toward center
+function computeSealed(gs) {
+    var none = {triL: 0, triR: 0, edgeL: 0, edgeR: 0, botL: 0, botR: 0};
+    if (gs.lv < 3) return none;
     var stomps = new Int8Array(POS_COUNT);
     for (var i = 0; i < gs.cubes.length; i++) {
         var idx = posToIdx[gs.cubes[i].row * ROWS + gs.cubes[i].col];
         stomps[idx] = stompsNeeded(gs.cubes[i].state, gs.lv);
     }
+
+    // Corner triangles
     var sL = 0, sR = 0, chkL = true, chkR = true;
     for (var d = 1; d <= ROWS - 1; d++) {
         if (!chkL && !chkR) break;
@@ -469,19 +474,56 @@ function sealedTriangles(gs) {
         if (chkL) sL = d;
         if (chkR) sR = d;
     }
-    return {left: sL, right: sR};
+
+    // Left edge (col=0, bottom up)
+    var eL = 0;
+    for (var r = ROWS - 1; r >= 1; r--) {
+        if (stomps[posToIdx[r * ROWS + 0]] !== 0) break;
+        eL++;
+    }
+    // Right edge (col=row, bottom up)
+    var eR = 0;
+    for (var r = ROWS - 1; r >= 1; r--) {
+        if (stomps[posToIdx[r * ROWS + r]] !== 0) break;
+        eR++;
+    }
+    // Bottom row from left
+    var bL = 0;
+    for (var c = 0; c < ROWS; c++) {
+        if (stomps[posToIdx[(ROWS-1) * ROWS + c]] !== 0) break;
+        bL++;
+    }
+    // Bottom row from right
+    var bR = 0;
+    for (var c = ROWS - 1; c >= 0; c--) {
+        if (stomps[posToIdx[(ROWS-1) * ROWS + c]] !== 0) break;
+        bR++;
+    }
+
+    return {triL: sL, triR: sR, edgeL: eL, edgeR: eR, botL: bL, botR: bR};
 }
 
-// Is position (r,c) inside a sealed corner triangle?
+// Is position (r,c) inside any sealed region?
 function isSealed(r, c, seal) {
-    if (seal.left > 0 && r >= ROWS - seal.left && c <= seal.left + r - ROWS) return true;
-    if (seal.right > 0 && r >= ROWS - seal.right && c >= ROWS - seal.right) return true;
+    // Corner triangles
+    if (seal.triL > 0 && r >= ROWS - seal.triL && c <= seal.triL + r - ROWS) return true;
+    if (seal.triR > 0 && r >= ROWS - seal.triR && c >= ROWS - seal.triR) return true;
+    // Left edge (col=0)
+    if (seal.edgeL > 0 && c === 0 && r >= ROWS - seal.edgeL) return true;
+    // Right edge (col=row)
+    if (seal.edgeR > 0 && c === r && r >= ROWS - seal.edgeR) return true;
+    // Bottom row
+    if (seal.botL > 0 && r === ROWS - 1 && c < seal.botL) return true;
+    if (seal.botR > 0 && r === ROWS - 1 && c >= ROWS - seal.botR) return true;
     return false;
 }
 
-// Would moving in `dir` enter a sealed corner triangle?
+// Would moving in `dir` enter a sealed region from outside?
+// If player is already inside sealed region, allow movement (escape).
 function entersSealed(gs, dir, seal) {
-    if (dir === 'STAY' || (seal.left === 0 && seal.right === 0)) return false;
+    if (dir === 'STAY') return false;
+    // If already in sealed region, don't block — let AI escape
+    if (isSealed(gs.player.row, gs.player.col, seal)) return false;
     var d = DIRS[dir];
     var nr = gs.player.row + d.dr, nc = gs.player.col + d.dc;
     if (!isValidPos(nr, nc)) return false;
@@ -622,7 +664,7 @@ function unifiedPick(gs, coilyActive) {
     var SAMPLES = coilyActive ? 20 : (hasEnemies ? 12 : 4);
 
     // Compute sealed corner triangles once for this decision
-    var seal = sealedTriangles(gs);
+    var seal = computeSealed(gs);
 
     // Disc lure — use when Coily is active
     if (coilyActive) {
@@ -970,7 +1012,7 @@ function aiPickBestDir() {
     // ── FINAL SEALED GUARD ──
     // If the chosen direction enters a sealed corner triangle, override it.
     // Catches oscillation/stuck breakers that might bypass unifiedPick's check.
-    var finalSeal = sealedTriangles(gs);
+    var finalSeal = computeSealed(gs);
     if (entersSealed(gs, result, finalSeal)) {
         var guardAlt = null, guardScore = -Infinity;
         for (var gk = 0; gk < DIR_KEYS_WITH_STAY.length; gk++) {
