@@ -452,36 +452,19 @@ var aiDetailPath = [], aiTourDots = [];
 
 function aiTourInit() {
     aiLastRemaining = 99; aiNoProgressCount = 0; aiStayCount = 0; aiSamePosCount = 0; aiPosHistory = [];
-    aiStompCounts = null; aiStompRound = -1; aiStompLv = -1;
 }
 
-// ─── Generalized graph-peeling seal ─────────────────────────────────────────
-// Instead of hardcoded corner triangles, seal completed cubes using graph
-// theory: a completed cube is sealed (off-limits) if:
-//   (a) it's a dead end (degree ≤ 1) — no reason to ever revisit, OR
-//   (b) ALL its neighbors are also completed — it's interior, no transit needed
-// This naturally seals bottom corners first (degree-1 dead ends), then grows
-// inward as surrounding cubes complete. Same principle as iterative leaf
-// removal / degeneracy ordering, applied to the completed subgraph.
+// ─── Sealed set: completed dead-end cubes ───────────────────────────────────
+// Only seal completed cubes that are dead ends (degree ≤ 1). These never need
+// to be revisited. Interior completed cubes stay open for routing — the AI
+// may need to traverse them to reach uncompleted cubes elsewhere.
 function computeSealedSet(gs) {
     var sealed = new Uint8Array(POS_COUNT);
     if (gs.lv < 3) return sealed;
-    var stomps = new Int8Array(POS_COUNT);
     for (var i = 0; i < gs.cubes.length; i++) {
         var idx = posToIdx[gs.cubes[i].row * ROWS + gs.cubes[i].col];
-        stomps[idx] = stompsNeeded(gs.cubes[i].state, gs.lv);
-    }
-    for (var idx = 0; idx < POS_COUNT; idx++) {
-        if (stomps[idx] !== 0) continue; // uncompleted — can't seal
-        var adj = posAdj[idx];
-        // Dead end (degree ≤ 1): always seal when completed
-        if (adj.length <= 1) { sealed[idx] = 1; continue; }
-        // Interior: seal if ALL neighbors are also completed
-        var allDone = true;
-        for (var a = 0; a < adj.length; a++) {
-            if (stomps[adj[a]] > 0) { allDone = false; break; }
-        }
-        if (allDone) sealed[idx] = 1;
+        if (stompsNeeded(gs.cubes[i].state, gs.lv) !== 0) continue;
+        if (posAdj[idx].length <= 1) sealed[idx] = 1;
     }
     return sealed;
 }
@@ -859,17 +842,10 @@ function unifiedPick(gs, coilyActive) {
     }
     var peelTarget = findPeelTarget(stomps);
 
-    // BFS from peel target, routing around sealed cubes (they're removed from graph)
-    var src = peelTarget >= 0 ? peelTarget : 0;
-    var targetDist = bfsFromIdx(src, seal);
+    // BFS from peel target, routing around sealed dead-end cubes
+    var targetDist = bfsFromIdx(peelTarget >= 0 ? peelTarget : 0, seal);
     var curIdx = posToIdx[gs.player.row * ROWS + gs.player.col];
     var curDist = targetDist[curIdx];
-    // After death/respawn at apex, the player can be on the wrong side of sealed cubes.
-    // Fall back to unrestricted BFS so the AI can cut through sealed cubes to reach the target.
-    if (curDist >= 999) {
-        targetDist = bfsFromIdx(src, null);
-        curDist = targetDist[curIdx];
-    }
     var bestDir = null, bestScore = Infinity;
     for (var fk = 0; fk < DIR_KEYS_WITH_STAY.length; fk++) {
         var fd = DIR_KEYS_WITH_STAY[fk];
@@ -924,9 +900,6 @@ var aiLastRemaining = 99; // cubes remaining last time we checked
 var aiNoProgressCount = 0; // moves without reducing remaining cubes
 var aiPosHistory = [];  // recent position history for oscillation detection
 var AI_HISTORY_LEN = 12; // how many positions to track
-var aiStompCounts = null; // per-position stomp count for peel target tiebreaking
-var aiStompRound = -1;    // round when stomp counts were last reset
-var aiStompLv = -1;       // level when stomp counts were last reset
 
 function aiPickBestDir() {
     // Save game RNG — ALL AI simulation must use seeded RNG, never Math.random
@@ -942,20 +915,8 @@ function aiPickBestDir() {
     aiMoveScores = {};
     aiMode = 1;
 
-    // Track stomp counts per position (reset on new round/level)
-    var posKey = gs.player.row + ',' + gs.player.col;
-    if (!aiStompCounts || gs.lv !== aiStompLv || gs.round !== aiStompRound) {
-        aiStompCounts = new Int32Array(POS_COUNT);
-        aiStompLv = gs.lv;
-        aiStompRound = gs.round;
-    }
-    if (posKey !== aiLastPos) {
-        // Player just landed on a new cube — count the stomp
-        var curIdx = posToIdx[gs.player.row * ROWS + gs.player.col];
-        if (curIdx >= 0) aiStompCounts[curIdx]++;
-    }
-
     // Track how long we've been on the same tile
+    var posKey = gs.player.row + ',' + gs.player.col;
     if (posKey === aiLastPos) aiSamePosCount++;
     else { aiSamePosCount = 0; aiLastPos = posKey; }
 
