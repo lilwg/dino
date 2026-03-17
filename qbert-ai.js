@@ -257,13 +257,14 @@ function isExhaustiveSafe(gs, dir) {
         }
 
         if (e.type === 'slick' || e.type === 'greenball') continue;
-        if (e.type === 'coily') continue;
 
         var er = e.jumping && e.jumpT >= 0.67 ? (e.destRow != null ? e.destRow : e.row) : e.row;
         var ec2 = e.jumping && e.jumpT >= 0.67 ? (e.destCol != null ? e.destCol : e.col) : e.col;
-        var distDest = Math.abs(er - destR) + Math.abs(ec2 - destC);
-        var distSrc = Math.abs(er - gs.player.row) + Math.abs(ec2 - gs.player.col);
-        if (distDest > EXHAUSTIVE_RADIUS && distSrc > EXHAUSTIVE_RADIUS) continue;
+        if (e.type !== 'coily') {
+            var distDest = Math.abs(er - destR) + Math.abs(ec2 - destC);
+            var distSrc = Math.abs(er - gs.player.row) + Math.abs(ec2 - gs.player.col);
+            if (distDest > EXHAUSTIVE_RADIUS && distSrc > EXHAUSTIVE_RADIUS) continue;
+        }
 
         var eClone = cloneEnemyLight(e);
         if (enemyPathCollides(eClone, playerTiles, startFrame, maxFrames, destR, destC, gs.sm)) {
@@ -423,16 +424,15 @@ function simCanMove(gs, dirKey) {
 
 // ─── Direction selection ─────────────────────────────────────────────────────
 
-function unifiedPick(gs, coilyActive) {
+function unifiedPick(gs) {
     var savedRng = simRng;
     var baseSeed = (gs.player.row * 7 + gs.player.col) * 10000 + (frameCount || 0);
     function simSeed(sampleIdx) { simRng = createSeededRng(baseSeed + sampleIdx * 9973); }
     function restoreRng() { simRng = savedRng; }
 
     var hasEnemies = gs.enemies.length > 0;
-    var SAMPLES = coilyActive ? 20 : (hasEnemies ? 12 : 4);
 
-    // ── Safety check for each direction (MC + exhaustive + hop-2/3 chain) ──
+    // ── Safety check for each direction (exhaustive + hop-2/3 chain) ──
     var safe1 = {};
     var safe2 = {};
     var hop1Surv = {};
@@ -441,53 +441,43 @@ function unifiedPick(gs, coilyActive) {
         var dir = DIR_KEYS_WITH_STAY[k];
         if (!simCanMove(gs, dir)) continue;
 
-        // Hop 1: MC simulation
-        var survived = 0;
-        var hop1States = [];
-        for (var s = 0; s < SAMPLES; s++) {
-            simSeed(k * 100 + s);
-            var child = simDeepClone(gs);
-            var alive = simStep(child, dir);
-            if (alive) {
-                survived++;
-                if (hop1States.length < 10) hop1States.push(child);
-            }
-        }
-
-        hop1Surv[dir] = survived / SAMPLES;
-        if (survived === SAMPLES) safe1[dir] = true;
-
-        // Exhaustive nearby-enemy check
-        if (safe1[dir] && hasEnemies) {
-            restoreRng();
-            if (dir === 'STAY') {
-                var stayFrames = 10;
-                var stayTiles = [];
-                for (var sf = 0; sf < stayFrames; sf++) stayTiles.push({ row: gs.player.row, col: gs.player.col });
-                var stayUnsafe = false;
-                for (var sei = 0; sei < gs.enemies.length; sei++) {
-                    var se = gs.enemies[sei];
-                    if (se.type === 'spawn-timer' || se.type === 'slick' || se.type === 'greenball' || se.type === 'coily') continue;
-                    var ser = se.jumping && se.jumpT >= 0.67 ? (se.destRow != null ? se.destRow : se.row) : se.row;
-                    var sec = se.jumping && se.jumpT >= 0.67 ? (se.destCol != null ? se.destCol : se.col) : se.col;
-                    if (Math.abs(ser - gs.player.row) + Math.abs(sec - gs.player.col) > 2) continue;
-                    var seClone = cloneEnemyLight(se);
-                    if (enemyPathCollides(seClone, stayTiles, 0, stayFrames, gs.player.row, gs.player.col, gs.sm)) {
-                        stayUnsafe = true; break;
-                    }
+        // Exhaustive safety check (covers all enemies including Coily)
+        if (!hasEnemies) {
+            safe1[dir] = true;
+        } else if (dir === 'STAY') {
+            var stayFrames = 10;
+            var stayTiles = [];
+            for (var sf = 0; sf < stayFrames; sf++) stayTiles.push({ row: gs.player.row, col: gs.player.col });
+            var stayUnsafe = false;
+            for (var sei = 0; sei < gs.enemies.length; sei++) {
+                var se = gs.enemies[sei];
+                if (se.type === 'spawn-timer' || se.type === 'slick' || se.type === 'greenball') continue;
+                var ser = se.jumping && se.jumpT >= 0.67 ? (se.destRow != null ? se.destRow : se.row) : se.row;
+                var sec = se.jumping && se.jumpT >= 0.67 ? (se.destCol != null ? se.destCol : se.col) : se.col;
+                if (se.type !== 'coily' && Math.abs(ser - gs.player.row) + Math.abs(sec - gs.player.col) > 2) continue;
+                var seClone = cloneEnemyLight(se);
+                if (enemyPathCollides(seClone, stayTiles, 0, stayFrames, gs.player.row, gs.player.col, gs.sm)) {
+                    stayUnsafe = true; break;
                 }
-                if (stayUnsafe) { safe1[dir] = false; hop1Surv[dir] = 0; }
-            } else if (!isExhaustiveSafe(gs, dir)) {
-                safe1[dir] = false;
-                hop1Surv[dir] = 0;
+            }
+            safe1[dir] = !stayUnsafe;
+        } else {
+            safe1[dir] = isExhaustiveSafe(gs, dir);
+        }
+        hop1Surv[dir] = safe1[dir] ? 1 : 0;
+
+        // Generate future states for hop-2/3 chain check
+        var hop1States = [];
+        if (safe1[dir]) {
+            for (var s = 0; s < 4; s++) {
+                simSeed(k * 100 + s);
+                var child = simDeepClone(gs);
+                if (simStep(child, dir) && hop1States.length < 4) hop1States.push(child);
             }
         }
 
         // Export for viz
-        if (!safe1[dir] && survived === SAMPLES) aiMoveScores[dir] = -8000;
-        else if (survived === 0) aiMoveScores[dir] = -10000;
-        else if (survived === SAMPLES && safe1[dir]) aiMoveScores[dir] = 10000;
-        else aiMoveScores[dir] = (survived / SAMPLES) * 100 - 100;
+        aiMoveScores[dir] = safe1[dir] ? 10000 : -10000;
 
         // Hop 2+3 chain check (anti-cornering)
         if (safe1[dir] && hasEnemies && dir !== 'STAY') {
@@ -602,17 +592,11 @@ var aiMode = 0;
 function aiPickBestDir() {
     var savedGameRng = simRng;
 
-    var coilyActive = false;
-    for (var i = 0; i < enemies.length; i++) {
-        if (enemies[i].type === 'coily') coilyActive = true;
-        if (enemies[i].type === 'egg' && (enemies[i].willHatch || (enemies[i].hops || 0) >= 5)) coilyActive = true;
-    }
-
     var gs = simCloneGameState();
     aiMoveScores = {};
     aiMode = 1;
 
-    var result = unifiedPick(gs, coilyActive);
+    var result = unifiedPick(gs);
 
     simRng = savedGameRng;
     return result;
