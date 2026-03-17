@@ -860,9 +860,16 @@ function unifiedPick(gs, coilyActive) {
     var peelTarget = findPeelTarget(stomps);
 
     // BFS from peel target, routing around sealed cubes (they're removed from graph)
-    var targetDist = bfsFromIdx(peelTarget >= 0 ? peelTarget : 0, seal);
+    var src = peelTarget >= 0 ? peelTarget : 0;
+    var targetDist = bfsFromIdx(src, seal);
     var curIdx = posToIdx[gs.player.row * ROWS + gs.player.col];
     var curDist = targetDist[curIdx];
+    // After death/respawn at apex, the player can be on the wrong side of sealed cubes.
+    // Fall back to unrestricted BFS so the AI can cut through sealed cubes to reach the target.
+    if (curDist >= 999) {
+        targetDist = bfsFromIdx(src, null);
+        curDist = targetDist[curIdx];
+    }
     var bestDir = null, bestScore = Infinity;
     for (var fk = 0; fk < DIR_KEYS_WITH_STAY.length; fk++) {
         var fd = DIR_KEYS_WITH_STAY[fk];
