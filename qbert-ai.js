@@ -830,7 +830,28 @@ function unifiedPick(gs, coilyActive) {
     // Soft revert penalty: on toggle levels, add extra cost for stepping on
     // completed cubes. This discourages reverts without being a hard wall
     // (unlike sealed regions which completely block entry).
+    // Only apply penalty when a non-reverting direction exists — otherwise
+    // the AI gets stuck (e.g. at apex surrounded by completed cubes).
     var REVERT_MOVE_COST = 6;
+    var hasNonRevert = false;
+    if (gs.lv >= 3) {
+        for (var nrk = 0; nrk < DIR_KEYS.length; nrk++) {
+            var nrd = DIR_KEYS[nrk];
+            if (!safe1[nrd] || !safe2[nrd]) continue;
+            if (entersSealed(gs, nrd, seal)) continue;
+            if (tourCosts[nrd] === undefined) continue;
+            var ndir = DIRS[nrd];
+            var nnr = gs.player.row + ndir.dr, nnc = gs.player.col + ndir.dc;
+            if (!isValidPos(nnr, nnc)) continue;
+            var nReverts = false;
+            for (var nci = 0; nci < gs.cubes.length; nci++) {
+                if (gs.cubes[nci].row === nnr && gs.cubes[nci].col === nnc && gs.cubes[nci].state >= gs.tgt) {
+                    nReverts = true; break;
+                }
+            }
+            if (!nReverts) { hasNonRevert = true; break; }
+        }
+    }
     var bestDir = null, bestCost = Infinity;
     for (var fk = 0; fk < DIR_KEYS_WITH_STAY.length; fk++) {
         var fd = DIR_KEYS_WITH_STAY[fk];
@@ -838,8 +859,8 @@ function unifiedPick(gs, coilyActive) {
         if (entersSealed(gs, fd, seal)) continue;
         var fc = tourCosts[fd];
         if (fc === undefined) continue;
-        // Soft revert penalty at move-choice level
-        if (gs.lv >= 3 && fd !== 'STAY') {
+        // Soft revert penalty — only when a non-reverting option exists
+        if (hasNonRevert && fd !== 'STAY') {
             var fdir = DIRS[fd];
             var fnr = gs.player.row + fdir.dr, fnc = gs.player.col + fdir.dc;
             if (isValidPos(fnr, fnc)) {
