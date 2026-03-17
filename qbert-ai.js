@@ -503,21 +503,46 @@ function entersSealed(gs, dir, sealed) {
 }
 
 // ─── Peel-order routing ─────────────────────────────────────────────────────
-// Peel priority: lower value = should be completed first.
-// Bottom corners (degree-1 dead ends) = 0, apex = highest.
-// This is the order of iterative leaf removal from the boundary inward.
-function peelPriority(row, col) {
-    return (ROWS - 1 - row) * ROWS + Math.min(col, row - col);
+// Compute the actual graph degeneracy ordering: iteratively remove the
+// minimum-degree vertex, tiebreaking by row (bottom first) then edge distance.
+// This gives the correct peel order where degree-2 nodes (bottom corners,
+// edges, AND the apex) are all peeled early.
+var PEEL_ORDER = null;
+function ensurePeelOrder() {
+    if (PEEL_ORDER) return;
+    PEEL_ORDER = new Int8Array(POS_COUNT);
+    var degree = new Int8Array(POS_COUNT);
+    var removed = new Uint8Array(POS_COUNT);
+    for (var i = 0; i < POS_COUNT; i++) degree[i] = posAdj[i].length;
+
+    for (var order = 0; order < POS_COUNT; order++) {
+        var minDeg = 99, minIdx = -1, minTie = -1;
+        for (var i = 0; i < POS_COUNT; i++) {
+            if (removed[i]) continue;
+            var pos = idxToPos[i];
+            // Tiebreak: prefer higher row (bottom), then closer to edge
+            var tie = pos[0] * 100 - Math.min(pos[1], pos[0] - pos[1]);
+            if (degree[i] < minDeg || (degree[i] === minDeg && tie > minTie)) {
+                minDeg = degree[i]; minIdx = i; minTie = tie;
+            }
+        }
+        if (minIdx < 0) break;
+        PEEL_ORDER[minIdx] = order;
+        removed[minIdx] = 1;
+        var adj = posAdj[minIdx];
+        for (var a = 0; a < adj.length; a++) {
+            if (!removed[adj[a]]) degree[adj[a]]--;
+        }
+    }
 }
 
-// Find the highest-priority (lowest peelPriority) uncompleted cube.
+// Find the highest-priority (lowest PEEL_ORDER) uncompleted cube.
 function findPeelTarget(stomps) {
-    var bestIdx = -1, bestPrio = Infinity;
+    ensurePeelOrder();
+    var bestIdx = -1, bestOrder = POS_COUNT;
     for (var i = 0; i < POS_COUNT; i++) {
         if (stomps[i] <= 0) continue;
-        var pos = idxToPos[i];
-        var prio = peelPriority(pos[0], pos[1]);
-        if (prio < bestPrio) { bestPrio = prio; bestIdx = i; }
+        if (PEEL_ORDER[i] < bestOrder) { bestOrder = PEEL_ORDER[i]; bestIdx = i; }
     }
     return bestIdx;
 }
@@ -671,18 +696,8 @@ function unifiedPick(gs, coilyActive) {
 
     var seal = computeSealedSet(gs);
 
-    // Disc lure — use when Coily is active
-    // On toggle levels, skip if apex is at target: disc ride stomps apex, reverting it.
-    var apexComplete = false;
-    if (gs.lv >= 3) {
-        for (var ai = 0; ai < gs.cubes.length; ai++) {
-            if (gs.cubes[ai].row === 0 && gs.cubes[ai].col === 0) {
-                apexComplete = gs.cubes[ai].state >= gs.tgt;
-                break;
-            }
-        }
-    }
-    if (coilyActive && !apexComplete) {
+    // Disc lure — use when Coily is active (skip on toggle levels: disc ride reverts apex)
+    if (coilyActive && gs.lv < 3) {
         var lureDir = evalDiscLure();
         if (lureDir && !entersSealed(gs, lureDir, seal)) {
             var lureSafe = 0;
@@ -865,6 +880,8 @@ function unifiedPick(gs, coilyActive) {
 
     // Pick safe direction closest to peel target
     var REVERT_MOVE_COST = 6;
+    var curIdx = posToIdx[gs.player.row * ROWS + gs.player.col];
+    var curDist = targetDist[curIdx];
     var bestDir = null, bestScore = Infinity;
     for (var fk = 0; fk < DIR_KEYS_WITH_STAY.length; fk++) {
         var fd = DIR_KEYS_WITH_STAY[fk];
@@ -884,8 +901,8 @@ function unifiedPick(gs, coilyActive) {
         var score = targetDist[lidx];
         if (score >= 999) continue;
 
-        // Bonus for landing on an uncompleted cube
-        if (stomps[lidx] > 0) score -= 2;
+        // Bonus for landing on an uncompleted cube — only when moving closer
+        if (stomps[lidx] > 0 && targetDist[lidx] < curDist) score -= 2;
         // Extra bonus for landing on the peel target itself
         if (lidx === peelTarget) score -= 3;
 
@@ -898,9 +915,6 @@ function unifiedPick(gs, coilyActive) {
                 }
             }
         }
-
-        // STAY penalty
-        if (fd === 'STAY') score += 2;
 
         if (score < bestScore) { bestScore = score; bestDir = fd; }
     }
