@@ -842,6 +842,23 @@ function update() {
         if (gs.score !== 0) { score += gs.score; gs.score = 0; checkExtraLife(); }
     }
 
+    // Safety net: detect level completion every frame.
+    // Catches edge cases where simAllColored isn't checked after a stomp
+    // (e.g. respawn stomp at apex completing the level).
+    if (!levelWon && !player.dead && simAllColored(gs)) {
+        score += roundCompletionBonus();
+        score += unusedDiscBonus(gs.discs);
+        checkExtraLife();
+        levelWon = true;
+        levelWonTimer = 30;
+        DinoSounds.reached();
+        var lvKey = bestHopsKey();
+        if (!bestHops[lvKey] || hops < bestHops[lvKey]) {
+            bestHops[lvKey] = hops;
+            localStorage.setItem('dino-qbert-best-hops', JSON.stringify(bestHops));
+        }
+    }
+
     // Sync visual positions from sim state
     syncVisuals();
 

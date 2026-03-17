@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic  (v8 — sealed corner triangles)
-var AI_VERSION = 'v9-human-heuristics';
+var AI_VERSION = 'v10-peel-order';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -107,10 +107,17 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs) {
         for (var i = 0; i < POS_COUNT; i++) {
             if (stomps[i] > 0 && i !== curIdx) {
                 var d = dijk.dist[i];
-                // Bottom-up bias: on toggle levels, prefer completing lower cubes first.
-                // Row bonus makes bottom cubes appear closer for target selection,
-                // but real hop count is used for cost accumulation.
-                if (isToggle) d -= idxToPos[i][0] * 0.3;
+                // Peel-order bias: on toggle levels, prefer completing outer cubes
+                // first (bottom rows + edge cubes). This is the graph-peeling
+                // heuristic — complete leaves first, then work inward.
+                // Row bonus: 0.3/row, max 1.8 for bottom row.
+                // Edge bonus: edge cubes get slight extra priority.
+                if (isToggle) {
+                    var pos = idxToPos[i];
+                    var rowBonus = pos[0] * 0.3;
+                    var edgeDist = Math.min(pos[1], pos[0] - pos[1]);
+                    d -= rowBonus - edgeDist * 0.1;
+                }
                 if (d < bestDist || (d === bestDist && (bestIdx === -1 || i < bestIdx))) {
                     bestDist = d; bestIdx = i;
                 }
@@ -447,63 +454,53 @@ function aiTourInit() {
     aiLastRemaining = 99; aiNoProgressCount = 0; aiStayCount = 0; aiSamePosCount = 0; aiPosHistory = [];
 }
 
-// Compute sealed corner triangles from game state. Sealed = completed & off-limits.
-// Only corner triangles: triangular regions of completed cubes growing from
-// bottom-left/right corners. These are the most critical zones to protect
-// because once sealed they're hard to reach and easy to accidentally revert.
-// Other completed cubes are protected by a soft revert penalty at move-choice level.
-function computeSealed(gs) {
-    var none = {triL: 0, triR: 0};
-    if (gs.lv < 3) return none;
+// ─── Generalized graph-peeling seal ─────────────────────────────────────────
+// Instead of hardcoded corner triangles, seal completed cubes using graph
+// theory: a completed cube is sealed (off-limits) if:
+//   (a) it's a dead end (degree ≤ 1) — no reason to ever revisit, OR
+//   (b) ALL its neighbors are also completed — it's interior, no transit needed
+// This naturally seals bottom corners first (degree-1 dead ends), then grows
+// inward as surrounding cubes complete. Same principle as iterative leaf
+// removal / degeneracy ordering, applied to the completed subgraph.
+function computeSealedSet(gs) {
+    var sealed = new Uint8Array(POS_COUNT);
+    if (gs.lv < 3) return sealed;
     var stomps = new Int8Array(POS_COUNT);
     for (var i = 0; i < gs.cubes.length; i++) {
         var idx = posToIdx[gs.cubes[i].row * ROWS + gs.cubes[i].col];
         stomps[idx] = stompsNeeded(gs.cubes[i].state, gs.lv);
     }
-
-    // Corner triangles
-    var sL = 0, sR = 0, chkL = true, chkR = true;
-    for (var d = 1; d <= ROWS - 1; d++) {
-        if (!chkL && !chkR) break;
-        for (var r = ROWS - d; r < ROWS; r++) {
-            if (!chkL && !chkR) break;
-            for (var c = 0; c <= r; c++) {
-                var idx = posToIdx[r * ROWS + c];
-                if (idx < 0) continue;
-                if (chkL && c <= d + r - ROWS && stomps[idx] !== 0) chkL = false;
-                if (chkR && c >= ROWS - d && stomps[idx] !== 0) chkR = false;
-            }
+    for (var idx = 0; idx < POS_COUNT; idx++) {
+        if (stomps[idx] !== 0) continue; // uncompleted — can't seal
+        var adj = posAdj[idx];
+        // Dead end (degree ≤ 1): always seal when completed
+        if (adj.length <= 1) { sealed[idx] = 1; continue; }
+        // Interior: seal if ALL neighbors are also completed
+        var allDone = true;
+        for (var a = 0; a < adj.length; a++) {
+            if (stomps[adj[a]] > 0) { allDone = false; break; }
         }
-        if (chkL) sL = d;
-        if (chkR) sR = d;
+        if (allDone) sealed[idx] = 1;
     }
-
-    return {triL: sL, triR: sR};
+    return sealed;
 }
 
-// Is position (r,c) inside a sealed corner triangle?
-function isSealed(r, c, seal) {
-    if (seal.triL > 0 && r >= ROWS - seal.triL && c <= seal.triL + r - ROWS) return true;
-    if (seal.triR > 0 && r >= ROWS - seal.triR && c >= ROWS - seal.triR) return true;
-    return false;
+// Is position (r,c) sealed?
+function isSealed(r, c, sealed) {
+    var idx = posToIdx[r * ROWS + c];
+    return idx >= 0 && sealed[idx] === 1;
 }
 
-// Would moving in `dir` enter a sealed region from outside?
-// If player is already inside sealed region, allow movement (escape).
-function entersSealed(gs, dir, seal) {
+// Would moving in `dir` enter a sealed cube from outside?
+// If player is already on a sealed cube, allow movement (escape).
+function entersSealed(gs, dir, sealed) {
     if (dir === 'STAY') return false;
-    // If already in sealed region, don't block — let AI escape
-    if (isSealed(gs.player.row, gs.player.col, seal)) return false;
+    if (isSealed(gs.player.row, gs.player.col, sealed)) return false;
     var d = DIRS[dir];
     var nr = gs.player.row + d.dr, nc = gs.player.col + d.dc;
     if (!isValidPos(nr, nc)) return false;
-    return isSealed(nr, nc, seal);
+    return isSealed(nr, nc, sealed);
 }
-
-// Dijkstra tour planner — nearest unfinished cube via weighted BFS
-// On toggle levels (lv3+), uses cluster-based sweep planning:
-// finds connected components of unfinished cubes and targets the nearest
-// cluster's closest member, preferring paths that don't cross completed cubes.
 
 
 // ─── Can-move check ──────────────────────────────────────────────────────────
@@ -634,7 +631,7 @@ function unifiedPick(gs, coilyActive) {
     var SAMPLES = coilyActive ? 20 : (hasEnemies ? 12 : 4);
 
     // Compute sealed corner triangles once for this decision
-    var seal = computeSealed(gs);
+    var seal = computeSealedSet(gs);
 
     // Disc lure — use when Coily is active
     if (coilyActive) {
@@ -1021,7 +1018,7 @@ function aiPickBestDir() {
     // ── FINAL SEALED GUARD ──
     // If the chosen direction enters a sealed corner triangle, override it.
     // Catches oscillation/stuck breakers that might bypass unifiedPick's check.
-    var finalSeal = computeSealed(gs);
+    var finalSeal = computeSealedSet(gs);
     if (entersSealed(gs, result, finalSeal)) {
         var guardAlt = null, guardScore = -Infinity;
         for (var gk = 0; gk < DIR_KEYS_WITH_STAY.length; gk++) {
