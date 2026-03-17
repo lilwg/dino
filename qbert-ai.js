@@ -1035,9 +1035,10 @@ function aiPickBestDir() {
 
     // Fast oscillation break: detect A-B-A pattern and escape early before
     // enemies can close in. The stuck breaker below waits too long (12+ moves).
+    // Skip on toggle levels — bouncing between two cubes is normal (2-stomp targets).
     var h = aiPosHistory;
     var hlen = h.length;
-    if (result !== 'STAY' && hlen >= 3 && h[hlen-1] === h[hlen-3] && h[hlen-1] !== h[hlen-2]) {
+    if (gs.lv < 3 && result !== 'STAY' && hlen >= 3 && h[hlen-1] === h[hlen-3] && h[hlen-1] !== h[hlen-2]) {
         var od = DIRS[result];
         var odKey = (gs.player.row + od.dr) + ',' + (gs.player.col + od.dc);
         if (odKey === h[hlen-2]) {
@@ -1055,8 +1056,10 @@ function aiPickBestDir() {
     }
 
     // Stuck breaker: if no progress and looping in few unique positions,
-    // pick a safe unvisited direction toward an unfinished cube
-    if (aiNoProgressCount > 12 && result !== 'STAY') {
+    // pick a safe unvisited direction toward an unfinished cube.
+    // On toggle levels, threshold is higher since bouncing is expected.
+    var stuckThreshold = gs.lv >= 3 ? 30 : 12;
+    if (aiNoProgressCount > stuckThreshold && result !== 'STAY') {
         var dd = DIRS[result];
         var dr = gs.player.row + dd.dr, dc = gs.player.col + dd.dc;
         var destUnfinished = false;
