@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic (peel routing)
-var AI_VERSION = 'v13.11';
+var AI_VERSION = 'v13.12';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -520,9 +520,8 @@ function unifiedPick(gs) {
                         var d3dir = DIR_KEYS_WITH_STAY[d3k];
                         var d3ok = true;
                         for (var si3 = 0; si3 < hop2States.length; si3++) {
-                            simSeed(k * 10000 + d2k * 1000 + d3k * 100 + si3);
-                            var d3c = simDeepClone(hop2States[si3]);
-                            if (!simStep(d3c, d3dir)) { d3ok = false; break; }
+                            if (d3dir !== 'STAY' && !simCanMove(hop2States[si3], d3dir)) { d3ok = false; break; }
+                            if (!isExhaustiveSafe(hop2States[si3], d3dir)) { d3ok = false; break; }
                         }
                         if (d3ok) { has3rdSafe = true; break; }
                     }
