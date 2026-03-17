@@ -1,5 +1,5 @@
-// qbert-ai.js — Q*bert AI logic  (v8 — revert guard)
-var AI_VERSION = 'v8-revert-guard';
+// qbert-ai.js — Q*bert AI logic  (v8 — sealed corner triangles)
+var AI_VERSION = 'v8-sealed-corners';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -443,17 +443,49 @@ function aiTourInit() {
     aiLastRemaining = 99; aiNoProgressCount = 0; aiStayCount = 0; aiSamePosCount = 0; aiPosHistory = [];
 }
 
-// Would moving in `dir` revert a completed cube? (toggle levels only)
-function wouldRevert(gs, dir) {
-    if (gs.lv < 3 || dir === 'STAY') return false;
+// Compute sealed corner triangle depths from game state.
+// Left triangle depth d: all cubes with row >= ROWS-d, col <= d+row-ROWS are completed.
+// Right triangle depth d: all cubes with row >= ROWS-d, col >= ROWS-d are completed.
+// Returns {left, right} depths (0 = nothing sealed).
+function sealedTriangles(gs) {
+    if (gs.lv < 3) return {left: 0, right: 0};
+    var stomps = new Int8Array(POS_COUNT);
+    for (var i = 0; i < gs.cubes.length; i++) {
+        var idx = posToIdx[gs.cubes[i].row * ROWS + gs.cubes[i].col];
+        stomps[idx] = stompsNeeded(gs.cubes[i].state, gs.lv);
+    }
+    var sL = 0, sR = 0, chkL = true, chkR = true;
+    for (var d = 1; d <= ROWS - 1; d++) {
+        if (!chkL && !chkR) break;
+        for (var r = ROWS - d; r < ROWS; r++) {
+            if (!chkL && !chkR) break;
+            for (var c = 0; c <= r; c++) {
+                var idx = posToIdx[r * ROWS + c];
+                if (idx < 0) continue;
+                if (chkL && c <= d + r - ROWS && stomps[idx] !== 0) chkL = false;
+                if (chkR && c >= ROWS - d && stomps[idx] !== 0) chkR = false;
+            }
+        }
+        if (chkL) sL = d;
+        if (chkR) sR = d;
+    }
+    return {left: sL, right: sR};
+}
+
+// Is position (r,c) inside a sealed corner triangle?
+function isSealed(r, c, seal) {
+    if (seal.left > 0 && r >= ROWS - seal.left && c <= seal.left + r - ROWS) return true;
+    if (seal.right > 0 && r >= ROWS - seal.right && c >= ROWS - seal.right) return true;
+    return false;
+}
+
+// Would moving in `dir` enter a sealed corner triangle?
+function entersSealed(gs, dir, seal) {
+    if (dir === 'STAY' || (seal.left === 0 && seal.right === 0)) return false;
     var d = DIRS[dir];
     var nr = gs.player.row + d.dr, nc = gs.player.col + d.dc;
     if (!isValidPos(nr, nc)) return false;
-    for (var i = 0; i < gs.cubes.length; i++) {
-        if (gs.cubes[i].row === nr && gs.cubes[i].col === nc && gs.cubes[i].state >= gs.tgt)
-            return true;
-    }
-    return false;
+    return isSealed(nr, nc, seal);
 }
 
 // Dijkstra tour planner — nearest unfinished cube via weighted BFS
@@ -589,10 +621,13 @@ function unifiedPick(gs, coilyActive) {
     var hasEnemies = gs.enemies.length > 0;
     var SAMPLES = coilyActive ? 20 : (hasEnemies ? 12 : 4);
 
+    // Compute sealed corner triangles once for this decision
+    var seal = sealedTriangles(gs);
+
     // Disc lure — use when Coily is active
     if (coilyActive) {
         var lureDir = evalDiscLure();
-        if (lureDir && !wouldRevert(gs, lureDir)) {
+        if (lureDir && !entersSealed(gs, lureDir, seal)) {
             var lureSafe = 0;
             for (var ls = 0; ls < SAMPLES; ls++) {
                 simSeed(ls);
@@ -770,7 +805,7 @@ function unifiedPick(gs, coilyActive) {
                 var sdk = DIRS[DIR_KEYS[sk]];
                 var snr = gs.player.row + sdk.dr, snc = gs.player.col + sdk.dc;
                 if (snr === spos.row && snc === spos.col) {
-                    if (safe1[DIR_KEYS[sk]] && safe2[DIR_KEYS[sk]] && !wouldRevert(gs, DIR_KEYS[sk])) {
+                    if (safe1[DIR_KEYS[sk]] && safe2[DIR_KEYS[sk]] && !entersSealed(gs, DIR_KEYS[sk], seal)) {
                         restoreRng(); return DIR_KEYS[sk];
                     }
                 }
@@ -779,22 +814,16 @@ function unifiedPick(gs, coilyActive) {
     }
 
     // Pick safe direction with lowest tour cost.
-    // On toggle levels, prefer directions that don't revert completed cubes.
+    // Never enter a sealed corner triangle.
     var bestDir = null, bestCost = Infinity;
-    var bestRevertDir = null, bestRevertCost = Infinity;
     for (var fk = 0; fk < DIR_KEYS_WITH_STAY.length; fk++) {
         var fd = DIR_KEYS_WITH_STAY[fk];
         if (!safe1[fd] || !safe2[fd]) continue;
+        if (entersSealed(gs, fd, seal)) continue;
         var fc = tourCosts[fd];
-        if (fc === undefined) continue;
-        if (wouldRevert(gs, fd)) {
-            if (fc < bestRevertCost) { bestRevertCost = fc; bestRevertDir = fd; }
-        } else {
-            if (fc < bestCost) { bestCost = fc; bestDir = fd; }
-        }
+        if (fc !== undefined && fc < bestCost) { bestCost = fc; bestDir = fd; }
     }
     if (bestDir) { restoreRng(); return bestDir; }
-    if (bestRevertDir) { restoreRng(); return bestRevertDir; }
 
     // No fully-safe option — prefer STAY to wait for better timing
     // Only move if STAY itself has poor survival or we'd die anyway
@@ -938,22 +967,22 @@ function aiPickBestDir() {
         aiStayCount = 0;
     }
 
-    // ── FINAL REVERT GUARD ──
-    // On toggle levels, if the chosen direction would revert a completed cube,
-    // find a non-revert alternative. Catches all overrides (oscillation/stuck breakers).
-    if (wouldRevert(gs, result)) {
+    // ── FINAL SEALED GUARD ──
+    // If the chosen direction enters a sealed corner triangle, override it.
+    // Catches oscillation/stuck breakers that might bypass unifiedPick's check.
+    var finalSeal = sealedTriangles(gs);
+    if (entersSealed(gs, result, finalSeal)) {
         var guardAlt = null, guardScore = -Infinity;
         for (var gk = 0; gk < DIR_KEYS_WITH_STAY.length; gk++) {
             var gd = DIR_KEYS_WITH_STAY[gk];
             if (gd === result) continue;
             if (!simCanMove(gs, gd)) continue;
-            if (wouldRevert(gs, gd)) continue;
+            if (entersSealed(gs, gd, finalSeal)) continue;
             var gsc = aiMoveScores[gd];
             if (gsc === undefined) gsc = 0;
             if (gsc > guardScore) { guardScore = gsc; guardAlt = gd; }
         }
         if (guardAlt) result = guardAlt;
-        else result = 'STAY';  // all moves revert — wait
     }
 
     // Restore game RNG — must never leak seeded RNG into real game
