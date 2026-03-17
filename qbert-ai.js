@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic (peel routing)
-var AI_VERSION = 'v13.5';
+var AI_VERSION = 'v13.6';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -417,7 +417,7 @@ function peelTargetDist(gs, forceFullGraph) {
             var v = adj[a];
             if (dist[v] < 999) continue;
             if (!forceFullGraph && gs.lv >= 3 && !peelRemaining[v]) continue;
-            dist[v] = dist[u] + 1 + (stomps[v] <= 0 ? 0.1 : 0);
+            dist[v] = dist[u] + 1 + (stomps[v] <= 0 ? 0.4 : 0);
             queue.push(v);
         }
     }
