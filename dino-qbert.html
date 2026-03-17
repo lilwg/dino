@@ -469,6 +469,9 @@ function killPlayerVisual() {
         if (de.spawnDrop > 0) deathInfo += '[drop=' + de.spawnDrop + ']';
     }
     console.log(deathInfo);
+    if (window._aiDecisionEnemies) {
+        console.log('AI-DECISION-STATE: ' + window._aiDecisionEnemies);
+    }
     if (!window._deathLog) window._deathLog = [];
     window._deathLog.push(deathInfo);
     if (lives <= 0) {

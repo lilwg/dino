@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic (peel routing)
-var AI_VERSION = 'v13.12';
+var AI_VERSION = 'v13.13';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -443,6 +443,16 @@ function unifiedPick(gs) {
     function restoreRng() { simRng = savedRng; }
 
     var hasEnemies = gs.enemies.length > 0;
+
+    // Capture decision-time enemy state for death debugging
+    window._aiDecisionEnemies = gs.enemies.map(function(e) {
+        if (e.type === 'spawn-timer') return 'spawn(' + (e.forcedType||'?') + ' t=' + e.timer + ')';
+        var s = e.type + '@(' + e.row + ',' + e.col + ')';
+        if (e.jumping) s += '→(' + e.destRow + ',' + e.destCol + ' t=' + (e.jumpT||0).toFixed(3) + ')';
+        if (e.spawnDrop > 0) s += '[drop=' + e.spawnDrop + ']';
+        s += '{mt=' + e.moveTimer + '/' + e.moveInterval + '}';
+        return s;
+    }).join(' ');
 
     // ── Safety check for each direction (exhaustive + hop-2/3 chain) ──
     var safe1 = {};
