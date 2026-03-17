@@ -837,6 +837,27 @@ function aiPickBestDir() {
     aiPosHistory.push(posKey);
     if (aiPosHistory.length > AI_HISTORY_LEN) aiPosHistory.shift();
 
+    // Fast oscillation break: detect A-B-A pattern and escape early before
+    // enemies can close in. The stuck breaker below waits too long (12+ moves).
+    var h = aiPosHistory;
+    var hlen = h.length;
+    if (result !== 'STAY' && hlen >= 3 && h[hlen-1] === h[hlen-3] && h[hlen-1] !== h[hlen-2]) {
+        var od = DIRS[result];
+        var odKey = (gs.player.row + od.dr) + ',' + (gs.player.col + od.dc);
+        if (odKey === h[hlen-2]) {
+            // We'd go right back to where we just were — find a safe alternative
+            var oscAlt = null, oscScore = -Infinity;
+            for (var ok = 0; ok < DIR_KEYS.length; ok++) {
+                if (DIR_KEYS[ok] === result) continue;
+                if (!simCanMove(gs, DIR_KEYS[ok])) continue;
+                var osc = aiMoveScores[DIR_KEYS[ok]];
+                if (osc === undefined || osc < 0) continue;
+                if (osc > oscScore) { oscScore = osc; oscAlt = DIR_KEYS[ok]; }
+            }
+            if (oscAlt) { result = oscAlt; aiPosHistory.length = 0; }
+        }
+    }
+
     // Stuck breaker: if no progress and looping in few unique positions,
     // pick a safe unvisited direction toward an unfinished cube
     if (aiNoProgressCount > 12 && result !== 'STAY') {
