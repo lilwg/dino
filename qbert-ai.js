@@ -556,9 +556,9 @@ function findPeelTarget(stomps, stompCounts) {
     return bestIdx;
 }
 
-// BFS from sourceIdx to all reachable positions.
+// BFS from sourceIdx, treating sealed cubes as removed from the graph.
 // Returns distance array (999 = unreachable).
-function bfsFromIdx(sourceIdx) {
+function bfsFromIdx(sourceIdx, sealed) {
     var dist = new Float64Array(POS_COUNT);
     for (var i = 0; i < POS_COUNT; i++) dist[i] = 999;
     dist[sourceIdx] = 0;
@@ -570,6 +570,7 @@ function bfsFromIdx(sourceIdx) {
         for (var a = 0; a < adj.length; a++) {
             var v = adj[a];
             if (dist[v] < 999) continue;
+            if (sealed && sealed[v] === 1) continue;
             dist[v] = dist[u] + 1;
             queue.push(v);
         }
@@ -862,14 +863,16 @@ function unifiedPick(gs, coilyActive) {
     }
     var peelTarget = findPeelTarget(stomps, aiStompCounts);
 
-    // BFS from peel target (or apex as fallback) to all positions
-    var targetDist = bfsFromIdx(peelTarget >= 0 ? peelTarget : 0);
-
-    // Pick safe direction closest to peel target
-    // Pure BFS routing — just head toward the target. No revert penalties needed;
-    // peel ordering handles what to target, BFS handles how to get there.
+    // BFS from peel target, routing around sealed cubes (they're removed from graph)
+    var src = peelTarget >= 0 ? peelTarget : 0;
+    var targetDist = bfsFromIdx(src, seal);
     var curIdx = posToIdx[gs.player.row * ROWS + gs.player.col];
     var curDist = targetDist[curIdx];
+    // Fallback: if player is unreachable (trapped behind sealed), route through everything
+    if (curDist >= 999) {
+        targetDist = bfsFromIdx(src, null);
+        curDist = targetDist[curIdx];
+    }
     var bestDir = null, bestScore = Infinity;
     for (var fk = 0; fk < DIR_KEYS_WITH_STAY.length; fk++) {
         var fd = DIR_KEYS_WITH_STAY[fk];
