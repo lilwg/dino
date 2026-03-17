@@ -486,51 +486,66 @@ function entersSealed(gs, dir, sealed) {
     return isSealed(nr, nc, sealed);
 }
 
-// ─── Peel-order routing ─────────────────────────────────────────────────────
-// Compute the actual graph degeneracy ordering: iteratively remove the
-// minimum-degree vertex, tiebreaking by row (bottom first) then edge distance.
-// This gives the correct peel order where degree-2 nodes (bottom corners,
-// edges, AND the apex) are all peeled early.
-var PEEL_ORDER = null;
-var PEEL_DEGREE = null;  // degree at which each node was removed (degeneracy)
-function ensurePeelOrder() {
-    if (PEEL_ORDER) return;
-    PEEL_ORDER = new Int8Array(POS_COUNT);
-    PEEL_DEGREE = new Int8Array(POS_COUNT);
+// ─── Peel-layer routing ─────────────────────────────────────────────────────
+// Batch graph peeling: iteratively remove ALL minimum-degree vertices at once.
+// Each batch is a "layer". Layer 0 = bottom corners (degree 1), layer 1 =
+// remaining bottom row + apex + edges that dropped to min degree, etc.
+// Cubes in the same layer have equal priority — the AI picks the closest one.
+var PEEL_LAYER = null;
+function ensurePeelLayer() {
+    if (PEEL_LAYER) return;
+    PEEL_LAYER = new Int8Array(POS_COUNT);
     var degree = new Int8Array(POS_COUNT);
     var removed = new Uint8Array(POS_COUNT);
     for (var i = 0; i < POS_COUNT; i++) degree[i] = posAdj[i].length;
 
-    for (var order = 0; order < POS_COUNT; order++) {
-        var minDeg = 99, minIdx = -1, minTie = -1;
+    var remaining = POS_COUNT;
+    var layer = 0;
+    while (remaining > 0) {
+        // Find minimum degree among remaining nodes
+        var minDeg = 99;
         for (var i = 0; i < POS_COUNT; i++) {
-            if (removed[i]) continue;
-            var pos = idxToPos[i];
-            // Tiebreak: prefer higher row (bottom), then closer to edge
-            var tie = pos[0] * 100 - Math.min(pos[1], pos[0] - pos[1]);
-            if (degree[i] < minDeg || (degree[i] === minDeg && tie > minTie)) {
-                minDeg = degree[i]; minIdx = i; minTie = tie;
+            if (!removed[i] && degree[i] < minDeg) minDeg = degree[i];
+        }
+        // Remove ALL nodes with this minimum degree (one batch = one layer)
+        var batch = [];
+        for (var i = 0; i < POS_COUNT; i++) {
+            if (!removed[i] && degree[i] === minDeg) {
+                batch.push(i);
+                PEEL_LAYER[i] = layer;
+                removed[i] = 1;
+                remaining--;
             }
         }
-        if (minIdx < 0) break;
-        PEEL_ORDER[minIdx] = order;
-        PEEL_DEGREE[minIdx] = minDeg;
-        removed[minIdx] = 1;
-        var adj = posAdj[minIdx];
-        for (var a = 0; a < adj.length; a++) {
-            if (!removed[adj[a]]) degree[adj[a]]--;
+        // Update degrees of neighbors
+        for (var b = 0; b < batch.length; b++) {
+            var adj = posAdj[batch[b]];
+            for (var a = 0; a < adj.length; a++) {
+                if (!removed[adj[a]]) degree[adj[a]]--;
+            }
         }
+        layer++;
     }
 }
 
-// Find the highest-priority uncompleted cube.
-// Find the uncompleted cube with lowest peel order (most peripheral first).
-function findPeelTarget(stomps) {
-    ensurePeelOrder();
-    var bestIdx = -1, bestOrder = POS_COUNT;
+// Find the closest uncompleted cube in the lowest incomplete peel layer.
+// playerIdx: current player position (for BFS distance tiebreaking within layer).
+function findPeelTarget(stomps, playerIdx) {
+    ensurePeelLayer();
+    // Find the lowest layer that still has uncompleted cubes
+    var minLayer = 99;
     for (var i = 0; i < POS_COUNT; i++) {
         if (stomps[i] <= 0) continue;
-        if (PEEL_ORDER[i] < bestOrder) { bestOrder = PEEL_ORDER[i]; bestIdx = i; }
+        if (PEEL_LAYER[i] < minLayer) minLayer = PEEL_LAYER[i];
+    }
+    if (minLayer >= 99) return -1;
+    // Among cubes in that layer, pick the closest to the player (BFS)
+    var playerDist = bfsFromIdx(playerIdx, null);
+    var bestIdx = -1, bestDist = 999;
+    for (var i = 0; i < POS_COUNT; i++) {
+        if (stomps[i] <= 0) continue;
+        if (PEEL_LAYER[i] !== minLayer) continue;
+        if (playerDist[i] < bestDist) { bestDist = playerDist[i]; bestIdx = i; }
     }
     return bestIdx;
 }
@@ -840,11 +855,11 @@ function unifiedPick(gs, coilyActive) {
         var idx = posToIdx[gs.cubes[i].row * ROWS + gs.cubes[i].col];
         stomps[idx] = stompsNeeded(gs.cubes[i].state, gs.lv);
     }
-    var peelTarget = findPeelTarget(stomps);
+    var curIdx = posToIdx[gs.player.row * ROWS + gs.player.col];
+    var peelTarget = findPeelTarget(stomps, curIdx);
 
     // BFS from peel target, routing around sealed dead-end cubes
     var targetDist = bfsFromIdx(peelTarget >= 0 ? peelTarget : 0, seal);
-    var curIdx = posToIdx[gs.player.row * ROWS + gs.player.col];
     var curDist = targetDist[curIdx];
     var bestDir = null, bestScore = Infinity;
     for (var fk = 0; fk < DIR_KEYS_WITH_STAY.length; fk++) {
