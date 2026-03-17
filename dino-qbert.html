@@ -987,26 +987,6 @@ function drawVizPath() {
             ctx.restore();
         }
 
-        // Draw arrow from player to best move
-        if (aiBestDir && aiBestDir !== 'STAY') {
-            var dd2 = DIRS[aiBestDir];
-            var nr2 = player.row + dd2.dr, nc2 = player.col + dd2.dc;
-            var from = cubeXY(player.row, player.col);
-            var to;
-            if (isValidPos(nr2, nc2)) {
-                to = cubeXY(nr2, nc2);
-            } else {
-                to = { cx: from.cx + dd2.dc * 50 - dd2.dr * 30, cy: from.cy + dd2.dr * -30 };
-            }
-            ctx.beginPath();
-            ctx.moveTo(from.cx, from.cy);
-            ctx.lineTo(to.cx, to.cy);
-            ctx.strokeStyle = 'rgba(0,255,0,0.7)';
-            ctx.lineWidth = 2;
-            ctx.setLineDash([3, 3]);
-            ctx.stroke();
-            ctx.setLineDash([]);
-        }
     }
 
     // ── Danger zone overlays: red-tinted cube tops ──
