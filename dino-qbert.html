@@ -472,6 +472,9 @@ function killPlayerVisual() {
     if (window._aiDecisionEnemies) {
         console.log('AI-DECISION-STATE: ' + window._aiDecisionEnemies);
     }
+    if (typeof _aiDecisionHistory !== 'undefined' && _aiDecisionHistory.length > 0) {
+        console.log('AI-HISTORY: ' + _aiDecisionHistory.join(' | '));
+    }
     if (!window._deathLog) window._deathLog = [];
     window._deathLog.push(deathInfo);
     if (lives <= 0) {

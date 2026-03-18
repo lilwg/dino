@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic (peel routing)
-var AI_VERSION = 'v13.22';
+var AI_VERSION = 'v13.24';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -523,7 +523,7 @@ function unifiedPick(gs) {
         aiMoveScores[dir] = safe1[dir] ? 10000 : (survived > 0 ? survived * 100 - 1000 : -10000);
 
         // Hop 2+3 chain check (anti-cornering)
-        if (safe1[dir] && hasEnemies && dir !== 'STAY') {
+        if (safe1[dir] && hasEnemies) {
             var has2ndSafe = false;
             for (var d2k = 0; d2k < DIR_KEYS_WITH_STAY.length; d2k++) {
                 var d2dir = DIR_KEYS_WITH_STAY[d2k];
@@ -561,12 +561,6 @@ function unifiedPick(gs) {
             }
             safe2[dir] = has2ndSafe;
             if (!has2ndSafe) aiMoveScores[dir] = -5000;
-        } else if (dir === 'STAY' && hasEnemies) {
-            var canEscape = false;
-            for (var ek = 0; ek < DIR_KEYS.length; ek++) {
-                if (safe1[DIR_KEYS[ek]]) { canEscape = true; break; }
-            }
-            safe2[dir] = canEscape;
         } else {
             safe2[dir] = true;
         }
@@ -678,6 +672,7 @@ function unifiedPick(gs) {
 // ─── Main entry point ────────────────────────────────────────────────────────
 var aiMoveScores = {};
 var aiMode = 0;
+var _aiDecisionHistory = [];
 
 function aiPickBestDir() {
     var savedGameRng = simRng;
@@ -687,6 +682,12 @@ function aiPickBestDir() {
     aiMode = 1;
 
     var result = unifiedPick(gs);
+
+    // Record rolling history of last 5 decisions for death debugging
+    var scores = '';
+    for (var dk in aiMoveScores) scores += dk + '=' + Math.round(aiMoveScores[dk]) + ' ';
+    _aiDecisionHistory.push('hop' + (hops||0) + ' @(' + gs.player.row + ',' + gs.player.col + ') → ' + result + ' [' + scores.trim() + ']');
+    if (_aiDecisionHistory.length > 5) _aiDecisionHistory.shift();
 
     simRng = savedGameRng;
     return result;
