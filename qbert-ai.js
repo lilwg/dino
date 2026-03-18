@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic (peel routing)
-var AI_VERSION = 'v13.19';
+var AI_VERSION = 'v13.20';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -587,7 +587,8 @@ function unifiedPick(gs) {
 
         var score = targetDist[lidx];
         if (score >= 999) continue;
-
+        // Tiebreaker: prefer cubes with more neighbors (avoid dead-end corners)
+        score -= posAdj[lidx].length * 0.01;
         if (score < bestScore) { bestScore = score; bestDir = fd; }
     }
     if (bestDir) { restoreRng(); return bestDir; }
@@ -617,6 +618,8 @@ function unifiedPick(gs) {
             if (PEEL_LAYER && !peelRemaining[lidx2]) {
                 score2 += (maxLayer - PEEL_LAYER[lidx2]) * 0.1;
             }
+            // Tiebreaker: prefer cubes with more neighbors (avoid dead-end corners)
+            score2 -= posAdj[lidx2].length * 0.01;
             if (score2 < bestScore) { bestScore = score2; bestDir = fd2; }
         }
         if (bestDir) { restoreRng(); return bestDir; }
