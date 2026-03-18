@@ -38,6 +38,9 @@ var DIR_KEYS_WITH_STAY = ['UL', 'UR', 'DL', 'DR', 'STAY'];
 // Frame timing (per-frame jumpT increments)
 var PLAYER_JUMP_DUR = 0.040;   // 25 frames = ~417ms at Lv1 (measured from arcade ROM)
 var ENEMY_JUMP_DUR  = 0.033;   // 30 frames = ~500ms at Lv1 (Coily slightly slower)
+// Post-landing idle pause (arcade: 35 frame hop-to-hop = 26 jump + 9 idle at 61.4Hz)
+var PLAYER_IDLE_FRAMES = 9;
+var ENEMY_IDLE_FRAMES = 12;    // arcade enemy hop-to-hop ~42 frames = 30 jump + 12 idle
 var BASE_ENEMY_INTERVALS = {
     egg: 4, coily: 4, redball: 4, greenball: 12, slick: 20, sam: 20, ugg: 4, wrongway: 4
 };
@@ -444,6 +447,11 @@ function simUpdatePlayer(gs) {
         gs.player.deathTimer--;
         return gs.player.deathTimer <= 0 ? 'respawn' : 'dead';
     }
+    // Post-landing idle pause (arcade: 9 frames between hops)
+    if (gs.player.idleTimer > 0) {
+        gs.player.idleTimer--;
+        return 'idle';
+    }
     if (!gs.player.jumping) return null;
 
     gs.player.jumpT += gs.player.jumpDur;
@@ -454,6 +462,7 @@ function simUpdatePlayer(gs) {
         gs.player.col = gs.player.destCol;
         gs.player.destRow = null;
         gs.player.destCol = null;
+        gs.player.idleTimer = PLAYER_IDLE_FRAMES;
         return 'landed';
     }
     return null;
@@ -507,6 +516,8 @@ function simUpdateEnemies(gs) {
                     e.type = 'coily';
                     e.moveInterval = enemyMoveInterval('coily', gs.sm);
                 }
+                // Post-landing idle pause for enemies (arcade: ~12 frames)
+                e.idleTimer = ENEMY_IDLE_FRAMES;
                 // Slick/Sam revert cube on landing
                 if (e.type === 'slick' || e.type === 'sam') {
                     for (var ci = 0; ci < gs.cubes.length; ci++) {
@@ -533,6 +544,9 @@ function simUpdateEnemies(gs) {
 
         // Spawn drop: enemy falling from sky, don't move yet
         if (e.spawnDrop > 0) { e.spawnDrop--; continue; }
+
+        // Post-landing idle pause
+        if (e.idleTimer > 0) { e.idleTimer--; continue; }
 
         // Idle: tick move timer
         e.moveTimer++;
@@ -673,7 +687,7 @@ function simUseDisc(gs, idx) {
 // Try to move the player in a direction. Returns true if move started.
 // Returns 'disc' if a disc was used.
 function simTryMove(gs, dirKey) {
-    if (gs.player.dead || gs.player.jumping) return false;
+    if (gs.player.dead || gs.player.jumping || gs.player.idleTimer > 0) return false;
     var d = DIRS[dirKey]; if (!d) return false;
     var nr = gs.player.row + d.dr, nc = gs.player.col + d.dc;
 

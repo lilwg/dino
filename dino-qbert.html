@@ -600,7 +600,7 @@ function initRound() {
 
 // ─── Player move (delegates to simulation) ──────────────────────────────────
 function tryMove(dirKey) {
-    if (debugEnemies || player.dead || player.jumping || player.fallOff || gameOver || paused || discRide) return;
+    if (debugEnemies || player.dead || player.jumping || player.fallOff || gameOver || paused || discRide || (gs.player.idleTimer > 0)) return;
     var d = DIRS[dirKey]; if (!d) return;
     roundStarted = true;
 
@@ -878,7 +878,7 @@ function update() {
     syncVisuals();
 
     // Accept input / AI when player is ready
-    if (!player.jumping && !player.dead && !player.fallOff && !discRide && !levelWon) {
+    if (!player.jumping && !player.dead && !player.fallOff && !discRide && !levelWon && !(gs.player.idleTimer > 0)) {
         if (gameMode === 'rules') {
             var dir = computeAIMove();
             if (dir === 'STAY') {
