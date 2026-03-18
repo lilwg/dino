@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic (peel routing)
-var AI_VERSION = 'v13.33';
+var AI_VERSION = 'v13.35';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -549,6 +549,8 @@ function unifiedPick(gs) {
     }
 
     // ── Opportunistic disc usage to kill Coily ──
+    // Disc + lure always kills Coily (lure is off-grid, Coily chases it off edge).
+    // No simulation needed — just check Coily exists and disc is reachable.
     var hasCoily = false;
     for (var ci = 0; ci < gs.enemies.length; ci++) {
         if (gs.enemies[ci].type === 'coily') { hasCoily = true; break; }
@@ -557,24 +559,25 @@ function unifiedPick(gs) {
         for (var di = 0; di < gs.discs.length; di++) {
             var disc = gs.discs[di];
             if (!disc.active) continue;
-            var discDir = null;
-            if (disc.side === 0 && gs.player.col === 0 && gs.player.row === disc.row)
-                discDir = 'UL';
-            else if (disc.side === 1 && gs.player.col === gs.player.row && gs.player.row === disc.row)
-                discDir = 'UR';
-            if (!discDir) continue;
+            var trigRow = disc.row;
+            var trigCol = disc.side === 0 ? 0 : disc.row;
 
-            // Simulate: will Coily actually fall off during the disc ride?
-            var discSim = simDeepClone(gs);
-            simUseDisc(discSim, di);
-            for (var df = 0; df < 30; df++) simUpdateEnemies(discSim);
-            var coilyGone = true;
-            for (var dci = 0; dci < discSim.enemies.length; dci++) {
-                if (discSim.enemies[dci].type === 'coily') { coilyGone = false; break; }
-            }
-            if (coilyGone) {
+            // Case 1: Already at disc trigger position → take disc immediately
+            if (gs.player.row === trigRow && gs.player.col === trigCol) {
+                var discDir = disc.side === 0 ? 'UL' : 'UR';
                 console.log('DISC-KILL @(' + gs.player.row + ',' + gs.player.col + ') → ' + discDir);
                 restoreRng(); return discDir;
+            }
+
+            // Case 2: One hop away from disc trigger → move toward it if safe
+            for (var dk = 0; dk < shuffledDirs.length; dk++) {
+                var ddir = shuffledDirs[dk];
+                var dd = DIRS[ddir];
+                var dr = gs.player.row + dd.dr, dc = gs.player.col + dd.dc;
+                if (dr !== trigRow || dc !== trigCol) continue;
+                if (!safe1[ddir]) continue;
+                console.log('DISC-APPROACH @(' + gs.player.row + ',' + gs.player.col + ') → ' + ddir + ' → disc');
+                restoreRng(); return ddir;
             }
         }
     }
