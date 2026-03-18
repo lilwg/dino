@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic (peel routing)
-var AI_VERSION = 'v13.29';
+var AI_VERSION = 'v13.30';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -30,7 +30,7 @@ function predictCoilyPos(coily, targetRow, targetCol, steps) {
             var nr = cr + dk.dr, nc = cc + dk.dc;
             if (!isValidPos(nr, nc)) continue;
             var dist = Math.abs(targetRow - nr) + Math.abs(targetCol - nc);
-            if (dist < bestDist) { bestDist = dist; bestDir = k; }
+            if (dist < bestDist || (dist === bestDist && Math.random() < 0.5)) { bestDist = dist; bestDir = k; }
         }
         if (bestDir === null) break;
         var dd = DIRS[DIR_KEYS[bestDir]];
@@ -46,7 +46,7 @@ function predictCoilyNext(coilyR, coilyC, targetR, targetC) {
         var nr = coilyR + dk.dr, nc = coilyC + dk.dc;
         if (!isValidPos(nr, nc)) continue;
         var dist = Math.abs(targetR - nr) + Math.abs(targetC - nc);
-        if (dist < bestDist) { bestDist = dist; bestDir = k; }
+        if (dist < bestDist || (dist === bestDist && Math.random() < 0.5)) { bestDist = dist; bestDir = k; }
     }
     if (bestDir === null) return { row: coilyR, col: coilyC };
     var dd = DIRS[DIR_KEYS[bestDir]];
@@ -156,7 +156,7 @@ function getEnemyMoveChoices(e, playerDestR, playerDestC) {
             var tr = e.row + dk.dr, tc = e.col + dk.dc;
             if (!isValidPos(tr, tc)) continue;
             var dist = Math.abs(playerDestR - tr) + Math.abs(playerDestC - tc);
-            if (dist < bestDist) { bestDist = dist; bestR = tr; bestC = tc; }
+            if (dist < bestDist || (dist === bestDist && simRng() < 0.5)) { bestDist = dist; bestR = tr; bestC = tc; }
         }
         return [{ nr: bestR, nc: bestC }];
     }
