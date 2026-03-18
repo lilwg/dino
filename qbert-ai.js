@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic (peel routing)
-var AI_VERSION = 'v13.28';
+var AI_VERSION = 'v13.29';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -431,6 +431,14 @@ function unifiedPick(gs) {
     function simSeed(sampleIdx) { simRng = createSeededRng(baseSeed + sampleIdx * 9973); }
     function restoreRng() { simRng = savedRng; }
 
+    // Shuffle direction keys each frame to eliminate iteration-order bias
+    var shuffledDirs = DIR_KEYS.slice();
+    for (var si = shuffledDirs.length - 1; si > 0; si--) {
+        var sj = Math.floor(Math.random() * (si + 1));
+        var tmp = shuffledDirs[si]; shuffledDirs[si] = shuffledDirs[sj]; shuffledDirs[sj] = tmp;
+    }
+    var shuffledDirsStay = shuffledDirs.concat(['STAY']);
+
     var hasEnemies = gs.enemies.length > 0;
 
     // Capture decision-time enemy state for death debugging
@@ -543,8 +551,8 @@ function unifiedPick(gs) {
 
     var bestDir = null, bestScore = Infinity;
     var _routeDbg = [];
-    for (var fk = 0; fk < DIR_KEYS.length; fk++) {
-        var fd = DIR_KEYS[fk];
+    for (var fk = 0; fk < shuffledDirs.length; fk++) {
+        var fd = shuffledDirs[fk];
         var fdd = DIRS[fd];
         var lr = gs.player.row + fdd.dr, lc = gs.player.col + fdd.dc;
         if (!isValidPos(lr, lc)) continue;
@@ -580,8 +588,8 @@ function unifiedPick(gs) {
         for (var pl = 0; pl < POS_COUNT; pl++)
             if (STATIC_PEEL.layer[pl] > maxLayer) maxLayer = STATIC_PEEL.layer[pl];
         bestDir = null; bestScore = Infinity;
-        for (var fk2 = 0; fk2 < DIR_KEYS.length; fk2++) {
-            var fd2 = DIR_KEYS[fk2];
+        for (var fk2 = 0; fk2 < shuffledDirs.length; fk2++) {
+            var fd2 = shuffledDirs[fk2];
             var fdd2 = DIRS[fd2];
             var lr2 = gs.player.row + fdd2.dr, lc2 = gs.player.col + fdd2.dc;
             if (!isValidPos(lr2, lc2)) continue;
@@ -620,8 +628,8 @@ function unifiedPick(gs) {
 
     // No fully-safe option — pick by survival, tie-break by routing.
     var bestFallback = -Infinity, bestFallbackDir = null;
-    for (var uk = 0; uk < DIR_KEYS_WITH_STAY.length; uk++) {
-        var ud = DIR_KEYS_WITH_STAY[uk];
+    for (var uk = 0; uk < shuffledDirsStay.length; uk++) {
+        var ud = shuffledDirsStay[uk];
         if (hop1Surv[ud] === undefined) continue;
         // Primary: survival rate (0-1). Secondary: routing score.
         var fallbackScore = hop1Surv[ud] * 1000;
