@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Q*bert Arcade AI</title>
+<style>
+body { margin: 0; background: #111; color: #fff; font-family: monospace; }
+#game-container { width: 100%; max-width: 1000px; height: 750px; margin: 10px auto; }
+#controls { text-align: center; padding: 10px; }
+#controls button { margin: 5px; padding: 8px 16px; font-size: 14px; cursor: pointer; background: #333; color: #fff; border: 1px solid #666; border-radius: 4px; }
+#controls button:hover { background: #555; }
+#controls button.active { background: #a00; }
+#status { text-align: center; padding: 5px; font-size: 14px; color: #0f0; }
+#help { text-align: center; font-size: 12px; color: #888; padding: 4px; }
+#debug-canvas { position: fixed; bottom: 10px; right: 10px; border: 2px solid #0f0; image-rendering: pixelated; width: 512px; height: 480px; background: #000; }
+</style>
+</head>
+<body>
+<div id="status">Loading EmulatorJS + Q*bert ROM...</div>
+<div id="help">
+  Click game area first, then: <b>V</b>=coin <b>Enter</b>=start | Arrows: <b>Up</b>=UL <b>Right</b>=UR <b>Down</b>=DR <b>Left</b>=DL
+</div>
+<div id="controls">
+  <button onmousedown="emuCoin()" tabindex="-1">Insert Coin</button>
+  <button onmousedown="emuStart()" tabindex="-1">1P Start</button>
+  <button id="ai-btn" onmousedown="toggleAI()" tabindex="-1">Start AI</button>
+</div>
+<div id="game-container">
+  <div id="game" style="width:100%;height:750px;"></div>
+</div>
+<canvas id="debug-canvas" width="256" height="240"></canvas>
+
+<script>
+  // ─── Hidden-tab workarounds ─────────────────────────────────────────────
+  // Chrome pauses rAF in hidden tabs. Patch everything so emulator runs anyway.
+  // 1. Fake WakeLock (crashes on hidden tabs)
+  try {
+    Object.defineProperty(navigator, 'wakeLock', { value: {
+      request: function() { return Promise.resolve({ released:false, type:'screen',
+        release:function(){return Promise.resolve()},
+        addEventListener:function(){}, removeEventListener:function(){} }); }
+    }, configurable: true });
+  } catch(e) {}
+  // 2. Fake visibility (so emulator doesn't self-pause)
+  try {
+    Object.defineProperty(document, 'hidden', { get: function(){ return false; }, configurable: true });
+    Object.defineProperty(document, 'visibilityState', { get: function(){ return 'visible'; }, configurable: true });
+  } catch(e) {}
+  // 3. Replace rAF with setTimeout fallback when tab is actually hidden
+  var _capCanvas = document.getElementById('debug-canvas');
+  var _capCtx = _capCanvas.getContext('2d');
+  var _nativeRAF = window.requestAnimationFrame.bind(window);
+  var _rafActive = true;
+  // Test if native rAF fires within 200ms; if not, switch to setTimeout mode
+  var _rafTestId = _nativeRAF(function() { _rafActive = true; });
+  setTimeout(function() {
+    if (!_rafActive) {
+      // rAF isn't firing — we're in a hidden tab. Use setTimeout instead.
+      console.log('rAF not firing, switching to setTimeout mode');
+    }
+  }, 200);
+  window.requestAnimationFrame = function(cb) {
+    // Always try native rAF first, with setTimeout fallback
+    var fired = false;
+    var nativeId = _nativeRAF(function(ts) {
+      if (fired) return;
+      fired = true;
+      cb(ts);
+      try {
+        var gc = document.querySelector('#game canvas');
+        if (gc) _capCtx.drawImage(gc, 0, 0, 256, 240);
+      } catch(e) {}
+    });
+    // setTimeout fallback in case rAF doesn't fire (hidden tab)
+    var fallbackId = setTimeout(function() {
+      if (fired) return;
+      fired = true;
+      cb(performance.now());
+      try {
+        var gc = document.querySelector('#game canvas');
+        if (gc) _capCtx.drawImage(gc, 0, 0, 256, 240);
+      } catch(e) {}
+    }, 17);
+    return nativeId;
+  };
+
+  var EJS_player = '#game';
+  var EJS_core = 'arcade';
+  var EJS_gameUrl = '/qbert.zip';
+  var EJS_pathtodata = 'https://cdn.emulatorjs.org/stable/data/';
+  var EJS_startOnLoaded = true;
+  var EJS_onGameStart = function() {
+    document.getElementById('status').textContent = 'Game loaded! Click game area, then use keyboard.';
+    window._emuReady = true;
+  };
+</script>
+<script src="https://cdn.emulatorjs.org/stable/data/loader.js"></script>
+
+<script>
+// ─── Emulator input ─────────────────────────────────────────────────────────
+var BTN = { SELECT:2, START:3, UP:4, DOWN:5, LEFT:6, RIGHT:7 };
+
+function getModule() {
+  try { return EJS_emulator.gameManager.Module; } catch(e) { return null; }
+}
+
+function emuPress(id, ms) {
+  var M = getModule();
+  if (!M) return;
+  M._simulate_input(0, 1, 0, id, 1);
+  setTimeout(function() { M._simulate_input(0, 1, 0, id, 0); }, ms || 100);
+}
+
+function emuCoin() { emuPress(BTN.SELECT); }
+function emuStart() { emuPress(BTN.START); }
+function emuDirection(dir) {
+  var map = { UL: BTN.UP, UR: BTN.RIGHT, DR: BTN.DOWN, DL: BTN.LEFT };
+  if (map[dir] !== undefined) emuPress(map[dir], 120);
+}
+
+// ─── Pixel-based Game State Reader ──────────────────────────────────────────
+// Q*bert arcade native resolution: 256x240
+// Pyramid layout in native pixel coords:
+//   Cube(row, col).x = 128 + (col - row/2) * 16
+//   Cube(row, col).y = 52 + row * 24
+// Sample the cube top face center to determine color state.
+
+var CUBE_POSITIONS = []; // {row, col, sx, sy} in 256x240 space
+(function() {
+  for (var r = 0; r < 7; r++) {
+    for (var c = 0; c <= r; c++) {
+      CUBE_POSITIONS.push({
+        row: r, col: c,
+        sx: Math.round(128 + (c - r / 2) * 16),
+        sy: Math.round(46 + r * 24)  // 6px higher to hit cube top face
+      });
+    }
+  }
+})();
+
+function colorDist(a, b) {
+  var dr = a[0]-b[0], dg = a[1]-b[1], db = a[2]-b[2];
+  return Math.sqrt(dr*dr + dg*dg + db*db);
+}
+
+function readCubeStates() {
+  var cubes = [];
+  for (var i = 0; i < CUBE_POSITIONS.length; i++) {
+    var cp = CUBE_POSITIONS[i];
+    // Sample a small area (3x3) around the cube top center
+    var colors = [];
+    for (var dy = -1; dy <= 1; dy++) {
+      for (var dx = -1; dx <= 1; dx++) {
+        var px = _capCtx.getImageData(cp.sx + dx, cp.sy + dy, 1, 1).data;
+        colors.push([px[0], px[1], px[2]]);
+      }
+    }
+    // Use the median color (most common)
+    var best = colors[4]; // center pixel
+    cubes.push({ row: cp.row, col: cp.col, color: best });
+  }
+  return cubes;
+}
+
+// Classify cube color into state: 0=uncolored, 1=colored, -1=unknown/blocked
+function classifyCubes(cubes, refUncolored) {
+  // On first call, detect the most common cube color as "uncolored" reference
+  if (!refUncolored) {
+    var freq = {};
+    cubes.forEach(function(c) {
+      var k = c.color[0] + ',' + c.color[1] + ',' + c.color[2];
+      freq[k] = (freq[k] || 0) + 1;
+    });
+    var best = null, bestN = 0;
+    for (var k in freq) {
+      if (freq[k] > bestN) { bestN = freq[k]; best = k.split(',').map(Number); }
+    }
+    refUncolored = best || [239, 222, 119];
+  }
+
+  var result = [];
+  cubes.forEach(function(c) {
+    var d = colorDist(c.color, refUncolored);
+    // If close to uncolored reference → state 0
+    // If far from both uncolored and black → state 1 (colored)
+    // If black → not visible (-1)
+    var brightness = c.color[0] + c.color[1] + c.color[2];
+    var state;
+    if (brightness < 50) state = -1; // black/not visible
+    else if (d < 40) state = 0;     // uncolored
+    else state = 1;                  // colored (different from uncolored)
+    result.push({ row: c.row, col: c.col, state: state, color: c.color });
+  });
+  return { cubes: result, refUncolored: refUncolored };
+}
+
+// Find Q*bert's position by looking for his distinctive orange/red near cube centers
+function findQbert(cubes) {
+  // Q*bert is orange/red: high R, moderate G, low B
+  for (var i = 0; i < cubes.length; i++) {
+    var c = cubes[i].color;
+    // Check for orange-ish (R > 180, G < 150, B < 80) or Q*bert specific colors
+    if (c[0] > 180 && c[1] < 150 && c[2] < 80) {
+      return { row: cubes[i].row, col: cubes[i].col };
+    }
+  }
+  // Also check slightly above each cube center for Q*bert sprite
+  for (var i = 0; i < CUBE_POSITIONS.length; i++) {
+    var cp = CUBE_POSITIONS[i];
+    var px = _capCtx.getImageData(cp.sx, cp.sy - 8, 1, 1).data; // 8px above cube
+    if (px[0] > 180 && px[1] < 150 && px[2] < 80) {
+      return { row: cp.row, col: cp.col };
+    }
+  }
+  return null;
+}
+
+// ─── AI: Simple peel-style routing ──────────────────────────────────────────
+// Moves toward the nearest uncolored cube, avoids falling off edges.
+
+function isValidPos(r, c) { return r >= 0 && r < 7 && c >= 0 && c <= r; }
+
+var DIRS = {
+  UL: { dr: -1, dc: -1 },
+  UR: { dr: -1, dc: 0 },
+  DL: { dr: 1, dc: 0 },
+  DR: { dr: 1, dc: 1 }
+};
+
+function pickAIDirection(qRow, qCol, cubeStates) {
+  // BFS from Q*bert's position to find nearest uncolored cube
+  var visited = {};
+  var queue = [{ r: qRow, c: qCol, firstDir: null, dist: 0 }];
+  visited[qRow * 7 + qCol] = true;
+
+  while (queue.length > 0) {
+    var cur = queue.shift();
+    // Check if this cube is uncolored
+    if (cur.firstDir !== null) {
+      var cs = cubeStates.find(function(c) { return c.row === cur.r && c.col === cur.c; });
+      if (cs && cs.state === 0) return cur.firstDir; // found uncolored cube
+    }
+    // Expand neighbors
+    var dirKeys = ['UL', 'UR', 'DL', 'DR'];
+    for (var i = 0; i < dirKeys.length; i++) {
+      var dk = dirKeys[i];
+      var d = DIRS[dk];
+      var nr = cur.r + d.dr, nc = cur.c + d.dc;
+      if (!isValidPos(nr, nc)) continue;
+      var key = nr * 7 + nc;
+      if (visited[key]) continue;
+      visited[key] = true;
+      queue.push({ r: nr, c: nc, firstDir: cur.firstDir || dk, dist: cur.dist + 1 });
+    }
+  }
+  // All cubes colored or can't find path — go down-right as default
+  return 'DR';
+}
+
+// ─── AI Loop ────────────────────────────────────────────────────────────────
+var aiRunning = false;
+var aiTimer = null;
+var aiMoveCount = 0;
+var aiRefColor = null;
+
+function toggleAI() {
+  aiRunning = !aiRunning;
+  var btn = document.getElementById('ai-btn');
+  btn.textContent = aiRunning ? 'Stop AI' : 'Start AI';
+  btn.className = aiRunning ? 'active' : '';
+  if (aiRunning) {
+    aiMoveCount = 0;
+    aiRefColor = null;
+    aiTick();
+  } else {
+    if (aiTimer) clearTimeout(aiTimer);
+    document.getElementById('status').textContent = 'AI stopped.';
+  }
+}
+
+function aiTick() {
+  if (!aiRunning) return;
+
+  // Read game state from pixels
+  var rawCubes = readCubeStates();
+  var classified = classifyCubes(rawCubes, aiRefColor);
+  aiRefColor = classified.refUncolored;
+  var cubeStates = classified.cubes;
+
+  // Find Q*bert
+  var qbert = findQbert(rawCubes);
+
+  // Count progress
+  var colored = 0, uncolored = 0;
+  cubeStates.forEach(function(c) {
+    if (c.state === 1) colored++;
+    else if (c.state === 0) uncolored++;
+  });
+
+  var dir;
+  if (qbert) {
+    dir = pickAIDirection(qbert.row, qbert.col, cubeStates);
+  } else {
+    // Can't find Q*bert — guess position from last colored cube, or use simple heuristic
+    // Find a cube that's colored (Q*bert was probably there recently)
+    var lastColored = cubeStates.filter(function(c) { return c.state === 1; });
+    if (lastColored.length > 0) {
+      var lc = lastColored[lastColored.length - 1];
+      dir = pickAIDirection(lc.row, lc.col, cubeStates);
+    } else {
+      // No info — just go down
+      var dirs = ['DL', 'DR'];
+      dir = dirs[Math.floor(Math.random() * 2)];
+    }
+  }
+
+  emuDirection(dir);
+  aiMoveCount++;
+
+  // Draw debug overlay on capture canvas
+  drawDebugOverlay(cubeStates, qbert, dir);
+
+  document.getElementById('status').textContent =
+    'AI #' + aiMoveCount + (dir ? ': ' + dir : ': waiting') +
+    ' | ' + colored + '/' + 28 + ' colored' +
+    (qbert ? ' | Q*bert@(' + qbert.row + ',' + qbert.col + ')' : ' | Q*bert: ?');
+
+  aiTimer = setTimeout(aiTick, 450);
+}
+
+// ─── Debug Overlay ──────────────────────────────────────────────────────────
+function drawDebugOverlay(cubeStates, qbert, dir) {
+  // Draw small dots on the debug canvas showing detected cube states
+  cubeStates.forEach(function(c) {
+    var cp = CUBE_POSITIONS.find(function(p) { return p.row === c.row && p.col === c.col; });
+    if (!cp) return;
+    _capCtx.fillStyle = c.state === 1 ? '#0f0' : (c.state === 0 ? '#00f' : '#333');
+    _capCtx.fillRect(cp.sx - 2, cp.sy - 2, 4, 4);
+  });
+  // Mark Q*bert
+  if (qbert) {
+    var qp = CUBE_POSITIONS.find(function(p) { return p.row === qbert.row && p.col === qbert.col; });
+    if (qp) {
+      _capCtx.fillStyle = '#f00';
+      _capCtx.fillRect(qp.sx - 3, qp.sy - 10, 6, 6);
+    }
+  }
+}
+
+window.emuCoin = emuCoin;
+window.emuStart = emuStart;
+window.toggleAI = toggleAI;
+window.readCubeStates = readCubeStates;
+window.classifyCubes = classifyCubes;
+window.findQbert = findQbert;
+</script>
+</body>
+</html>
