@@ -922,8 +922,6 @@ function draw() {
         }
     }
     pyrCtx.restore();
-    // Draw player behind pyramid when falling off
-    if (player.fallOff) drawPlayer();
 
     ctx.imageSmoothingEnabled = false;
     ctx.drawImage(pyrCvs, 0, 0, CW, CH);
@@ -937,7 +935,7 @@ function draw() {
 
     // Enemies and player (before inversion so they invert with scene)
     if (enemiesEnabled) for (var i = 0; i < enemies.length; i++) drawEnemy(enemies[i]);
-    if (!player.fallOff) drawPlayer();
+    drawPlayer();
 
     // Draw spinning disc under player during disc ride
     if (discRide) {
