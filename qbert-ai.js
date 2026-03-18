@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic (peel routing)
-var AI_VERSION = 'v13.40';
+var AI_VERSION = 'v13.41';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -124,9 +124,8 @@ function computePlayerTiles(pRow, pCol, dir, sm) {
                 tiles.push({ row: destR, col: destC });
                 continue;
             }
-            if (jumpT < 0.33) tiles.push({ row: pRow, col: pCol });
-            else if (jumpT >= 0.67) tiles.push({ row: destR, col: destC });
-            else tiles.push(null);
+            if (jumpT < 0.5) tiles.push({ row: pRow, col: pCol });
+            else tiles.push({ row: destR, col: destC });
         } else {
             tiles.push({ row: destR, col: destC });
             idleFrames++;
@@ -174,9 +173,8 @@ function getEnemyMoveChoices(e, playerDestR, playerDestC) {
 
 function enemyCollisionTile(e) {
     if (!e.jumping) return { row: e.row, col: e.col };
-    if (e.jumpT < 0.33) return { row: e.row, col: e.col };
-    if (e.jumpT >= 0.67) return { row: e.destRow, col: e.destCol };
-    return null;
+    if (e.jumpT < 0.5) return { row: e.row, col: e.col };
+    return { row: e.destRow, col: e.destCol };
 }
 
 function enemyPathCollides(e, playerTiles, frame, maxFrames, pDestR, pDestC, sm) {
@@ -288,8 +286,8 @@ function isExhaustiveSafe(gs, dir) {
         // Don't land on a tile where an enemy is dropping or sitting after drop
         if (e.spawnDrop > 0 && e.row === destR && e.col === destC) return false;
 
-        var er = e.jumping && e.jumpT >= 0.67 ? (e.destRow != null ? e.destRow : e.row) : e.row;
-        var ec2 = e.jumping && e.jumpT >= 0.67 ? (e.destCol != null ? e.destCol : e.col) : e.col;
+        var er = e.jumping && e.jumpT >= 0.5 ? (e.destRow != null ? e.destRow : e.row) : e.row;
+        var ec2 = e.jumping && e.jumpT >= 0.5 ? (e.destCol != null ? e.destCol : e.col) : e.col;
         if (e.type !== 'coily') {
             var distDest = Math.abs(er - destR) + Math.abs(ec2 - destC);
             var distSrc = Math.abs(er - gs.player.row) + Math.abs(ec2 - gs.player.col);
@@ -473,8 +471,8 @@ function unifiedPick(gs) {
             for (var sei = 0; sei < gs.enemies.length; sei++) {
                 var se = gs.enemies[sei];
                 if (se.type === 'spawn-timer' || se.type === 'slick' || se.type === 'sam' || se.type === 'greenball') continue;
-                var ser = se.jumping && se.jumpT >= 0.67 ? (se.destRow != null ? se.destRow : se.row) : se.row;
-                var sec = se.jumping && se.jumpT >= 0.67 ? (se.destCol != null ? se.destCol : se.col) : se.col;
+                var ser = se.jumping && se.jumpT >= 0.5 ? (se.destRow != null ? se.destRow : se.row) : se.row;
+                var sec = se.jumping && se.jumpT >= 0.5 ? (se.destCol != null ? se.destCol : se.col) : se.col;
                 if (se.type !== 'coily' && Math.abs(ser - gs.player.row) + Math.abs(sec - gs.player.col) > 2) continue;
                 var seClone = cloneEnemyLight(se);
                 if (enemyPathCollides(seClone, stayTiles, 0, stayFrames, gs.player.row, gs.player.col, gs.sm)) {
