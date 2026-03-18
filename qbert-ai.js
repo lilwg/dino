@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic (peel routing)
-var AI_VERSION = 'v13.25';
+var AI_VERSION = 'v13.26';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -307,19 +307,12 @@ function isExhaustiveSafe(gs, dir) {
 }
 
 // ─── Dynamic peel routing (toggle levels) ───────────────────────────────────
-// Maintains a "remaining" set across frames. Each frame:
-//   1. Compute peel layers on remaining subgraph
-//   2. Any completed cube in the lowest peel layer → remove from remaining, recompute
-//   3. Target = closest uncompleted cube in lowest peel layer (BFS on remaining)
-//   4. Route toward target
+// Stateless peel routing: each frame, look at the board and decide purely based on:
+//   1. Static peel layers (computed once on the full pyramid graph)
+//   2. Current cube states (stomps needed for each position)
+// No cross-frame state — same board always produces the same decision.
 
-var peelRemaining = null;
-var peelRound = -1;
-
-function peelReset() {
-    peelRemaining = new Uint8Array(POS_COUNT);
-    for (var i = 0; i < POS_COUNT; i++) peelRemaining[i] = 1;
-}
+var STATIC_PEEL = null;
 
 function computePeelLayers(remaining) {
     var layer = new Int8Array(POS_COUNT);
@@ -369,64 +362,38 @@ var PEEL_LAYER = null;
 var PEEL_DEGREE = null;
 
 function peelTargetDist(gs, forceFullGraph) {
-    var roundId = (gs.round || 0) * 1000 + (gs.lv || 0);
-    if (!peelRemaining || peelRound !== roundId) {
-        peelReset();
-        peelRound = roundId;
+    // Compute static peel layers once (full graph never changes)
+    if (!STATIC_PEEL) {
+        var full = new Uint8Array(POS_COUNT);
+        for (var i = 0; i < POS_COUNT; i++) full[i] = 1;
+        STATIC_PEEL = computePeelLayers(full);
     }
 
+    // Current cube states
     var stomps = new Int8Array(POS_COUNT);
     for (var i = 0; i < gs.cubes.length; i++) {
         var idx = posToIdx[gs.cubes[i].row * ROWS + gs.cubes[i].col];
         stomps[idx] = stompsNeeded(gs.cubes[i].state, gs.lv);
     }
 
-    // Repair: if a removed cube got reverted (slick, etc.), add it back
-    for (var i = 0; i < POS_COUNT; i++) {
-        if (!peelRemaining[i] && stomps[i] > 0) peelRemaining[i] = 1;
-    }
-
-    // Iteratively: compute peel layers, remove completed cubes from lowest layer
-    var peel;
-    for (var iter = 0; iter < POS_COUNT; iter++) {
-        peel = computePeelLayers(peelRemaining);
-        var minLayer = 99;
-        for (var i = 0; i < POS_COUNT; i++) {
-            if (!peelRemaining[i]) continue;
-            if (peel.layer[i] < minLayer) minLayer = peel.layer[i];
-        }
-        if (minLayer >= 99) break;
-        var removedAny = false;
-        for (var i = 0; i < POS_COUNT; i++) {
-            if (!peelRemaining[i]) continue;
-            if (peel.layer[i] !== minLayer) continue;
-            if (stomps[i] <= 0) {
-                peelRemaining[i] = 0;
-                removedAny = true;
-            }
-        }
-        if (!removedAny) break;
-    }
-
     // Export for viz
-    PEEL_LAYER = peel.layer;
-    PEEL_DEGREE = peel.degree;
+    PEEL_LAYER = STATIC_PEEL.layer;
+    PEEL_DEGREE = STATIC_PEEL.degree;
 
     // Find lowest layer with uncompleted cubes
-    var minLayer = 99;
+    var targetLayer = 99;
     for (var i = 0; i < POS_COUNT; i++) {
-        if (!peelRemaining[i]) continue;
-        if (stomps[i] <= 0) continue;
-        if (peel.layer[i] < minLayer) minLayer = peel.layer[i];
+        if (stomps[i] > 0 && STATIC_PEEL.layer[i] < targetLayer)
+            targetLayer = STATIC_PEEL.layer[i];
     }
 
-    // Multi-source BFS from all uncompleted cubes in lowest layer, on remaining graph
+    // Multi-source BFS from uncompleted cubes in target layer
     var dist = new Float64Array(POS_COUNT);
     for (var i = 0; i < POS_COUNT; i++) dist[i] = 999;
-    if (minLayer >= 99) return dist;
+    if (targetLayer >= 99) return dist;
     var queue = [];
     for (var i = 0; i < POS_COUNT; i++) {
-        if (peelRemaining[i] && stomps[i] > 0 && peel.layer[i] === minLayer) {
+        if (stomps[i] > 0 && STATIC_PEEL.layer[i] === targetLayer) {
             dist[i] = 0;
             queue.push(i);
         }
@@ -438,8 +405,9 @@ function peelTargetDist(gs, forceFullGraph) {
         for (var a = 0; a < adj.length; a++) {
             var v = adj[a];
             if (dist[v] < 999) continue;
-            if (!forceFullGraph && gs.lv >= 3 && !peelRemaining[v]) continue;
-            dist[v] = dist[u] + 1 + (stomps[v] <= 0 ? 0.4 : 0);
+            // On toggle levels, don't route through completed cubes
+            if (!forceFullGraph && gs.lv >= 3 && stomps[v] <= 0) continue;
+            dist[v] = dist[u] + 1;
             queue.push(v);
         }
     }
@@ -591,7 +559,7 @@ function unifiedPick(gs) {
                 _stompsHere = stompsNeeded(gs.cubes[_ci].state, gs.lv); break;
             }
         }
-        _routeDbg.push(fd + '→(' + lr + ',' + lc + ') dist=' + score.toFixed(1) + ' stomps=' + _stompsHere + ' peel=' + (peelRemaining[lidx]?'Y':'N'));
+        _routeDbg.push(fd + '→(' + lr + ',' + lc + ') dist=' + score.toFixed(1) + ' stomps=' + _stompsHere + ' L=' + STATIC_PEEL.layer[lidx]);
         if (score >= 999) continue;
         // Tiebreaker: prefer cubes with more neighbors (avoid dead-end corners)
         score -= posAdj[lidx].length * 0.01;
@@ -608,10 +576,8 @@ function unifiedPick(gs) {
     if (gs.lv >= 3) {
         targetDist = peelTargetDist(gs, true);
         var maxLayer = 0;
-        if (PEEL_LAYER) {
-            for (var pl = 0; pl < POS_COUNT; pl++)
-                if (PEEL_LAYER[pl] > maxLayer) maxLayer = PEEL_LAYER[pl];
-        }
+        for (var pl = 0; pl < POS_COUNT; pl++)
+            if (STATIC_PEEL.layer[pl] > maxLayer) maxLayer = STATIC_PEEL.layer[pl];
         bestDir = null; bestScore = Infinity;
         for (var fk2 = 0; fk2 < DIR_KEYS.length; fk2++) {
             var fd2 = DIR_KEYS[fk2];
@@ -624,8 +590,14 @@ function unifiedPick(gs) {
             var score2 = targetDist[lidx2];
             if (score2 >= 999) continue;
             // Penalize stepping on low-layer (edge) completed cubes — prefer reverting interior
-            if (PEEL_LAYER && !peelRemaining[lidx2]) {
-                score2 += (maxLayer - PEEL_LAYER[lidx2]) * 0.1;
+            var _stomps2 = 0;
+            for (var _ci2 = 0; _ci2 < gs.cubes.length; _ci2++) {
+                if (gs.cubes[_ci2].row === lr2 && gs.cubes[_ci2].col === lc2) {
+                    _stomps2 = stompsNeeded(gs.cubes[_ci2].state, gs.lv); break;
+                }
+            }
+            if (_stomps2 <= 0) {
+                score2 += (maxLayer - STATIC_PEEL.layer[lidx2]) * 0.3;
             }
             // Tiebreaker: prefer cubes with more neighbors (avoid dead-end corners)
             score2 -= posAdj[lidx2].length * 0.01;
