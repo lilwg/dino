@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic (peel routing)
-var AI_VERSION = 'v13.30';
+var AI_VERSION = 'v13.31';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -431,10 +431,12 @@ function unifiedPick(gs) {
     function simSeed(sampleIdx) { simRng = createSeededRng(baseSeed + sampleIdx * 9973); }
     function restoreRng() { simRng = savedRng; }
 
-    // Shuffle direction keys each frame to eliminate iteration-order bias
+    // Shuffle direction keys to eliminate iteration-order bias
+    // Use position-based seed so same position always gets same shuffle (no oscillation)
+    var shuffleRng = createSeededRng(gs.player.row * 31 + gs.player.col * 97);
     var shuffledDirs = DIR_KEYS.slice();
     for (var si = shuffledDirs.length - 1; si > 0; si--) {
-        var sj = Math.floor(Math.random() * (si + 1));
+        var sj = Math.floor(shuffleRng() * (si + 1));
         var tmp = shuffledDirs[si]; shuffledDirs[si] = shuffledDirs[sj]; shuffledDirs[sj] = tmp;
     }
     var shuffledDirsStay = shuffledDirs.concat(['STAY']);

@@ -550,7 +550,7 @@ function simUpdateEnemies(gs) {
                 var enr = e.row + dk.dr, enc = e.col + dk.dc;
                 if (!canExit && !isValidPos(enr, enc)) continue;
                 var dist = Math.abs(targetR - enr) + Math.abs(targetC - enc);
-                if (dist < bestDist || (dist === bestDist && simRng() < 0.5)) { bestDist = dist; bestDir = { nr: enr, nc: enc }; }
+                if (dist < bestDist || (dist === bestDist && Math.random() < 0.5)) { bestDist = dist; bestDir = { nr: enr, nc: enc }; }
             }
             if (bestDir) {
                 simEnemyJumpTo(e, bestDir.nr, bestDir.nc, gs.sm);
