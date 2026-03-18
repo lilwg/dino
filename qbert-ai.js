@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic (peel routing)
-var AI_VERSION = 'v13.31';
+var AI_VERSION = 'v13.32';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -545,6 +545,31 @@ function unifiedPick(gs) {
             }
         } else {
             safe2[dir] = true;
+        }
+    }
+
+    // ── Opportunistic disc usage to kill Coily ──
+    for (var di = 0; di < gs.discs.length; di++) {
+        var disc = gs.discs[di];
+        if (!disc.active) continue;
+        var discDir = null;
+        if (disc.side === 0 && gs.player.col === 0 && gs.player.row === disc.row)
+            discDir = 'UL';
+        else if (disc.side === 1 && gs.player.col === gs.player.row && gs.player.row === disc.row)
+            discDir = 'UR';
+        if (!discDir) continue;
+
+        // Simulate: will Coily actually fall off during the disc ride?
+        var discSim = simDeepClone(gs);
+        simUseDisc(discSim, di);
+        for (var df = 0; df < 30; df++) simUpdateEnemies(discSim);
+        var coilyGone = true;
+        for (var dci = 0; dci < discSim.enemies.length; dci++) {
+            if (discSim.enemies[dci].type === 'coily') { coilyGone = false; break; }
+        }
+        if (coilyGone) {
+            console.log('DISC-KILL @(' + gs.player.row + ',' + gs.player.col + ') → ' + discDir);
+            restoreRng(); return discDir;
         }
     }
 
