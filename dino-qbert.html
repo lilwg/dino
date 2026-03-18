@@ -582,7 +582,6 @@ function initRound() {
     player.facing = 'R';
     player.deathAnimTimer = 0;
     player.pendingDisc = null;
-    player.pendingFallOff = false;
     player.fallOff = false;
 
     if (debugEnemies) {
@@ -632,15 +631,16 @@ function tryMove(dirKey) {
                 return;
             }
         }
-        // Fall off edge — visual-only jump arc first, then ballistic fall
+        // Fall off edge — ballistic arc off-screen
+        var src = cubeXY(gs.player.row, gs.player.col);
+        var dst = cubeXY(nr, nc);
+        var dx = dst.cx - src.cx, dy = dst.cy - src.cy;
+        var hopFrames = 18;
+        player.fallOff = true;
+        player.fallVx = dx / hopFrames;
+        player.fallVy = Math.min(dy / hopFrames - 4, -5);  // ensure visible upward arc
         DinoSounds.press();
         player.spriteFrame = 0; player.frameTimer = 0;
-        player.jumping = true; player.jumpT = 0;
-        player.jumpDur = PLAYER_JUMP_DUR * gs.sm;
-        player.jumpSrcRow = player.row;
-        player.jumpSrcCol = player.col;
-        player.destRow = nr; player.destCol = nc;
-        player.pendingFallOff = true;
         return;
     }
 
@@ -713,29 +713,6 @@ function update() {
             score += gs.score; gs.score = 0;
             checkExtraLife();
             startDiscRide(pd.side, pd.row);
-        }
-        // Enemies still tick during the jump
-        if (roundStarted && enemiesEnabled) {
-            simUpdateEnemies(gs);
-            enemies = gs.enemies;
-            freezeTimer = gs.freezeTimer;
-        }
-        syncVisuals();
-        return;
-    }
-
-    // Fall off edge: visual-only jump arc, then transition to ballistic fall
-    if (player.pendingFallOff && player.jumping) {
-        player.jumpT += player.jumpDur;
-        if (player.jumpT >= 1) {
-            // Jump arc complete — transition to ballistic falling
-            player.jumpT = 1; player.jumping = false;
-            player.pendingFallOff = false;
-            var dst = cubeXY(player.destRow, player.destCol);
-            player.px = dst.cx; player.py = dst.cy;
-            player.fallOff = true;
-            player.fallVx = player.facing === 'L' ? -2 : 2;
-            player.fallVy = 0;
         }
         // Enemies still tick during the jump
         if (roundStarted && enemiesEnabled) {
