@@ -40,7 +40,7 @@ var PLAYER_JUMP_DUR = 0.040;   // 25 frames = ~417ms at Lv1 (measured from arcad
 var ENEMY_JUMP_DUR  = 0.033;   // 30 frames = ~500ms at Lv1 (Coily slightly slower)
 // Post-landing idle pause (arcade: 35 frame hop-to-hop = 26 jump + 9 idle at 61.4Hz)
 var PLAYER_IDLE_FRAMES = 9;
-var ENEMY_IDLE_FRAMES = 12;    // arcade enemy hop-to-hop ~42 frames = 30 jump + 12 idle
+var ENEMY_IDLE_FRAMES = 5;     // arcade enemy hop-to-hop ~39 frames = 30 jump + 4 moveInterval + 5 idle
 var BASE_ENEMY_INTERVALS = {
     egg: 4, coily: 4, redball: 4, greenball: 12, slick: 20, sam: 20, ugg: 4, wrongway: 4
 };
