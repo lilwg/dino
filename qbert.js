@@ -554,6 +554,13 @@ function simUpdateEnemies(gs) {
             var hasLure = e.lureRow != null;
             var targetR = hasLure ? e.lureRow : gs.player.row;
             var targetC = hasLure ? e.lureCol : gs.player.col;
+            // When lured and AT the lure position, force jump off the correct edge
+            if (hasLure && e.row === e.lureRow && e.col === e.lureCol) {
+                var exitDir = e.lureCol <= 0 ? DIRS['UL'] : DIRS['UR'];
+                simEnemyJumpTo(e, e.row + exitDir.dr, e.col + exitDir.dc, gs.sm);
+                e.falling = true;
+                continue;
+            }
             // When lured and on the disc's row, allow jumping off the edge
             var canExit = hasLure && e.row === e.lureRow;
             for (var k = 0; k < 4; k++) {
@@ -646,9 +653,9 @@ function simCheckCollision(gs) {
 function simUseDisc(gs, idx) {
     var disc = gs.discs[idx];
     disc.active = false;
-    // Set lure on Coily — it will chase toward the disc exit and fall off naturally
-    // Left side lure: col -1 (off left edge). Right side lure: col disc.row
-    // (the rightmost valid column on that row, so UR takes Coily off the grid).
+    // Set lure on Coily — it will chase toward the disc edge and fall off
+    // Left side: lure at col -1 (off left). Right side: lure at col=row (rightmost valid).
+    // When Coily reaches the lure, it is forced off the edge (see Coily movement code).
     var lureRow = disc.row;
     var lureCol = disc.side === 0 ? -1 : disc.row;
     for (var i = 0; i < gs.enemies.length; i++) {
