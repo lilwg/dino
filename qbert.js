@@ -777,9 +777,15 @@ function simStep(gs, dir) {
             // Player is off-grid on disc, no collision check needed
             if (!gs.alive || gs.levelWon) return gs.alive;
         }
-        // Player lands at apex
+        // Player lands at apex — clear Coily lure so it chases real position
         gs.player.row = 0;
         gs.player.col = 0;
+        for (var li = 0; li < gs.enemies.length; li++) {
+            if (gs.enemies[li].type === 'coily') {
+                gs.enemies[li].lureRow = null;
+                gs.enemies[li].lureCol = null;
+            }
+        }
         simStompCube(gs, 0, 0);
         if (simAllColored(gs)) {
             gs.score += roundCompletionBonus(gs.round);

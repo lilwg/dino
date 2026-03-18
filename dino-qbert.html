@@ -503,9 +503,16 @@ function updateDiscRide() {
         discRide.t = 1;
         var top = cubeXY(0, 0);
         player.px = top.cx; player.py = top.cy;
-        // Player lands at apex
+        // Player lands at apex — clear Coily lure so it chases real position
         player.row = 0; player.col = 0;
         gs.player.row = 0; gs.player.col = 0;
+        for (var li = 0; li < gs.enemies.length; li++) {
+            if (gs.enemies[li].type === 'coily') {
+                gs.enemies[li].lureRow = null;
+                gs.enemies[li].lureCol = null;
+            }
+        }
+        enemies = gs.enemies;
         simStompCube(gs, 0, 0);
         score += gs.score; gs.score = 0;
         checkExtraLife();
