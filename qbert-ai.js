@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic (peel routing)
-var AI_VERSION = 'v13.18';
+var AI_VERSION = 'v13.19';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -260,6 +260,24 @@ function isExhaustiveSafe(gs, dir) {
                             if (pt && pt.row === 1 && pt.col === sc) return false;
                         }
                     }
+                }
+                if (ft === 'wrongway') {
+                    var we = { type: 'wrongway', row: ROWS-1, col: -1,
+                        jumping: true, jumpT: 0, jumpDur: ENEMY_JUMP_DUR * gs.sm,
+                        destRow: ROWS-1, destCol: 0,
+                        moveTimer: 0, moveInterval: enemyMoveInterval('wrongway', gs.sm),
+                        hops: 0, falling: false, spawnDrop: 0 };
+                    if (enemyPathCollides(we, playerTiles, e.timer, maxFrames, chaseR, chaseC, gs.sm))
+                        return false;
+                }
+                if (ft === 'ugg') {
+                    var ue = { type: 'ugg', row: ROWS-1, col: ROWS,
+                        jumping: true, jumpT: 0, jumpDur: ENEMY_JUMP_DUR * gs.sm,
+                        destRow: ROWS-1, destCol: ROWS-1,
+                        moveTimer: 0, moveInterval: enemyMoveInterval('ugg', gs.sm),
+                        hops: 0, falling: false, spawnDrop: 0 };
+                    if (enemyPathCollides(ue, playerTiles, e.timer, maxFrames, chaseR, chaseC, gs.sm))
+                        return false;
                 }
             }
             continue;
