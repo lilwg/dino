@@ -355,6 +355,11 @@ function simSpawnEnemy(gs, forcedType) {
         type = hasCoily ? 'redball' : 'egg';
     }
     // Enforce max active counts (arcade-accurate: prevent enemy pile-ups)
+    // Egg and coily share a combined cap of 1 (only one Coily at a time)
+    if (type === 'egg' || type === 'coily') {
+        for (var i = 0; i < gs.enemies.length; i++)
+            if (gs.enemies[i].type === 'egg' || gs.enemies[i].type === 'coily') return;
+    }
     var activeCount = 0;
     for (var i = 0; i < gs.enemies.length; i++) {
         if (gs.enemies[i].type === type) activeCount++;

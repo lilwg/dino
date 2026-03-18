@@ -778,11 +778,8 @@ function update() {
             player.px = sp.cx; player.py = sp.cy;
             simStompCube(gs, rr, rc);
             score += gs.score; gs.score = 0;
-            // Clear non-spawn-timer enemies
-            var kept = [];
-            for (var i = 0; i < gs.enemies.length; i++)
-                if (gs.enemies[i].type === 'spawn-timer') kept.push(gs.enemies[i]);
-            gs.enemies = kept;
+            // Clear ALL enemies (including spawn-timers) — arcade-accurate
+            gs.enemies = [];
             enemies = gs.enemies;
             gs.alive = true;
             roundStarted = false;
