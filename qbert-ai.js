@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic (peel routing)
-var AI_VERSION = 'v13.20';
+var AI_VERSION = 'v13.21';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -576,22 +576,34 @@ function unifiedPick(gs) {
     var targetDist = peelTargetDist(gs);
 
     var bestDir = null, bestScore = Infinity;
+    var _routeDbg = [];
     for (var fk = 0; fk < DIR_KEYS.length; fk++) {
         var fd = DIR_KEYS[fk];
         var fdd = DIRS[fd];
         var lr = gs.player.row + fdd.dr, lc = gs.player.col + fdd.dc;
         if (!isValidPos(lr, lc)) continue;
         var lidx = posToIdx[lr * ROWS + lc];
-        if (!safe1[fd] || !safe2[fd]) continue;
+        var _s1 = safe1[fd], _s2 = safe2[fd];
+        if (!_s1 || !_s2) { _routeDbg.push(fd + '→(' + lr + ',' + lc + ') UNSAFE s1=' + _s1 + ' s2=' + _s2); continue; }
         if (lidx < 0) continue;
 
         var score = targetDist[lidx];
+        var _stompsHere = 0;
+        for (var _ci = 0; _ci < gs.cubes.length; _ci++) {
+            if (gs.cubes[_ci].row === lr && gs.cubes[_ci].col === lc) {
+                _stompsHere = stompsNeeded(gs.cubes[_ci].state, gs.lv); break;
+            }
+        }
+        _routeDbg.push(fd + '→(' + lr + ',' + lc + ') dist=' + score.toFixed(1) + ' stomps=' + _stompsHere + ' peel=' + (peelRemaining[lidx]?'Y':'N'));
         if (score >= 999) continue;
         // Tiebreaker: prefer cubes with more neighbors (avoid dead-end corners)
         score -= posAdj[lidx].length * 0.01;
         if (score < bestScore) { bestScore = score; bestDir = fd; }
     }
-    if (bestDir) { restoreRng(); return bestDir; }
+    if (bestDir) {
+        console.log('PEEL-ROUTE @(' + gs.player.row + ',' + gs.player.col + ') → ' + bestDir + ' | ' + _routeDbg.join(' | '));
+        restoreRng(); return bestDir;
+    }
 
     // Peel BFS found no path (e.g. respawn at apex, separated from targets by
     // removed cubes). Fall back to simple BFS on the full graph to reconnect.
@@ -622,9 +634,13 @@ function unifiedPick(gs) {
             score2 -= posAdj[lidx2].length * 0.01;
             if (score2 < bestScore) { bestScore = score2; bestDir = fd2; }
         }
-        if (bestDir) { restoreRng(); return bestDir; }
+        if (bestDir) {
+            console.log('PEEL-FALLBACK @(' + gs.player.row + ',' + gs.player.col + ') → ' + bestDir + ' | ' + _routeDbg.join(' | '));
+            restoreRng(); return bestDir;
+        }
     }
 
+    console.log('PEEL-NONE @(' + gs.player.row + ',' + gs.player.col + ') | ' + _routeDbg.join(' | '));
     // No safe movement direction — STAY if it's safe
     // Don't require safe2 here: delaying death is always better than
     // choosing an exhaustive-unsafe direction that dies immediately.
