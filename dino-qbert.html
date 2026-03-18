@@ -590,6 +590,7 @@ function initRound() {
         simScheduleSpawn(gs, 5, 'redball');
         simScheduleSpawn(gs, 10, 'greenball');
         simScheduleSpawn(gs, 15, 'slick');
+        simScheduleSpawn(gs, 18, 'sam');
         simScheduleSpawn(gs, 20, 'ugg');
         simScheduleSpawn(gs, 25, 'wrongway');
     } else if (enemiesEnabled) {
@@ -1370,6 +1371,11 @@ function drawEnemy(e) {
         // Evil dino: color-inverted T-Rex
         var slSp = e.frame ? SPRITES.TREX_RUN2 : SPRITES.TREX_RUN1;
         _drawEvilDino(e.px, e.py, slSp, 0.65, e.facing === 'L');
+
+    } else if (e.type === 'sam') {
+        // Sam: Slick's counterpart — smaller evil dino, mirrored
+        var samSp = e.frame ? SPRITES.TREX_RUN2 : SPRITES.TREX_RUN1;
+        _drawEvilDino(e.px, e.py, samSp, 0.55, e.facing !== 'L');
 
     } else if (e.type === 'redball') {
         // Dangerous cactus (dark, with white outline)

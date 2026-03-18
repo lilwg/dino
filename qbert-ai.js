@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic (peel routing)
-var AI_VERSION = 'v13.36';
+var AI_VERSION = 'v13.37';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -60,7 +60,7 @@ function buildDangerSet() {
     var framesPerHop = Math.ceil(1 / (0.028 * sm));
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
-        if (e.type === 'slick' || e.type === 'greenball') continue;
+        if (e.type === 'slick' || e.type === 'sam' || e.type === 'greenball') continue;
         if (e.type === 'coily') continue;
         if (e.type === 'spawn-timer') {
             if (e.timer <= framesPerHop * 2) {
@@ -283,7 +283,7 @@ function isExhaustiveSafe(gs, dir) {
             continue;
         }
 
-        if (e.type === 'slick' || e.type === 'greenball') continue;
+        if (e.type === 'slick' || e.type === 'sam' || e.type === 'greenball') continue;
 
         // Don't land on a tile where an enemy is dropping or sitting after drop
         if (e.spawnDrop > 0 && e.row === destR && e.col === destC) return false;
@@ -472,7 +472,7 @@ function unifiedPick(gs) {
             var stayUnsafe = false;
             for (var sei = 0; sei < gs.enemies.length; sei++) {
                 var se = gs.enemies[sei];
-                if (se.type === 'spawn-timer' || se.type === 'slick' || se.type === 'greenball') continue;
+                if (se.type === 'spawn-timer' || se.type === 'slick' || se.type === 'sam' || se.type === 'greenball') continue;
                 var ser = se.jumping && se.jumpT >= 0.67 ? (se.destRow != null ? se.destRow : se.row) : se.row;
                 var sec = se.jumping && se.jumpT >= 0.67 ? (se.destCol != null ? se.destCol : se.col) : se.col;
                 if (se.type !== 'coily' && Math.abs(ser - gs.player.row) + Math.abs(sec - gs.player.col) > 2) continue;

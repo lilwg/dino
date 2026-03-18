@@ -39,7 +39,7 @@ var DIR_KEYS_WITH_STAY = ['UL', 'UR', 'DL', 'DR', 'STAY'];
 var PLAYER_JUMP_DUR = 0.028;
 var ENEMY_JUMP_DUR  = 0.030;
 var BASE_ENEMY_INTERVALS = {
-    egg: 4, coily: 4, redball: 4, greenball: 12, slick: 20, ugg: 4, wrongway: 4
+    egg: 4, coily: 4, redball: 4, greenball: 12, slick: 20, sam: 20, ugg: 4, wrongway: 4
 };
 
 // ─── Board utilities ─────────────────────────────────────────────────────────
@@ -54,6 +54,7 @@ function arcadeLevel(rnd) {
 
 function targetState(rnd) {
     var lv = arcadeLevel(rnd);
+    if (lv >= 5) return 2;
     return (lv === 1 || lv === 3) ? 1 : 2;
 }
 
@@ -87,10 +88,11 @@ function discCount(rnd) {
     var lv = arcadeLevel(rnd);
     var r = (((rnd !== undefined ? rnd : round) - 1) % 4);
     if (lv === 1) return 2;
-    if (lv === 2) return [3, 3, 3, 2][r];
+    if (lv === 2) return [3, 3, 2, 2][r];
     if (lv === 3) return [4, 4, 3, 3][r];
     if (lv === 4) return [6, 6, 5, 4][r];
-    return [7, 6, 6, 5][r];
+    if (lv === 5) return [7, 6, 6, 5][r];
+    return 5;
 }
 
 function hasRedBall(rnd) {
@@ -103,7 +105,8 @@ function hasRedBall(rnd) {
 }
 function hasUggWrongway(rnd) { return ((rnd !== undefined) ? rnd : round) >= 3; }
 function hasSlick(rnd) { return ((rnd !== undefined) ? rnd : round) >= 4; }
-function hasGreenBall(rnd) { return ((rnd !== undefined) ? rnd : round) >= 6; }
+function hasGreenBall(rnd) { return ((rnd !== undefined) ? rnd : round) >= 3; }
+function hasSam(rnd) { return ((rnd !== undefined) ? rnd : round) >= 4; }
 
 function discConfig(rnd) {
     var r = (rnd !== undefined) ? rnd : round;
@@ -122,16 +125,16 @@ function discConfig(rnd) {
 
 function roundCompletionBonus(rnd) {
     var r = (rnd !== undefined) ? rnd : round;
-    var lv = arcadeLevel(r);
-    return Math.min(5000, 750 + 1000 * lv + 250 * r);
+    return Math.min(5000, 750 + r * 250);
 }
 
-function unusedDiscBonus(dsList) {
+function unusedDiscBonus(dsList, rnd) {
     var ds = dsList || (typeof discs !== 'undefined' ? discs : []);
     var count = 0;
     for (var i = 0; i < ds.length; i++)
         if (ds[i].active) count++;
-    return count * 50;
+    var perDisc = arcadeLevel(rnd) >= 5 ? 100 : 50;
+    return count * perDisc;
 }
 
 // Global-accessor convenience functions (for HTML game loop using globals)
@@ -314,6 +317,7 @@ function buildSpawnSequence(rnd) {
     if (hasRedBall(rnd)) seq.push('redball');
     if (hasUggWrongway(rnd)) seq.push('wrongway');
     if (hasSlick(rnd)) seq.push('slick');
+    if (hasSam(rnd)) seq.push('sam');
     if (hasGreenBall(rnd)) seq.push('greenball');
     if (hasUggWrongway(rnd)) seq.push('ugg');
     if (hasRedBall(rnd)) seq.push('redball');
@@ -355,7 +359,7 @@ function simSpawnEnemy(gs, forcedType) {
     for (var i = 0; i < gs.enemies.length; i++) {
         if (gs.enemies[i].type === type) activeCount++;
     }
-    var maxActive = { redball: 2, ugg: 2, wrongway: 2, slick: 1, greenball: 1 };
+    var maxActive = { redball: 2, ugg: 2, wrongway: 2, slick: 1, sam: 1, greenball: 1 };
     if (maxActive[type] !== undefined && activeCount >= maxActive[type]) return;
     var spawnCol = Math.floor(simRng() * 2);
     var interval = enemyMoveInterval(type, gs.sm);
@@ -424,6 +428,7 @@ function simScheduleEnemyRespawn(gs, type) {
         simScheduleSpawn(gs, Math.max(120, 240 - Math.floor(rnd / 2) * 15), 'redball');
     else if (type === 'greenball' && hasGreenBall(rnd)) simScheduleSpawn(gs, 540, 'greenball');
     else if (type === 'slick' && hasSlick(rnd)) simScheduleSpawn(gs, 720, 'slick');
+    else if (type === 'sam' && hasSam(rnd)) simScheduleSpawn(gs, 720, 'sam');
     else if (type === 'ugg' && hasUggWrongway(rnd)) simScheduleSpawn(gs, 540, 'ugg');
     else if (type === 'wrongway' && hasUggWrongway(rnd)) simScheduleSpawn(gs, 600, 'wrongway');
 }
@@ -497,8 +502,8 @@ function simUpdateEnemies(gs) {
                     e.type = 'coily';
                     e.moveInterval = enemyMoveInterval('coily', gs.sm);
                 }
-                // Slick reverts cube on landing
-                if (e.type === 'slick') {
+                // Slick/Sam revert cube on landing
+                if (e.type === 'slick' || e.type === 'sam') {
                     for (var ci = 0; ci < gs.cubes.length; ci++) {
                         if (gs.cubes[ci].row === e.row && gs.cubes[ci].col === e.col) {
                             if (gs.cubes[ci].state > 0) {
@@ -512,7 +517,8 @@ function simUpdateEnemies(gs) {
                     }
                     if (e.row >= ROWS - 1) {
                         gs.enemies.splice(i, 1);
-                        if (hasSlick(gs.round)) simScheduleSpawn(gs, 720, 'slick');
+                        if (e.type === 'slick' && hasSlick(gs.round)) simScheduleSpawn(gs, 720, 'slick');
+                        if (e.type === 'sam' && hasSam(gs.round)) simScheduleSpawn(gs, 720, 'sam');
                         continue;
                     }
                 }
@@ -559,7 +565,7 @@ function simUpdateEnemies(gs) {
                 simEnemyJumpTo(e, e.row, e.col, gs.sm);
                 e.falling = true;
             }
-        } else if (e.type === 'redball' || e.type === 'greenball' || e.type === 'slick') {
+        } else if (e.type === 'redball' || e.type === 'greenball' || e.type === 'slick' || e.type === 'sam') {
             var dir = simRng() < 0.5 ? 'DL' : 'DR';
             var delta = DIRS[dir];
             var nr = e.row + delta.dr, nc = e.col + delta.dc;
@@ -603,7 +609,7 @@ function simCheckCollision(gs) {
         var et = collisionTile(e);
         if (!et) continue; // enemy at apex, immune
         if (et.row === pt.row && et.col === pt.col) {
-            if (e.type === 'slick') {
+            if (e.type === 'slick' || e.type === 'sam') {
                 gs.score += 300;
                 gs.enemies.splice(i, 1); i--;
             } else if (e.type === 'greenball') {
@@ -789,7 +795,7 @@ function simStep(gs, dir) {
         simStompCube(gs, 0, 0);
         if (simAllColored(gs)) {
             gs.score += roundCompletionBonus(gs.round);
-            gs.score += unusedDiscBonus(gs.discs);
+            gs.score += unusedDiscBonus(gs.discs, gs.round);
             gs.levelWon = true;
             return true;
         }
@@ -807,7 +813,7 @@ function simStep(gs, dir) {
             simStompCube(gs, gs.player.row, gs.player.col);
             if (simAllColored(gs)) {
                 gs.score += roundCompletionBonus(gs.round);
-                gs.score += unusedDiscBonus(gs.discs);
+                gs.score += unusedDiscBonus(gs.discs, gs.round);
                 gs.levelWon = true;
                 return true;
             }
