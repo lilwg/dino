@@ -36,8 +36,8 @@ var DIR_KEYS = ['UL', 'UR', 'DL', 'DR'];
 var DIR_KEYS_WITH_STAY = ['UL', 'UR', 'DL', 'DR', 'STAY'];
 
 // Frame timing (per-frame jumpT increments)
-var PLAYER_JUMP_DUR = 0.028;
-var ENEMY_JUMP_DUR  = 0.030;
+var PLAYER_JUMP_DUR = 0.040;   // 25 frames = ~417ms at Lv1 (measured from arcade ROM)
+var ENEMY_JUMP_DUR  = 0.033;   // 30 frames = ~500ms at Lv1 (Coily slightly slower)
 var BASE_ENEMY_INTERVALS = {
     egg: 4, coily: 4, redball: 4, greenball: 12, slick: 20, sam: 20, ugg: 4, wrongway: 4
 };

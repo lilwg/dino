@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic (peel routing)
-var AI_VERSION = 'v13.37';
+var AI_VERSION = 'v13.38';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
