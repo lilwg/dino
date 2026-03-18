@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic (peel routing)
-var AI_VERSION = 'v13.17';
+var AI_VERSION = 'v13.18';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -279,7 +279,9 @@ function isExhaustiveSafe(gs, dir) {
         }
 
         var eClone = cloneEnemyLight(e);
-        if (enemyPathCollides(eClone, playerTiles, startFrame, maxFrames, destR, destC, gs.sm)) {
+        // Coily chases gs.player.row/col which stays at ORIGIN during hop
+        var chaseR = gs.player.row, chaseC = gs.player.col;
+        if (enemyPathCollides(eClone, playerTiles, startFrame, maxFrames, chaseR, chaseC, gs.sm)) {
             return false;
         }
     }
