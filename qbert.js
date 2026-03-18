@@ -600,12 +600,12 @@ function simUpdateEnemies(gs) {
 }
 
 // Get the tile an entity is "on" for collision purposes.
-// During a jump: first half on source, second half on dest. No immunity window
-// (matches arcade: mid-air collisions always happen).
+// During a jump: first 1/3 on source, middle 1/3 immune, last 1/3 on dest.
 function collisionTile(entity) {
     if (!entity.jumping) return { row: entity.row, col: entity.col };
-    if (entity.jumpT < 0.5) return { row: entity.row, col: entity.col };
-    return { row: entity.destRow, col: entity.destCol };
+    if (entity.jumpT < 0.33) return { row: entity.row, col: entity.col };
+    if (entity.jumpT >= 0.67) return { row: entity.destRow, col: entity.destCol };
+    return null; // immune at apex
 }
 
 // Per-frame collision check: same tile = death (or catch for slick/greenball)
@@ -613,11 +613,13 @@ function collisionTile(entity) {
 function simCheckCollision(gs) {
     if (gs.player.dead || gs.player.fallOff) return;
     var pt = collisionTile(gs.player);
+    if (!pt) return; // player at apex, immune
     for (var i = 0; i < gs.enemies.length; i++) {
         var e = gs.enemies[i];
         if (e.type === 'spawn-timer') continue;
         if (e.spawnDrop > 0) continue;
         var et = collisionTile(e);
+        if (!et) continue; // enemy at apex, immune
         if (et.row === pt.row && et.col === pt.col) {
             if (e.type === 'slick' || e.type === 'sam') {
                 gs.score += 300;
