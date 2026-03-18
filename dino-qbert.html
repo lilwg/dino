@@ -637,6 +637,7 @@ function tryMove(dirKey) {
         var dx = dst.cx - src.cx, dy = dst.cy - src.cy;
         var hopFrames = 18;
         player.fallOff = true;
+        player.fallOffBottom = (dy > 0);  // bottom falls render in front of pyramid
         player.fallVx = dx / hopFrames;
         player.fallVy = Math.min(dy / hopFrames - 4, -5);  // ensure visible upward arc
         DinoSounds.press();
@@ -922,6 +923,8 @@ function draw() {
         }
     }
     pyrCtx.restore();
+    // Side falls: draw player behind pyramid
+    if (player.fallOff && !player.fallOffBottom) drawPlayer();
 
     ctx.imageSmoothingEnabled = false;
     ctx.drawImage(pyrCvs, 0, 0, CW, CH);
@@ -935,7 +938,7 @@ function draw() {
 
     // Enemies and player (before inversion so they invert with scene)
     if (enemiesEnabled) for (var i = 0; i < enemies.length; i++) drawEnemy(enemies[i]);
-    drawPlayer();
+    if (!player.fallOff || player.fallOffBottom) drawPlayer();
 
     // Draw spinning disc under player during disc ride
     if (discRide) {
