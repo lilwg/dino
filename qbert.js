@@ -304,29 +304,41 @@ function simScheduleSpawn(gs, delay, forcedType) {
     gs.enemies.push({ type: 'spawn-timer', timer: delay, forcedType: forcedType || null });
 }
 
-// Schedule initial enemies for a round
-function simScheduleInitialEnemies(gs) {
-    var rnd = gs.round;
-    var lv = arcadeLevel(rnd);
-    simScheduleSpawn(gs, 180);                                           // Coily egg
-    if (hasRedBall(rnd))     simScheduleSpawn(gs, 300, 'redball');
-    if (hasSlick(rnd))       simScheduleSpawn(gs, 900, 'slick');
-    if (hasGreenBall(rnd))   simScheduleSpawn(gs, 540, 'greenball');
-    if (hasUggWrongway(rnd)) simScheduleSpawn(gs, 660, 'ugg');
-    if (hasUggWrongway(rnd)) simScheduleSpawn(gs, 780, 'wrongway');
-    if (lv >= 3 && hasRedBall(rnd)) simScheduleSpawn(gs, 600, 'redball');
-    if (lv >= 4 && hasSlick(rnd))   simScheduleSpawn(gs, 1080, 'slick');
+// Build arcade-style spawn sequence for a round.
+// Enemies appear one at a time from this list, staggered by a fixed delay.
+function buildSpawnSequence(rnd) {
+    var seq = [];
+    seq.push('egg');
+    if (hasRedBall(rnd)) seq.push('redball');
+    if (hasUggWrongway(rnd)) seq.push('ugg');
+    if (hasRedBall(rnd)) seq.push('redball');
+    if (hasUggWrongway(rnd)) seq.push('wrongway');
+    if (hasSlick(rnd)) seq.push('slick');
+    if (hasGreenBall(rnd)) seq.push('greenball');
+    if (hasUggWrongway(rnd)) seq.push('ugg');
+    if (hasRedBall(rnd)) seq.push('redball');
+    if (hasUggWrongway(rnd)) seq.push('wrongway');
+    return seq;
 }
 
-// Schedule respawn enemies after death
+// Schedule initial enemies for a round (staggered from spawn sequence)
+function simScheduleInitialEnemies(gs) {
+    var seq = buildSpawnSequence(gs.round);
+    var delay = 180;
+    for (var i = 0; i < seq.length; i++) {
+        simScheduleSpawn(gs, delay, seq[i]);
+        delay += 180;
+    }
+}
+
+// Schedule respawn enemies after death (slightly tighter stagger)
 function simScheduleRespawnEnemies(gs) {
-    var rnd = gs.round;
-    simScheduleSpawn(gs, 180);                                           // Coily egg
-    if (hasRedBall(rnd))     simScheduleSpawn(gs, 240, 'redball');
-    if (hasSlick(rnd))       simScheduleSpawn(gs, 720, 'slick');
-    if (hasGreenBall(rnd))   simScheduleSpawn(gs, 480, 'greenball');
-    if (hasUggWrongway(rnd)) simScheduleSpawn(gs, 540, 'ugg');
-    if (hasUggWrongway(rnd)) simScheduleSpawn(gs, 660, 'wrongway');
+    var seq = buildSpawnSequence(gs.round);
+    var delay = 180;
+    for (var i = 0; i < seq.length; i++) {
+        simScheduleSpawn(gs, delay, seq[i]);
+        delay += 150;
+    }
 }
 
 // Spawn an enemy into the game state
@@ -338,6 +350,13 @@ function simSpawnEnemy(gs, forcedType) {
             if (gs.enemies[i].type === 'coily' || gs.enemies[i].type === 'egg') { hasCoily = true; break; }
         type = hasCoily ? 'redball' : 'egg';
     }
+    // Enforce max active counts (arcade-accurate: prevent enemy pile-ups)
+    var activeCount = 0;
+    for (var i = 0; i < gs.enemies.length; i++) {
+        if (gs.enemies[i].type === type) activeCount++;
+    }
+    var maxActive = { redball: 2, ugg: 2, wrongway: 2, slick: 1, greenball: 1 };
+    if (maxActive[type] !== undefined && activeCount >= maxActive[type]) return;
     var spawnCol = Math.floor(simRng() * 2);
     var interval = enemyMoveInterval(type, gs.sm);
     if (type === 'ugg') {
@@ -463,11 +482,8 @@ function simUpdateEnemies(gs) {
                     // Coily lured off by disc: 500 points, clear all enemies, respawn
                     if (e.type === 'coily' && e.lureRow != null) {
                         gs.score += 500;
-                        var spawnTimers = [];
-                        for (var j = 0; j < gs.enemies.length; j++)
-                            if (gs.enemies[j].type === 'spawn-timer') spawnTimers.push(gs.enemies[j]);
-                        gs.enemies = spawnTimers;
-                        simScheduleSpawn(gs, 180);
+                        gs.enemies = [];
+                        simScheduleInitialEnemies(gs);
                         break; // enemies array replaced, exit loop
                     }
                     var ft = e.type;
