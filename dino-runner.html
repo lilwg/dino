@@ -466,15 +466,22 @@
                     this._setViz('duck', tRex, speed, ahead, near);
                     return;
                 }
-                // Only speed-drop after clearing ALL obstacles in flight path.
+                // Only speed-drop if we'll land AFTER every obstacle
+                // has passed behind us.
+                var dropY = tRex.yPos, dropJV = 1, dropFrames = 0;
+                while (dropY < tRex.groundYPos && dropFrames < 30) {
+                    dropY += Math.round(dropJV * tRex.config.SPEED_DROP_COEFFICIENT);
+                    dropJV += tRex.config.GRAVITY;
+                    dropFrames++;
+                }
                 var cleared = true;
                 for (var k = 0; k < ahead.length; k++) {
                     var ak = ahead[k];
                     if (ak.typeConfig.type === 'PTERODACTYL' && ak.yPos === 50) continue;
-                    var akRight = ak.xPos + ak.typeConfig.width * ak.size;
-                    var pastIt = (akRight <= tRex.xPos);
-                    var aboveIt = (tRex.yPos + tH <= ak.yPos);
-                    if (!pastIt && !aboveIt) { cleared = false; break; }
+                    var akW = ak.typeConfig.width * ak.size;
+                    var obsSpd = Math.floor(speed + (ak.speedOffset || 0));
+                    var rightAtLanding = ak.xPos + akW - dropFrames * obsSpd;
+                    if (rightAtLanding > tRex.xPos) { cleared = false; break; }
                 }
                 if (cleared && this._safeToSpeedDrop(tRex, ahead, speed)) {
                     tRex.setSpeedDrop();
