@@ -466,11 +466,16 @@
                     this._setViz('duck', tRex, speed, ahead, near);
                     return;
                 }
-                // Only speed-drop after clearing the obstacle: dino's
-                // bottom is above it, or its right edge is behind us.
-                var cleared = !near ||
-                    (tRex.yPos + tH <= near.yPos) ||
-                    (near.xPos + oW <= tRex.xPos);
+                // Only speed-drop after clearing ALL obstacles in flight path.
+                var cleared = true;
+                for (var k = 0; k < ahead.length; k++) {
+                    var ak = ahead[k];
+                    if (ak.typeConfig.type === 'PTERODACTYL' && ak.yPos === 50) continue;
+                    var akRight = ak.xPos + ak.typeConfig.width * ak.size;
+                    var pastIt = (akRight <= tRex.xPos);
+                    var aboveIt = (tRex.yPos + tH <= ak.yPos);
+                    if (!pastIt && !aboveIt) { cleared = false; break; }
+                }
                 if (cleared && this._safeToSpeedDrop(tRex, ahead, speed)) {
                     tRex.setSpeedDrop();
                     this._setViz('duck', tRex, speed, ahead, near);
@@ -1926,7 +1931,8 @@
         // Set default speed per mode
         var slider = document.getElementById('max-speed-slider');
         var msv = document.getElementById('max-speed-val');
-        var defaultSpd = (mode === 'off') ? 13 : parseInt(slider && slider.value || 30);
+        var sliderVal = parseInt(slider && slider.value || 13);
+        var defaultSpd = (mode === 'off') ? 13 : (sliderVal <= 13 ? 30 : sliderVal);
         if (slider) {
             slider.value = defaultSpd;
             if (msv) msv.textContent = defaultSpd;
