@@ -112,10 +112,10 @@
     <!-- ═══ HOW IT WORKS ═══ -->
     <h2 style="margin-top: 16px;">How it works</h2>
     <p class="si-prose">
-        The AI uses forward simulation to decide when to jump or duck. Each frame, it clones the current game state and simulates the next 80 frames for three scenarios: keep running, jump now, or duck now. If running straight will collide with an obstacle, it picks whichever alternative keeps the dinosaur alive.
+        The AI uses pixel-accurate physics simulation to decide when to jump or duck. It computes the exact jump arc at the current speed, then finds the precise distance window where jumping clears each obstacle. Mid-air, it simulates speed-drops frame by frame to land as quickly as safely possible. Pterodactyls are handled by height: high ones fly overhead, medium ones get ducked under with pixel-accurate timing.
     </p>
     <p class="si-prose">
-        Tap <strong>Viz</strong> to watch the AI think. A cloud of simulated paths appears ahead of the dinosaur — blue for jumping, orange for ducking, dark for running. The thick line is the chosen path; fainter lines are alternatives the AI evaluated. A badge above the dino shows the current decision.
+        Tap <strong>Viz</strong> to watch the AI think. Paths appear ahead of the dinosaur — blue for jumping, orange for ducking/dropping, dark for running. The thick line is the chosen action; fainter lines are alternatives. A badge above the dino shows the current decision.
     </p>
 
     <p style="margin-top: 20px;">
@@ -139,960 +139,210 @@
 <script src="fs-toggle.js"></script>
 <script src="runner-weights.js"></script>
 <script src="cached-weights.js"></script>
-<!-- ═══ AI Agent (inlined from ai-agent.js) ═══ -->
+<!-- ═══ AI Agent ═══ -->
 <script>
 // =============================================================================
-// AI Agent — Hand-crafted simulation-based AI for Chrome Dino game.
+// AI Agent — Pixel-accurate rule-based AI for Chrome Dino game.
 //
-// Extracted from index.js so the game engine stays clean.
-// Depends on: Runner, Trex, CollisionBox, boxCompare, createAdjustedCollisionBox
-// (all exposed on window by index.js).
+// Uses exact game physics to compute jump arcs and collision windows.
+// Decision logic:
+//   1. Simulate the jump arc at current speed (cached).
+//   2. Compute the pixel-accurate distance window where jumping clears.
+//   3. Mid-jump: simulate speed-drop to check if it's collision-free.
+//   4. Pteros: duck with pixel-accurate timing based on overlap distance.
 // =============================================================================
 (function () {
     'use strict';
 
-    // Grab references from the game engine (exposed on window by index.js).
     var Trex = window.Trex;
-    var CollisionBox = window.CollisionBox;
-    var boxCompare = window.boxCompare;
-    var createAdjustedCollisionBox = window.createAdjustedCollisionBox;
 
-    //******************************************************************************
-    /**
-     * AI Agent — Uses the game's own code to simulate outcomes.
-     *
-     * Instead of reimplementing physics, we clone the relevant game state
-     * and run the actual updateJump / obstacle movement / collision detection
-     * code forward in time. This guarantees zero simulation-vs-reality drift.
-     *
-     * Decision logic is pure simulation:
-     *  1. Each frame, simulate "run", "jump", and "duck" forward N steps.
-     *  2. If running is safe → keep running (handles timing automatically).
-     *  3. If running will collide → pick the safe action (jump or duck).
-     *  4. Mid-jump: check if speed-drop helps or is safe proactively.
-     *
-     * @constructor
-     */
     function AIAgent() {
         this.enabled = false;
         this.deaths = 0;
         this.bestScore = 0;
         this._vizEnabled = false;
         this._vizData = null;
+        this._arcCache = null;
+        this._arcSpeedKey = -1;
+        this._winCache = null;
+        this._winKey = '';
         this.loadStats();
     }
 
     AIAgent.prototype = {
-        GROUND_Y: Runner.defaultDimensions.HEIGHT - Trex.config.HEIGHT -
-            Runner.config.BOTTOM_PAD,
 
-        /**
-         * Clone the minimal tRex state needed for jump simulation.
-         */
-        cloneTrex: function (tRex) {
-            return {
-                xPos: tRex.xPos,
-                yPos: tRex.yPos,
-                jumping: tRex.jumping,
-                ducking: tRex.ducking,
-                jumpVelocity: tRex.jumpVelocity,
-                reachedMinHeight: tRex.reachedMinHeight,
-                speedDrop: tRex.speedDrop,
-                groundYPos: tRex.groundYPos,
-                minJumpHeight: tRex.minJumpHeight,
-                config: tRex.config
-            };
-        },
+        // ---------------------------------------------------------------
+        // Simulate a full jump arc at given speed. Returns array of yPos
+        // values for each frame. Cached by quantized speed.
+        // ---------------------------------------------------------------
+        _getJumpArc: function (speed, tRex) {
+            var key = Math.round(speed * 10);
+            if (this._arcCache && this._arcSpeedKey === key) return this._arcCache;
 
-        /**
-         * Step the tRex clone forward one frame using the game's exact
-         * updateJump physics. deltaTime = 1000/60 for a perfect 60fps frame.
-         * @param {Object} sim Cloned tRex state.
-         * @param {number} speed Current game speed.
-         */
-        stepTrex: function (sim) {
-            if (!sim.jumping) return;
-
-            // Exact copy of Trex.updateJump logic.
-            // msPerFrame for JUMPING status = 1000/60.
-            var msPerFrame = 1000 / 60;
-            var deltaTime = 1000 / 60; // simulate at perfect 60fps
-            var framesElapsed = deltaTime / msPerFrame; // = 1.0
-
-            if (sim.speedDrop) {
-                sim.yPos += Math.round(sim.jumpVelocity *
-                    sim.config.SPEED_DROP_COEFFICIENT * framesElapsed);
-            } else {
-                sim.yPos += Math.round(sim.jumpVelocity * framesElapsed);
-            }
-
-            sim.jumpVelocity += sim.config.GRAVITY * framesElapsed;
-
-            // Minimum height check.
-            if (sim.yPos < sim.minJumpHeight || sim.speedDrop) {
-                sim.reachedMinHeight = true;
-            }
-
-            // Max height / endJump.
-            if (sim.yPos < sim.config.MAX_JUMP_HEIGHT || sim.speedDrop) {
-                // endJump: cap velocity
-                if (sim.reachedMinHeight &&
-                    sim.jumpVelocity < sim.config.DROP_VELOCITY) {
-                    sim.jumpVelocity = sim.config.DROP_VELOCITY;
-                }
-            }
-
-            // Landed.  Use >= so exact-groundYPos landings are caught.
-            if (sim.yPos >= sim.groundYPos) {
-                sim.yPos = sim.groundYPos;
-                sim.jumping = false;
-                sim.ducking = false;
-                sim.speedDrop = false;
-                sim.jumpVelocity = 0;
-            }
-        },
-
-        /**
-         * Start a jump on a tRex clone. Exact copy of Trex.startJump.
-         * @param {Object} sim Cloned tRex state.
-         * @param {number} speed Current game speed.
-         */
-        startJump: function (sim, speed) {
-            if (!sim.jumping) {
-                sim.jumping = true;
-                sim.reachedMinHeight = false;
-                sim.speedDrop = false;
-                sim.jumpVelocity = sim.config.INIITAL_JUMP_VELOCITY - (speed / 10);
-            }
-        },
-
-        /**
-         * Activate speed-drop on a tRex clone. Exact copy of Trex.setSpeedDrop.
-         * @param {Object} sim Cloned tRex state.
-         */
-        setSpeedDrop: function (sim) {
-            sim.speedDrop = true;
-            sim.jumpVelocity = 1;
-        },
-
-        /**
-         * Simulate a full jump from ground and return the arc (Y positions).
-         * Used to compute jump duration for the lookahead window.
-         * @param {number} speed Current game speed.
-         * @return {Array<number>} Y positions per frame.
-         */
-        simulateJump: function (speed, runner) {
-            var tRex = runner.tRex;
-            var sim = this.cloneTrex(tRex);
-            sim.yPos = sim.groundYPos;
-            sim.jumping = false;
-            sim.ducking = false;
-            sim.speedDrop = false;
-            sim.jumpVelocity = 0;
-            this.startJump(sim, speed);
-            var frames = [];
-            for (var f = 0; f < 80; f++) {
-                this.stepTrex(sim);
-                frames.push(sim.yPos);
-                if (!sim.jumping) break;
-            }
-            return frames;
-        },
-
-        /**
-         * Compute obstacle X position after N frames.
-         * Uses the game's exact formula: xPos -= Math.floor((speed * FPS / 1000) * deltaTime)
-         * At 60fps: Math.floor(speed * 60/1000 * 16.667) = Math.floor(speed * 1.0)
-         * @param {Object} obs The obstacle.
-         * @param {number} speed Game speed.
-         * @param {number} nFrames Number of frames forward.
-         * @return {number} Future X position.
-         */
-        futureObstX: function (obs, speed, nFrames) {
-            var obstSpeed = speed;
-            if (obs.typeConfig.speedOffset) {
-                obstSpeed += (obs.speedOffset || 0);
-            }
-
-            var accel = this._accel || 0;
-            var maxSpd = this._maxSpeed || 999;
-
-            if (accel > 0 && nFrames > 1) {
-                // With acceleration, each future frame the game speed is
-                // higher, so obstacles approach progressively faster than
-                // the current speed alone predicts.  Sum frame-by-frame.
-                var total = 0;
-                for (var i = 0; i < nFrames; i++) {
-                    total += Math.floor(Math.min(obstSpeed + i * accel, maxSpd));
-                }
-                return obs.xPos - total;
-            }
-
-            var perFrame = Math.floor(obstSpeed);
-            return obs.xPos - perFrame * nFrames;
-        },
-
-        /**
-         * Compute the minimum vertical/horizontal gap between sim tRex
-         * and an obstacle at a given frame. Returns positive if no overlap
-         * (clearance), negative if overlapping (penetration depth).
-         */
-        _gapToObstacle: function (sim, obs, obstX) {
-            // Use the detailed inner collision boxes for accuracy.
-            var tRexOuter = new CollisionBox(
-                sim.xPos + 1, sim.yPos + 1,
-                sim.config.WIDTH - 2, sim.config.HEIGHT - 2);
-            var obstOuter = new CollisionBox(
-                obstX + 1, obs.yPos + 1,
-                obs.typeConfig.width * obs.size - 2,
-                obs.typeConfig.height - 2);
-
-            // First check if outer boxes are even close.
-            // Horizontal gap between outer boxes:
-            var hGapOuter = Math.max(obstOuter.x - (tRexOuter.x + tRexOuter.width),
-                                     tRexOuter.x - (obstOuter.x + obstOuter.width));
-            if (hGapOuter > 50) return 9999; // way too far, skip detail
-
-            // Get inner boxes based on ducking state.
-            var tRexBoxes = sim.ducking ?
-                Trex.collisionBoxes.DUCKING : Trex.collisionBoxes.RUNNING;
-            var obstBoxes = obs.collisionBoxes;
-
-            var minGap = 9999;
-            for (var t = 0; t < tRexBoxes.length; t++) {
-                for (var o = 0; o < obstBoxes.length; o++) {
-                    var adjT = createAdjustedCollisionBox(tRexBoxes[t], tRexOuter);
-                    var adjO = createAdjustedCollisionBox(obstBoxes[o], obstOuter);
-
-                    // Compute gap on each axis. Positive = separated, negative = overlapping.
-                    var hGap = Math.max(adjO.x - (adjT.x + adjT.width),
-                                        adjT.x - (adjO.x + adjO.width));
-                    var vGap = Math.max(adjO.y - (adjT.y + adjT.height),
-                                        adjT.y - (adjO.y + adjO.height));
-
-                    // If separated on either axis, gap is the max of the two
-                    // (you need overlap on BOTH axes for collision).
-                    // If overlapping on both, gap is negative (the less-negative axis).
-                    var gap;
-                    if (hGap > 0 || vGap > 0) {
-                        gap = Math.max(hGap, vGap); // separated
-                    } else {
-                        gap = Math.max(hGap, vGap); // both negative, least penetration
-                    }
-
-                    if (gap < minGap) minGap = gap;
-                }
-            }
-            return minGap;
-        },
-
-        /**
-         * Simulate an action forward N frames and return:
-         *   { collisionFrame: number, minClearance: number }
-         *
-         * collisionFrame: frame of first collision, or -1 if none.
-         * minClearance: smallest gap (in pixels) between tRex and any obstacle
-         *   across the entire simulation. Positive = safe buffer. Negative = collision.
-         *   Higher is safer — the AI should prefer actions with larger minClearance.
-         *
-         * @param {string} action 'run', 'jump', 'duck', or 'speedDrop'.
-         * @param {Object} tRex The real T-Rex object.
-         * @param {Array} obstacles Obstacles ahead.
-         * @param {number} speed Current game speed.
-         * @param {number} numFrames Frames to simulate.
-         * @return {Object} { collisionFrame, minClearance }
-         */
-        simulate: function (action, tRex, obstacles, speed, numFrames, captureFrames) {
-            var sim = this.cloneTrex(tRex);
-
-            if (action === 'jump' && !sim.jumping) {
-                this.startJump(sim, speed);
-            } else if (action === 'speedDrop' && sim.jumping) {
-                this.setSpeedDrop(sim);
-            } else if (action === 'duck') {
-                sim.ducking = true;
-                sim.jumping = false;
-            } else if (action === 'run') {
-                sim.ducking = false;
-            }
-
-            // Optional: capture frame-by-frame positions for visualization.
-            var framePositions = captureFrames ? [] : null;
-
-            // Track state transitions so we can chain follow-up actions.
-            var inAir = sim.jumping;
-            var transitioned = false;
-            var postAction = null;
-
-            // For duck chaining: track the first obstacle to detect when it passes.
-            var isDuckAction = (action === 'duck');
-            var firstObstPassed = false;
-            var firstObstIdx = -1;
-            if (isDuckAction && obstacles.length > 0) {
-                for (var i = 0; i < obstacles.length; i++) {
-                    var ox0 = this.futureObstX(obstacles[i], speed, 0);
-                    if (ox0 + obstacles[i].typeConfig.width * obstacles[i].size >= sim.xPos) {
-                        firstObstIdx = i;
-                        break;
-                    }
-                }
-            }
-
-            var overallMinClearance = 9999;
-
-            for (var f = 0; f < numFrames; f++) {
-                this.stepTrex(sim);
-
-                // Transition 1: Detect landing from jump/speedDrop.
-                if (!sim.jumping && !transitioned && inAir) {
-                    transitioned = true;
-                    postAction = this._pickPostLandingAction(
-                        sim, obstacles, speed, f + 1, numFrames - f - 1);
-                }
-
-                // Transition 2: Detect first obstacle passing during duck.
-                if (isDuckAction && !transitioned && !firstObstPassed &&
-                    firstObstIdx >= 0) {
-                    var firstObs = obstacles[firstObstIdx];
-                    var fox = this.futureObstX(firstObs, speed, f + 1);
-                    if (fox + firstObs.typeConfig.width * firstObs.size < sim.xPos) {
-                        firstObstPassed = true;
-                        transitioned = true;
-                        postAction = this._pickPostLandingAction(
-                            sim, obstacles, speed, f + 1, numFrames - f - 1);
-                    }
-                }
-
-                // Apply state based on transitions.
-                if (!sim.jumping) {
-                    if (transitioned && postAction === 'jump') {
-                        this.startJump(sim, speed);
-                        postAction = 'jumped';
-                    } else if (transitioned && postAction === 'duck') {
-                        sim.ducking = true;
-                    } else if (transitioned) {
-                        sim.ducking = false;
-                    } else if (action === 'duck' || action === 'speedDrop') {
-                        sim.ducking = true;
-                    } else {
-                        sim.ducking = false;
-                    }
-                }
-
-                // Measure clearance to each obstacle.
-                var frameClearance = 9999;
-                var frameCollided = false;
-                for (var i = 0; i < obstacles.length; i++) {
-                    var obs = obstacles[i];
-                    var ox = this.futureObstX(obs, speed, f + 1);
-
-                    if (ox + obs.typeConfig.width * obs.size < sim.xPos) continue;
-                    if (ox > sim.xPos + 600) continue;
-
-                    var gap = this._gapToObstacle(sim, obs, ox);
-
-                    if (gap < overallMinClearance) {
-                        overallMinClearance = gap;
-                    }
-                    if (gap < frameClearance) {
-                        frameClearance = gap;
-                    }
-
-                    // If gap is actually negative (true overlap, not just
-                    // drift-adjusted), that's a collision.
-                    if (gap <= 0) {
-                        frameCollided = true;
-                        if (framePositions) {
-                            framePositions.push({
-                                x: sim.xPos, y: sim.yPos,
-                                ducking: sim.ducking, jumping: sim.jumping,
-                                clearance: -1
-                            });
-                        }
-                        return { collisionFrame: f, minClearance: overallMinClearance,
-                                 framePositions: framePositions };
-                    }
-                }
-
-                // Capture position + per-frame clearance for visualization.
-                if (framePositions) {
-                    framePositions.push({
-                        x: sim.xPos,
-                        y: sim.yPos,
-                        ducking: sim.ducking,
-                        jumping: sim.jumping,
-                        clearance: frameClearance
-                    });
-                }
-            }
-            return { collisionFrame: -1, minClearance: overallMinClearance,
-                     framePositions: framePositions };
-        },
-
-        /**
-         * Precompute the cumulative y-displacements for a speed-drop arc.
-         * Since setSpeedDrop always sets jumpVelocity=1, the displacement
-         * sequence is deterministic and only depends on physics constants.
-         * Called lazily on first use; reused for the lifetime of the page.
-         */
-        _precomputeDropTable: function(tRex) {
-            var coeff = tRex.config.SPEED_DROP_COEFFICIENT;
-            var gravity = tRex.config.GRAVITY;
-            var dropVel = tRex.config.DROP_VELOCITY;
-            var v = 1;
-            var cumY = 0;
-            var cumDeltas = [];
-            for (var k = 0; k < 60; k++) {
-                var dy = Math.round(v * coeff);
-                cumY += dy;
-                cumDeltas.push(cumY);
-                v += gravity;
-                if (v < dropVel) v = dropVel;
-            }
-            this._dropCumDeltas = cumDeltas;
-            this._dropTableLen = cumDeltas.length;
-        },
-
-        /**
-         * Full backward-induction DP over the tRex state space.
-         * Handles BOTH ground decisions (run/jump/duck) and mid-jump
-         * decisions (continue/speed-drop) in a unified framework.
-         * Bellman equation:
-         *
-         *   V(f, state) = min(clearance(f), max over actions V(f+1, next))
-         *
-         * State space is tiny (~330 tRex states × 60 frames = ~20K),
-         * so the full DP runs in <1ms per frame.
-         *
-         * @param {Object} tRex The real T-Rex object.
-         * @param {Array} ahead Obstacles ahead of the dino.
-         * @param {number} speed Current game speed.
-         * @param {number} N Frames to simulate.
-         * @return {Object} { action, value }
-         *   Ground:   action in {run, jump, duck}
-         *   Mid-jump: action in {continue, speedDrop}
-         */
-        _dpDecide: function (tRex, ahead, speed, N, collectViz) {
-            var self = this;
+            var cfg = tRex.config;
             var groundY = tRex.groundYPos;
-            var tRexX = tRex.xPos;
-            var tConfig = tRex.config;
-            var isJumping = tRex.jumping && !tRex.speedDrop;
+            var minJH = groundY - cfg.MIN_JUMP_HEIGHT;
+            var jv = cfg.INIITAL_JUMP_VELOCITY - (speed / 10);
+            var y = groundY;
+            var reachedMin = false;
+            var arc = [];
 
-            // Ensure drop displacement table is precomputed (once per page).
-            if (!this._dropCumDeltas) this._precomputeDropTable(tRex);
-            var dropCum = this._dropCumDeltas;
-            var dropTLen = this._dropTableLen;
-
-            // Fast drop arc from starting y using precomputed displacements.
-            // Replaces expensive cloneTrex + setSpeedDrop + stepTrex loop.
-            function fastDropArc(startY) {
-                var arc = [];
-                for (var k = 0; k < dropTLen; k++) {
-                    var y = startY + dropCum[k];
-                    if (y >= groundY) break;
-                    arc.push(y);
+            for (var f = 0; f < 80; f++) {
+                y += Math.round(jv);
+                jv += cfg.GRAVITY;
+                if (y < minJH) reachedMin = true;
+                if (y < cfg.MAX_JUMP_HEIGHT) {
+                    if (reachedMin && jv < cfg.DROP_VELOCITY) jv = cfg.DROP_VELOCITY;
                 }
-                return arc;
+                if (y >= groundY) { arc.push(groundY); break; }
+                arc.push(y);
             }
 
-            // Build drop sub-arcs for each frame of a jump arc.
-            function buildJumpArcs(arcY, arcDur) {
-                var dY = [], dLen = [], dOff = [], dTot = 0;
-                for (var jj = 0; jj < arcDur; jj++) {
-                    dOff[jj] = dTot;
-                    if (arcY[jj] >= groundY) { dY[jj] = []; dLen[jj] = 0; continue; }
-                    var a = fastDropArc(arcY[jj]);
-                    dY[jj] = a; dLen[jj] = a.length; dTot += a.length;
-                }
-                return {dY: dY, dLen: dLen, dOff: dOff, dTot: dTot};
-            }
+            this._arcCache = arc;
+            this._arcSpeedKey = key;
+            return arc;
+        },
 
-            // --- 1. Fresh jump arc (cached by quantized speed) ---
-            var speedKey = Math.round(speed * 10);
-            if (!this._fjCache || this._fjCache.speedKey !== speedKey) {
-                var fSim = this.cloneTrex(tRex);
-                fSim.yPos = groundY; fSim.jumping = false;
-                fSim.ducking = false; fSim.speedDrop = false;
-                fSim.jumpVelocity = 0;
-                this.startJump(fSim, speed);
-                var _fjY = [];
-                for (var k = 0; k < N; k++) {
-                    this.stepTrex(fSim);
-                    _fjY[k] = fSim.yPos;
-                    if (!fSim.jumping) break;
-                }
-                var _fjDur = _fjY.length;
-                var _fj = buildJumpArcs(_fjY, _fjDur);
-                this._fjCache = {
-                    speedKey: speedKey, fjY: _fjY, fjDur: _fjDur,
-                    dY: _fj.dY, dLen: _fj.dLen, dOff: _fj.dOff, dTot: _fj.dTot
-                };
-            }
-            var fjY = this._fjCache.fjY;
-            var fjDur = this._fjCache.fjDur;
-            var fj = this._fjCache;
-
-            // --- 2. Current-jump arcs (mid-jump only) ---
-            var cjY = [], cjDur = 0, cj = null;
-            var imY = [], imDur = 0;
-            if (isJumping) {
-                var cSim = this.cloneTrex(tRex);
-                for (k = 0; k < N; k++) {
-                    this.stepTrex(cSim);
-                    if (!cSim.jumping) break;
-                    cjY[k] = cSim.yPos;
-                }
-                cjDur = cjY.length;
-                cj = buildJumpArcs(cjY, cjDur);
-
-                // Immediate speed-drop from current position.
-                imY = fastDropArc(tRex.yPos);
-                imDur = imY.length;
-            }
-
-            // --- 3. State encoding ---
-            var G = 0, D_ST = 1, FJ = 2;
-            var FS = FJ + fjDur;
-            var CJ, CS, IM, TOTAL;
-            if (isJumping) {
-                CJ = FS + fj.dTot;
-                CS = CJ + cjDur;
-                IM = CS + cj.dTot;
-                TOTAL = IM + imDur;
-            } else {
-                CJ = -1; CS = -1; IM = -1;
-                TOTAL = FS + fj.dTot;
-            }
-
-            // --- 4. State properties ---
-            var sY = new Array(TOTAL);
-            var sDk = new Array(TOTAL);
-            sY[G] = groundY; sDk[G] = false;
-            sY[D_ST] = groundY; sDk[D_ST] = true;
-            for (k = 0; k < fjDur; k++) { sY[FJ + k] = fjY[k]; sDk[FJ + k] = false; }
-            for (var j = 0; j < fjDur; j++)
-                for (var d = 0; d < fj.dLen[j]; d++) {
-                    var sid = FS + fj.dOff[j] + d;
-                    sY[sid] = fj.dY[j][d]; sDk[sid] = true;
-                }
-            if (isJumping) {
-                for (k = 0; k < cjDur; k++) { sY[CJ + k] = cjY[k]; sDk[CJ + k] = false; }
-                for (j = 0; j < cjDur; j++)
-                    for (d = 0; d < cj.dLen[j]; d++) {
-                        sid = CS + cj.dOff[j] + d;
-                        sY[sid] = cj.dY[j][d]; sDk[sid] = true;
-                    }
-                for (k = 0; k < imDur; k++) { sY[IM + k] = imY[k]; sDk[IM + k] = true; }
-            }
-
-            // --- 5. Transitions ---
-            var ns = new Array(TOTAL);
-            var GA = [G, FJ, D_ST]; // ground actions
-            ns[G] = GA; ns[D_ST] = GA;
-            // Fresh jump.
-            for (k = 0; k < fjDur; k++) {
-                if (k + 1 >= fjDur || fjY[k + 1] >= groundY) { ns[FJ + k] = GA; }
-                else {
-                    var jn = [FJ + k + 1];
-                    if (fj.dLen[k] > 0) jn.push(FS + fj.dOff[k]);
-                    ns[FJ + k] = jn;
+        // ---------------------------------------------------------------
+        // Check if jumping when the obstacle is at edgeDist pixels away
+        // clears the obstacle group without collision.
+        //
+        // Checks every frame from jump start until the obstacle group
+        // has fully passed the dino (including post-landing frames).
+        // ---------------------------------------------------------------
+        _jumpClears: function (arc, edgeDist, obsY, groupW, tW, tH, perFrame, groundY) {
+            var totalFrames = Math.ceil((edgeDist + groupW + tW) / perFrame) + 1;
+            for (var f = 0; f < totalFrames; f++) {
+                var moved = (f + 1) * perFrame;
+                var obsLeft = edgeDist - moved;
+                // Horizontal overlap: obstacle left past dino right,
+                // obstacle right not past dino left
+                if (obsLeft < 0 && obsLeft + groupW > -tW) {
+                    var y = (f < arc.length) ? arc[f] : groundY;
+                    if (y + tH > obsY) return false;
                 }
             }
-            for (j = 0; j < fjDur; j++)
-                for (d = 0; d < fj.dLen[j]; d++) {
-                    sid = FS + fj.dOff[j] + d;
-                    ns[sid] = (d + 1 >= fj.dLen[j]) ? GA : [sid + 1];
+            return true;
+        },
+
+        // ---------------------------------------------------------------
+        // Find the pixel-accurate safe jump distance window.
+        // Returns { min, max } where min is the closest safe distance
+        // and max is the farthest. Cached by speed + obstacle props.
+        // ---------------------------------------------------------------
+        _jumpWindow: function (speed, obsY, groupW, tRex) {
+            var key = Math.round(speed * 10) + '_' + obsY + '_' + groupW;
+            if (this._winCache && this._winKey === key) return this._winCache;
+
+            var arc = this._getJumpArc(speed, tRex);
+            var tW = tRex.config.WIDTH;
+            var tH = tRex.config.HEIGHT;
+            var groundY = tRex.groundYPos;
+            var perFrame = Math.floor(speed);
+            if (perFrame < 1) perFrame = 1;
+
+            var maxTest = perFrame * (arc.length + 5);
+            var min = -1, max = -1;
+            for (var d = 0; d <= maxTest; d++) {
+                if (this._jumpClears(arc, d, obsY, groupW, tW, tH, perFrame, groundY)) {
+                    if (min < 0) min = d;
+                    max = d;
                 }
-            // Current jump + immediate drop (mid-jump only).
-            if (isJumping) {
-                for (k = 0; k < cjDur; k++) {
-                    if (k + 1 >= cjDur || cjY[k + 1] >= groundY) { ns[CJ + k] = GA; }
-                    else {
-                        jn = [CJ + k + 1];
-                        if (cj.dLen[k] > 0) jn.push(CS + cj.dOff[k]);
-                        ns[CJ + k] = jn;
-                    }
-                }
-                for (j = 0; j < cjDur; j++)
-                    for (d = 0; d < cj.dLen[j]; d++) {
-                        sid = CS + cj.dOff[j] + d;
-                        ns[sid] = (d + 1 >= cj.dLen[j]) ? GA : [sid + 1];
-                    }
-                for (k = 0; k < imDur; k++)
-                    ns[IM + k] = (k + 1 >= imDur) ? GA : [IM + k + 1];
             }
 
-            // --- 6. Obstacle positions per frame ---
-            var obsPerFrame = new Array(N);
-            for (var f = 0; f < N; f++) {
-                var fl = [];
-                for (var i = 0; i < ahead.length; i++) {
-                    var obs = ahead[i];
-                    var ox = self.futureObstX(obs, speed, f + 1);
-                    var right = ox + obs.typeConfig.width * obs.size;
-                    if (right < tRexX) continue;
-                    if (ox > tRexX + 600) continue;
-                    fl.push(ox, i);
-                }
-                obsPerFrame[f] = fl;
-            }
-
-            // --- 7. Clearance ---
-            var simObj = {xPos: tRexX, yPos: 0, ducking: false, config: tConfig};
-            function cl(f, id) {
-                simObj.yPos = sY[id]; simObj.ducking = sDk[id];
-                var fl2 = obsPerFrame[f]; var minG = 9999;
-                for (var p = 0; p < fl2.length; p += 2) {
-                    var gap = self._gapToObstacle(simObj, ahead[fl2[p + 1]], fl2[p]);
-                    if (gap < minG) minG = gap;
-                }
-                return minG;
-            }
-
-            // --- 8. DP with memoization ---
-            var memo = new Float64Array(N * TOTAL);
-            var computed = new Uint8Array(N * TOTAL);
-            function solve(f, id) {
-                if (f >= N) return 9999;
-                var idx = f * TOTAL + id;
-                if (computed[idx]) return memo[idx];
-                computed[idx] = 1;
-                var c = cl(f, id);
-                if (c <= 0 || f >= N - 1) { memo[idx] = c; return c; }
-                var nexts = ns[id];
-                var best = -9999;
-                for (var n = 0; n < nexts.length; n++) {
-                    var v = solve(f + 1, nexts[n]);
-                    if (v > best) best = v;
-                }
-                memo[idx] = Math.min(c, best);
-                return memo[idx];
-            }
-
-            // --- 9. Choose starting action ---
-            var result;
-            if (isJumping) {
-                var valCont = (cjDur > 0) ? solve(0, CJ) : solve(0, G);
-                var valDrop = (imDur > 0) ? solve(0, IM) : -9999;
-                result = (valDrop > valCont)
-                    ? {action: 'speedDrop', value: valDrop}
-                    : {action: 'continue', value: valCont};
-            } else {
-                var acts = [
-                    {a: 'run',  next: G},
-                    {a: 'duck', next: D_ST},
-                    {a: 'jump', next: FJ}
-                ];
-                var bestAct = 'run';
-                var bestVal = -9999;
-                for (i = 0; i < acts.length; i++) {
-                    var val = solve(0, acts[i].next);
-                    if (val > bestVal) { bestVal = val; bestAct = acts[i].a; }
-                }
-                result = {action: bestAct, value: bestVal};
-            }
-
-            // --- 10. Collect DP visualization data ---
-            if (collectViz) {
-                // State type classifier
-                function stateType(id) {
-                    if (id === G) return 0;   // ground/run
-                    if (id === D_ST) return 1; // duck
-                    // Fresh jump arc
-                    if (id >= FJ && id < FS) return 2; // jump
-                    if (id >= FS && id < (isJumping ? CJ : TOTAL)) return 1; // drop (ducking)
-                    if (!isJumping) return 0;
-                    // Current jump continuation
-                    if (id >= CJ && id < CS) return 2; // jump
-                    if (id >= CS && id < IM) return 1;  // drop (ducking)
-                    // Immediate drop
-                    if (id >= IM) return 1; // drop (ducking)
-                    return 0;
-                }
-
-                // Collect full paths through the DP graph.
-                // Each path = {points, val, ground, dead}
-                // dead = true only when the path ends at an actual collision point.
-                // Paths are CUT SHORT at the first collision (cl <= 0).
-                //
-                // Performance: cap frame index to what's visible on the canvas.
-                // At speed 40, frame 15 is already at ~620px; generating paths
-                // beyond that wastes CPU and causes lag.
-                var vizCanvasW = 600;
-                var vizPerFrame = Math.max(1, Math.floor(speed));
-                var maxVizF = Math.min(N, Math.ceil((vizCanvasW - tRexX + 40) / vizPerFrame) + 2);
-                var vizPaths = [];
-
-                // Stride — at high speeds, neighboring arcs overlap so heavily
-                // that drawing all of them causes lag with no visual benefit.
-                // Only stride when speed > 20; at normal speeds keep full density.
-                var arcStride  = speed > 25 ? 2 : 1;
-                var dropStride = speed > 25 ? 2 : 1;
-
-                // Ground running segments (each stops at collision, resumes after gap)
-                var runPts = [], runDead = false;
-                for (var pf = 0; pf < maxVizF; pf++) {
-                    if (!computed[pf * TOTAL + G]) {
-                        // Flush current segment
-                        if (runPts.length >= 2)
-                            vizPaths.push({points: runPts, val: memo[runPts[0].f * TOTAL + G], ground: true, dead: runDead});
-                        runPts = []; runDead = false;
-                        continue;
-                    }
-                    runPts.push({f: pf, y: sY[G], dk: false, type: 0});
-                    if (cl(pf, G) <= 0) {
-                        runDead = true;
-                        // Flush this segment, start fresh after the collision
-                        if (runPts.length >= 2)
-                            vizPaths.push({points: runPts, val: memo[runPts[0].f * TOTAL + G], ground: true, dead: runDead});
-                        runPts = []; runDead = false;
-                    }
-                }
-                if (runPts.length >= 2)
-                    vizPaths.push({points: runPts, val: memo[runPts[0].f * TOTAL + G], ground: true, dead: runDead});
-
-                // Duck segments (same multi-segment approach)
-                var duckPts = [], duckDead = false;
-                for (pf = 0; pf < maxVizF; pf++) {
-                    if (!computed[pf * TOTAL + D_ST]) {
-                        if (duckPts.length >= 2)
-                            vizPaths.push({points: duckPts, val: memo[duckPts[0].f * TOTAL + D_ST], ground: true, dead: duckDead});
-                        duckPts = []; duckDead = false;
-                        continue;
-                    }
-                    duckPts.push({f: pf, y: sY[D_ST], dk: true, type: 1});
-                    if (cl(pf, D_ST) <= 0) {
-                        duckDead = true;
-                        if (duckPts.length >= 2)
-                            vizPaths.push({points: duckPts, val: memo[duckPts[0].f * TOTAL + D_ST], ground: true, dead: duckDead});
-                        duckPts = []; duckDead = false;
-                    }
-                }
-                if (duckPts.length >= 2)
-                    vizPaths.push({points: duckPts, val: memo[duckPts[0].f * TOTAL + D_ST], ground: true, dead: duckDead});
-
-                // Jump arcs + drop branches from each ground frame
-                for (var gf = 0; gf < maxVizF - 1; gf += arcStride) {
-                    if (!computed[gf * TOTAL + G]) continue;
-                    var jf0 = gf + 1;
-                    if (jf0 >= N || !computed[jf0 * TOTAL + FJ]) continue;
-                    // Jump arc (stop at first collision or off-screen)
-                    var jPts = [{f: gf, y: sY[G], dk: false, type: 0}];
-                    var jDead = false;
-                    for (var jk = 0; jk < fjDur; jk++) {
-                        var jff = jf0 + jk;
-                        if (jff >= N || jff >= maxVizF || !computed[jff * TOTAL + (FJ + jk)]) break;
-                        jPts.push({f: jff, y: sY[FJ + jk], dk: false, type: 2});
-                        if (cl(jff, FJ + jk) <= 0) { jDead = true; break; }
-                    }
-                    if (jPts.length >= 3)
-                        vizPaths.push({points: jPts, val: memo[jf0 * TOTAL + FJ], dead: jDead});
-                    // Drop branches from this arc (stop at first collision)
-                    for (jk = 0; jk < fjDur; jk += dropStride) {
-                        if (fj.dLen[jk] <= 0) continue;
-                        var df0 = jf0 + jk + 1;
-                        var dId0 = FS + fj.dOff[jk];
-                        if (df0 >= N || !computed[df0 * TOTAL + dId0]) continue;
-                        var dPts = [{f: jf0 + jk, y: sY[FJ + jk], dk: false, type: 2}];
-                        var dDead = false;
-                        for (var dd = 0; dd < fj.dLen[jk]; dd++) {
-                            var dff = df0 + dd;
-                            if (dff >= N || dff >= maxVizF || !computed[dff * TOTAL + (dId0 + dd)]) break;
-                            dPts.push({f: dff, y: sY[dId0 + dd], dk: true, type: 1});
-                            if (cl(dff, dId0 + dd) <= 0) { dDead = true; break; }
-                        }
-                        if (dPts.length >= 2)
-                            vizPaths.push({points: dPts, val: memo[df0 * TOTAL + dId0], dead: dDead});
-                    }
-                }
-
-                // Mid-jump paths (if currently jumping)
-                if (isJumping) {
-                    // Current jump continuation (stop at first collision or off-screen)
-                    if (cjDur > 0 && computed[CJ]) {
-                        var cjPts = [], cjDead2 = false;
-                        for (var ck = 0; ck < cjDur; ck++) {
-                            if (ck >= N || ck >= maxVizF || !computed[ck * TOTAL + (CJ + ck)]) break;
-                            cjPts.push({f: ck, y: sY[CJ + ck], dk: false, type: 2});
-                            if (cl(ck, CJ + ck) <= 0) { cjDead2 = true; break; }
-                        }
-                        if (cjPts.length >= 2)
-                            vizPaths.push({points: cjPts, val: memo[CJ], dead: cjDead2});
-                        // Drop branches from current jump
-                        for (ck = 0; ck < cjDur; ck += dropStride) {
-                            if (cj.dLen[ck] <= 0) continue;
-                            var csf0 = ck + 1;
-                            if (csf0 >= maxVizF) continue;
-                            var csId0 = CS + cj.dOff[ck];
-                            if (csf0 >= N || !computed[csf0 * TOTAL + csId0]) continue;
-                            var csDPts = [{f: ck, y: sY[CJ + ck], dk: false, type: 2}];
-                            var csDead = false;
-                            for (dd = 0; dd < cj.dLen[ck]; dd++) {
-                                var csff = csf0 + dd;
-                                if (csff >= N || csff >= maxVizF || !computed[csff * TOTAL + (csId0 + dd)]) break;
-                                csDPts.push({f: csff, y: sY[csId0 + dd], dk: true, type: 1});
-                                if (cl(csff, csId0 + dd) <= 0) { csDead = true; break; }
-                            }
-                            if (csDPts.length >= 2)
-                                vizPaths.push({points: csDPts, val: memo[csf0 * TOTAL + csId0], dead: csDead});
-                        }
-                    }
-                    // Immediate drop (stop at first collision or off-screen)
-                    if (imDur > 0 && computed[IM]) {
-                        var imPts2 = [], imDead2 = false;
-                        for (var ik = 0; ik < imDur; ik++) {
-                            if (ik >= N || ik >= maxVizF || !computed[ik * TOTAL + (IM + ik)]) break;
-                            imPts2.push({f: ik, y: sY[IM + ik], dk: true, type: 1});
-                            if (cl(ik, IM + ik) <= 0) { imDead2 = true; break; }
-                        }
-                        if (imPts2.length >= 2)
-                            vizPaths.push({points: imPts2, val: memo[IM], dead: imDead2});
-                    }
-                }
-
-                // Trace optimal path from chosen start action
-                function traceOptimal(startId) {
-                    var path = [];
-                    var tid = startId;
-                    for (var tf = 0; tf < N; tf++) {
-                        path.push({f: tf, y: sY[tid], dk: sDk[tid],
-                                   type: stateType(tid)});
-                        var tnexts = ns[tid];
-                        if (!tnexts || tf + 1 >= N) break;
-                        var tBest = tnexts[0], tBestV = -9999;
-                        for (var tn = 0; tn < tnexts.length; tn++) {
-                            var tnv = memo[(tf + 1) * TOTAL + tnexts[tn]];
-                            if (tnv > tBestV) { tBestV = tnv; tBest = tnexts[tn]; }
-                        }
-                        tid = tBest;
-                    }
-                    return path;
-                }
-
-                var chosenStart;
-                if (isJumping) {
-                    chosenStart = (result.action === 'speedDrop') ? IM : CJ;
-                } else {
-                    chosenStart = (result.action === 'jump') ? FJ :
-                                  (result.action === 'duck') ? D_ST : G;
-                }
-                var optPath = traceOptimal(chosenStart);
-
-                // Drop branches from fresh jump (sampled every 3 frames)
-                var branches = [];
-                var branchSrc = isJumping ? {arc: cjY, dur: cjDur, d: cj, base: CJ, ds: CS}
-                                          : {arc: fjY, dur: fjDur, d: fj, base: FJ, ds: FS};
-                for (var bk = 0; bk < branchSrc.dur; bk += 3) {
-                    if (branchSrc.d.dLen[bk] <= 0) continue;
-                    var bpts = [];
-                    for (var bd = 0; bd < branchSrc.d.dLen[bk]; bd++) {
-                        var bsid = branchSrc.ds + branchSrc.d.dOff[bk] + bd;
-                        var bval = (bk + 1 + bd < N) ?
-                            memo[(bk + 1 + bd) * TOTAL + bsid] : 9999;
-                        bpts.push({
-                            y: branchSrc.d.dY[bk][bd],
-                            val: bval
-                        });
-                    }
-                    branches.push({startFrame: bk, points: bpts});
-                }
-
-                // Main jump arc DP values
-                var mainArc = [];
-                for (var mk = 0; mk < branchSrc.dur; mk++) {
-                    var msid2 = branchSrc.base + mk;
-                    var mval = (mk < N) ? memo[mk * TOTAL + msid2] : 9999;
-                    mainArc.push({y: branchSrc.arc[mk], val: mval});
-                }
-
-                // DP values for ground alternatives
-                var groundVals = {
-                    run:  solve(0, G),
-                    duck: solve(0, D_ST),
-                    jump: solve(0, FJ)
-                };
-
-                result.vizDP = {
-                    paths: vizPaths,
-                    optimalPath: optPath,
-                    branches: branches,
-                    mainArc: mainArc,
-                    groundVals: groundVals,
-                    groundY: groundY,
-                    N: N,
-                    isJumping: isJumping,
-                    tRexX: tRexX,
-                    speed: speed,
-                    // Immediate drop arc (mid-jump)
-                    imY: imY,
-                    imDur: imDur
-                };
-            }
-
+            var result = { min: min, max: max };
+            this._winCache = result;
+            this._winKey = key;
             return result;
         },
 
-        /**
-         * After a jump lands, pick the best follow-up action.
-         * Runs a quick sub-simulation to see if running, jumping, or ducking
-         * survives. Returns 'run', 'jump', or 'duck'.
-         */
-        _pickPostLandingAction: function (sim, obstacles, speed, currentFrame, remainingFrames) {
-            // Use only the remaining frames from the parent simulation
-            // window — do NOT extend. The parent sim uses 2×jumpDur, so
-            // extending here gives compound sequences an unfair extra
-            // lookahead that makes premature jumping appear safe.
-            if (remainingFrames <= 0) return 'run';
+        // ---------------------------------------------------------------
+        // Check if speed-dropping right now is collision-free.
+        // Simulates the full drop arc checking all obstacles each frame.
+        // ---------------------------------------------------------------
+        _safeToSpeedDrop: function (tRex, obstacles, speed) {
+            var cfg = tRex.config;
+            var groundY = tRex.groundYPos;
+            var tW = cfg.WIDTH;
+            var tH = cfg.HEIGHT;
+            var coeff = cfg.SPEED_DROP_COEFFICIENT;
+            var gravity = cfg.GRAVITY;
 
-            // Evaluate each action's minimum clearance using a sub-simulation.
-            var actions = ['run', 'jump', 'duck'];
-            var bestAction = 'run';
-            var bestClearance = -9999;
+            var jv = 1;
+            var y = tRex.yPos;
 
-            for (var a = 0; a < actions.length; a++) {
-                var act = actions[a];
-                var sub = this.cloneTrex(sim);
-                var minClear = 9999;
-                var collided = false;
+            for (var f = 1; f <= 60; f++) {
+                y += Math.round(jv * coeff);
+                jv += gravity;
+                if (y >= groundY) y = groundY;
 
-                if (act === 'jump') this.startJump(sub, speed);
-                else if (act === 'duck') sub.ducking = true;
-                else sub.ducking = false;
+                for (var i = 0; i < obstacles.length; i++) {
+                    var obs = obstacles[i];
+                    var oW = obs.typeConfig.width * obs.size;
+                    var obsSpd = speed + (obs.speedOffset || 0);
+                    var perF = Math.floor(obsSpd);
+                    var obsLeft = obs.xPos - f * perF;
 
-                for (var f = 0; f < remainingFrames; f++) {
-                    if (act === 'jump') this.stepTrex(sub);
-                    if (act === 'jump' && !sub.jumping) sub.ducking = false;
-
-                    for (var i = 0; i < obstacles.length; i++) {
-                        var obs = obstacles[i];
-                        var fOffset = (act === 'jump') ? f + 1 : f;
-                        var ox = this.futureObstX(obs, speed, currentFrame + fOffset);
-                        if (ox + obs.typeConfig.width * obs.size < sub.xPos) continue;
-                        if (ox > sub.xPos + 600) continue;
-
-                        var gap = this._gapToObstacle(sub, obs, ox);
-                        if (gap < minClear) minClear = gap;
-
-                        if (gap <= 0) { collided = true; break; }
+                    if (obsLeft + oW > tRex.xPos && obsLeft < tRex.xPos + tW) {
+                        if (y + tH > obs.yPos) return false;
                     }
-                    if (collided) break;
                 }
 
-                if (minClear > bestClearance) {
-                    bestClearance = minClear;
-                    bestAction = act;
-                }
+                if (y >= groundY) break;
             }
-            return bestAction;
+            return true;
         },
 
+        // ---------------------------------------------------------------
+        // Simulate speed-drop arc from current position (for viz).
+        // ---------------------------------------------------------------
+        _simDropArc: function (tRex) {
+            var cfg = tRex.config;
+            var groundY = tRex.groundYPos;
+            var jv = 1;
+            var y = tRex.yPos;
+            var arc = [];
+            for (var f = 0; f < 60; f++) {
+                y += Math.round(jv * cfg.SPEED_DROP_COEFFICIENT);
+                jv += cfg.GRAVITY;
+                if (y >= groundY) { arc.push(groundY); break; }
+                arc.push(y);
+            }
+            return arc;
+        },
+
+        // ---------------------------------------------------------------
+        // Simulate remaining jump from current state (for viz).
+        // ---------------------------------------------------------------
+        _simContinueArc: function (tRex) {
+            var cfg = tRex.config;
+            var groundY = tRex.groundYPos;
+            var minJH = groundY - cfg.MIN_JUMP_HEIGHT;
+            var jv = tRex.jumpVelocity;
+            var y = tRex.yPos;
+            var reachedMin = tRex.reachedMinHeight;
+            var arc = [];
+            for (var f = 0; f < 60; f++) {
+                y += Math.round(jv);
+                jv += cfg.GRAVITY;
+                if (y < minJH) reachedMin = true;
+                if (y < cfg.MAX_JUMP_HEIGHT) {
+                    if (reachedMin && jv < cfg.DROP_VELOCITY) jv = cfg.DROP_VELOCITY;
+                }
+                if (y >= groundY) { arc.push(groundY); break; }
+                arc.push(y);
+            }
+            return arc;
+        },
+
+        // ---------------------------------------------------------------
+        // Stats
+        // ---------------------------------------------------------------
         onCrash: function (runner) {
             this.deaths++;
             var score = Math.round(runner.distanceRan * 0.025);
             if (score > this.bestScore) this.bestScore = score;
 
-            // Detailed crash log for debugging.
             var tRex = runner.tRex;
             var obstacles = runner.horizon.obstacles;
             var info = 'CRASH #' + this.deaths + ' score=' + score +
@@ -1100,35 +350,12 @@
                 ' tX=' + tRex.xPos + ' tY=' + tRex.yPos +
                 ' j=' + tRex.jumping + ' dk=' + tRex.ducking +
                 ' dr=' + tRex.speedDrop;
-            // Log ALL obstacles so we can see what the dino actually hit.
             for (var i = 0; i < obstacles.length; i++) {
                 var o = obstacles[i];
                 info += ' | [' + i + '] ' + o.typeConfig.type +
-                    ' x=' + o.xPos + ' y=' + o.yPos +
-                    ' sz=' + o.size;
+                    ' x=' + o.xPos + ' y=' + o.yPos + ' sz=' + o.size;
             }
             console.log(info);
-
-            // Dump prediction vs actual comparison history.
-            if (this._history && this._history.length > 0) {
-                console.log('--- PREDICTION vs ACTUAL (last ' + this._history.length + ' frames) ---');
-                for (var h = 0; h < this._history.length; h++) {
-                    var entry = this._history[h];
-                    var pr = entry.predicted;
-                    var ac = entry.actual;
-                    console.log('  [' + h + '] dt=' + entry.dt.toFixed(1) +
-                        ' pred tY=' + pr.tY.toFixed(0) +
-                        ' j=' + pr.tJ + ' dk=' + pr.tDk +
-                        ' obstX=' + (pr.obstX !== null ? pr.obstX.toFixed(0) : 'n/a') +
-                        ' | actual tY=' + ac.tY.toFixed(0) +
-                        ' j=' + ac.tJ + ' dk=' + ac.tDk +
-                        ' obstX=' + (ac.obstX !== null ? ac.obstX.toFixed(0) : 'n/a') +
-                        ' | ΔY=' + entry.deltaY.toFixed(0) +
-                        ' ΔX=' + entry.deltaX.toFixed(0));
-                }
-            }
-            this._history = [];
-
             this.saveStats();
             this.updateStats();
         },
@@ -1152,224 +379,241 @@
         updateStats: function () {
             var el = document.getElementById('ai-stats');
             if (el) {
-                el.textContent = 'Deaths: ' + this.deaths +
-                    ' | Best: ' + this.bestScore;
+                el.textContent = 'Deaths: ' + this.deaths + ' | Best: ' + this.bestScore;
             }
         },
 
-        /**
-         * Main AI decision loop — pure simulation.
-         * @param {Runner} runner The game runner instance.
-         */
+        recordPrediction: function () {},
+        checkGhostCollisions: function () {},
+
+        // ---------------------------------------------------------------
+        // Main AI decision loop — pixel-accurate rules.
+        // ---------------------------------------------------------------
         update: function (runner) {
             if (!this.enabled || !runner.playing || runner.crashed) return;
 
             var tRex = runner.tRex;
-            var obstacles = runner.horizon.obstacles;
+            var obs = runner.horizon.obstacles;
             var speed = runner.currentSpeed;
+            var tW = tRex.config.WIDTH;
+            var tH = tRex.config.HEIGHT;
+            var tRight = tRex.xPos + tW;
 
-            // --- PREDICTION COMPARISON ---
-            // Compare last frame's prediction to current actual state.
-            if (this._prediction) {
-                var p = this._prediction;
-                var actual = {
-                    tY: tRex.yPos,
-                    tJ: tRex.jumping,
-                    tDk: tRex.ducking,
-                    obstX: obstacles.length > 0 ? obstacles[0].xPos : null
-                };
-                var dY = Math.abs(p.tY - actual.tY);
-                var dX = p.obstX !== null && actual.obstX !== null ?
-                    Math.abs(p.obstX - actual.obstX) : 0;
-                if (!this._history) this._history = [];
-                this._history.push({
-                    predicted: p,
-                    actual: actual,
-                    deltaY: dY,
-                    deltaX: dX,
-                    dt: this._lastDeltaTime || 0
-                });
-                if (this._history.length > 15) this._history.shift();
-            }
-
-            // Fix stuck ducking state: if the dino is jumping AND
-            // ducking (from a speed-drop landing), un-duck immediately.
+            // Fix stuck ducking-while-jumping state.
             if (tRex.jumping && tRex.ducking) tRex.setDuck(false);
 
-            // Gather obstacles ahead of the dino.
+            // Find nearest obstacle ahead of dino's midpoint.
+            var near = null;
+            for (var i = 0; i < obs.length; i++) {
+                var o = obs[i];
+                if (o.xPos + o.typeConfig.width * o.size > tRex.xPos + tW / 2) {
+                    near = o;
+                    break;
+                }
+            }
+
+            // Gather all obstacles ahead (for speed-drop check).
             var ahead = [];
-            for (var i = 0; i < obstacles.length; i++) {
-                var o = obstacles[i];
-                if (o.xPos + o.typeConfig.width * o.size > tRex.xPos) {
-                    ahead.push(o);
+            for (i = 0; i < obs.length; i++) {
+                if (obs[i].xPos + obs[i].typeConfig.width * obs[i].size > tRex.xPos) {
+                    ahead.push(obs[i]);
                 }
             }
 
-            if (ahead.length === 0) {
+            if (!near) {
                 if (tRex.ducking) tRex.setDuck(false);
-                // Still produce viz data so trails are always visible.
-                if (this._vizEnabled) {
-                    var vizN = (this._jumpDuration || 30) * 2;
-                    var idleDP = this._dpDecide(tRex, [], speed, vizN, true);
-                    var idleAction = tRex.jumping
-                        ? (tRex.speedDrop ? 'duck' : 'jump') : 'run';
-                    this._vizData = {
-                        chosenAction: idleAction,
-                        dpAction: 'run',
-                        dpValue: 9999,
-                        deciding: false,
-                        midJump: !!tRex.jumping,
-                        obstacles: [],
-                        tRexPos: { x: tRex.xPos, y: tRex.yPos,
-                                   jumping: tRex.jumping, ducking: tRex.ducking },
-                        speed: speed,
-                        dpViz: idleDP.vizDP || null
-                    };
-                } else if (!tRex.jumping) {
-                    this._vizData = null;
+                this._setViz('run', tRex, speed, ahead, null);
+                return;
+            }
+
+            var oW = near.typeConfig.width * near.size;
+            var edgeDist = near.xPos - tRight;
+            var isPtero = near.typeConfig.type === 'PTERODACTYL';
+            var isMedPtero = isPtero && near.yPos === 75;
+            var isHighPtero = isPtero && near.yPos === 50;
+
+            // Obstacle grouping: merge closely-spaced jumpable obstacles.
+            var lastRight = near.xPos + oW;
+            var groupObsY = near.yPos;
+            for (var j = 0; j < obs.length; j++) {
+                var o2 = obs[j];
+                if (o2 === near) continue;
+                var o2IsPtero = o2.typeConfig.type === 'PTERODACTYL';
+                var o2DuckPtero = o2IsPtero && (o2.yPos === 75 || o2.yPos === 50);
+                if (o2DuckPtero) continue;
+                var o2Left = o2.xPos;
+                var o2Right = o2.xPos + o2.typeConfig.width * o2.size;
+                if (o2Left > near.xPos && o2Left - lastRight < speed * 10) {
+                    if (o2Right > lastRight) lastRight = o2Right;
+                    if (o2.yPos < groupObsY) groupObsY = o2.yPos;
+                }
+            }
+            var groupW = lastRight - near.xPos;
+
+            // ===== MID-AIR DECISIONS =====
+            if (tRex.jumping) {
+                if (tRex.speedDrop) {
+                    this._setViz('duck', tRex, speed, ahead, near);
+                    return;
+                }
+                if (this._safeToSpeedDrop(tRex, ahead, speed)) {
+                    tRex.setSpeedDrop();
+                    this._setViz('duck', tRex, speed, ahead, near);
+                } else {
+                    this._setViz('jump', tRex, speed, ahead, near);
                 }
                 return;
             }
 
-            // Store acceleration info for futureObstX to account for
-            // obstacles approaching faster as speed increases.
-            this._accel = runner.config.ACCELERATION || 0;
-            this._maxSpeed = runner.config.MAX_SPEED || 13;
-            if (speed >= this._maxSpeed) this._accel = 0;
-
-            // Compute jump duration (frames) at current speed.
-            if (!this._jumpDuration || this._jumpDurationSpeed !== Math.floor(speed)) {
-                var arc = this.simulateJump(speed, runner);
-                this._jumpDuration = arc.length;
-                this._jumpDurationSpeed = Math.floor(speed);
+            // ===== GROUND: High pteros (yPos=50) — run under =====
+            if (isHighPtero) {
+                if (tRex.ducking) tRex.setDuck(false);
+                this._setViz('run', tRex, speed, ahead, near);
+                return;
             }
 
-            // Simulation window: 2x jump duration covers the current
-            // obstacle plus the next one. This lets the AI "see" whether
-            // landing from a jump leaves enough time for the next action.
-            var N = this._jumpDuration * 2;
+            // ===== GROUND: Medium pteros (yPos=75) — duck under =====
+            if (isMedPtero) {
+                var pteroSpeed = speed + (near.speedOffset || 0);
+                var pteroPerFrame = Math.floor(pteroSpeed);
+                if (pteroPerFrame < 1) pteroPerFrame = 1;
+                // Ducking hitbox is wider — account for the extra pixels
+                var duckExtra = tRex.config.WIDTH_DUCK - tW;
+                // Duck when overlap is within 2 frames
+                var duckStart = duckExtra + pteroPerFrame * 2;
+                var duckEnd = -(oW + pteroPerFrame * 2);
 
-            // --- UNIFIED DP DECISION (ground + mid-jump) ---
-            // Already dropping — no decisions to make, but update vizData
-            // so the visualization tracks the current dino position.
-            if (tRex.jumping && tRex.speedDrop) {
-                if (this._vizEnabled) {
-                    // Compute remaining drop arc from current position.
-                    var dropCum = this._dropCumDeltas;
-                    var groundY = tRex.groundYPos;
-                    var dropPath = [{f: 0, y: tRex.yPos, dk: true, type: 1}];
-                    if (dropCum) {
-                        // Find how far into the drop table we already are
-                        // by checking cumulative deltas against current pos.
-                        // Since speedDrop resets velocity to 1, we approximate
-                        // by simulating from current yPos using the table.
-                        var sim = this.cloneTrex(tRex);
-                        for (var df = 0; df < 30; df++) {
-                            this.stepTrex(sim);
-                            if (!sim.jumping) break;
-                            dropPath.push({f: df + 1, y: sim.yPos, dk: true, type: 1});
-                        }
-                    }
-                    // Add ground landing point.
-                    dropPath.push({f: dropPath.length, y: groundY, dk: false, type: 0});
-
-                    this._vizData = {
-                        chosenAction: 'duck',
-                        dpAction: 'speedDrop',
-                        dpValue: 9999,
-                        deciding: false,
-                        midJump: true,
-                        obstacles: [],
-                        tRexPos: { x: tRex.xPos, y: tRex.yPos,
-                                   jumping: true, ducking: tRex.ducking },
-                        speed: speed,
-                        dpViz: {
-                            paths: [],
-                            optimalPath: dropPath,
-                            branches: [],
-                            groundY: groundY,
-                            N: dropPath.length,
-                            isJumping: true,
-                            tRexX: tRex.xPos,
-                            speed: speed
-                        }
-                    };
+                if (edgeDist < duckStart && edgeDist > duckEnd) {
+                    if (!tRex.ducking) tRex.setDuck(true);
+                    this._setViz('duck', tRex, speed, ahead, near);
+                } else {
+                    if (tRex.ducking) tRex.setDuck(false);
+                    this._setViz('run', tRex, speed, ahead, near);
                 }
                 return;
             }
 
-            var viz = this._vizEnabled;
-            var dpResult = this._dpDecide(tRex, ahead, speed, N, viz);
+            // ===== GROUND: Cacti & low pteros — jump =====
+            if (tRex.ducking) tRex.setDuck(false);
 
-            // Build viz data from DP-native results (no extra simulations).
-            if (viz) {
-                var obsViz = ahead.map(function (o) {
-                    return {
-                        xPos: o.xPos, yPos: o.yPos,
-                        width: o.typeConfig.width * o.size,
-                        height: o.typeConfig.height,
-                        type: o.typeConfig.type,
-                        collisionBoxes: o.collisionBoxes
-                    };
-                });
-                this._vizData = {
-                    chosenAction: tRex.jumping
-                        ? (dpResult.action === 'speedDrop' ? 'duck' : 'jump')
-                        : dpResult.action,
-                    dpAction: dpResult.action,
-                    dpValue: dpResult.value,
-                    deciding: true,
-                    midJump: !!tRex.jumping,
-                    obstacles: obsViz,
-                    tRexPos: {
-                        x: tRex.xPos, y: tRex.yPos,
-                        jumping: tRex.jumping, ducking: tRex.ducking
-                    },
-                    speed: speed,
-                    // DP-native visualization data
-                    dpViz: dpResult.vizDP || null
-                };
-            }
-
-            // Execute.
-            if (dpResult.action === 'speedDrop') {
-                tRex.setSpeedDrop();
-            } else if (dpResult.action === 'continue') {
-                // Do nothing — let the jump continue.
-            } else if (dpResult.action === 'run') {
-                if (tRex.ducking) tRex.setDuck(false);
-            } else if (dpResult.action === 'jump') {
-                if (tRex.ducking) tRex.setDuck(false);
+            var win = this._jumpWindow(speed, groupObsY, groupW, tRex);
+            if (win.min >= 0 && edgeDist <= win.max && edgeDist >= win.min) {
                 tRex.startJump(speed);
-            } else if (dpResult.action === 'duck') {
-                if (!tRex.ducking) tRex.setDuck(true);
+                this._setViz('jump', tRex, speed, ahead, near);
+            } else {
+                this._setViz('run', tRex, speed, ahead, near);
             }
         },
 
-        /**
-         * Record prediction for next frame. Called after AI decision.
-         */
-        recordPrediction: function (tRex, obstacles, speed) {
-            // Predict where tRex and obstacles will be after 1 game frame.
-            var sim = this.cloneTrex(tRex);
-            this.stepTrex(sim);
-            var obstX = null;
-            if (obstacles.length > 0) {
-                obstX = this.futureObstX(obstacles[0], speed, 1);
+        // ---------------------------------------------------------------
+        // Build visualization data
+        // ---------------------------------------------------------------
+        _setViz: function (action, tRex, speed, obstacles, near) {
+            if (!this._vizEnabled) { this._vizData = null; return; }
+
+            var obsViz = [];
+            for (var i = 0; i < obstacles.length; i++) {
+                var o = obstacles[i];
+                obsViz.push({
+                    xPos: o.xPos, yPos: o.yPos,
+                    width: o.typeConfig.width * o.size,
+                    height: o.typeConfig.height,
+                    type: o.typeConfig.type,
+                    collisionBoxes: o.collisionBoxes
+                });
             }
-            this._prediction = {
-                tY: sim.yPos,
-                tJ: sim.jumping,
-                tDk: sim.ducking,
-                obstX: obstX
+
+            this._vizData = {
+                chosenAction: action,
+                dpAction: action,
+                dpValue: 9999,
+                deciding: true,
+                midJump: !!tRex.jumping,
+                obstacles: obsViz,
+                tRexPos: {
+                    x: tRex.xPos, y: tRex.yPos,
+                    jumping: tRex.jumping, ducking: tRex.ducking
+                },
+                speed: speed,
+                ruleViz: this._buildRuleViz(action, tRex, speed, near)
+            };
+        },
+
+        _buildRuleViz: function (action, tRex, speed, near) {
+            var groundY = tRex.groundYPos;
+            var arc = this._getJumpArc(speed, tRex);
+            var paths = [];
+            var optPath = [];
+
+            if (!tRex.jumping) {
+                // Jump arc from ground
+                var jumpPts = [];
+                for (var f = 0; f < arc.length; f++) {
+                    jumpPts.push({ f: f, y: arc[f], dk: false, type: 2 });
+                }
+                paths.push({ points: jumpPts, val: action === 'jump' ? 9999 : 1, dead: false });
+
+                // Ground run
+                var runLen = Math.min(arc.length, 30);
+                var runPts = [];
+                for (f = 0; f < runLen; f++) {
+                    runPts.push({ f: f, y: groundY, dk: false, type: 0 });
+                }
+                paths.push({ points: runPts, val: action === 'run' ? 9999 : 1, dead: false });
+
+                // Ground duck
+                var duckPts = [];
+                for (f = 0; f < runLen; f++) {
+                    duckPts.push({ f: f, y: groundY, dk: true, type: 1 });
+                }
+                paths.push({ points: duckPts, val: action === 'duck' ? 9999 : 1, dead: false });
+
+                optPath = (action === 'jump') ? jumpPts :
+                          (action === 'duck') ? duckPts : runPts;
+            } else if (!tRex.speedDrop) {
+                // Continue jump arc
+                var contArc = this._simContinueArc(tRex);
+                var contPts = [];
+                for (f = 0; f < contArc.length; f++) {
+                    contPts.push({ f: f, y: contArc[f], dk: false, type: 2 });
+                }
+                paths.push({ points: contPts, val: action !== 'duck' ? 9999 : 1, dead: false });
+
+                // Speed-drop arc
+                var dropArc = this._simDropArc(tRex);
+                var dropPts = [];
+                for (f = 0; f < dropArc.length; f++) {
+                    dropPts.push({ f: f, y: dropArc[f], dk: true, type: 1 });
+                }
+                paths.push({ points: dropPts, val: action === 'duck' ? 9999 : 1, dead: false });
+
+                optPath = (action === 'duck') ? dropPts : contPts;
+            } else {
+                // Already speed-dropping
+                var dropArc2 = this._simDropArc(tRex);
+                var dropPts2 = [];
+                for (f = 0; f < dropArc2.length; f++) {
+                    dropPts2.push({ f: f, y: dropArc2[f], dk: true, type: 1 });
+                }
+                paths.push({ points: dropPts2, val: 9999, dead: false });
+                optPath = dropPts2;
+            }
+
+            return {
+                paths: paths,
+                optimalPath: optPath,
+                groundY: groundY,
+                N: arc.length * 2,
+                isJumping: tRex.jumping,
+                tRexX: tRex.xPos,
+                speed: speed
             };
         }
     };
 
-    // Singleton AI agent instance.
+    // Singleton instance.
     var aiAgent = new AIAgent();
 
-    // Expose toggle function globally.
     window.toggleAI = function () {
         var runner = Runner.instance_;
         aiAgent.enabled = !aiAgent.enabled;
@@ -1377,13 +621,11 @@
         btn.textContent = aiAgent.enabled ? 'AI: ON' : 'AI: OFF';
         btn.classList.toggle('active', aiAgent.enabled);
 
-        // Hide/show the "Press Space to start" message.
         var msgBox = document.getElementById('messageBox');
         if (msgBox) {
             msgBox.style.display = aiAgent.enabled ? 'none' : '';
         }
 
-        // If AI is enabled and game hasn't started, start it.
         if (aiAgent.enabled && runner) {
             if (runner.crashed) {
                 runner.restart();
@@ -1391,7 +633,6 @@
                 runner.loadSounds();
                 runner.playing = true;
                 runner.activated = true;
-                // Skip the intro animation — go straight to gameplay.
                 runner.tRex.playingIntro = false;
                 runner.playingIntro = false;
                 if (window._arcadeEnabled) {
@@ -1402,15 +643,12 @@
                 runner.update();
             }
         }
-
         aiAgent.updateStats();
     };
 
-    // Expose the sim agent for app.html to wire up per-section.
     window._simAgent = aiAgent;
 
-    // Arcade mode toggle.
-    window._arcadeEnabled = true; // default: on
+    window._arcadeEnabled = true;
     window.toggleArcade = function () {
         var runner = Runner.instance_;
         var btn = document.getElementById('arcade-toggle');
@@ -1418,9 +656,7 @@
         if (window._arcadeEnabled) {
             btn.textContent = 'ARCADE: ON';
             btn.classList.remove('inactive');
-            if (runner) {
-                runner.setArcadeMode();
-            }
+            if (runner) runner.setArcadeMode();
         } else {
             btn.textContent = 'ARCADE: OFF';
             btn.classList.add('inactive');
@@ -1431,92 +667,34 @@
         }
     };
 
-    // Expose AIAgent constructor for use by decision-tree.js, logistic-agent.js
     window.AIAgent = AIAgent;
 })();
 
 </script>
-<!-- ═══ Sim Visualizer (inlined from sim-visualizer.js) ═══ -->
+<!-- ═══ Sim Visualizer ═══ -->
 <script>
 // =============================================================================
-// sim-visualizer.js — DP visualization for the Sim AI agent.
+// sim-visualizer.js — Visualization for the rule-based AI agent.
 //
-// Two visualization modes (toggle with V key):
-//
-//   MODE 1 — "tree": Branching arc tree
-//     Shows the main jump arc with speed-drop branches fanning downward.
-//     Optimal path highlighted bold. Each dot colored by DP value (future
-//     safety), not just current clearance. Ground/duck alternatives shown
-//     as thin lines.
-//
-//   MODE 2 — "cloud": State cloud
-//     Every reachable DP state plotted as a dot.
-//     Color = state type (blue=jump, orange=duck, grey=ground).
-//     Opacity = DP value (brighter = safer path exists from here).
-//     Optimal path overlaid as a bold line.
-//
-// Both modes draw obstacle outlines and a decision badge.
-//
-// Depends on: window._simAgent._vizData.dpViz (from _dpDecide).
+// Shows predicted paths (jump arc, ground run, duck, speed-drop) with
+// the chosen path highlighted bold. Decision badge shows current action.
 // =============================================================================
 (function () {
     'use strict';
 
-    // DP value thresholds for colour mapping.
-    var THRESH_SAFE = 8;
-    var THRESH_MOD  = 4;
-
-    // Colours.
-    var COL_SAFE     = '#30d158';
-    var COL_MODERATE = '#8ee53f';
-    var COL_CLOSE    = '#ffcc00';
-    var COL_DANGER   = '#ff3b30';
-    var COL_OBSTACLE = '#8e8e93';
-
-    // State-type colours (for cloud mode).
     var TYPE_COLORS = [
-        '#48484a',  // 0 = ground/run  (dark charcoal)
-        '#ff9f0a',  // 1 = duck/drop   (orange)
-        '#0071e3'   // 2 = jump         (blue)
+        '#48484a',  // 0 = ground/run
+        '#ff9f0a',  // 1 = duck/drop
+        '#0071e3'   // 2 = jump
     ];
 
-    // Action label colours.
     var LABEL_COLORS = {
         jump: '#0071e3',
         duck: '#ff9f0a',
         run:  '#48484a'
     };
 
-    function dpValueColor(val) {
-        if (val <= 0)          return COL_DANGER;
-        if (val < THRESH_MOD)  return COL_CLOSE;
-        if (val < THRESH_SAFE) return COL_MODERATE;
-        return COL_SAFE;
-    }
-
-    // Cloud sliders: K = tier ratio, hiAlpha = brightest tier alpha.
-    var _cloudK     = 2.5;   // each tier K× brighter than tier below
-    var _cloudHi    = 0.65;  // alpha of the best (top) tier
-    var _cloudDecay = 0.5;   // temporal decay power (0=none, higher=more falloff)
-    var _cloudSize  = 1.0;   // path line thickness in pixels
-
-    function dpValueAlpha(val) {
-        // 5 tiers: dead(0), dangerous(1), moderate(2), safe(3), best(4).
-        var tier;
-        if (val <= 0)       tier = 0;
-        else if (val < 4)   tier = 1;
-        else if (val < 8)   tier = 2;
-        else if (val < 20)  tier = 3;
-        else                tier = 4;
-
-        // Exponential: alpha = hiAlpha / K^(4-tier)
-        // tier 4 → hiAlpha
-        // tier 3 → hiAlpha / K
-        // tier 2 → hiAlpha / K²
-        // tier 1 → hiAlpha / K³
-        // tier 0 → hiAlpha / K⁴
-        return Math.max(0.003, _cloudHi / Math.pow(_cloudK, 4 - tier));
-    }
+    var _inverted = false;
 
     function invertColor(hex) {
         var r = parseInt(hex.slice(1, 3), 16);
@@ -1528,212 +706,95 @@
             ('0' + (255 - b).toString(16)).slice(-2);
     }
 
-    var _inverted = false;
     function nightAdjust(color) {
         return _inverted ? invertColor(color) : color;
     }
 
-    // =========================================================================
-    // SimVisualizer
-    // =========================================================================
+    function toCanvasX(baseX, f, dk, perFrame) {
+        return baseX + (dk ? 28 : 20) + f * perFrame;
+    }
+
+    function toCanvasY(y) { return y + 22; }
+
+    function optCanvasX(baseX, f, perFrame) {
+        return baseX + 22 + f * perFrame;
+    }
 
     function SimVisualizer() {
         this.enabled = false;
     }
 
-    SimVisualizer.prototype._setK = function (val) { _cloudK = val; };
-    SimVisualizer.prototype._setHi = function (val) { _cloudHi = val; };
-    SimVisualizer.prototype._setDecay = function (val) { _cloudDecay = val; };
-    SimVisualizer.prototype._setSize = function (val) { _cloudSize = val; };
-
-
-    // =========================================================================
-    // Main draw
-    // =========================================================================
+    SimVisualizer.prototype._setK = function () {};
+    SimVisualizer.prototype._setHi = function () {};
+    SimVisualizer.prototype._setDecay = function () {};
+    SimVisualizer.prototype._setSize = function () {};
 
     SimVisualizer.prototype.draw = function (ctx, runner) {
         if (!this.enabled) return;
-
         _inverted = !!(runner && runner.inverted);
 
         var agent = window._simAgent;
         if (!agent || !agent._vizData) return;
 
         var viz = agent._vizData;
-        var dp = viz.dpViz;
+        var rv = viz.ruleViz;
 
         ctx.save();
-
-        if (dp) {
-            this._drawCloud(ctx, viz, dp);
-            this._drawOptimalPath(ctx, viz, dp);
+        if (rv) {
+            this._drawPaths(ctx, viz, rv);
+            this._drawOptimalPath(ctx, viz, rv);
         }
-
-        // Decision badge.
         this._drawDecisionBadge(ctx, viz);
-
         ctx.restore();
     };
 
-    // =========================================================================
-    // DP Paths
-    // =========================================================================
-
-    // Inline coordinate conversion (no object alloc).
-    function toCanvasX(baseX, f, dk, perFrame) {
-        return baseX + (dk ? 28 : 20) + f * perFrame;
-    }
-    function toCanvasY(y) { return y + 22; }
-
-    SimVisualizer.prototype._drawCloud = function (ctx, viz, dp) {
-        var speed = viz.speed;
+    SimVisualizer.prototype._drawPaths = function (ctx, viz, rv) {
         var baseX = viz.tRexPos.x;
-        var perFrame = Math.floor(speed);
+        var perFrame = Math.max(1, Math.floor(viz.speed));
         var canvasW = ctx.canvas.width;
         if (window.devicePixelRatio > 1) canvasW /= 2;
-        var clipX = canvasW + 20;
 
-        var paths = dp.paths;
+        var paths = rv.paths;
         if (!paths || paths.length === 0) return;
-        var N = dp.N || 1;
-        var lw = _cloudSize;
 
-        // Pre-compute alpha and color for each path.
-        var alphas = new Array(paths.length);
-        var colors = new Array(paths.length);
+        ctx.save();
+        ctx.lineJoin = 'round';
+        ctx.lineCap = 'round';
+        ctx.lineWidth = 1;
+
         for (var p = 0; p < paths.length; p++) {
             var path = paths[p];
             var pts = path.points;
-            if (pts.length < 2) { alphas[p] = 0; continue; }
-            var a = dpValueAlpha(path.val);
-            if (_cloudDecay > 0) a *= Math.pow(1 - pts[0].f / N, _cloudDecay);
-            alphas[p] = a;
-            colors[p] = pts.length > 1 ? pts[1].type : pts[0].type;
-        }
+            if (pts.length < 2) continue;
+            if (path.val >= 9999) continue;
 
-        // Lines for jump (type 2) and run (type 0) paths.
-        // Dots for drop (type 1) paths.
-        ctx.save();
-        var dotR = Math.max(0.5, lw * 0.6);
-        var drawn = new Uint8Array(paths.length);
-
-        // --- Pass 1: lines for jump & run paths ---
-        ctx.lineJoin = 'round';
-        ctx.lineCap = 'round';
-        ctx.lineWidth = lw;
-        for (p = 0; p < paths.length; p++) {
-            if (drawn[p] || alphas[p] < 0.003) { drawn[p] = 1; continue; }
-            if (colors[p] === 1) continue; // skip drops (drawn as dots below)
-            var batchColor = colors[p];
-            var batchAlpha = Math.round(alphas[p] * 20) / 20;
-
-            ctx.strokeStyle = nightAdjust(TYPE_COLORS[batchColor]);
-            ctx.globalAlpha = batchAlpha;
+            var type = pts[1] ? pts[1].type : pts[0].type;
+            ctx.strokeStyle = nightAdjust(TYPE_COLORS[type]);
+            ctx.globalAlpha = 0.3;
             ctx.beginPath();
-
-            for (var q = p; q < paths.length; q++) {
-                if (drawn[q]) continue;
-                if (colors[q] !== batchColor) continue;
-                var qa = Math.round(alphas[q] * 20) / 20;
-                if (qa !== batchAlpha) continue;
-                drawn[q] = 1;
-
-                var path2 = paths[q];
-                var pts2 = path2.points;
-                var safeEnd = path2.dead ? pts2.length - 1 : pts2.length;
-                var pt0 = pts2[0];
-                ctx.moveTo(toCanvasX(baseX, pt0.f, pt0.dk, perFrame), toCanvasY(pt0.y));
-                for (var i = 1; i < safeEnd; i++) {
-                    var pi = pts2[i];
-                    var px = toCanvasX(baseX, pi.f, pi.dk, perFrame);
-                    if (px > clipX) break;
-                    ctx.lineTo(px, toCanvasY(pi.y));
-                }
+            var pt0 = pts[0];
+            ctx.moveTo(toCanvasX(baseX, pt0.f, pt0.dk, perFrame), toCanvasY(pt0.y));
+            for (var i = 1; i < pts.length; i++) {
+                var pi = pts[i];
+                var px = toCanvasX(baseX, pi.f, pi.dk, perFrame);
+                if (px > canvasW) break;
+                ctx.lineTo(px, toCanvasY(pi.y));
             }
             ctx.stroke();
-        }
-
-        // --- Pass 2: arcs for drop paths (type 1) ---
-        for (p = 0; p < paths.length; p++) {
-            if (drawn[p] || alphas[p] < 0.003) { drawn[p] = 1; continue; }
-            var batchAlpha2 = Math.round(alphas[p] * 20) / 20;
-
-            ctx.strokeStyle = nightAdjust(TYPE_COLORS[1]);
-            ctx.globalAlpha = batchAlpha2;
-            ctx.beginPath();
-
-            for (q = p; q < paths.length; q++) {
-                if (drawn[q]) continue;
-                if (colors[q] !== 1) continue;
-                var qa2 = Math.round(alphas[q] * 20) / 20;
-                if (qa2 !== batchAlpha2) continue;
-                drawn[q] = 1;
-
-                var path3 = paths[q];
-                var pts3 = path3.points;
-                var safeEnd2 = path3.dead ? pts3.length - 1 : pts3.length;
-                var pt3 = pts3[0];
-                ctx.moveTo(toCanvasX(baseX, pt3.f, pt3.dk, perFrame), toCanvasY(pt3.y));
-                for (i = 1; i < safeEnd2; i++) {
-                    pi = pts3[i];
-                    px = toCanvasX(baseX, pi.f, pi.dk, perFrame);
-                    if (px > clipX) break;
-                    ctx.lineTo(px, toCanvasY(pi.y));
-                }
-            }
-            ctx.stroke();
-        }
-
-        // --- Death markers (red dots) ---
-        drawn.fill(0);
-        var deathColor = nightAdjust('#e03030');
-        for (p = 0; p < paths.length; p++) {
-            if (drawn[p]) continue;
-            var path4 = paths[p];
-            if (!path4.dead || path4.points.length < 2) { drawn[p] = 1; continue; }
-            var da = Math.round(Math.max(alphas[p], 0.15) * 20) / 20;
-
-            ctx.fillStyle = deathColor;
-            ctx.globalAlpha = da;
-
-            for (q = p; q < paths.length; q++) {
-                if (drawn[q]) continue;
-                var path5 = paths[q];
-                if (!path5.dead || path5.points.length < 2) continue;
-                var da2 = Math.round(Math.max(alphas[q], 0.15) * 20) / 20;
-                if (da2 !== da) continue;
-                drawn[q] = 1;
-
-                var dp2 = path5.points[path5.points.length - 1];
-                var deadX = toCanvasX(baseX, dp2.f, dp2.dk, perFrame);
-                if (deadX > canvasW) continue;
-                ctx.fillRect(deadX - dotR, toCanvasY(dp2.y) - dotR, dotR * 2, dotR * 2);
-            }
         }
 
         ctx.restore();
     };
 
-    // =========================================================================
-    // Shared: Optimal path overlay
-    // =========================================================================
-
-    // Optimal path uses constant cx=22 (sprite center) regardless of dk,
-    // so the trajectory is smooth without a kink at jump→drop transitions.
-    function optCanvasX(baseX, f, perFrame) {
-        return baseX + 22 + f * perFrame;
-    }
-
-    SimVisualizer.prototype._drawOptimalPath = function (ctx, viz, dp) {
-        var path = dp.optimalPath;
+    SimVisualizer.prototype._drawOptimalPath = function (ctx, viz, rv) {
+        var path = rv.optimalPath;
         if (!path || path.length < 2) return;
 
-        var perFrame = Math.floor(viz.speed);
+        var perFrame = Math.max(1, Math.floor(viz.speed));
         var baseX = viz.tRexPos.x;
         var canvasW = ctx.canvas.width;
         if (window.devicePixelRatio > 1) canvasW /= 2;
 
-        // Thick solid line — batch segments by color (max 3 strokes).
         ctx.save();
         ctx.lineWidth = 3.5;
         ctx.lineJoin = 'round';
@@ -1756,13 +817,9 @@
             }
             if (has) ctx.stroke();
         }
+
         ctx.restore();
     };
-
-
-    // =========================================================================
-    // Shared: Decision badge
-    // =========================================================================
 
     SimVisualizer.prototype._drawDecisionBadge = function (ctx, viz) {
         var chosenAction = viz.chosenAction;
@@ -1778,18 +835,7 @@
         }
 
         var actionColor = LABEL_COLORS[chosenAction] || '#8e8e93';
-
-        var dpVal = viz.dpValue;
-        var text = '→ ' + displayName;
-        if (dpVal !== undefined && dpVal !== null) {
-            if (dpVal >= 9999) {
-                text += '  ✓';
-            } else if (dpVal > 0) {
-                text += '  ✓ ' + Math.round(dpVal) + 'px';
-            } else {
-                text += '  ✗';
-            }
-        }
+        var text = '\u2192 ' + displayName;
 
         var badgeX = viz.tRexPos.x + 2;
         var badgeY = 12;
@@ -1820,18 +866,8 @@
         ctx.restore();
     };
 
-    // =========================================================================
-    // Mode label — small hint showing current viz mode + toggle key
-    // =========================================================================
-
-
-    // =========================================================================
-    // Expose
-    // =========================================================================
-
     window.SimVisualizer = SimVisualizer;
     window._simVisualizer = new SimVisualizer();
-
 })();
 
 </script>
