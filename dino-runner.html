@@ -477,7 +477,12 @@
                     this._setViz('duck', tRex, speed, ahead, near);
                     return;
                 }
-                if (this._safeToSpeedDrop(tRex, ahead, speed)) {
+                // Only speed-drop after clearing the obstacle: dino's
+                // bottom is above it, or its right edge is behind us.
+                var cleared = !near ||
+                    (tRex.yPos + tH <= near.yPos) ||
+                    (near.xPos + oW <= tRex.xPos);
+                if (cleared && this._safeToSpeedDrop(tRex, ahead, speed)) {
                     tRex.setSpeedDrop();
                     this._setViz('duck', tRex, speed, ahead, near);
                 } else {
