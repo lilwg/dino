@@ -164,6 +164,8 @@
         this._vizData = null;
         this._arcCache = null;
         this._arcSpeedKey = -1;
+        this._winCache = null;
+        this._winKey = '';
         this.loadStats();
     }
 
@@ -202,45 +204,50 @@
         },
 
         // ---------------------------------------------------------------
-        // Polynomial coefficients for clearance frame prediction.
-        // fFirst/fLast(speed) = c[0] + c[1]*speed + c[2]*speed^2
-        // Fit from exact physics simulation across speed 6-200.
-        //
-        // Two sets: one for tall obstacles (obsY <= 100, threshold y<=43)
-        // and one for short obstacles (obsY > 100, threshold y<=58).
-        // Conservative rounding (ceil/floor) ensures the predicted
-        // window is always inside the actual safe window.
+        // Check if jumping when the obstacle is at edgeDist pixels away
+        // clears the obstacle group without collision.
+        // Uses the exact jump arc — no polynomial approximation.
         // ---------------------------------------------------------------
-        _POLY_TALL: { first: [4.5698, -0.03222, 0.0000730], last: [26.979, -0.06096, 0.000240] },
-        _POLY_SHORT: { first: [3.1518, -0.03012, 0.000101], last: [28.849, -0.05957, 0.000227] },
-
-        _evalPoly: function (c, s) {
-            return c[0] + c[1] * s + c[2] * s * s;
+        _jumpClears: function (arc, edgeDist, obsY, groupW, tW, tH, perFrame, groundY) {
+            var totalFrames = Math.ceil((edgeDist + groupW + tW) / perFrame) + 1;
+            for (var f = 0; f < totalFrames; f++) {
+                var obsLeft = edgeDist - (f + 1) * perFrame;
+                if (obsLeft < 0 && obsLeft + groupW > -tW) {
+                    var y = (f < arc.length) ? arc[f] : groundY;
+                    if (y + tH > obsY) return false;
+                }
+            }
+            return true;
         },
 
         // ---------------------------------------------------------------
-        // Compute the safe jump distance window from polynomial fit.
-        // Returns { min, max } in pixels.
-        //
-        // min = fFirst * perFrame  (latest safe jump)
-        // max = (fLast + 2) * perFrame - groupW - tW  (earliest safe jump)
-        //
-        // No simulation needed — O(1) computation.
+        // Compute the safe jump distance window via exact simulation.
+        // Returns { min, max } in pixels. Cached by speed + obstacle.
         // ---------------------------------------------------------------
         _jumpWindow: function (speed, obsY, groupW, tRex) {
-            var poly = (obsY <= 100) ? this._POLY_TALL : this._POLY_SHORT;
+            var key = Math.round(speed * 10) + '_' + obsY + '_' + groupW;
+            if (this._winCache && this._winKey === key) return this._winCache;
+
+            var arc = this._getJumpArc(speed, tRex);
+            var tW = tRex.config.WIDTH;
+            var tH = tRex.config.HEIGHT;
+            var groundY = tRex.groundYPos;
             var perFrame = Math.floor(speed);
             if (perFrame < 1) perFrame = 1;
 
-            // Conservative rounding: ceil for fFirst (don't jump too late)
-            var fFirst = Math.max(1, Math.ceil(this._evalPoly(poly.first, speed)));
-            var fLast = Math.floor(this._evalPoly(poly.last, speed));
+            var maxTest = perFrame * (arc.length + 5);
+            var min = -1, max = -1;
+            for (var d = 0; d <= maxTest; d++) {
+                if (this._jumpClears(arc, d, obsY, groupW, tW, tH, perFrame, groundY)) {
+                    if (min < 0) min = d;
+                    max = d;
+                }
+            }
 
-            var tW = tRex.config.WIDTH;
-            var min = fFirst * perFrame;
-            var max = (fLast + 2) * perFrame - groupW - tW;
-
-            return { min: Math.max(0, min), max: max };
+            var result = { min: min, max: max };
+            this._winCache = result;
+            this._winKey = key;
+            return result;
         },
 
         // ---------------------------------------------------------------
