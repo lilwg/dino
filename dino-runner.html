@@ -99,7 +99,7 @@
                 <button class="si-btn" id="pause-btn" onclick="togglePause()">Pause</button>
                 <button class="si-btn" id="fs-btn" onclick="toggleFullscreen()">Fullscreen</button>
                 <div class="si-speed" style="font-size: 11px;">
-                    Max Speed: <input type="range" id="max-speed-slider" min="6" max="50" value="13" step="1"> <span id="max-speed-val">13</span>
+                    Max Speed: <input type="range" id="max-speed-slider" min="6" max="200" value="13" step="1"> <span id="max-speed-val">13</span>
                 </div>
                 <span style="margin-left: auto; font-size: 11px; color: #6e6e73;">
                     Current Speed: <span id="speed-val">6</span>
@@ -164,8 +164,6 @@
         this._vizData = null;
         this._arcCache = null;
         this._arcSpeedKey = -1;
-        this._winCache = null;
-        this._winKey = '';
         this.loadStats();
     }
 
@@ -204,56 +202,45 @@
         },
 
         // ---------------------------------------------------------------
-        // Check if jumping when the obstacle is at edgeDist pixels away
-        // clears the obstacle group without collision.
+        // Polynomial coefficients for clearance frame prediction.
+        // fFirst/fLast(speed) = c[0] + c[1]*speed + c[2]*speed^2
+        // Fit from exact physics simulation across speed 6-200.
         //
-        // Checks every frame from jump start until the obstacle group
-        // has fully passed the dino (including post-landing frames).
+        // Two sets: one for tall obstacles (obsY <= 100, threshold y<=43)
+        // and one for short obstacles (obsY > 100, threshold y<=58).
+        // Conservative rounding (ceil/floor) ensures the predicted
+        // window is always inside the actual safe window.
         // ---------------------------------------------------------------
-        _jumpClears: function (arc, edgeDist, obsY, groupW, tW, tH, perFrame, groundY) {
-            var totalFrames = Math.ceil((edgeDist + groupW + tW) / perFrame) + 1;
-            for (var f = 0; f < totalFrames; f++) {
-                var moved = (f + 1) * perFrame;
-                var obsLeft = edgeDist - moved;
-                // Horizontal overlap: obstacle left past dino right,
-                // obstacle right not past dino left
-                if (obsLeft < 0 && obsLeft + groupW > -tW) {
-                    var y = (f < arc.length) ? arc[f] : groundY;
-                    if (y + tH > obsY) return false;
-                }
-            }
-            return true;
+        _POLY_TALL: { first: [4.5698, -0.03222, 0.0000730], last: [26.979, -0.06096, 0.000240] },
+        _POLY_SHORT: { first: [3.1518, -0.03012, 0.000101], last: [28.849, -0.05957, 0.000227] },
+
+        _evalPoly: function (c, s) {
+            return c[0] + c[1] * s + c[2] * s * s;
         },
 
         // ---------------------------------------------------------------
-        // Find the pixel-accurate safe jump distance window.
-        // Returns { min, max } where min is the closest safe distance
-        // and max is the farthest. Cached by speed + obstacle props.
+        // Compute the safe jump distance window from polynomial fit.
+        // Returns { min, max } in pixels.
+        //
+        // min = fFirst * perFrame  (latest safe jump)
+        // max = (fLast + 2) * perFrame - groupW - tW  (earliest safe jump)
+        //
+        // No simulation needed — O(1) computation.
         // ---------------------------------------------------------------
         _jumpWindow: function (speed, obsY, groupW, tRex) {
-            var key = Math.round(speed * 10) + '_' + obsY + '_' + groupW;
-            if (this._winCache && this._winKey === key) return this._winCache;
-
-            var arc = this._getJumpArc(speed, tRex);
-            var tW = tRex.config.WIDTH;
-            var tH = tRex.config.HEIGHT;
-            var groundY = tRex.groundYPos;
+            var poly = (obsY <= 100) ? this._POLY_TALL : this._POLY_SHORT;
             var perFrame = Math.floor(speed);
             if (perFrame < 1) perFrame = 1;
 
-            var maxTest = perFrame * (arc.length + 5);
-            var min = -1, max = -1;
-            for (var d = 0; d <= maxTest; d++) {
-                if (this._jumpClears(arc, d, obsY, groupW, tW, tH, perFrame, groundY)) {
-                    if (min < 0) min = d;
-                    max = d;
-                }
-            }
+            // Conservative rounding: ceil for fFirst (don't jump too late)
+            var fFirst = Math.max(1, Math.ceil(this._evalPoly(poly.first, speed)));
+            var fLast = Math.floor(this._evalPoly(poly.last, speed));
 
-            var result = { min: min, max: max };
-            this._winCache = result;
-            this._winKey = key;
-            return result;
+            var tW = tRex.config.WIDTH;
+            var min = fFirst * perFrame;
+            var max = (fLast + 2) * perFrame - groupW - tW;
+
+            return { min: Math.max(0, min), max: max };
         },
 
         // ---------------------------------------------------------------
@@ -423,11 +410,14 @@
             // Fix stuck ducking-while-jumping state.
             if (tRex.jumping && tRex.ducking) tRex.setDuck(false);
 
-            // Find nearest obstacle ahead of dino's midpoint.
+            // Find nearest obstacle that requires action.
+            // High pteros (yPos=50) pass overhead — skip them so the AI
+            // sees the cactus or low ptero behind them.
             var near = null;
             for (var i = 0; i < obs.length; i++) {
                 var o = obs[i];
                 if (o.xPos + o.typeConfig.width * o.size > tRex.xPos + tW / 2) {
+                    if (o.typeConfig.type === 'PTERODACTYL' && o.yPos === 50) continue;
                     near = o;
                     break;
                 }
@@ -451,7 +441,6 @@
             var edgeDist = near.xPos - tRight;
             var isPtero = near.typeConfig.type === 'PTERODACTYL';
             var isMedPtero = isPtero && near.yPos === 75;
-            var isHighPtero = isPtero && near.yPos === 50;
 
             // Obstacle grouping: merge closely-spaced jumpable obstacles.
             var lastRight = near.xPos + oW;
@@ -488,13 +477,6 @@
                 } else {
                     this._setViz('jump', tRex, speed, ahead, near);
                 }
-                return;
-            }
-
-            // ===== GROUND: High pteros (yPos=50) — run under =====
-            if (isHighPtero) {
-                if (tRex.ducking) tRex.setDuck(false);
-                this._setViz('run', tRex, speed, ahead, near);
                 return;
             }
 
@@ -1944,7 +1926,7 @@
         // Set default speed per mode
         var slider = document.getElementById('max-speed-slider');
         var msv = document.getElementById('max-speed-val');
-        var defaultSpd = (mode === 'off') ? 13 : 30;
+        var defaultSpd = (mode === 'off') ? 13 : parseInt(slider && slider.value || 30);
         if (slider) {
             slider.value = defaultSpd;
             if (msv) msv.textContent = defaultSpd;

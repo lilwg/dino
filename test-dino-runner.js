@@ -59,19 +59,20 @@ function startServer(dir) {
     // Wait for the page's own initialization to complete (sets window.runner)
     await page.waitForFunction('!!window.runner', { timeout: 15000 });
 
-    // Set max speed and enable AI
+    // Set slider value first, then enable AI (setMode reads the slider)
     await page.evaluate(function(opts) {
-        var r = window.runner;
-        r.config.MAX_SPEED = opts.maxSpeed;
-        var ratio = opts.maxSpeed / 13;
-        r.config.ACCELERATION = 0.002 * ratio * ratio;
-
         var sl = document.getElementById('max-speed-slider');
         if (sl) { sl.value = opts.maxSpeed; }
         var sv = document.getElementById('max-speed-val');
         if (sv) { sv.textContent = opts.maxSpeed; }
 
         window.setMode('rules');
+
+        // Ensure config matches (setMode reads slider, but belt-and-suspenders)
+        var r = window.runner;
+        r.config.MAX_SPEED = opts.maxSpeed;
+        var ratio = opts.maxSpeed / 13;
+        r.config.ACCELERATION = 0.002 * ratio * ratio;
     }, { maxSpeed: maxSpeed });
 
     console.log('Running dino runner AI for ' + testSeconds + 's at max speed ' + maxSpeed + '...\n');
