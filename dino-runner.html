@@ -270,11 +270,13 @@
 
             var jv = 1;
             var y = tRex.yPos;
+            var landFrame = 60;
 
+            // Simulate the drop and check for collisions during descent.
             for (var f = 1; f <= 60; f++) {
                 y += Math.round(jv * coeff);
                 jv += gravity;
-                if (y >= groundY) y = groundY;
+                if (y >= groundY) { y = groundY; landFrame = f; }
 
                 for (var i = 0; i < obstacles.length; i++) {
                     var obs = obstacles[i];
@@ -290,6 +292,25 @@
 
                 if (y >= groundY) break;
             }
+
+            // After landing, check that no obstacle will hit the dino
+            // on the ground in the next several frames.
+            var perFrame = Math.floor(speed);
+            for (var pf = 1; pf <= 10; pf++) {
+                var tf = landFrame + pf;
+                for (var j = 0; j < obstacles.length; j++) {
+                    var obs2 = obstacles[j];
+                    var oW2 = obs2.typeConfig.width * obs2.size;
+                    var obsSpd2 = speed + (obs2.speedOffset || 0);
+                    var perF2 = Math.floor(obsSpd2);
+                    var obsLeft2 = obs2.xPos - tf * perF2;
+
+                    if (obsLeft2 + oW2 > tRex.xPos && obsLeft2 < tRex.xPos + tW) {
+                        if (groundY + tH > obs2.yPos) return false;
+                    }
+                }
+            }
+
             return true;
         },
 
