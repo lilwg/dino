@@ -1712,19 +1712,13 @@
     // ── Parallel neuroevolution tick ──
     // All 50 dinos play simultaneously with shared obstacles.
     // Runs SIM_SPEED physics steps per animation frame.
-    // Single rAF loop — flag-guarded so it can never duplicate.
-    // Normal: runs as fast as possible (rAF).
-    // Slo-mo: adds a 16ms delay between frames so it looks like
-    // a high-speed film of the game playing at 60fps.
+    // Training loop: fixed 60fps via setTimeout (not rAF which varies
+    // with display refresh rate on ProMotion displays).
+    // Normal: 8 steps per tick. Slo-mo: 1 step per tick.
     function trainLoop() {
         if (!_trainLoopRunning) return;
         dqnTrainTick();
-        if (!_trainLoopRunning) return;
-        if (_trainSlowMo && _trainState === 'running') {
-            setTimeout(trainLoop, 16);
-        } else {
-            requestAnimationFrame(trainLoop);
-        }
+        if (_trainLoopRunning) setTimeout(trainLoop, 16);
     }
 
     function dqnTrainTick() {
