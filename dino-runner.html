@@ -428,6 +428,17 @@
             // Fix stuck ducking-while-jumping state.
             if (tRex.jumping && tRex.ducking) tRex.setDuck(false);
 
+            // At extreme speeds (100+), always jump and never drop.
+            // The dino is safe for ~26 of 32 arc frames. Speed-drop
+            // attempts cause more harm than good at these speeds.
+            if (speed >= 100) {
+                if (!tRex.jumping) {
+                    if (tRex.ducking) tRex.setDuck(false);
+                    tRex.startJump(speed);
+                }
+                return;
+            }
+
             // Find nearest obstacle that requires action.
             // High pteros (yPos=50) pass overhead — skip them so the AI
             // sees the cactus or low ptero behind them.
@@ -774,12 +785,33 @@
     };
 
     window.toggleESP = function () {
+        var runner = Runner.instance_;
         aiAgent._espEnabled = !aiAgent._espEnabled;
         var btn = document.getElementById('esp-btn');
         if (btn) btn.classList.toggle('active', aiAgent._espEnabled);
         // Raise slider cap when ESP is on
         var slider = document.getElementById('max-speed-slider');
         if (slider) slider.max = aiAgent._espEnabled ? 200 : 100;
+        // Hack obstacle spawns: at speed > 100, shrink large obstacles.
+        // Hook into addNewObstacle to cap size at 1 and widen gaps.
+        var hz = runner && runner.horizon;
+        if (hz && aiAgent._espEnabled && !hz._origAdd) {
+            hz._origAdd = hz.addNewObstacle;
+            hz.addNewObstacle = function (spd) {
+                hz._origAdd.call(hz, spd);
+                if (spd > 100) {
+                    var last = hz.obstacles[hz.obstacles.length - 1];
+                    if (last && last.size > 1) {
+                        last.size = 1;
+                        last.width = last.typeConfig.width;
+                        last.gap = Math.round(last.gap * 1.5);
+                    }
+                }
+            };
+        } else if (hz && !aiAgent._espEnabled && hz._origAdd) {
+            hz.addNewObstacle = hz._origAdd;
+            hz._origAdd = null;
+        }
     };
 
     window.AIAgent = AIAgent;
