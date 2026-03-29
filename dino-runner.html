@@ -713,24 +713,8 @@
                         timeline.push({ f: f++, y: groundY, dk: false, type: 0 });
                     }
                 } else {
-                    // Running — show run, then jump when window is reached
-                    var jumpAt = -1;
-                    if (win && win.max > 0 && edgeDist > 0) {
-                        // Frames until edgeDist enters jump window
-                        jumpAt = Math.max(0, Math.ceil((edgeDist - win.max) / perFrame));
-                    }
-                    // Run until jump
-                    var runEnd = (jumpAt >= 0) ? Math.min(jumpAt, N) : N;
-                    for (var ri = 0; ri < runEnd; ri++) {
-                        timeline.push({ f: f++, y: groundY, dk: false, type: 0 });
-                    }
-                    // Jump arc
-                    if (jumpAt >= 0 && f < N) {
-                        for (var ai = 0; ai < arc.length && f < N; ai++) {
-                            timeline.push({ f: f++, y: arc[ai], dk: false, type: 2 });
-                        }
-                    }
-                    // Run after landing
+                    // Running — just show flat ground line.
+                    // The arc appears when action switches to 'jump'.
                     while (f < N) {
                         timeline.push({ f: f++, y: groundY, dk: false, type: 0 });
                     }
