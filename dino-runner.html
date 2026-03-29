@@ -1730,10 +1730,10 @@
     function trainLoop() {
         if (!_trainLoopRunning) return;
         if (_trainSlowMo && _trainState === 'running') {
-            // Slo-mo: skip 15 frames between physics steps.
-            // Don't draw on skip frames (was causing freeze).
+            // Slo-mo: advance physics every 15th frame, draw every frame.
             _slowCounter++;
             if (_slowCounter < 15) {
+                drawSwarmViz();
                 _trainTimeoutId = setTimeout(trainLoop, 16);
                 return;
             }
@@ -1850,12 +1850,10 @@
             drawChart();
         }
         if (_generation % 5 === 0) saveTrainingState();
-
-        requestAnimationFrame(dqnTrainTick);
     }
 
     function drawSwarmViz() {
-        if (!runner || !trainRunner) { console.log('[DRAW] no runner'); return; }
+        if (!runner || !trainRunner) return;
         var ctx = runner.canvasCtx;
         if (!ctx) return;
         var w = runner.dimensions.WIDTH;
