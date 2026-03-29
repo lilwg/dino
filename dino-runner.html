@@ -1533,7 +1533,8 @@
         _snapshots = [];
         _selectedSnapshot = -1;
         dqnTraining = false;
-        initPopulation();
+        // Don't init population yet — wait for loadTrainingState()
+        // to restore saved weights into policy first.
         document.getElementById('dqn-train-btn').textContent = 'TRAIN';
         document.getElementById('dqn-train-btn').classList.remove('active');
         document.getElementById('dqn-train-btn').classList.add('primary');
@@ -1706,7 +1707,10 @@
         var speed = r.currentSpeed;
         var dt = 1000 / 60;
 
-        for (var s = 0; s < SIM_SPEED; s++) {
+        // Slo-mo: run 1 step per frame instead of SIM_SPEED
+        var stepsThisTick = (runner && runner.slowMo) ? 1 : SIM_SPEED;
+
+        for (var s = 0; s < stepsThisTick; s++) {
             // Advance shared obstacles
             r.runningTime += dt;
             var hasObs = r.runningTime > r.config.CLEAR_TIME;
@@ -2312,14 +2316,16 @@
 
         initDQN();
 
-        // Restore previous training from localStorage
+        // Restore previous training from localStorage, THEN seed population
         if (loadTrainingState()) {
             drawChart();
             updateStatPanel();
             document.getElementById('dqn-stats').textContent =
-                'Restored: Ep ' + dqnEp + '  Best ' + dqnBest +
+                'Restored: Gen ' + _generation + '  Best ' + dqnBest +
                 '  (' + _snapshots.length + ' snapshots)';
         }
+        // Now that policy has saved weights (if any), seed population from it
+        initPopulation();
     }
 
     window.addEventListener('load', function () {
