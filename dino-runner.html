@@ -1607,7 +1607,7 @@
     var _lastChartDraw = 0;
     var SIM_SPEED = 8; // physics steps per animation frame
     var _tintCanvas = null;
-    // _trainSlowMo is declared above with the state machine
+    var _trainRAFActive = false; // true when rAF loop is running
 
     // ── Virtual dino for parallel evaluation ──
     function VDino(mlp, tRex) {
@@ -1711,7 +1711,10 @@
     // All 50 dinos play simultaneously with shared obstacles.
     // Runs SIM_SPEED physics steps per animation frame.
     function dqnTrainTick() {
-        if (_trainState !== 'running' && _trainState !== 'paused') return;
+        if (_trainState !== 'running' && _trainState !== 'paused') {
+            _trainRAFActive = false;
+            return;
+        }
 
         // Paused: just redraw, don't advance physics
         if (_trainState === 'paused') {
@@ -2135,13 +2138,17 @@
                 }
                 trainRestart();
                 resetVDinos();
+                // Start the rAF loop (only on fresh start, not resume from pause)
+                _trainRAFActive = true;
+                requestAnimationFrame(dqnTrainTick);
             }
-            // Start (or resume) the training loop
-            requestAnimationFrame(dqnTrainTick);
+            // Resume from pause: the existing rAF loop is still running
+            // (it draws the frozen scene), so don't start a second one.
         }
 
         // --- Enter 'idle' or 'snapshot': restore game ---
         if (newState === 'idle' || newState === 'snapshot') {
+            _trainRAFActive = false; // loop will exit on next tick
             _trainSlowMo = false;
             saveTrainingState();
             if (runner && runner._origPlaySound) {
