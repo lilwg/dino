@@ -1607,9 +1607,7 @@
     }
 
     var _lastChartDraw = 0;
-    var SIM_SPEED = 8; // target: SIM_SPEED * 60 steps per second
-    var _lastTickTime = 0;
-    var _stepAccum = 0;
+    var SIM_SPEED = 8;
     var _tintCanvas = null;
     var _trainLoopRunning = false; // single rAF loop flag
 
@@ -1730,17 +1728,7 @@
         }
         if (_trainState !== 'running') return;
 
-        // Time-based stepping: consistent speed regardless of display refresh rate
-        var now = performance.now();
-        if (!_lastTickTime) _lastTickTime = now;
-        var elapsed = Math.min(now - _lastTickTime, 100); // cap at 100ms
-        _lastTickTime = now;
-
-        var targetSPS = _trainSlowMo ? 60 : 60 * SIM_SPEED; // steps per second
-        _stepAccum += elapsed * targetSPS / 1000;
-        var stepsThisTick = Math.floor(_stepAccum);
-        _stepAccum -= stepsThisTick;
-        if (stepsThisTick > 30) stepsThisTick = 30; // prevent spiral
+        var stepsThisTick = _trainSlowMo ? 1 : SIM_SPEED;
 
         var r = trainRunner;
         var speed = r.currentSpeed;
@@ -2156,8 +2144,6 @@
                     runner.stop();
                 }
                 _trainSlowMo = false;
-                _lastTickTime = 0;
-                _stepAccum = 0;
                 trainRestart();
                 resetVDinos();
                 // Start the single rAF loop (flag-guarded, can't duplicate)
