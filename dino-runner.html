@@ -94,6 +94,7 @@
             <div class="si-controls" style="margin-top: 12px;">
                 <button class="si-btn active" id="human-btn" onclick="setMode('off')">Human</button>
                 <button class="si-btn" id="rules-btn" onclick="setMode('rules')">AI</button>
+                <button class="si-btn" id="dqn-btn" onclick="setMode('dqn')">ML</button>
                 <button class="si-btn" id="viz-btn" onclick="toggleViz()">Viz</button>
                 <button class="si-btn" onclick="restartGame()">Restart</button>
                 <button class="si-btn" id="pause-btn" onclick="togglePause()">Pause</button>
@@ -125,7 +126,6 @@
 </div>
 
 <!-- Hidden elements required by the JS engine -->
-<button class="si-btn" id="dqn-btn" onclick="setMode('dqn')">ML</button>
 <canvas id="dqn-chart" style="display:none" width="1" height="1"></canvas>
 <span id="stat-score" style="display:none"></span>
 <span id="stat-best" style="display:none"></span>
