@@ -1816,27 +1816,22 @@
         ctx.fillStyle = '#535353';
         ctx.fillRect(0, h - 12, w, 1);
 
-        // Obstacles — draw using actual sprites
+        // Obstacles — just draw as solid dark shapes (simpler than sprite lookup)
         var obs = trainRunner.horizon.obstacles;
+        ctx.fillStyle = '#535353';
         for (var i = 0; i < obs.length; i++) {
             var o = obs[i];
-            var ow = o.typeConfig.width * o.size;
-            var oh = o.typeConfig.height;
-            // Use the obstacle's own sprite position
-            if (o.spritePos) {
-                ctx.drawImage(sprite,
-                    o.spritePos.x, o.spritePos.y, ow, oh,
-                    o.xPos, o.yPos, ow, oh);
-            } else {
-                ctx.fillStyle = '#535353';
-                ctx.fillRect(o.xPos, o.yPos, ow, oh);
-            }
+            ctx.fillRect(o.xPos, o.yPos, o.typeConfig.width * o.size, o.typeConfig.height);
         }
 
-        // Dino sprite coords (1x sheet)
+        // Dino sprite coords — must account for HiDPI scaling
         var trexBase = runner.spriteDef ? runner.spriteDef.TREX : { x: 848, y: 2 };
-        var runFrame = 88; // running animation frame offset
-        var duckFrame = 264; // ducking frame offset
+        var hidpi = window.devicePixelRatio > 1;
+        var scale = hidpi ? 2 : 1;
+        var runFrame = 88 * scale;
+        var duckFrame = 264 * scale;
+        var sW = 44 * scale, sH = 47 * scale;
+        var sDW = 59 * scale;
 
         // Draw all dinos using actual sprites
         for (var i = 0; i < _vdinos.length; i++) {
@@ -1852,11 +1847,11 @@
 
             if (vd.ducking) {
                 ctx.drawImage(sprite,
-                    trexBase.x + duckFrame, trexBase.y, 59, 47,
+                    trexBase.x + duckFrame, trexBase.y, sDW, sH,
                     vd.xPos, vd.yPos, 59, 47);
             } else {
                 ctx.drawImage(sprite,
-                    trexBase.x + runFrame, trexBase.y, 44, 47,
+                    trexBase.x + runFrame, trexBase.y, sW, sH,
                     vd.xPos, vd.yPos, 44, 47);
             }
         }
