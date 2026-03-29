@@ -1591,8 +1591,10 @@
 
     function trainRestart() {
         var r = trainRunner;
+        // Stop trainRunner's own update loop — we control physics manually
+        if (r.raqId) { cancelAnimationFrame(r.raqId); r.raqId = 0; }
+        r.playing = false;
         r.runningTime = 0;
-        r.playing = true;
         r.crashed = false;
         r.activated = true;
         r.playingIntro = false;
