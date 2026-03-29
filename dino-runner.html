@@ -2501,21 +2501,8 @@
     };
 
     // --- Fix togglePause (single click works) ---
-    window.togglePause = function () {
-        var r = window.runner;
-        if (!r || r.crashed || !r.activated) return;
-        var btn = document.getElementById('pause-btn');
-        if (r.playing) {
-            r.stop();
-            btn.classList.add('active');
-        } else {
-            r.playing = true;
-            r.paused = false;
-            r.time = performance.now();
-            r.update();
-            btn.classList.remove('active');
-        }
-    };
+    // Preserve the training-aware version from the page logic section.
+    // Don't overwrite it.
 
     // --- R key restart (all states) ---
     document.addEventListener('keydown', function (e) {
