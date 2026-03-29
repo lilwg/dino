@@ -1797,7 +1797,7 @@
                 // Collision
                 if (hasObs && vd.checkCollision(obstacles)) {
                     vd.alive = false;
-                    vd.deathFrame = _evalSteps;
+                    vd.deathTime = performance.now();
                     _population[i].fitness = Math.floor(r.distanceRan / 100);
                 } else {
                     aliveCount++;
@@ -1899,7 +1899,10 @@
             var vd = _vdinos[i];
 
             if (!vd.alive) {
-                var fade = Math.max(0, 1 - (_evalSteps - vd.deathFrame) / 40);
+                // Fade based on wall time, not physics steps (avoids
+                // expensive tinting in slo-mo where steps are sparse)
+                if (!vd.deathTime) vd.deathTime = performance.now();
+                var fade = Math.max(0, 1 - (performance.now() - vd.deathTime) / 500);
                 if (fade <= 0) continue;
                 // Red-tinted sprite via offscreen canvas
                 if (!_tintCanvas) {
