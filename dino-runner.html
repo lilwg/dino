@@ -1599,6 +1599,8 @@
     var _lastChartDraw = 0;
     var SIM_SPEED = 8; // physics steps per animation frame
     var _tintCanvas = null;
+    var _trainPaused = false;
+    var _trainSlowMo = false;
 
     // ── Virtual dino for parallel evaluation ──
     function VDino(mlp, tRex) {
@@ -1705,7 +1707,7 @@
         if (!dqnTraining) return;
 
         // Pause: just redraw, don't advance physics
-        if (runner && runner.paused) {
+        if (_trainPaused) {
             drawSwarmViz();
             requestAnimationFrame(dqnTrainTick);
             return;
@@ -1715,8 +1717,7 @@
         var speed = r.currentSpeed;
         var dt = 1000 / 60;
 
-        // Slo-mo: run fewer steps so it looks slower
-        var stepsThisTick = (runner && runner.slowMo) ? 2 : SIM_SPEED;
+        var stepsThisTick = _trainSlowMo ? 2 : SIM_SPEED;
 
         for (var s = 0; s < stepsThisTick; s++) {
             // Advance shared obstacles
@@ -2107,10 +2108,9 @@
     window.togglePause = function () {
         if (!runner) return;
         var btn = document.getElementById('pause-btn');
-        // During training, just toggle a flag — don't touch the game loop
         if (dqnTraining) {
-            runner.paused = !runner.paused;
-            btn.classList.toggle('active', runner.paused);
+            _trainPaused = !_trainPaused;
+            btn.classList.toggle('active', _trainPaused);
             return;
         }
         if (runner.crashed) return;
@@ -2127,6 +2127,12 @@
     };
 
     window.toggleSlowMo = function () {
+        if (dqnTraining) {
+            _trainSlowMo = !_trainSlowMo;
+            var b2t = document.getElementById('slow-mo-btn2');
+            if (b2t) b2t.classList.toggle('active', _trainSlowMo);
+            return;
+        }
         if (!runner) return;
         runner.slowMo = !runner.slowMo;
         var b1 = document.getElementById('slow-mo-btn');
@@ -2155,7 +2161,9 @@
                     runner.raqId = 0;
                 }
             }
-            // Clear pause/slo-mo button states
+            // Reset training control flags
+            _trainPaused = false;
+            _trainSlowMo = false;
             document.getElementById('pause-btn').classList.remove('active');
             var smb = document.getElementById('slow-mo-btn2');
             if (smb) smb.classList.remove('active');
