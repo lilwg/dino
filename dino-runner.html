@@ -1732,7 +1732,7 @@
         if (_trainSlowMo && _trainState === 'running') {
             // Slo-mo: advance physics every 15th frame, draw every frame.
             _slowCounter++;
-            if (_slowCounter < 7) {
+            if (_slowCounter < 3) {
                 drawSwarmViz();
                 _trainTimeoutId = setTimeout(trainLoop, 16);
                 return;
