@@ -1722,7 +1722,7 @@
     function startTrainLoop() {
         stopTrainLoop();
         _trainLoopRunning = true;
-        trainLoop();
+        _trainTimeoutId = setTimeout(trainLoop, 0); // always async
     }
 
     function trainLoop() {
@@ -1809,8 +1809,13 @@
             }
         }
 
-        // Draw all dinos on the main canvas
-        drawSwarmViz();
+        // Draw — every tick in slo-mo, every 3rd tick in normal
+        if (!_drawSkip) _drawSkip = 0;
+        _drawSkip++;
+        if (_trainSlowMo || _drawSkip >= 3) {
+            _drawSkip = 0;
+            drawSwarmViz();
+        }
 
         // Update stats
         var alive = 0;
