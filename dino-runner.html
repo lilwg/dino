@@ -1816,12 +1816,6 @@
         var sprite = Runner.imageSprite;
         if (!sprite) return;
 
-        // Stop the game's own render by canceling its rAF
-        if (runner.raqId) {
-            cancelAnimationFrame(runner.raqId);
-            runner.raqId = 0;
-        }
-
         ctx.clearRect(0, 0, w, h);
 
         // Ground line
@@ -2111,8 +2105,15 @@
     };
 
     window.togglePause = function () {
-        if (!runner || runner.crashed) return;
+        if (!runner) return;
         var btn = document.getElementById('pause-btn');
+        // During training, just toggle a flag — don't touch the game loop
+        if (dqnTraining) {
+            runner.paused = !runner.paused;
+            btn.classList.toggle('active', runner.paused);
+            return;
+        }
+        if (runner.crashed) return;
         if (runner.playing && !runner.paused) {
             runner.stop();
             btn.classList.add('active');
@@ -2142,14 +2143,22 @@
             btn.classList.remove('primary');
             btn.classList.add('active');
 
-            // Mute sounds and pause the main game during training
+            // Mute sounds, stop the main game loop during training
             if (runner) {
                 runner._origPlaySound = runner.playSound;
                 runner.playSound = function () {};
-                if (runner.playing && !runner.crashed) {
-                    runner.paused = true;
+                runner.paused = false;
+                runner.slowMo = false;
+                // Stop game's render loop — training viz takes over the canvas
+                if (runner.raqId) {
+                    cancelAnimationFrame(runner.raqId);
+                    runner.raqId = 0;
                 }
             }
+            // Clear pause/slo-mo button states
+            document.getElementById('pause-btn').classList.remove('active');
+            var smb = document.getElementById('slow-mo-btn2');
+            if (smb) smb.classList.remove('active');
 
             // Reset virtual dinos and start parallel training
             trainRestart();
@@ -2164,16 +2173,20 @@
             btn.classList.remove('active');
             saveTrainingState();
 
-            // Restore sounds and restart game render loop
+            // Restore sounds, clear flags, restart game render loop
             if (runner && runner._origPlaySound) {
                 runner.playSound = runner._origPlaySound;
                 runner._origPlaySound = null;
             }
             if (runner) {
                 runner.paused = false;
+                runner.slowMo = false;
                 runner.time = performance.now();
                 runner.scheduleNextUpdate();
             }
+            document.getElementById('pause-btn').classList.remove('active');
+            var smb2 = document.getElementById('slow-mo-btn2');
+            if (smb2) smb2.classList.remove('active');
 
 
             var badge = document.getElementById('status-badge');
