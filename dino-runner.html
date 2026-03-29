@@ -2254,6 +2254,8 @@
             _trainSlowMo = !_trainSlowMo;
             var sb = document.getElementById('slow-mo-btn2');
             if (sb) sb.classList.toggle('active', _trainSlowMo);
+            // Restart the loop so the new delay takes effect immediately
+            if (_trainState === 'running') startTrainLoop();
             return;
         }
         if (!runner) return;
