@@ -2012,9 +2012,18 @@
             var snap = _snapshots[bestIdx];
             policy.deserialize(snap.weights);
             document.getElementById('chart-hint').textContent =
-                'Loaded ep ' + snap.ep + ' (score ' + snap.score + ')';
+                'Gen ' + snap.ep + ' (score ' + snap.score + ') — click TRAIN to resume';
+
+            // Stop training so the user can watch this model play
+            if (dqnTraining) toggleTrain();
+
             drawChart();
+
+            // Switch to ML mode and restart the game with this model
             if (aiMode !== 'dqn') setMode('dqn');
+            if (runner) {
+                runner.restart();
+            }
         }
     }
 
