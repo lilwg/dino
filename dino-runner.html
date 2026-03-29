@@ -1816,12 +1816,19 @@
         ctx.fillStyle = '#535353';
         ctx.fillRect(0, h - 12, w, 1);
 
-        // Obstacles — just draw as solid dark shapes (simpler than sprite lookup)
+        // Obstacles — draw using actual sprites
         var obs = trainRunner.horizon.obstacles;
-        ctx.fillStyle = '#535353';
+        var hidpi = window.devicePixelRatio > 1;
+        var scale = hidpi ? 2 : 1;
         for (var i = 0; i < obs.length; i++) {
             var o = obs[i];
-            ctx.fillRect(o.xPos, o.yPos, o.typeConfig.width * o.size, o.typeConfig.height);
+            var ow = o.typeConfig.width * o.size;
+            var oh = o.typeConfig.height;
+            if (o.spritePos) {
+                ctx.drawImage(sprite,
+                    o.spritePos.x, o.spritePos.y, ow * scale, oh * scale,
+                    o.xPos, o.yPos, ow, oh);
+            }
         }
 
         // Dino sprite coords — must account for HiDPI scaling
