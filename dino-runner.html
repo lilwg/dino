@@ -507,23 +507,58 @@
                 return;
             }
 
-            // ===== GROUND: Medium pteros (yPos=75) — duck under =====
+            // ===== GROUND: Medium pteros (yPos=75) — duck or jump over =====
+            var accel = (speed < runner.config.MAX_SPEED) ? (runner.config.ACCELERATION || 0) : 0;
+            var maxSpd = runner.config.MAX_SPEED;
             if (isMedPtero) {
-                var pteroSpeed = speed + (near.speedOffset || 0);
-                var pteroPerFrame = Math.floor(pteroSpeed);
-                if (pteroPerFrame < 1) pteroPerFrame = 1;
-                // Ducking hitbox is wider — account for the extra pixels
-                var duckExtra = tRex.config.WIDTH_DUCK - tW;
-                // Duck when overlap is within 2 frames
-                var duckStart = duckExtra + pteroPerFrame * 2;
-                var duckEnd = -(oW + pteroPerFrame * 2);
+                // Look ahead: is there a jumpable obstacle close behind?
+                var nextObs = null;
+                for (var ni = 0; ni < obs.length; ni++) {
+                    var nob = obs[ni];
+                    if (nob === near || nob.xPos <= near.xPos) continue;
+                    var nPtero = nob.typeConfig.type === 'PTERODACTYL';
+                    if (nPtero && (nob.yPos === 50 || nob.yPos === 75)) continue;
+                    nextObs = nob;
+                    break;
+                }
 
-                if (edgeDist < duckStart && edgeDist > duckEnd) {
-                    if (!tRex.ducking) tRex.setDuck(true);
-                    this._setViz('duck', tRex, speed, ahead, near);
-                } else {
-                    if (tRex.ducking) tRex.setDuck(false);
-                    this._setViz('run', tRex, speed, ahead, near);
+                var jumpOverBoth = false;
+                if (nextObs) {
+                    var perFrame = Math.floor(speed);
+                    var gap = nextObs.xPos - (near.xPos + oW);
+                    // If gap is too small to duck-then-jump (< 6 frames),
+                    // try jumping over the ptero + obstacle as one group.
+                    if (gap < perFrame * 6) {
+                        var nextW = nextObs.typeConfig.width * nextObs.size;
+                        var comboRight = Math.max(near.xPos + oW, nextObs.xPos + nextW);
+                        var comboW = comboRight - near.xPos;
+                        var comboY = Math.min(near.yPos, nextObs.yPos);
+                        var comboWin = this._jumpWindow(speed, comboY, comboW, tRex, accel, maxSpd);
+                        if (comboWin.min >= 0 && edgeDist <= comboWin.max && edgeDist >= comboWin.min) {
+                            if (tRex.ducking) tRex.setDuck(false);
+                            tRex.startJump(speed);
+                            this._setViz('jump', tRex, speed, ahead, near);
+                            jumpOverBoth = true;
+                        }
+                    }
+                }
+
+                if (!jumpOverBoth) {
+                    // Normal duck behavior
+                    var pteroSpeed = speed + (near.speedOffset || 0);
+                    var pteroPerFrame = Math.floor(pteroSpeed);
+                    if (pteroPerFrame < 1) pteroPerFrame = 1;
+                    var duckExtra = tRex.config.WIDTH_DUCK - tW;
+                    var duckStart = duckExtra + pteroPerFrame * 2;
+                    var duckEnd = -(oW + pteroPerFrame * 2);
+
+                    if (edgeDist < duckStart && edgeDist > duckEnd) {
+                        if (!tRex.ducking) tRex.setDuck(true);
+                        this._setViz('duck', tRex, speed, ahead, near);
+                    } else {
+                        if (tRex.ducking) tRex.setDuck(false);
+                        this._setViz('run', tRex, speed, ahead, near);
+                    }
                 }
                 return;
             }
@@ -531,8 +566,7 @@
             // ===== GROUND: Cacti & low pteros — jump =====
             if (tRex.ducking) tRex.setDuck(false);
 
-            var accel = (speed < runner.config.MAX_SPEED) ? (runner.config.ACCELERATION || 0) : 0;
-            var win = this._jumpWindow(speed, groupObsY, groupW, tRex, accel, runner.config.MAX_SPEED);
+            var win = this._jumpWindow(speed, groupObsY, groupW, tRex, accel, maxSpd);
             if (win.min >= 0 && edgeDist <= win.max && edgeDist >= win.min) {
                 tRex.startJump(speed);
                 this._setViz('jump', tRex, speed, ahead, near);
