@@ -658,71 +658,90 @@
             };
         },
 
+        // Build a single continuous predicted path showing exactly
+        // where the dino will be each frame, color-coded by state:
+        //   grey (0) = running, blue (2) = jumping, orange (1) = dropping
         _buildRuleViz: function (action, tRex, speed, near) {
             var groundY = tRex.groundYPos;
             var arc = this._getJumpArc(speed, tRex);
-            var paths = [];
-            var optPath = [];
+            var cfg = tRex.config;
+            var timeline = []; // single continuous path
+            var N = arc.length * 2; // frames to predict
+            var f = 0;
 
-            if (!tRex.jumping) {
-                // Jump arc from ground
-                var jumpPts = [];
-                for (var f = 0; f < arc.length; f++) {
-                    jumpPts.push({ f: f, y: arc[f], dk: false, type: 2 });
+            if (tRex.jumping) {
+                if (tRex.speedDrop) {
+                    // Currently speed-dropping — simulate to landing
+                    var dArc = this._simDropArc(tRex);
+                    for (var di = 0; di < dArc.length; di++) {
+                        timeline.push({ f: f++, y: dArc[di], dk: true, type: 1 });
+                    }
+                } else {
+                    // Mid-jump — simulate remaining arc
+                    var cArc = this._simContinueArc(tRex);
+                    for (var ci = 0; ci < cArc.length; ci++) {
+                        timeline.push({ f: f++, y: cArc[ci], dk: false, type: 2 });
+                    }
                 }
-                paths.push({ points: jumpPts, val: action === 'jump' ? 9999 : 1, dead: false });
-
-                // Ground run
-                var runLen = Math.min(arc.length, 30);
-                var runPts = [];
-                for (f = 0; f < runLen; f++) {
-                    runPts.push({ f: f, y: groundY, dk: false, type: 0 });
+                // After landing, run on ground for remaining frames
+                while (f < N) {
+                    timeline.push({ f: f++, y: groundY, dk: false, type: 0 });
                 }
-                paths.push({ points: runPts, val: action === 'run' ? 9999 : 1, dead: false });
-
-                // Ground duck
-                var duckPts = [];
-                for (f = 0; f < runLen; f++) {
-                    duckPts.push({ f: f, y: groundY, dk: true, type: 1 });
-                }
-                paths.push({ points: duckPts, val: action === 'duck' ? 9999 : 1, dead: false });
-
-                optPath = (action === 'jump') ? jumpPts :
-                          (action === 'duck') ? duckPts : runPts;
-            } else if (!tRex.speedDrop) {
-                // Continue jump arc
-                var contArc = this._simContinueArc(tRex);
-                var contPts = [];
-                for (f = 0; f < contArc.length; f++) {
-                    contPts.push({ f: f, y: contArc[f], dk: false, type: 2 });
-                }
-                paths.push({ points: contPts, val: action !== 'duck' ? 9999 : 1, dead: false });
-
-                // Speed-drop arc
-                var dropArc = this._simDropArc(tRex);
-                var dropPts = [];
-                for (f = 0; f < dropArc.length; f++) {
-                    dropPts.push({ f: f, y: dropArc[f], dk: true, type: 1 });
-                }
-                paths.push({ points: dropPts, val: action === 'duck' ? 9999 : 1, dead: false });
-
-                optPath = (action === 'duck') ? dropPts : contPts;
             } else {
-                // Already speed-dropping
-                var dropArc2 = this._simDropArc(tRex);
-                var dropPts2 = [];
-                for (f = 0; f < dropArc2.length; f++) {
-                    dropPts2.push({ f: f, y: dropArc2[f], dk: true, type: 1 });
+                // On ground — predict: run until jump window, jump, land, repeat
+                var win = this._lastJumpWin;
+                var edgeDist = near ? (near.xPos - (tRex.xPos + cfg.WIDTH)) : 9999;
+                var perFrame = Math.floor(speed);
+                if (perFrame < 1) perFrame = 1;
+
+                if (action === 'jump') {
+                    // Jumping this frame — show the arc
+                    for (var ji = 0; ji < arc.length; ji++) {
+                        timeline.push({ f: f++, y: arc[ji], dk: false, type: 2 });
+                    }
+                    // Then run after landing
+                    while (f < N) {
+                        timeline.push({ f: f++, y: groundY, dk: false, type: 0 });
+                    }
+                } else if (action === 'duck') {
+                    // Ducking — show duck duration then run
+                    var duckFrames = Math.min(15, N);
+                    for (var dki = 0; dki < duckFrames; dki++) {
+                        timeline.push({ f: f++, y: groundY, dk: true, type: 1 });
+                    }
+                    while (f < N) {
+                        timeline.push({ f: f++, y: groundY, dk: false, type: 0 });
+                    }
+                } else {
+                    // Running — show run, then jump when window is reached
+                    var jumpAt = -1;
+                    if (win && win.max > 0 && edgeDist > 0) {
+                        // Frames until edgeDist enters jump window
+                        jumpAt = Math.max(0, Math.ceil((edgeDist - win.max) / perFrame));
+                    }
+                    // Run until jump
+                    var runEnd = (jumpAt >= 0) ? Math.min(jumpAt, N) : N;
+                    for (var ri = 0; ri < runEnd; ri++) {
+                        timeline.push({ f: f++, y: groundY, dk: false, type: 0 });
+                    }
+                    // Jump arc
+                    if (jumpAt >= 0 && f < N) {
+                        for (var ai = 0; ai < arc.length && f < N; ai++) {
+                            timeline.push({ f: f++, y: arc[ai], dk: false, type: 2 });
+                        }
+                    }
+                    // Run after landing
+                    while (f < N) {
+                        timeline.push({ f: f++, y: groundY, dk: false, type: 0 });
+                    }
                 }
-                paths.push({ points: dropPts2, val: 9999, dead: false });
-                optPath = dropPts2;
             }
 
             return {
-                paths: paths,
-                optimalPath: optPath,
+                paths: [],
+                optimalPath: timeline,
                 groundY: groundY,
-                N: arc.length * 2,
+                N: N,
                 isJumping: tRex.jumping,
                 tRexX: tRex.xPos,
                 speed: speed
