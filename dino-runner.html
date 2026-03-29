@@ -1609,7 +1609,7 @@
     var _lastChartDraw = 0;
     var SIM_SPEED = 8; // physics steps per animation frame
     var _tintCanvas = null;
-    var _trainIntervalId = null; // single setInterval ID
+    var _trainLoopRunning = false; // single rAF loop flag
 
     // ── Virtual dino for parallel evaluation ──
     function VDino(mlp, tRex) {
@@ -1712,6 +1712,14 @@
     // ── Parallel neuroevolution tick ──
     // All 50 dinos play simultaneously with shared obstacles.
     // Runs SIM_SPEED physics steps per animation frame.
+    // Single rAF loop — flag-guarded so it can never duplicate.
+    // Pause/unpause don't touch the loop; they flip _trainState.
+    function trainLoop() {
+        if (!_trainLoopRunning) return;
+        dqnTrainTick();
+        if (_trainLoopRunning) requestAnimationFrame(trainLoop);
+    }
+
     function dqnTrainTick() {
         // Paused: just redraw, don't advance physics
         if (_trainState === 'paused') {
@@ -2137,16 +2145,18 @@
                 }
                 trainRestart();
                 resetVDinos();
-                // Start the single training interval
-                if (_trainIntervalId) clearInterval(_trainIntervalId);
-                _trainIntervalId = setInterval(dqnTrainTick, 1000 / 60);
+                // Start the single rAF loop (flag-guarded, can't duplicate)
+                if (!_trainLoopRunning) {
+                    _trainLoopRunning = true;
+                    requestAnimationFrame(trainLoop);
+                }
             }
             // Resume from pause: interval is still running, just flip the state.
         }
 
         // --- Enter 'idle' or 'snapshot': restore game ---
         if (newState === 'idle' || newState === 'snapshot') {
-            if (_trainIntervalId) { clearInterval(_trainIntervalId); _trainIntervalId = null; }
+            _trainLoopRunning = false;
             _trainSlowMo = false;
             saveTrainingState();
             if (runner && runner._origPlaySound) {
