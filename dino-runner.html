@@ -1719,7 +1719,7 @@
         if (!_trainLoopRunning) return;
         dqnTrainTick();
         if (_trainLoopRunning) {
-            setTimeout(trainLoop, _trainSlowMo ? 100 : 16);
+            setTimeout(trainLoop, _trainSlowMo ? 500 : 16);
         }
     }
 
