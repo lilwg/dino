@@ -1607,7 +1607,7 @@
     var _lastChartDraw = 0;
     var SIM_SPEED = 8; // physics steps per animation frame
     var _tintCanvas = null;
-    var _trainRAFActive = false; // true when rAF loop is running
+    var _trainIntervalId = null; // single setInterval ID
 
     // ── Virtual dino for parallel evaluation ──
     function VDino(mlp, tRex) {
@@ -1711,17 +1711,12 @@
     // All 50 dinos play simultaneously with shared obstacles.
     // Runs SIM_SPEED physics steps per animation frame.
     function dqnTrainTick() {
-        if (_trainState !== 'running' && _trainState !== 'paused') {
-            _trainRAFActive = false;
-            return;
-        }
-
         // Paused: just redraw, don't advance physics
         if (_trainState === 'paused') {
             drawSwarmViz();
-            requestAnimationFrame(dqnTrainTick);
             return;
         }
+        if (_trainState !== 'running') return;
 
         var r = trainRunner;
         var speed = r.currentSpeed;
@@ -2138,17 +2133,16 @@
                 }
                 trainRestart();
                 resetVDinos();
-                // Start the rAF loop (only on fresh start, not resume from pause)
-                _trainRAFActive = true;
-                requestAnimationFrame(dqnTrainTick);
+                // Start the single training interval
+                if (_trainIntervalId) clearInterval(_trainIntervalId);
+                _trainIntervalId = setInterval(dqnTrainTick, 1000 / 60);
             }
-            // Resume from pause: the existing rAF loop is still running
-            // (it draws the frozen scene), so don't start a second one.
+            // Resume from pause: interval is still running, just flip the state.
         }
 
         // --- Enter 'idle' or 'snapshot': restore game ---
         if (newState === 'idle' || newState === 'snapshot') {
-            _trainRAFActive = false; // loop will exit on next tick
+            if (_trainIntervalId) { clearInterval(_trainIntervalId); _trainIntervalId = null; }
             _trainSlowMo = false;
             saveTrainingState();
             if (runner && runner._origPlaySound) {
