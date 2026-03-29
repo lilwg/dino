@@ -854,7 +854,10 @@
         return baseX + (dk ? 28 : 20) + f * perFrame;
     }
 
-    function toCanvasY(y) { return y; }
+    // Path y values are the dino's sprite top (yPos).
+    // Offset by sprite height to draw at feet level.
+    var DINO_H = 47;
+    function toCanvasY(y) { return y + DINO_H; }
 
     function optCanvasX(baseX, f, perFrame) {
         return baseX + 22 + f * perFrame;
@@ -901,7 +904,7 @@
             ctx.strokeStyle = nightAdjust(isNear ? '#ff3b30' : '#636366');
             ctx.globalAlpha = isNear ? 0.8 : 0.25;
             ctx.setLineDash(isNear ? [] : [3, 3]);
-            ctx.strokeRect(o.xPos, toCanvasY(o.yPos), o.width, o.height);
+            ctx.strokeRect(o.xPos, o.yPos, o.width, o.height);
         }
         ctx.setLineDash([]);
         ctx.restore();
@@ -980,8 +983,10 @@
 
             if (bestF >= 0) {
                 var clearX = nearCX;
-                var dinoBottom = toCanvasY(bestY) + 47; // sprite height
-                var obsTop = toCanvasY(near.yPos);
+                // Dino bottom = yPos + sprite height (already in canvas coords)
+                var dinoBottom = bestY + DINO_H;
+                // Obstacle top = yPos (already in canvas coords)
+                var obsTop = near.yPos;
                 var gap = obsTop - dinoBottom;
 
                 // Vertical clearance line
