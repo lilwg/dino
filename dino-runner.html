@@ -883,7 +883,7 @@
         var rv = viz.ruleViz;
 
         ctx.save();
-        this._drawObstacles(ctx, viz);
+        this._drawObstacles(ctx, viz, runner);
         if (rv) {
             this._drawPath(ctx, viz, rv);
         }
@@ -892,9 +892,17 @@
     };
 
     // Draw obstacle bounding boxes — bold red for nearest, faint for others.
-    SimVisualizer.prototype._drawObstacles = function (ctx, viz) {
+    // Compensate for 1-frame physics lag (positions captured before movement).
+    SimVisualizer.prototype._drawObstacles = function (ctx, viz, runner) {
         var obs = viz.obstacles;
         if (!obs || obs.length === 0) return;
+
+        // Compute actual per-frame movement (accounts for slo-mo)
+        var drift = Math.floor(viz.speed);
+        if (runner && runner.slowMo) {
+            var scale = 5 / Math.max(5, viz.speed);
+            drift = Math.floor(viz.speed * scale);
+        }
 
         ctx.save();
         for (var i = 0; i < obs.length; i++) {
@@ -904,9 +912,7 @@
             ctx.strokeStyle = nightAdjust(isNear ? '#ff3b30' : '#636366');
             ctx.globalAlpha = isNear ? 0.8 : 0.25;
             ctx.setLineDash(isNear ? [] : [3, 3]);
-            // Ptero sprites extend ~10px beyond their collision width
-            var pad = (o.type === 'PTERODACTYL') ? 10 : 0;
-            ctx.strokeRect(o.xPos - pad / 2, o.yPos, o.width + pad, o.height);
+            ctx.strokeRect(o.xPos - drift, o.yPos, o.width, o.height);
         }
         ctx.setLineDash([]);
         ctx.restore();
@@ -969,7 +975,8 @@
         var ni = viz.nearIdx;
         if (ni >= 0 && ni < obs.length) {
             var near = obs[ni];
-            var nearCX = near.xPos + near.width / 2; // obstacle center x
+            var cDrift = Math.floor(viz.speed);
+            var nearCX = near.xPos - cDrift + near.width / 2;
 
             // Find the path point closest to the obstacle center
             var bestF = -1, bestY = rv.groundY;
