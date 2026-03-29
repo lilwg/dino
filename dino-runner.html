@@ -1598,6 +1598,7 @@
 
     var _lastChartDraw = 0;
     var SIM_SPEED = 8; // physics steps per animation frame
+    var _tintCanvas = null;
 
     // ── Virtual dino for parallel evaluation ──
     function VDino(mlp, tRex) {
@@ -1703,12 +1704,19 @@
     function dqnTrainTick() {
         if (!dqnTraining) return;
 
+        // Pause: just redraw, don't advance physics
+        if (runner && runner.paused) {
+            drawSwarmViz();
+            requestAnimationFrame(dqnTrainTick);
+            return;
+        }
+
         var r = trainRunner;
         var speed = r.currentSpeed;
         var dt = 1000 / 60;
 
-        // Slo-mo: run 1 step per frame instead of SIM_SPEED
-        var stepsThisTick = (runner && runner.slowMo) ? 1 : SIM_SPEED;
+        // Slo-mo: run fewer steps so it looks slower
+        var stepsThisTick = (runner && runner.slowMo) ? 2 : SIM_SPEED;
 
         for (var s = 0; s < stepsThisTick; s++) {
             // Advance shared obstacles
@@ -1851,11 +1859,23 @@
             if (!vd.alive) {
                 var fade = Math.max(0, 1 - (_evalSteps - vd.deathFrame) / 40);
                 if (fade <= 0) continue;
-                // Red death flash
-                ctx.globalAlpha = fade * 0.4;
-                ctx.fillStyle = '#ff3b30';
+                // Red-tinted sprite via offscreen canvas
+                if (!_tintCanvas) {
+                    _tintCanvas = document.createElement('canvas');
+                    _tintCanvas.width = 60; _tintCanvas.height = 48;
+                }
+                var tc = _tintCanvas.getContext('2d');
                 var dw2 = vd.ducking ? 59 : 44;
-                ctx.fillRect(vd.xPos, vd.yPos, dw2, 47);
+                var sx2 = trexBase.x + (vd.ducking ? duckFrame : runFrame);
+                var sw2 = vd.ducking ? sDW : sW;
+                tc.clearRect(0, 0, 60, 48);
+                tc.drawImage(sprite, sx2, trexBase.y, sw2, sH, 0, 0, dw2, 47);
+                tc.globalCompositeOperation = 'source-atop';
+                tc.fillStyle = '#ff3b30';
+                tc.fillRect(0, 0, 60, 48);
+                tc.globalCompositeOperation = 'source-over';
+                ctx.globalAlpha = fade * 0.4;
+                ctx.drawImage(_tintCanvas, 0, 0, dw2, 47, vd.xPos, vd.yPos, dw2, 47);
                 continue;
             }
 
