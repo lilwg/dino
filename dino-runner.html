@@ -1730,11 +1730,10 @@
     function trainLoop() {
         if (!_trainLoopRunning) return;
         if (_trainSlowMo && _trainState === 'running') {
-            // Slo-mo: always 16ms loop for smooth rendering,
-            // but only advance physics every 15th frame (~4 steps/sec).
+            // Slo-mo: skip 15 frames between physics steps.
+            // Don't draw on skip frames (was causing freeze).
             _slowCounter++;
             if (_slowCounter < 15) {
-                drawSwarmViz(); // just redraw frozen scene
                 _trainTimeoutId = setTimeout(trainLoop, 16);
                 return;
             }
@@ -1856,7 +1855,7 @@
     }
 
     function drawSwarmViz() {
-        if (!runner || !trainRunner) return;
+        if (!runner || !trainRunner) { console.log('[DRAW] no runner'); return; }
         var ctx = runner.canvasCtx;
         if (!ctx) return;
         var w = runner.dimensions.WIDTH;
