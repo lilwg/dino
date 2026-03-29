@@ -882,97 +882,34 @@
         ctx.save();
         this._drawObstacles(ctx, viz);
         if (rv) {
-            this._drawJumpWindow(ctx, viz);
-            this._drawPaths(ctx, viz, rv);
-            this._drawOptimalPath(ctx, viz, rv);
+            this._drawPath(ctx, viz, rv);
         }
         this._drawDecisionBadge(ctx, viz);
         ctx.restore();
     };
 
-    // Draw obstacle bounding boxes — red outline for the nearest,
-    // grey for others. Shows what the AI is focused on.
+    // Draw obstacle bounding boxes — bold red for nearest, faint for others.
     SimVisualizer.prototype._drawObstacles = function (ctx, viz) {
         var obs = viz.obstacles;
         if (!obs || obs.length === 0) return;
 
         ctx.save();
-        ctx.lineWidth = 1;
         for (var i = 0; i < obs.length; i++) {
             var o = obs[i];
             var isNear = (i === viz.nearIdx);
-            ctx.strokeStyle = nightAdjust(isNear ? '#ff3b30' : '#8e8e93');
-            ctx.globalAlpha = isNear ? 0.7 : 0.3;
+            ctx.lineWidth = isNear ? 2 : 1;
+            ctx.strokeStyle = nightAdjust(isNear ? '#ff3b30' : '#636366');
+            ctx.globalAlpha = isNear ? 0.8 : 0.25;
+            ctx.setLineDash(isNear ? [] : [3, 3]);
             ctx.strokeRect(o.xPos, toCanvasY(o.yPos), o.width, o.height);
         }
+        ctx.setLineDash([]);
         ctx.restore();
     };
 
-    // Draw the jump window as a colored band on the ground.
-    // Green = safe to jump, shows the distance range.
-    SimVisualizer.prototype._drawJumpWindow = function (ctx, viz) {
-        var win = viz.jumpWindow;
-        if (!win || win.min < 0) return;
-
-        var tRight = viz.tRexPos.x + 44; // tW
-        var groundY = toCanvasY(93); // groundYPos
-        var x1 = tRight + win.min;
-        var x2 = tRight + win.max;
-        var canvasW = ctx.canvas.width;
-        if (window.devicePixelRatio > 1) canvasW /= 2;
-        if (x1 > canvasW) return;
-        if (x2 > canvasW) x2 = canvasW;
-
-        ctx.save();
-        ctx.globalAlpha = 0.08;
-        ctx.fillStyle = nightAdjust('#30d158');
-        ctx.fillRect(x1, toCanvasY(0), x2 - x1, groundY - toCanvasY(0) + 20);
-        // Bottom edge marker
-        ctx.globalAlpha = 0.4;
-        ctx.fillStyle = nightAdjust('#30d158');
-        ctx.fillRect(x1, groundY + 2, x2 - x1, 3);
-        ctx.restore();
-    };
-
-    SimVisualizer.prototype._drawPaths = function (ctx, viz, rv) {
-        var baseX = viz.tRexPos.x;
-        var perFrame = Math.max(1, Math.floor(viz.speed));
-        var canvasW = ctx.canvas.width;
-        if (window.devicePixelRatio > 1) canvasW /= 2;
-
-        var paths = rv.paths;
-        if (!paths || paths.length === 0) return;
-
-        ctx.save();
-        ctx.lineJoin = 'round';
-        ctx.lineCap = 'round';
-        ctx.lineWidth = 1;
-
-        for (var p = 0; p < paths.length; p++) {
-            var path = paths[p];
-            var pts = path.points;
-            if (pts.length < 2) continue;
-            if (path.val >= 9999) continue;
-
-            var type = pts[1] ? pts[1].type : pts[0].type;
-            ctx.strokeStyle = nightAdjust(TYPE_COLORS[type]);
-            ctx.globalAlpha = 0.25;
-            ctx.beginPath();
-            var pt0 = pts[0];
-            ctx.moveTo(toCanvasX(baseX, pt0.f, pt0.dk, perFrame), toCanvasY(pt0.y));
-            for (var i = 1; i < pts.length; i++) {
-                var pi = pts[i];
-                var px = toCanvasX(baseX, pi.f, pi.dk, perFrame);
-                if (px > canvasW) break;
-                ctx.lineTo(px, toCanvasY(pi.y));
-            }
-            ctx.stroke();
-        }
-
-        ctx.restore();
-    };
-
-    SimVisualizer.prototype._drawOptimalPath = function (ctx, viz, rv) {
+    // Draw the single predicted path with color-coded state,
+    // plus clearance indicators at obstacle crossings.
+    SimVisualizer.prototype._drawPath = function (ctx, viz, rv) {
         var path = rv.optimalPath;
         if (!path || path.length < 2) return;
 
@@ -980,7 +917,9 @@
         var baseX = viz.tRexPos.x;
         var canvasW = ctx.canvas.width;
         if (window.devicePixelRatio > 1) canvasW /= 2;
+        var clipX = Math.min(canvasW, baseX + 600); // don't draw too far ahead
 
+        // --- Draw the path, segment by segment, colored by state ---
         ctx.save();
         ctx.lineWidth = 3;
         ctx.lineJoin = 'round';
@@ -994,7 +933,7 @@
             for (var i = 1; i < path.length; i++) {
                 var pt = path[i];
                 var x1 = optCanvasX(baseX, pt.f, perFrame);
-                if (x1 > canvasW) break;
+                if (x1 > clipX) break;
                 if (pt.type !== c) continue;
                 var prev = path[i - 1];
                 ctx.moveTo(optCanvasX(baseX, prev.f, perFrame), toCanvasY(prev.y));
@@ -1002,6 +941,68 @@
                 has = true;
             }
             if (has) ctx.stroke();
+        }
+
+        // --- Landing dot: mark where the dino touches ground ---
+        for (i = 1; i < path.length; i++) {
+            var lp = path[i];
+            var lx = optCanvasX(baseX, lp.f, perFrame);
+            if (lx > clipX) break;
+            // Landing = transition from airborne to ground
+            if (lp.y >= rv.groundY && path[i - 1].y < rv.groundY) {
+                ctx.fillStyle = nightAdjust('#30d158');
+                ctx.globalAlpha = 0.8;
+                ctx.beginPath();
+                ctx.arc(lx, toCanvasY(rv.groundY), 4, 0, Math.PI * 2);
+                ctx.fill();
+                break;
+            }
+        }
+
+        // --- Clearance indicator at nearest obstacle ---
+        var obs = viz.obstacles;
+        var ni = viz.nearIdx;
+        if (ni >= 0 && ni < obs.length) {
+            var near = obs[ni];
+            var nearCX = near.xPos + near.width / 2; // obstacle center x
+
+            // Find the path point closest to the obstacle center
+            var bestF = -1, bestY = rv.groundY;
+            for (i = 0; i < path.length; i++) {
+                var px = optCanvasX(baseX, path[i].f, perFrame);
+                if (Math.abs(px - nearCX) < perFrame) {
+                    if (bestF < 0 || path[i].y < bestY) {
+                        bestF = i;
+                        bestY = path[i].y;
+                    }
+                }
+            }
+
+            if (bestF >= 0) {
+                var clearX = nearCX;
+                var dinoBottom = toCanvasY(bestY) + 47; // sprite height
+                var obsTop = toCanvasY(near.yPos);
+                var gap = obsTop - dinoBottom;
+
+                // Vertical clearance line
+                if (gap > 0) {
+                    ctx.strokeStyle = nightAdjust('#30d158');
+                    ctx.globalAlpha = 0.7;
+                    ctx.lineWidth = 2;
+                    ctx.setLineDash([2, 2]);
+                    ctx.beginPath();
+                    ctx.moveTo(clearX, dinoBottom);
+                    ctx.lineTo(clearX, obsTop);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+
+                    // Gap label
+                    ctx.font = 'bold 9px sans-serif';
+                    ctx.fillStyle = nightAdjust('#30d158');
+                    ctx.textAlign = 'center';
+                    ctx.fillText(Math.round(gap) + 'px', clearX, dinoBottom + gap / 2 + 3);
+                }
+            }
         }
 
         ctx.restore();
