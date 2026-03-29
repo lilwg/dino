@@ -560,14 +560,29 @@
             }
             this.time = now;
 
-            // Slow-mo: scale deltaTime so the game LOOKS like speed ~5
-            // regardless of the actual currentSpeed. Renders at smooth 60fps
-            // with proportionally smaller physics steps.
+            // Slow-mo: when AI is playing, skip frames to slow down
+            // instead of scaling deltaTime (which causes physics
+            // rounding mismatches with the AI's simulation).
+            // When human is playing, scale deltaTime as before.
             var slowMoScale = 1;
             if (this.slowMo) {
                 var targetSlowSpeed = 5;
                 slowMoScale = targetSlowSpeed / Math.max(targetSlowSpeed, this.currentSpeed);
-                deltaTime = (1000 / 60) * slowMoScale;
+                if (this.aiAgent && this.aiAgent.enabled) {
+                    // AI mode: full-speed physics, but only update
+                    // every Nth frame to create visual slow-mo.
+                    if (!this._slowMoAccum) this._slowMoAccum = 0;
+                    this._slowMoAccum += slowMoScale;
+                    if (this._slowMoAccum < 1) {
+                        this.scheduleNextUpdate();
+                        _activeRng = _prevRng;
+                        return;
+                    }
+                    this._slowMoAccum -= 1;
+                    // deltaTime stays at aiStep — full-speed physics
+                } else {
+                    deltaTime = (1000 / 60) * slowMoScale;
+                }
             }
 
             if (this.playing) {
