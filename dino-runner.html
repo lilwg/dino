@@ -490,18 +490,23 @@
 
             // Obstacle grouping: merge closely-spaced jumpable obstacles.
             var lastRight = near.xPos + oW;
-            var groupObsY = near.yPos;
+            // Ptero collision boxes start 9px below sprite yPos.
+            // When jumping over pteros (speed > 50), use effective top.
+            var groupObsY = (isPtero && speed > 50) ? near.yPos + 9 : near.yPos;
             for (var j = 0; j < obs.length; j++) {
                 var o2 = obs[j];
                 if (o2 === near) continue;
                 var o2IsPtero = o2.typeConfig.type === 'PTERODACTYL';
-                var o2DuckPtero = o2IsPtero && (o2.yPos === 75 || o2.yPos === 50);
-                if (o2DuckPtero) continue;
+                // At speed > 50 we jump over everything, so only skip high pteros.
+                // At low speed, also skip medium pteros (we duck those).
+                if (o2IsPtero && o2.yPos === 50) continue;
+                if (o2IsPtero && o2.yPos === 75 && speed <= 50) continue;
                 var o2Left = o2.xPos;
                 var o2Right = o2.xPos + o2.typeConfig.width * o2.size;
                 if (o2Left > near.xPos && o2Left - lastRight < speed * 10) {
                     if (o2Right > lastRight) lastRight = o2Right;
-                    if (o2.yPos < groupObsY) groupObsY = o2.yPos;
+                    var effY = (o2IsPtero && speed > 50) ? o2.yPos + 9 : o2.yPos;
+                    if (effY < groupObsY) groupObsY = effY;
                 }
             }
             var groupW = lastRight - near.xPos;
@@ -541,7 +546,7 @@
             // ===== GROUND: Medium pteros (yPos=75) — duck or jump over =====
             var accel = (speed < runner.config.MAX_SPEED) ? (runner.config.ACCELERATION || 0) : 0;
             var maxSpd = runner.config.MAX_SPEED;
-            if (isMedPtero) {
+            if (isMedPtero && speed <= 50) {
                 // Look ahead: is there a jumpable obstacle close behind?
                 var nextObs = null;
                 for (var ni = 0; ni < obs.length; ni++) {
