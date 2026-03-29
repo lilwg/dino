@@ -1889,6 +1889,18 @@
             btn.classList.remove('primary');
             btn.classList.add('active');
 
+            // Mute sounds and pause the main game during training
+            if (runner) {
+                runner._origPlaySound = runner.playSound;
+                runner.playSound = function () {};
+                if (runner.playing && !runner.crashed) {
+                    runner.paused = true;
+                }
+            }
+
+            // Start training visualization on main canvas
+            _trainVizInterval = setInterval(drawTrainViz, 1000 / 20);
+
             _trainChannel = new MessageChannel();
             _trainChannel.port1.onmessage = dqnTrainTick;
             _trainChannel.port2.postMessage(0);
@@ -1902,10 +1914,74 @@
             _trainChannel = null;
             saveTrainingState();
 
+            // Restore sounds and unpause
+            if (runner && runner._origPlaySound) {
+                runner.playSound = runner._origPlaySound;
+                runner._origPlaySound = null;
+                runner.paused = false;
+                runner.time = performance.now();
+                runner.update();
+            }
+
+            if (_trainVizInterval) { clearInterval(_trainVizInterval); _trainVizInterval = null; }
+
             var badge = document.getElementById('status-badge');
             if (badge) badge.style.display = 'none';
         }
     };
+
+    var _trainVizInterval = null;
+
+    // Draw the training game state on the main canvas with overlay info
+    function drawTrainViz() {
+        if (!runner || !trainRunner || !dqnTraining) return;
+        var ctx = runner.canvasCtx;
+        if (!ctx) return;
+        var w = runner.dimensions.WIDTH;
+        var h = runner.dimensions.HEIGHT;
+
+        // Clear and draw the training runner's current game state
+        ctx.clearRect(0, 0, w, h);
+
+        // Draw ground
+        ctx.fillStyle = '#535353';
+        ctx.fillRect(0, h - 12, w, 1);
+
+        // Draw obstacles from training runner
+        var obs = trainRunner.horizon.obstacles;
+        for (var i = 0; i < obs.length; i++) {
+            var o = obs[i];
+            ctx.fillStyle = '#535353';
+            ctx.fillRect(o.xPos, o.yPos, o.typeConfig.width * o.size, o.typeConfig.height);
+        }
+
+        // Draw dino
+        var t = trainRunner.tRex;
+        var dw = t.ducking ? 59 : 44;
+        var dh = t.ducking ? 25 : 47;
+        var dy = t.ducking ? t.yPos + 22 : t.yPos;
+        ctx.fillStyle = '#535353';
+        ctx.fillRect(t.xPos, dy, dw, dh);
+
+        // Overlay: generation, individual, fitness
+        ctx.fillStyle = 'rgba(0,0,0,0.6)';
+        ctx.fillRect(0, 0, w, 28);
+        ctx.font = 'bold 11px sans-serif';
+        ctx.fillStyle = '#fff';
+        ctx.textBaseline = 'middle';
+        ctx.textAlign = 'left';
+        ctx.fillText(
+            'Gen ' + _generation + '  |  Dino ' + (_currentIdx + 1) + '/' + POP_SIZE +
+            '  |  Score: ' + Math.floor(trainRunner.distanceRan / 100) +
+            '  |  Best: ' + dqnBest,
+            8, 14
+        );
+
+        // Progress bar for current generation
+        var progress = (_currentIdx + _evalSteps / MAX_STEPS_PER_EVAL) / POP_SIZE;
+        ctx.fillStyle = '#0071e3';
+        ctx.fillRect(0, 26, w * progress, 2);
+    }
 
     window.resetDQN = function () {
         dqnTraining = false;
