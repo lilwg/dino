@@ -1801,38 +1801,66 @@
         if (!ctx) return;
         var w = runner.dimensions.WIDTH;
         var h = runner.dimensions.HEIGHT;
+        var sprite = Runner.imageSprite;
+        if (!sprite) return;
+
+        // Stop the game's own render by canceling its rAF
+        if (runner.raqId) {
+            cancelAnimationFrame(runner.raqId);
+            runner.raqId = 0;
+        }
 
         ctx.clearRect(0, 0, w, h);
 
-        // Ground
+        // Ground line
         ctx.fillStyle = '#535353';
         ctx.fillRect(0, h - 12, w, 1);
 
-        // Obstacles
+        // Obstacles — draw using actual sprites
         var obs = trainRunner.horizon.obstacles;
-        ctx.fillStyle = '#535353';
         for (var i = 0; i < obs.length; i++) {
             var o = obs[i];
-            ctx.fillRect(o.xPos, o.yPos, o.typeConfig.width * o.size, o.typeConfig.height);
+            var ow = o.typeConfig.width * o.size;
+            var oh = o.typeConfig.height;
+            // Use the obstacle's own sprite position
+            if (o.spritePos) {
+                ctx.drawImage(sprite,
+                    o.spritePos.x, o.spritePos.y, ow, oh,
+                    o.xPos, o.yPos, ow, oh);
+            } else {
+                ctx.fillStyle = '#535353';
+                ctx.fillRect(o.xPos, o.yPos, ow, oh);
+            }
         }
 
-        // Draw all dinos — alive in blue, dead in red (fading)
+        // Dino sprite coords (1x sheet)
+        var trexBase = runner.spriteDef ? runner.spriteDef.TREX : { x: 848, y: 2 };
+        var runFrame = 88; // running animation frame offset
+        var duckFrame = 264; // ducking frame offset
+
+        // Draw all dinos using actual sprites
         for (var i = 0; i < _vdinos.length; i++) {
             var vd = _vdinos[i];
-            var dw = vd.ducking ? 59 : 44;
-            var dh = vd.ducking ? 25 : 47;
-            var dy = vd.ducking ? vd.yPos + 22 : vd.yPos;
 
-            if (vd.alive) {
-                ctx.fillStyle = 'rgba(0, 113, 227, 0.15)'; // blue, low opacity
-            } else {
-                // Fade out dead dinos over 30 frames
+            if (!vd.alive) {
                 var fade = Math.max(0, 1 - (_evalSteps - vd.deathFrame) / 30);
                 if (fade <= 0) continue;
-                ctx.fillStyle = 'rgba(255, 59, 48, ' + (fade * 0.12).toFixed(2) + ')';
+                ctx.globalAlpha = fade * 0.15;
+            } else {
+                ctx.globalAlpha = 0.2;
             }
-            ctx.fillRect(vd.xPos, dy, dw, dh);
+
+            if (vd.ducking) {
+                ctx.drawImage(sprite,
+                    trexBase.x + duckFrame, trexBase.y, 59, 47,
+                    vd.xPos, vd.yPos, 59, 47);
+            } else {
+                ctx.drawImage(sprite,
+                    trexBase.x + runFrame, trexBase.y, 44, 47,
+                    vd.xPos, vd.yPos, 44, 47);
+            }
         }
+        ctx.globalAlpha = 1;
 
         // Overlay bar
         ctx.fillStyle = 'rgba(0,0,0,0.55)';
@@ -1847,7 +1875,7 @@
             'Gen ' + _generation +
             '   Alive: ' + alive + '/' + POP_SIZE +
             '   Score: ' + Math.floor(trainRunner.distanceRan / 100) +
-            '   Best: ' + dqnBest, 6, 11);
+            '   Best ever: ' + dqnBest, 6, 11);
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -2106,13 +2134,15 @@
             btn.classList.remove('active');
             saveTrainingState();
 
-            // Restore sounds and unpause
+            // Restore sounds and restart game render loop
             if (runner && runner._origPlaySound) {
                 runner.playSound = runner._origPlaySound;
                 runner._origPlaySound = null;
+            }
+            if (runner) {
                 runner.paused = false;
                 runner.time = performance.now();
-                runner.update();
+                runner.scheduleNextUpdate();
             }
 
 
