@@ -114,6 +114,7 @@
             <div id="ml-panel" style="display:none;margin-top:8px;padding:8px 0;">
                 <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
                     <button class="si-btn primary" id="dqn-train-btn" onclick="toggleTrain()">TRAIN</button>
+                    <button class="si-btn" onclick="resetDQN()" style="font-size:10px;color:#ff3b30;border-color:#ff3b30;">Reset</button>
                     <span id="dqn-stats" style="font-size:11px;color:#6e6e73;"></span>
                     <span id="status-badge"></span>
                 </div>
@@ -1505,6 +1506,19 @@
                 score: bestFitness,
                 weights: policy.serialize()
             });
+            // Thin old snapshots: when >100, keep every 2nd from the
+            // first half so the chart doesn't get cluttered.
+            if (_snapshots.length > 100) {
+                var half = Math.floor(_snapshots.length / 2);
+                var thinned = [];
+                for (var ti = 0; ti < half; ti++) {
+                    if (ti % 2 === 0) thinned.push(_snapshots[ti]);
+                }
+                for (ti = half; ti < _snapshots.length; ti++) {
+                    thinned.push(_snapshots[ti]);
+                }
+                _snapshots = thinned;
+            }
         }
 
         // Next generation: keep elite, mutate the rest
@@ -2338,10 +2352,14 @@
     }
 
     window.resetDQN = function () {
-        dqnTraining = false;
-        _trainChannel = null;
+        if (!confirm('Reset all training? This clears all generations, scores, and saved models.')) return;
+        setTrainState('idle');
         clearTrainingState();
         initDQN();
+        initPopulation();
+        drawChart();
+        document.getElementById('dqn-stats').textContent = 'Reset — ready to train';
+        document.getElementById('chart-hint').textContent = '';
     };
 
     window.loadCached = function () {
