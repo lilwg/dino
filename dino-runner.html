@@ -1461,11 +1461,18 @@
         }
     }
 
-    // Create initial random population
+    // Create population — seed from policy if available (resume training)
     function initPopulation() {
         _population = [];
         for (var i = 0; i < POP_SIZE; i++) {
-            _population.push({ mlp: new MLP([N_FEAT, 16, N_ACT]), fitness: 0 });
+            var mlp = new MLP([N_FEAT, 16, N_ACT]);
+            // If we have a trained policy, seed most of the population
+            // from it with mutations so training resumes from where it left off.
+            if (policy && i < POP_SIZE - 5) {
+                mlp.copyFrom(policy);
+                if (i > 0) mutateMLP(mlp, MUTATION_RATE);
+            }
+            _population.push({ mlp: mlp, fitness: 0 });
         }
         _currentIdx = 0;
         _evalSteps = 0;
@@ -1589,50 +1596,184 @@
     }
 
     var _lastChartDraw = 0;
+    var SIM_SPEED = 8; // physics steps per animation frame
 
-    // ── Neuroevolution training tick ──
-    // Evaluates individuals by running them in the hidden game.
-    // Each tick runs STEPS_PER_TICK frames, cycling through individuals.
-    // When one dies or times out, moves to the next. When all are
-    // evaluated, evolves the population.
+    // ── Virtual dino for parallel evaluation ──
+    function VDino(mlp, tRex) {
+        this.mlp = mlp;
+        this.alive = true;
+        this.yPos = tRex.groundYPos;
+        this.jumping = false;
+        this.ducking = false;
+        this.speedDrop = false;
+        this.jumpVelocity = 0;
+        this.reachedMinHeight = false;
+        this.groundYPos = tRex.groundYPos;
+        this.minJumpHeight = tRex.minJumpHeight;
+        this.config = tRex.config;
+        this.xPos = tRex.xPos;
+        this.deathFrame = -1;
+    }
+
+    VDino.prototype.startJump = function (speed) {
+        if (!this.jumping) {
+            this.jumping = true;
+            this.reachedMinHeight = false;
+            this.speedDrop = false;
+            this.jumpVelocity = this.config.INIITAL_JUMP_VELOCITY - (speed / 10);
+        }
+    };
+
+    VDino.prototype.step = function () {
+        if (!this.jumping) return;
+        var cfg = this.config;
+        if (this.speedDrop) {
+            this.yPos += Math.round(this.jumpVelocity * cfg.SPEED_DROP_COEFFICIENT);
+        } else {
+            this.yPos += Math.round(this.jumpVelocity);
+        }
+        this.jumpVelocity += cfg.GRAVITY;
+        if (this.yPos < this.minJumpHeight || this.speedDrop) this.reachedMinHeight = true;
+        if (this.yPos < cfg.MAX_JUMP_HEIGHT || this.speedDrop) {
+            if (this.reachedMinHeight && this.jumpVelocity < cfg.DROP_VELOCITY)
+                this.jumpVelocity = cfg.DROP_VELOCITY;
+        }
+        if (this.yPos >= this.groundYPos) {
+            this.yPos = this.groundYPos;
+            this.jumping = false;
+            this.ducking = false;
+            this.speedDrop = false;
+            this.jumpVelocity = 0;
+        }
+    };
+
+    VDino.prototype.checkCollision = function (obstacles) {
+        for (var i = 0; i < obstacles.length; i++) {
+            var o = obstacles[i];
+            var oW = o.typeConfig.width * o.size;
+            var oRight = o.xPos + oW;
+            if (oRight < this.xPos || o.xPos > this.xPos + this.config.WIDTH) continue;
+            // Vertical overlap
+            var tH = this.ducking ? this.config.HEIGHT_DUCK : this.config.HEIGHT;
+            var tY = this.ducking ? this.yPos + (this.config.HEIGHT - this.config.HEIGHT_DUCK) : this.yPos;
+            if (tY + tH > o.yPos && tY < o.yPos + o.typeConfig.height) return true;
+        }
+        return false;
+    };
+
+    VDino.prototype.extractState = function (r) {
+        var obstacles = r.horizon.obstacles;
+        var CW = r.dimensions.WIDTH;
+        var sorted = [];
+        for (var i = 0; i < obstacles.length; i++) {
+            if (obstacles[i].xPos + obstacles[i].width > this.xPos) sorted.push(obstacles[i]);
+        }
+        sorted.sort(function (a, b) { return a.xPos - b.xPos; });
+        var obs1Dist = 1, obs1Y = 0, obs1Type = 0, obs1H = 0, obs1W = 0, obs2Dist = 1;
+        if (sorted.length > 0) {
+            var o = sorted[0];
+            obs1Dist = Math.max(0, o.xPos - this.xPos) / CW;
+            obs1Y = o.yPos / 150;
+            obs1Type = (o.typeConfig && o.typeConfig.type === 'PTERODACTYL') ? 1 : 0;
+            obs1H = (o.typeConfig ? o.typeConfig.height : 35) / 60;
+            obs1W = (o.width || 25) / 150;
+        }
+        if (sorted.length > 1) obs2Dist = Math.max(0, sorted[1].xPos - this.xPos) / CW;
+        var jumpHeight = this.jumping ? (this.groundYPos - this.yPos) / 80 : 0;
+        var jumpVel = this.jumping ? this.jumpVelocity / 10 : 0;
+        return [obs1Dist, obs1Y, obs1Type, obs1H, obs1W, obs2Dist,
+                (r.currentSpeed - 6) / 7, jumpHeight, jumpVel, this.ducking ? 1 : 0];
+    };
+
+    // All 50 virtual dinos for current generation
+    var _vdinos = [];
+
+    function resetVDinos() {
+        _vdinos = [];
+        for (var i = 0; i < POP_SIZE; i++) {
+            _vdinos.push(new VDino(_population[i].mlp, trainRunner.tRex));
+        }
+        _evalSteps = 0;
+    }
+
+    // ── Parallel neuroevolution tick ──
+    // All 50 dinos play simultaneously with shared obstacles.
+    // Runs SIM_SPEED physics steps per animation frame.
     function dqnTrainTick() {
         if (!dqnTraining) return;
-        var t0 = performance.now();
 
-        for (var s = 0; s < STEPS_PER_TICK; s++) {
-            var ind = _population[_currentIdx];
+        var r = trainRunner;
+        var speed = r.currentSpeed;
+        var dt = 1000 / 60;
 
-            // Run one frame with this individual's network
-            var features = extractState(trainRunner);
-            var action = argmax(ind.mlp.forward(features));
-            var result = trainStep(action);
+        for (var s = 0; s < SIM_SPEED; s++) {
+            // Advance shared obstacles
+            r.runningTime += dt;
+            var hasObs = r.runningTime > r.config.CLEAR_TIME;
+            r.horizon.update(dt, speed, hasObs);
+            r.distanceRan += speed * dt / r.msPerFrame;
+            if (speed < r.config.MAX_SPEED) speed += r.config.ACCELERATION;
+            r.currentSpeed = speed;
+
+            var obstacles = r.horizon.obstacles;
+            var aliveCount = 0;
+
+            // Step each alive dino
+            for (var i = 0; i < _vdinos.length; i++) {
+                var vd = _vdinos[i];
+                if (!vd.alive) continue;
+
+                // AI decision
+                var features = vd.extractState(r);
+                var action = argmax(vd.mlp.forward(features));
+
+                if (action === 1 && !vd.jumping) vd.startJump(speed);
+                if (action === 2) {
+                    if (vd.jumping && !vd.speedDrop) { vd.speedDrop = true; vd.jumpVelocity = 1; }
+                    else if (!vd.jumping) vd.ducking = true;
+                } else {
+                    vd.ducking = false;
+                }
+                if (vd.jumping && vd.ducking) vd.ducking = false;
+
+                // Physics
+                vd.step();
+
+                // Collision
+                if (hasObs && vd.checkCollision(obstacles)) {
+                    vd.alive = false;
+                    vd.deathFrame = _evalSteps;
+                    _population[i].fitness = Math.floor(r.distanceRan / 100);
+                } else {
+                    aliveCount++;
+                }
+            }
+
             _evalSteps++;
             dqnStep++;
 
-            if (result.collision || _evalSteps >= MAX_STEPS_PER_EVAL) {
-                // Record fitness (score)
-                ind.fitness = Math.floor(trainRunner.distanceRan / 100);
-                dqnEp++;
-
-                // Move to next individual
-                _currentIdx++;
-                _evalSteps = 0;
-                trainRestart();
-
-                // All individuals evaluated? Evolve!
-                if (_currentIdx >= POP_SIZE) {
-                    evolve();
+            // All dead or timed out? Evolve!
+            if (aliveCount === 0 || _evalSteps >= MAX_STEPS_PER_EVAL) {
+                // Give surviving dinos max fitness
+                for (var j = 0; j < _vdinos.length; j++) {
+                    if (_vdinos[j].alive)
+                        _population[j].fitness = Math.floor(r.distanceRan / 100);
                 }
+                dqnEp += POP_SIZE;
+                evolve();
+                trainRestart();
+                resetVDinos();
+                speed = r.currentSpeed;
+                break;
             }
         }
 
-        var elapsed = (performance.now() - t0) / 1000;
-        var sps = Math.round(STEPS_PER_TICK / elapsed);
+        // Draw all dinos on the main canvas
+        drawSwarmViz();
 
         // Update stats
-        document.getElementById('stat-sps').textContent = sps.toLocaleString();
-        updateStatPanel();
-
+        var alive = 0;
+        for (var i = 0; i < _vdinos.length; i++) if (_vdinos[i].alive) alive++;
         var avg = 0;
         if (dqnScores.length > 0) {
             var last10 = dqnScores.slice(-10);
@@ -1641,18 +1782,72 @@
         }
         document.getElementById('dqn-stats').textContent =
             'Gen ' + _generation + '  Best: ' + dqnBest +
-            '  Avg10: ' + avg.toFixed(0) +
-            '  [' + (_currentIdx + 1) + '/' + POP_SIZE + ']';
+            '  Avg: ' + avg.toFixed(0) +
+            '  Alive: ' + alive + '/' + POP_SIZE;
 
         var now = performance.now();
         if (dqnScores.length > 0 && now - _lastChartDraw > 500) {
             _lastChartDraw = now;
             drawChart();
         }
-
         if (_generation % 5 === 0) saveTrainingState();
 
-        _trainChannel.port2.postMessage(0);
+        requestAnimationFrame(dqnTrainTick);
+    }
+
+    function drawSwarmViz() {
+        if (!runner || !trainRunner) return;
+        var ctx = runner.canvasCtx;
+        if (!ctx) return;
+        var w = runner.dimensions.WIDTH;
+        var h = runner.dimensions.HEIGHT;
+
+        ctx.clearRect(0, 0, w, h);
+
+        // Ground
+        ctx.fillStyle = '#535353';
+        ctx.fillRect(0, h - 12, w, 1);
+
+        // Obstacles
+        var obs = trainRunner.horizon.obstacles;
+        ctx.fillStyle = '#535353';
+        for (var i = 0; i < obs.length; i++) {
+            var o = obs[i];
+            ctx.fillRect(o.xPos, o.yPos, o.typeConfig.width * o.size, o.typeConfig.height);
+        }
+
+        // Draw all dinos — alive in blue, dead in red (fading)
+        for (var i = 0; i < _vdinos.length; i++) {
+            var vd = _vdinos[i];
+            var dw = vd.ducking ? 59 : 44;
+            var dh = vd.ducking ? 25 : 47;
+            var dy = vd.ducking ? vd.yPos + 22 : vd.yPos;
+
+            if (vd.alive) {
+                ctx.fillStyle = 'rgba(0, 113, 227, 0.15)'; // blue, low opacity
+            } else {
+                // Fade out dead dinos over 30 frames
+                var fade = Math.max(0, 1 - (_evalSteps - vd.deathFrame) / 30);
+                if (fade <= 0) continue;
+                ctx.fillStyle = 'rgba(255, 59, 48, ' + (fade * 0.12).toFixed(2) + ')';
+            }
+            ctx.fillRect(vd.xPos, dy, dw, dh);
+        }
+
+        // Overlay bar
+        ctx.fillStyle = 'rgba(0,0,0,0.55)';
+        ctx.fillRect(0, 0, w, 22);
+        var alive = 0;
+        for (var i = 0; i < _vdinos.length; i++) if (_vdinos[i].alive) alive++;
+        ctx.font = 'bold 10px sans-serif';
+        ctx.fillStyle = '#fff';
+        ctx.textBaseline = 'middle';
+        ctx.textAlign = 'left';
+        ctx.fillText(
+            'Gen ' + _generation +
+            '   Alive: ' + alive + '/' + POP_SIZE +
+            '   Score: ' + Math.floor(trainRunner.distanceRan / 100) +
+            '   Best: ' + dqnBest, 6, 11);
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -1898,12 +2093,10 @@
                 }
             }
 
-            // Start training visualization on main canvas
-            _trainVizInterval = setInterval(drawTrainViz, 1000 / 20);
-
-            _trainChannel = new MessageChannel();
-            _trainChannel.port1.onmessage = dqnTrainTick;
-            _trainChannel.port2.postMessage(0);
+            // Reset virtual dinos and start parallel training
+            trainRestart();
+            resetVDinos();
+            requestAnimationFrame(dqnTrainTick);
 
             var badge = document.getElementById('status-badge');
             if (badge) { badge.style.display = ''; badge.className = 'status-badge training'; badge.textContent = 'TRAINING'; }
@@ -1911,7 +2104,6 @@
             btn.textContent = 'TRAIN';
             btn.classList.add('primary');
             btn.classList.remove('active');
-            _trainChannel = null;
             saveTrainingState();
 
             // Restore sounds and unpause
@@ -1923,7 +2115,6 @@
                 runner.update();
             }
 
-            if (_trainVizInterval) { clearInterval(_trainVizInterval); _trainVizInterval = null; }
 
             var badge = document.getElementById('status-badge');
             if (badge) badge.style.display = 'none';
