@@ -885,34 +885,30 @@
         ctx.save();
         this._drawObstacles(ctx, viz, runner);
         if (rv) {
-            this._drawPath(ctx, viz, rv);
+            this._drawPath(ctx, viz, rv, runner);
         }
         this._drawDecisionBadge(ctx, viz);
         ctx.restore();
     };
 
-    // Draw obstacle bounding boxes — bold red for nearest, faint for others.
-    // Compensate for 1-frame physics lag (positions captured before movement).
+    // Draw obstacle bounding boxes — read live positions from the runner
+    // so there's no 1-frame drift from the AI's cached data.
     SimVisualizer.prototype._drawObstacles = function (ctx, viz, runner) {
-        var obs = viz.obstacles;
+        if (!runner) return;
+        var obs = runner.horizon.obstacles;
         if (!obs || obs.length === 0) return;
-
-        // Compute actual per-frame movement (accounts for slo-mo)
-        var drift = Math.floor(viz.speed);
-        if (runner && runner.slowMo) {
-            var scale = 5 / Math.max(5, viz.speed);
-            drift = Math.floor(viz.speed * scale);
-        }
 
         ctx.save();
         for (var i = 0; i < obs.length; i++) {
             var o = obs[i];
+            var w = o.typeConfig.width * o.size;
+            var h = o.typeConfig.height;
             var isNear = (i === viz.nearIdx);
             ctx.lineWidth = isNear ? 2 : 1;
             ctx.strokeStyle = nightAdjust(isNear ? '#ff3b30' : '#636366');
             ctx.globalAlpha = isNear ? 0.8 : 0.25;
             ctx.setLineDash(isNear ? [] : [3, 3]);
-            ctx.strokeRect(o.xPos - drift, o.yPos, o.width, o.height);
+            ctx.strokeRect(o.xPos, o.yPos, w, h);
         }
         ctx.setLineDash([]);
         ctx.restore();
@@ -920,7 +916,7 @@
 
     // Draw the single predicted path with color-coded state,
     // plus clearance indicators at obstacle crossings.
-    SimVisualizer.prototype._drawPath = function (ctx, viz, rv) {
+    SimVisualizer.prototype._drawPath = function (ctx, viz, rv, runner) {
         var path = rv.optimalPath;
         if (!path || path.length < 2) return;
 
@@ -971,12 +967,12 @@
         }
 
         // --- Clearance indicator at nearest obstacle ---
-        var obs = viz.obstacles;
+        var liveObs = runner ? runner.horizon.obstacles : [];
         var ni = viz.nearIdx;
-        if (ni >= 0 && ni < obs.length) {
-            var near = obs[ni];
-            var cDrift = Math.floor(viz.speed);
-            var nearCX = near.xPos - cDrift + near.width / 2;
+        if (ni >= 0 && ni < liveObs.length) {
+            var near = liveObs[ni];
+            var nearW = near.typeConfig.width * near.size;
+            var nearCX = near.xPos + nearW / 2;
 
             // Find the path point closest to the obstacle center
             var bestF = -1, bestY = rv.groundY;
