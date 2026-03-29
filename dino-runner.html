@@ -98,10 +98,9 @@
                 <button class="si-btn" onclick="restartGame()">Restart</button>
                 <button class="si-btn" id="pause-btn" onclick="togglePause()">Pause</button>
                 <button class="si-btn" id="slow-mo-btn2" onclick="toggleSlowMo()">Slo-Mo</button>
-                <button class="si-btn" id="esp-btn" onclick="toggleESP()">ESP</button>
                 <button class="si-btn" id="fs-btn" onclick="toggleFullscreen()">Fullscreen</button>
                 <div class="si-speed" style="font-size: 11px;">
-                    Max Speed: <input type="range" id="max-speed-slider" min="6" max="100" value="13" step="1"> <span id="max-speed-val">13</span>
+                    Max Speed: <input type="range" id="max-speed-slider" min="6" max="200" value="13" step="1"> <span id="max-speed-val">13</span>
                 </div>
                 <span style="margin-left: auto; font-size: 11px; color: #6e6e73;">
                     Current Speed: <span id="speed-val">6</span>
@@ -166,7 +165,6 @@
         this._vizData = null;
         this._arcCache = null;
         this._arcSpeedKey = -1;
-        this._espEnabled = false;
         this._winCache = null;
         this._winKey = '';
         this.loadStats();
@@ -464,7 +462,7 @@
             // pre-jump for a worst-case phantom. Only activates when the
             // dino is on the ground with nothing to react to — doesn't
             // interfere with real obstacle decisions.
-            if (this._espEnabled && !near && !tRex.jumping && obs.length > 0) {
+            if (!near && !tRex.jumping && obs.length > 0) {
                 var lastObs = obs[obs.length - 1];
                 var spawnX = runner.dimensions.WIDTH;
                 var lastObsRight = lastObs.xPos + lastObs.typeConfig.width * lastObs.size;
@@ -784,35 +782,7 @@
         }
     };
 
-    window.toggleESP = function () {
-        var runner = Runner.instance_;
-        aiAgent._espEnabled = !aiAgent._espEnabled;
-        var btn = document.getElementById('esp-btn');
-        if (btn) btn.classList.toggle('active', aiAgent._espEnabled);
-        // Raise slider cap when ESP is on
-        var slider = document.getElementById('max-speed-slider');
-        if (slider) slider.max = aiAgent._espEnabled ? 200 : 100;
-        // Hack obstacle spawns: at speed > 100, shrink large obstacles.
-        // Hook into addNewObstacle to cap size at 1 and widen gaps.
-        var hz = runner && runner.horizon;
-        if (hz && aiAgent._espEnabled && !hz._origAdd) {
-            hz._origAdd = hz.addNewObstacle;
-            hz.addNewObstacle = function (spd) {
-                hz._origAdd.call(hz, spd);
-                if (spd > 100) {
-                    var last = hz.obstacles[hz.obstacles.length - 1];
-                    if (last && last.size > 1) {
-                        last.size = 1;
-                        last.width = last.typeConfig.width;
-                        last.gap = Math.round(last.gap * 1.5);
-                    }
-                }
-            };
-        } else if (hz && !aiAgent._espEnabled && hz._origAdd) {
-            hz.addNewObstacle = hz._origAdd;
-            hz._origAdd = null;
-        }
-    };
+
 
     window.AIAgent = AIAgent;
 })();

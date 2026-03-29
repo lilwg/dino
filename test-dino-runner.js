@@ -9,10 +9,8 @@ var path = require('path');
 
 var testSeconds = 60;
 var maxSpeed = 30;
-var useESP = false;
 var nums = [];
 for (var i = 2; i < process.argv.length; i++) {
-    if (process.argv[i] === '--esp') { useESP = true; continue; }
     var n = parseInt(process.argv[i]);
     if (!isNaN(n) && n > 0) nums.push(n);
 }
@@ -70,15 +68,12 @@ function startServer(dir) {
 
         window.setMode('rules');
 
-        // Enable ESP if requested
-        if (opts.esp) window.toggleESP();
-
         // Ensure config matches (setMode reads slider, but belt-and-suspenders)
         var r = window.runner;
         r.config.MAX_SPEED = opts.maxSpeed;
         var ratio = opts.maxSpeed / 13;
         r.config.ACCELERATION = 0.002 * ratio * ratio;
-    }, { maxSpeed: maxSpeed, esp: useESP });
+    }, { maxSpeed: maxSpeed });
 
     console.log('Running dino runner AI for ' + testSeconds + 's at max speed ' + maxSpeed + '...\n');
 
