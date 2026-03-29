@@ -113,10 +113,10 @@
     <!-- ═══ HOW IT WORKS ═══ -->
     <h2 style="margin-top: 16px;">How it works</h2>
     <p class="si-prose">
-        The AI uses pixel-accurate physics simulation to decide when to jump or duck. It computes the exact jump arc at the current speed, then finds the precise distance window where jumping clears each obstacle. Mid-air, it simulates speed-drops frame by frame to land as quickly as safely possible. Pterodactyls are handled by height: high ones fly overhead, medium ones get ducked under with pixel-accurate timing.
+        Two AI modes: <strong>Rules</strong> uses pixel-accurate physics simulation to decide when to jump or duck. <strong>ML</strong> uses a neural network trained via neuroevolution — a population of 50 small networks compete, the best survive and mutate.
     </p>
     <p class="si-prose">
-        Tap <strong>Viz</strong> to watch the AI think. Paths appear ahead of the dinosaur — blue for jumping, orange for ducking/dropping, dark for running. The thick line is the chosen action; fainter lines are alternatives. A badge above the dino shows the current decision.
+        Click <strong>TRAIN</strong> to start evolving the ML brain. Each generation, 50 networks play the game. The best are kept, mutated copies fill the next generation. Watch the chart to see fitness climb. Click a snapshot diamond to load that generation's best network.
     </p>
 
     <p style="margin-top: 20px;">
@@ -1346,12 +1346,14 @@
     }
 
     // ═══════════════════════════════════════════════════════════════
-    //  REINFORCE — policy gradient with discounted returns
+    //  NEUROEVOLUTION — evolve a population of neural networks
     // ═══════════════════════════════════════════════════════════════
-    var GAMMA = 0.99;
-    var RL_LR = 0.001;
-    var STEPS_PER_TICK = 2000;
-    var SNAPSHOT_EVERY = 500;
+    var POP_SIZE = 50;
+    var ELITISM = 5;
+    var MUTATION_RATE = 0.15;
+    var STEPS_PER_TICK = 3000;
+    var MAX_STEPS_PER_EVAL = 5000; // cap per individual (~83s at 60fps)
+    var SNAPSHOT_EVERY = 20; // snapshot every N generations
 
     var policy;
     var trainRunner;
@@ -1359,15 +1361,13 @@
     var dqnTraining = false;
     var _trainChannel = null;
 
-    // Episode buffers
-    var _epStates = [], _epActions = [], _epProbs = [], _epRewards = [];
+    // Population state
+    var _population = [];  // array of { mlp, fitness }
+    var _currentIdx = 0;   // which individual is being evaluated
+    var _evalSteps = 0;    // steps taken by current individual
+    var _generation = 0;
 
-    // Adam optimizer state
-    var _adamMW = [], _adamMb = [];
-    var _adamVW = [], _adamVb = [];
-    var _adamT = 0;
-
-    // Model snapshots: { ep, score, weights }
+    // Model snapshots: { ep (generation), score, weights }
     var _snapshots = [];
     var _selectedSnapshot = -1;
 
@@ -1405,6 +1405,7 @@
                 best: dqnBest,
                 step: dqnStep,
                 ep: dqnEp,
+                generation: _generation,
                 snapshots: _snapshots,
                 currentWeights: policy ? policy.serialize() : null
             };
@@ -1422,6 +1423,7 @@
                 dqnBest = data.best || 0;
                 dqnStep = data.step || 0;
                 dqnEp = data.ep || 0;
+                _generation = data.generation || 0;
                 _snapshots = data.snapshots || [];
                 if (data.currentWeights && policy) {
                     policy.deserialize(data.currentWeights);
@@ -1436,8 +1438,77 @@
         try { localStorage.removeItem(LS_KEY); } catch (e) {}
     }
 
+    // Clone an MLP's weights into a new network
+    function cloneMLP(src) {
+        var dst = new MLP([N_FEAT, 16, N_ACT]);
+        dst.copyFrom(src);
+        return dst;
+    }
+
+    // Mutate an MLP's weights with gaussian noise
+    function mutateMLP(mlp, rate) {
+        for (var l = 0; l < mlp.n; l++) {
+            for (var i = 0; i < mlp.W[l].length; i++)
+                mlp.W[l][i] += randn() * rate;
+            for (var i = 0; i < mlp.b[l].length; i++)
+                mlp.b[l][i] += randn() * rate;
+        }
+    }
+
+    // Create initial random population
+    function initPopulation() {
+        _population = [];
+        for (var i = 0; i < POP_SIZE; i++) {
+            _population.push({ mlp: new MLP([N_FEAT, 16, N_ACT]), fitness: 0 });
+        }
+        _currentIdx = 0;
+        _evalSteps = 0;
+    }
+
+    // Evolve: keep top ELITISM, fill rest with mutated copies
+    function evolve() {
+        _population.sort(function (a, b) { return b.fitness - a.fitness; });
+
+        var bestFitness = _population[0].fitness;
+        dqnScores.push(bestFitness);
+        _generation++;
+        if (bestFitness > dqnBest) dqnBest = bestFitness;
+
+        // Best individual becomes the playable policy
+        policy.copyFrom(_population[0].mlp);
+
+        // Snapshot periodically
+        if (_generation % SNAPSHOT_EVERY === 0) {
+            _snapshots.push({
+                ep: _generation,
+                score: bestFitness,
+                weights: policy.serialize()
+            });
+        }
+
+        // Next generation: keep elite, mutate the rest
+        var newPop = [];
+        for (var i = 0; i < ELITISM; i++) {
+            newPop.push({ mlp: _population[i].mlp, fitness: 0 });
+        }
+        while (newPop.length < POP_SIZE) {
+            // Tournament selection: pick best of 3 random
+            var candidates = [];
+            for (var c = 0; c < 3; c++)
+                candidates.push(_population[Math.floor(Math.random() * POP_SIZE)]);
+            candidates.sort(function (a, b) { return b.fitness - a.fitness; });
+            var child = cloneMLP(candidates[0].mlp);
+            mutateMLP(child, MUTATION_RATE);
+            newPop.push({ mlp: child, fitness: 0 });
+        }
+
+        _population = newPop;
+        _currentIdx = 0;
+        _evalSteps = 0;
+    }
+
     function initDQN() {
-        policy = new MLP([N_FEAT, 32, N_ACT]);
+        policy = new MLP([N_FEAT, 16, N_ACT]);
 
         if (!trainRunner) {
             trainRunner = createTrainRunner();
@@ -1445,11 +1516,11 @@
 
         dqnStep = 0; dqnEp = 0;
         dqnScores = []; dqnBest = -99;
+        _generation = 0;
         _snapshots = [];
         _selectedSnapshot = -1;
         dqnTraining = false;
-        _epStates = []; _epActions = []; _epProbs = []; _epRewards = [];
-        _adamMW = []; _adamMb = []; _adamVW = []; _adamVb = []; _adamT = 0;
+        initPopulation();
         document.getElementById('dqn-train-btn').textContent = 'TRAIN';
         document.getElementById('dqn-train-btn').classList.remove('active');
         document.getElementById('dqn-train-btn').classList.add('primary');
@@ -1513,168 +1584,68 @@
 
     var _lastChartDraw = 0;
 
-    // ── REINFORCE update: backprop policy gradient through MLP ──
-    function reinforceUpdate() {
-        var T = _epStates.length;
-        if (T === 0) return;
-
-        // Discounted returns
-        var returns = new Float64Array(T);
-        var G = 0;
-        for (var t = T - 1; t >= 0; t--) {
-            G = _epRewards[t] + GAMMA * G;
-            returns[t] = G;
-        }
-
-        // Normalize returns
-        var mean = 0;
-        for (var t = 0; t < T; t++) mean += returns[t];
-        mean /= T;
-        var variance = 0;
-        for (var t = 0; t < T; t++) variance += (returns[t] - mean) * (returns[t] - mean);
-        var std = Math.sqrt(variance / T) + 1e-8;
-        for (var t = 0; t < T; t++) returns[t] = (returns[t] - mean) / std;
-
-        // Accumulate gradients over episode
-        var gradW = [], gradB = [];
-        for (var l = 0; l < policy.n; l++) {
-            gradW.push(new Float64Array(policy.W[l].length));
-            gradB.push(new Float64Array(policy.b[l].length));
-        }
-
-        for (var t = 0; t < T; t++) {
-            policy.forward(_epStates[t]); // stores activations in policy.a[]
-            var p = _epProbs[t];
-            var a = _epActions[t];
-            var R = returns[t];
-
-            // Output gradient: dz = R * (probs - one_hot(action))
-            // Points in -ascent direction; Adam subtracts → net ascent
-            var delta = new Float64Array(N_ACT);
-            for (var i = 0; i < N_ACT; i++) delta[i] = R * p[i];
-            delta[a] -= R;
-
-            // Backprop through layers
-            for (var l = policy.n - 1; l >= 0; l--) {
-                var aIn = policy.a[l];
-                var rows = policy.b[l].length;
-                var cols = aIn.length;
-
-                for (var i = 0; i < rows; i++) {
-                    for (var j = 0; j < cols; j++) {
-                        gradW[l][i * cols + j] += delta[i] * aIn[j];
-                    }
-                    gradB[l][i] += delta[i];
-                }
-
-                if (l > 0) {
-                    var newDelta = new Float64Array(cols);
-                    for (var j = 0; j < cols; j++) {
-                        var s = 0;
-                        for (var i = 0; i < rows; i++) s += policy.W[l][i * cols + j] * delta[i];
-                        newDelta[j] = s * (1 - aIn[j] * aIn[j]); // tanh derivative
-                    }
-                    delta = newDelta;
-                }
-            }
-        }
-
-        // Adam update
-        var b1 = 0.9, b2 = 0.999, eps = 1e-8;
-        _adamT++;
-        if (_adamMW.length === 0) {
-            for (var l = 0; l < policy.n; l++) {
-                _adamMW.push(new Float64Array(policy.W[l].length));
-                _adamMb.push(new Float64Array(policy.b[l].length));
-                _adamVW.push(new Float64Array(policy.W[l].length));
-                _adamVb.push(new Float64Array(policy.b[l].length));
-            }
-        }
-        var bc1 = 1 - Math.pow(b1, _adamT), bc2 = 1 - Math.pow(b2, _adamT);
-
-        for (var l = 0; l < policy.n; l++) {
-            for (var i = 0; i < policy.W[l].length; i++) {
-                var g = gradW[l][i] / T;
-                _adamMW[l][i] = b1 * _adamMW[l][i] + (1 - b1) * g;
-                _adamVW[l][i] = b2 * _adamVW[l][i] + (1 - b2) * g * g;
-                policy.W[l][i] -= RL_LR * (_adamMW[l][i] / bc1) / (Math.sqrt(_adamVW[l][i] / bc2) + eps);
-            }
-            for (var i = 0; i < policy.b[l].length; i++) {
-                var g = gradB[l][i] / T;
-                _adamMb[l][i] = b1 * _adamMb[l][i] + (1 - b1) * g;
-                _adamVb[l][i] = b2 * _adamVb[l][i] + (1 - b2) * g * g;
-                policy.b[l][i] -= RL_LR * (_adamMb[l][i] / bc1) / (Math.sqrt(_adamVb[l][i] / bc2) + eps);
-            }
-        }
-    }
-
+    // ── Neuroevolution training tick ──
+    // Evaluates individuals by running them in the hidden game.
+    // Each tick runs STEPS_PER_TICK frames, cycling through individuals.
+    // When one dies or times out, moves to the next. When all are
+    // evaluated, evolves the population.
     function dqnTrainTick() {
         if (!dqnTraining) return;
         var t0 = performance.now();
 
         for (var s = 0; s < STEPS_PER_TICK; s++) {
+            var ind = _population[_currentIdx];
+
+            // Run one frame with this individual's network
             var features = extractState(trainRunner);
-            var logits = policy.forward(features);
-            var probs = softmax(logits);
-            var action = sampleAction(probs);
-
-            _epStates.push(features);
-            _epActions.push(action);
-            _epProbs.push(probs);
-
+            var action = argmax(ind.mlp.forward(features));
             var result = trainStep(action);
-            _epRewards.push(trainRunner.currentSpeed / 13);
+            _evalSteps++;
             dqnStep++;
 
-            if (result.collision) {
-                var score = Math.floor(trainRunner.distanceRan / 100);
-                dqnScores.push(score);
+            if (result.collision || _evalSteps >= MAX_STEPS_PER_EVAL) {
+                // Record fitness (score)
+                ind.fitness = Math.floor(trainRunner.distanceRan / 100);
                 dqnEp++;
-                if (score > dqnBest) dqnBest = score;
 
-                reinforceUpdate();
-
-                // Snapshot periodically
-                if (dqnEp % SNAPSHOT_EVERY === 0) {
-                    _snapshots.push({
-                        ep: dqnEp,
-                        score: score,
-                        weights: policy.serialize()
-                    });
-                }
-
-                _epStates = []; _epActions = []; _epProbs = []; _epRewards = [];
+                // Move to next individual
+                _currentIdx++;
+                _evalSteps = 0;
                 trainRestart();
+
+                // All individuals evaluated? Evolve!
+                if (_currentIdx >= POP_SIZE) {
+                    evolve();
+                }
             }
         }
 
         var elapsed = (performance.now() - t0) / 1000;
         var sps = Math.round(STEPS_PER_TICK / elapsed);
 
-        // Update stats panel
+        // Update stats
         document.getElementById('stat-sps').textContent = sps.toLocaleString();
         updateStatPanel();
 
         var avg = 0;
         if (dqnScores.length > 0) {
-            var last50 = dqnScores.slice(-50);
-            for (var i = 0; i < last50.length; i++) avg += last50[i];
-            avg /= last50.length;
+            var last10 = dqnScores.slice(-10);
+            for (var i = 0; i < last10.length; i++) avg += last10[i];
+            avg /= last10.length;
         }
         document.getElementById('dqn-stats').textContent =
-            'Ep ' + dqnEp + '  Avg50: ' + avg.toFixed(0);
+            'Gen ' + _generation + '  Best: ' + dqnBest +
+            '  Avg10: ' + avg.toFixed(0) +
+            '  [' + (_currentIdx + 1) + '/' + POP_SIZE + ']';
 
-        // Throttle chart redraws to every 500ms
         var now = performance.now();
         if (dqnScores.length > 0 && now - _lastChartDraw > 500) {
             _lastChartDraw = now;
             drawChart();
         }
 
-        // Save to localStorage periodically
-        if (dqnEp % 100 === 0) saveTrainingState();
+        if (_generation % 5 === 0) saveTrainingState();
 
-        // MessageChannel pump
         _trainChannel.port2.postMessage(0);
     }
 
@@ -1755,7 +1726,7 @@
         // Axis label
         c.fillStyle = '#999'; c.font = '7px "Press Start 2P", "Courier New"';
         c.textAlign = 'center';
-        c.fillText('EPISODE', w / 2, h - 4);
+        c.fillText('GENERATION', w / 2, h - 4);
     }
 
     function chartClick(e) {
