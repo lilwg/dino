@@ -904,7 +904,9 @@
             ctx.strokeStyle = nightAdjust(isNear ? '#ff3b30' : '#636366');
             ctx.globalAlpha = isNear ? 0.8 : 0.25;
             ctx.setLineDash(isNear ? [] : [3, 3]);
-            ctx.strokeRect(o.xPos, o.yPos, o.width, o.height);
+            // Ptero sprites extend ~10px beyond their collision width
+            var pad = (o.type === 'PTERODACTYL') ? 10 : 0;
+            ctx.strokeRect(o.xPos - pad / 2, o.yPos, o.width + pad, o.height);
         }
         ctx.setLineDash([]);
         ctx.restore();
