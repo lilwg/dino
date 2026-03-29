@@ -2129,7 +2129,9 @@
                 if (runner) {
                     if (!runner._origPlaySound) runner._origPlaySound = runner.playSound;
                     runner.playSound = function () {};
-                    if (runner.raqId) { cancelAnimationFrame(runner.raqId); runner.raqId = 0; }
+                    // Properly stop the game loop — runner.stop() sets playing=false
+                    // which prevents update() from re-scheduling itself
+                    runner.stop();
                 }
                 trainRestart();
                 resetVDinos();
@@ -2150,6 +2152,7 @@
                 runner._origPlaySound = null;
             }
             if (runner) {
+                runner.playing = true;
                 runner.paused = false;
                 runner.slowMo = false;
                 runner.time = performance.now();
