@@ -612,6 +612,7 @@
             if (tRex.ducking) tRex.setDuck(false);
 
             var win = this._jumpWindow(speed, groupObsY, groupW, tRex, accel, maxSpd);
+            this._lastJumpWin = win;
             if (win.min >= 0 && edgeDist <= win.max && edgeDist >= win.min) {
                 tRex.startJump(speed);
                 this._setViz('jump', tRex, speed, ahead, near);
@@ -645,6 +646,9 @@
                 deciding: true,
                 midJump: !!tRex.jumping,
                 obstacles: obsViz,
+                nearIdx: near ? obstacles.indexOf(near) : -1,
+                jumpWindow: this._lastJumpWin || null,
+                edgeDist: near ? (near.xPos - (tRex.xPos + tRex.config.WIDTH)) : 9999,
                 tRexPos: {
                     x: tRex.xPos, y: tRex.yPos,
                     jumping: tRex.jumping, ducking: tRex.ducking
@@ -857,11 +861,57 @@
         var rv = viz.ruleViz;
 
         ctx.save();
+        this._drawObstacles(ctx, viz);
         if (rv) {
+            this._drawJumpWindow(ctx, viz);
             this._drawPaths(ctx, viz, rv);
             this._drawOptimalPath(ctx, viz, rv);
         }
         this._drawDecisionBadge(ctx, viz);
+        ctx.restore();
+    };
+
+    // Draw obstacle bounding boxes — red outline for the nearest,
+    // grey for others. Shows what the AI is focused on.
+    SimVisualizer.prototype._drawObstacles = function (ctx, viz) {
+        var obs = viz.obstacles;
+        if (!obs || obs.length === 0) return;
+
+        ctx.save();
+        ctx.lineWidth = 1;
+        for (var i = 0; i < obs.length; i++) {
+            var o = obs[i];
+            var isNear = (i === viz.nearIdx);
+            ctx.strokeStyle = nightAdjust(isNear ? '#ff3b30' : '#8e8e93');
+            ctx.globalAlpha = isNear ? 0.7 : 0.3;
+            ctx.strokeRect(o.xPos, toCanvasY(o.yPos), o.width, o.height);
+        }
+        ctx.restore();
+    };
+
+    // Draw the jump window as a colored band on the ground.
+    // Green = safe to jump, shows the distance range.
+    SimVisualizer.prototype._drawJumpWindow = function (ctx, viz) {
+        var win = viz.jumpWindow;
+        if (!win || win.min < 0) return;
+
+        var tRight = viz.tRexPos.x + 44; // tW
+        var groundY = toCanvasY(93); // groundYPos
+        var x1 = tRight + win.min;
+        var x2 = tRight + win.max;
+        var canvasW = ctx.canvas.width;
+        if (window.devicePixelRatio > 1) canvasW /= 2;
+        if (x1 > canvasW) return;
+        if (x2 > canvasW) x2 = canvasW;
+
+        ctx.save();
+        ctx.globalAlpha = 0.08;
+        ctx.fillStyle = nightAdjust('#30d158');
+        ctx.fillRect(x1, toCanvasY(0), x2 - x1, groundY - toCanvasY(0) + 20);
+        // Bottom edge marker
+        ctx.globalAlpha = 0.4;
+        ctx.fillStyle = nightAdjust('#30d158');
+        ctx.fillRect(x1, groundY + 2, x2 - x1, 3);
         ctx.restore();
     };
 
@@ -887,7 +937,7 @@
 
             var type = pts[1] ? pts[1].type : pts[0].type;
             ctx.strokeStyle = nightAdjust(TYPE_COLORS[type]);
-            ctx.globalAlpha = 0.3;
+            ctx.globalAlpha = 0.25;
             ctx.beginPath();
             var pt0 = pts[0];
             ctx.moveTo(toCanvasX(baseX, pt0.f, pt0.dk, perFrame), toCanvasY(pt0.y));
@@ -913,10 +963,10 @@
         if (window.devicePixelRatio > 1) canvasW /= 2;
 
         ctx.save();
-        ctx.lineWidth = 3.5;
+        ctx.lineWidth = 3;
         ctx.lineJoin = 'round';
         ctx.lineCap = 'round';
-        ctx.globalAlpha = 0.9;
+        ctx.globalAlpha = 0.85;
 
         for (var c = 0; c < 3; c++) {
             ctx.strokeStyle = nightAdjust(TYPE_COLORS[c]);
@@ -953,6 +1003,11 @@
 
         var actionColor = LABEL_COLORS[chosenAction] || '#8e8e93';
         var text = '\u2192 ' + displayName;
+        // Show distance to nearest obstacle
+        if (viz.edgeDist < 9999) {
+            var d = Math.round(viz.edgeDist);
+            text += '  ' + d + 'px';
+        }
 
         var badgeX = viz.tRexPos.x + 2;
         var badgeY = 12;
