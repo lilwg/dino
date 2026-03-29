@@ -1611,6 +1611,8 @@
     var _tintCanvas = null;
     var _trainLoopRunning = false;
     var _trainTimeoutId = null;
+    var _drawSkip = 0;
+    var _slowCounter = 0;
 
     // ── Virtual dino for parallel evaluation ──
     function VDino(mlp, tRex) {
@@ -1727,9 +1729,20 @@
 
     function trainLoop() {
         if (!_trainLoopRunning) return;
+        if (_trainSlowMo && _trainState === 'running') {
+            // Slo-mo: always 16ms loop for smooth rendering,
+            // but only advance physics every 15th frame (~4 steps/sec).
+            _slowCounter++;
+            if (_slowCounter < 15) {
+                drawSwarmViz(); // just redraw frozen scene
+                _trainTimeoutId = setTimeout(trainLoop, 16);
+                return;
+            }
+            _slowCounter = 0;
+        }
         dqnTrainTick();
         if (_trainLoopRunning) {
-            _trainTimeoutId = setTimeout(trainLoop, _trainSlowMo ? 250 : 16);
+            _trainTimeoutId = setTimeout(trainLoop, 16);
         }
     }
 
@@ -1742,6 +1755,7 @@
         if (_trainState !== 'running') return;
 
         var stepsThisTick = _trainSlowMo ? 1 : SIM_SPEED;
+        _slowCounter = 0; // reset so next slo-mo cycle starts fresh
 
         var r = trainRunner;
         var speed = r.currentSpeed;
@@ -2257,10 +2271,9 @@
     window.toggleSlowMo = function () {
         if (_trainState === 'running' || _trainState === 'paused') {
             _trainSlowMo = !_trainSlowMo;
+            _slowCounter = 0;
             var sb = document.getElementById('slow-mo-btn2');
             if (sb) sb.classList.toggle('active', _trainSlowMo);
-            // The flag takes effect on the next setTimeout scheduling.
-            // At worst there's one more fast tick before slo-mo kicks in.
             return;
         }
         if (!runner) return;
