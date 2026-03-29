@@ -125,17 +125,19 @@
     </p>
 </div>
 
-<!-- Hidden elements required by the JS engine -->
-<canvas id="dqn-chart" style="display:none" width="1" height="1"></canvas>
+<!-- ML Training Panel (shown when ML mode active) -->
+<div style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+    <button class="si-btn primary" id="dqn-train-btn" style="display:none" onclick="toggleTrain()">TRAIN</button>
+    <span id="dqn-stats" style="display:none;font-size:11px;color:#6e6e73;"></span>
+    <span id="status-badge" style="display:none"></span>
+</div>
+<canvas id="dqn-chart" style="display:none" width="500" height="150"></canvas>
+<span id="chart-hint" style="display:none;font-size:10px;color:#6e6e73;margin-top:4px;"></span>
 <span id="stat-score" style="display:none"></span>
 <span id="stat-best" style="display:none"></span>
 <span id="stat-sps" style="display:none"></span>
 <span id="stat-ep" style="display:none"></span>
-<span id="dqn-stats" style="display:none"></span>
-<button id="dqn-train-btn" style="display:none"></button>
 <button id="slow-mo-btn" style="display:none"></button>
-<span id="status-badge" style="display:none"></span>
-<span id="chart-hint" style="display:none"></span>
 
 <script src="fs-toggle.js"></script>
 <script src="runner-weights.js"></script>
@@ -1797,6 +1799,14 @@
         document.getElementById('human-btn').classList.remove('active');
         document.getElementById('rules-btn').classList.remove('active');
         document.getElementById('dqn-btn').classList.remove('active');
+        // Hide training UI when leaving ML mode
+        var hideIds = ['dqn-chart','dqn-train-btn','dqn-stats','chart-hint','status-badge'];
+        for (var hi = 0; hi < hideIds.length; hi++) {
+            var hel = document.getElementById(hideIds[hi]);
+            if (hel) hel.style.display = 'none';
+        }
+        // Stop training if running
+        if (dqnTraining) { dqnTraining = false; _trainChannel = null; }
 
         if (mode === 'off') {
             document.getElementById('human-btn').classList.add('active');
@@ -1812,6 +1822,17 @@
             dqnAgent.enabled = true;
             runner.aiAgent = dqnAgent;
             document.getElementById('dqn-btn').classList.add('active');
+            // Show training UI
+            var ids = ['dqn-chart','dqn-train-btn','dqn-stats','chart-hint','status-badge'];
+            for (var ii = 0; ii < ids.length; ii++) {
+                var el = document.getElementById(ids[ii]);
+                if (el) el.style.display = '';
+            }
+            var chart = document.getElementById('dqn-chart');
+            if (chart) { chart.width = 500; chart.height = 150; chart.style.cssText = 'width:100%;max-width:500px;height:150px;margin-top:8px;cursor:pointer;border-radius:8px;'; }
+            var trainBtn = document.getElementById('dqn-train-btn');
+            if (trainBtn) { trainBtn.className = 'si-btn primary'; trainBtn.onclick = toggleTrain; }
+            drawChart();
             startRunnerIfNeeded();
         }
     }
