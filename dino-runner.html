@@ -97,6 +97,8 @@
                 <button class="si-btn" id="viz-btn" onclick="toggleViz()">Viz</button>
                 <button class="si-btn" onclick="restartGame()">Restart</button>
                 <button class="si-btn" id="pause-btn" onclick="togglePause()">Pause</button>
+                <button class="si-btn" id="slow-mo-btn2" onclick="toggleSlowMo()">Slo-Mo</button>
+                <button class="si-btn" id="esp-btn" onclick="toggleESP()">ESP</button>
                 <button class="si-btn" id="fs-btn" onclick="toggleFullscreen()">Fullscreen</button>
                 <div class="si-speed" style="font-size: 11px;">
                     Max Speed: <input type="range" id="max-speed-slider" min="6" max="100" value="13" step="1"> <span id="max-speed-val">13</span>
@@ -164,6 +166,7 @@
         this._vizData = null;
         this._arcCache = null;
         this._arcSpeedKey = -1;
+        this._espEnabled = false;
         this._winCache = null;
         this._winKey = '';
         this.loadStats();
@@ -443,6 +446,34 @@
             for (i = 0; i < obs.length; i++) {
                 if (obs[i].xPos + obs[i].typeConfig.width * obs[i].size > tRex.xPos) {
                     ahead.push(obs[i]);
+                }
+            }
+
+            // ESP: when no obstacles are visible but a spawn is imminent,
+            // pre-jump for a worst-case phantom. Only activates when the
+            // dino is on the ground with nothing to react to — doesn't
+            // interfere with real obstacle decisions.
+            if (this._espEnabled && !near && !tRex.jumping && obs.length > 0) {
+                var lastObs = obs[obs.length - 1];
+                var spawnX = runner.dimensions.WIDTH;
+                var lastObsRight = lastObs.xPos + lastObs.typeConfig.width * lastObs.size;
+                var triggerX = lastObsRight + (lastObs.gap || 0);
+                // Predict frames until next spawn
+                var perF = Math.floor(speed);
+                var framesToSpawn = (triggerX >= spawnX && perF > 0) ?
+                    Math.ceil((triggerX - spawnX) / perF) : 0;
+                // Pre-jump if spawn is within jump-window-min frames
+                if (framesToSpawn > 0 && framesToSpawn <= 8) {
+                    var phantom = {
+                        xPos: spawnX,
+                        yPos: 90,
+                        typeConfig: { type: 'CACTUS_LARGE', width: 25, height: 50 },
+                        size: 3,
+                        speedOffset: 0,
+                        collisionBoxes: []
+                    };
+                    near = phantom;
+                    ahead.push(phantom);
                 }
             }
 
@@ -735,6 +766,15 @@
                 runner.containerEl.style.transform = '';
             }
         }
+    };
+
+    window.toggleESP = function () {
+        aiAgent._espEnabled = !aiAgent._espEnabled;
+        var btn = document.getElementById('esp-btn');
+        if (btn) btn.classList.toggle('active', aiAgent._espEnabled);
+        // Raise slider cap when ESP is on
+        var slider = document.getElementById('max-speed-slider');
+        if (slider) slider.max = aiAgent._espEnabled ? 200 : 100;
     };
 
     window.AIAgent = AIAgent;
@@ -1774,7 +1814,10 @@
     window.toggleSlowMo = function () {
         if (!runner) return;
         runner.slowMo = !runner.slowMo;
-        document.getElementById('slow-mo-btn').classList.toggle('active', runner.slowMo);
+        var b1 = document.getElementById('slow-mo-btn');
+        var b2 = document.getElementById('slow-mo-btn2');
+        if (b1) b1.classList.toggle('active', runner.slowMo);
+        if (b2) b2.classList.toggle('active', runner.slowMo);
     };
 
     window.toggleTrain = function () {
