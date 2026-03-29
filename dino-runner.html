@@ -208,10 +208,16 @@
         // clears the obstacle group without collision.
         // Uses the exact jump arc — no polynomial approximation.
         // ---------------------------------------------------------------
-        _jumpClears: function (arc, edgeDist, obsY, groupW, tW, tH, perFrame, groundY) {
-            var totalFrames = Math.ceil((edgeDist + groupW + tW) / perFrame) + 1;
-            for (var f = 0; f < totalFrames; f++) {
-                var obsLeft = edgeDist - (f + 1) * perFrame;
+        _jumpClears: function (arc, edgeDist, obsY, groupW, tW, tH, speed, accel, maxSpd, groundY) {
+            // Use cumulative movement with acceleration for accurate
+            // obstacle position prediction at high speeds.
+            var cumMoved = 0;
+            var spd = speed;
+            for (var f = 0; f < 80; f++) {
+                cumMoved += Math.floor(spd);
+                if (spd < maxSpd) spd += accel;
+                var obsLeft = edgeDist - cumMoved;
+                if (obsLeft + groupW <= -tW) break; // fully past
                 if (obsLeft < 0 && obsLeft + groupW > -tW) {
                     var y = (f < arc.length) ? arc[f] : groundY;
                     if (y + tH > obsY) return false;
@@ -222,10 +228,12 @@
 
         // ---------------------------------------------------------------
         // Compute the safe jump distance window via exact simulation.
+        // Accounts for game acceleration so obstacles arriving faster
+        // than constant-speed prediction don't cause collisions.
         // Returns { min, max } in pixels. Cached by speed + obstacle.
         // ---------------------------------------------------------------
-        _jumpWindow: function (speed, obsY, groupW, tRex) {
-            var key = Math.round(speed * 10) + '_' + obsY + '_' + groupW;
+        _jumpWindow: function (speed, obsY, groupW, tRex, accel, maxSpd) {
+            var key = Math.round(speed * 10) + '_' + obsY + '_' + groupW + '_' + Math.round(accel * 10000);
             if (this._winCache && this._winKey === key) return this._winCache;
 
             var arc = this._getJumpArc(speed, tRex);
@@ -238,7 +246,7 @@
             var maxTest = perFrame * (arc.length + 5);
             var min = -1, max = -1;
             for (var d = 0; d <= maxTest; d++) {
-                if (this._jumpClears(arc, d, obsY, groupW, tW, tH, perFrame, groundY)) {
+                if (this._jumpClears(arc, d, obsY, groupW, tW, tH, speed, accel, maxSpd, groundY)) {
                     if (min < 0) min = d;
                     max = d;
                 }
@@ -523,7 +531,8 @@
             // ===== GROUND: Cacti & low pteros — jump =====
             if (tRex.ducking) tRex.setDuck(false);
 
-            var win = this._jumpWindow(speed, groupObsY, groupW, tRex);
+            var accel = (speed < runner.config.MAX_SPEED) ? (runner.config.ACCELERATION || 0) : 0;
+            var win = this._jumpWindow(speed, groupObsY, groupW, tRex, accel, runner.config.MAX_SPEED);
             if (win.min >= 0 && edgeDist <= win.max && edgeDist >= win.min) {
                 tRex.startJump(speed);
                 this._setViz('jump', tRex, speed, ahead, near);
