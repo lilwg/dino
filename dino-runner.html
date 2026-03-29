@@ -1364,16 +1364,24 @@
     var policy;
     var trainRunner;
     var dqnStep, dqnEp, dqnScores, dqnBest;
+
+    // ── State machine ──
+    // 'idle'     — ML mode, model plays the main game
+    // 'running'  — neuroevolution swarm active
+    // 'paused'   — swarm frozen mid-generation
+    // 'snapshot' — training stopped, playing a loaded snapshot
+    var _trainState = 'idle';
+    // Legacy alias used by setAIMode and other code
     var dqnTraining = false;
-    var _trainChannel = null;
+    var _trainSlowMo = false;
 
     // Population state
-    var _population = [];  // array of { mlp, fitness }
-    var _currentIdx = 0;   // which individual is being evaluated
-    var _evalSteps = 0;    // steps taken by current individual
+    var _population = [];
+    var _currentIdx = 0;
+    var _evalSteps = 0;
     var _generation = 0;
 
-    // Model snapshots: { ep (generation), score, weights }
+    // Model snapshots
     var _snapshots = [];
     var _selectedSnapshot = -1;
 
@@ -1599,8 +1607,7 @@
     var _lastChartDraw = 0;
     var SIM_SPEED = 8; // physics steps per animation frame
     var _tintCanvas = null;
-    var _trainPaused = false;
-    var _trainSlowMo = false;
+    // _trainSlowMo is declared above with the state machine
 
     // ── Virtual dino for parallel evaluation ──
     function VDino(mlp, tRex) {
@@ -1704,10 +1711,10 @@
     // All 50 dinos play simultaneously with shared obstacles.
     // Runs SIM_SPEED physics steps per animation frame.
     function dqnTrainTick() {
-        if (!dqnTraining) return;
+        if (_trainState !== 'running' && _trainState !== 'paused') return;
 
-        // Pause: just redraw, don't advance physics
-        if (_trainPaused) {
+        // Paused: just redraw, don't advance physics
+        if (_trainState === 'paused') {
             drawSwarmViz();
             requestAnimationFrame(dqnTrainTick);
             return;
@@ -2014,16 +2021,11 @@
             document.getElementById('chart-hint').textContent =
                 'Gen ' + snap.ep + ' (score ' + snap.score + ') — click TRAIN to resume';
 
-            // Stop training so the user can watch this model play
-            if (dqnTraining) toggleTrain();
-
+            // Transition to snapshot state: stops training, plays model
+            setTrainState('snapshot');
             drawChart();
-
-            // Switch to ML mode and restart the game with this model
             if (aiMode !== 'dqn') setMode('dqn');
-            if (runner) {
-                runner.restart();
-            }
+            if (runner) runner.restart();
         }
     }
 
@@ -2063,7 +2065,7 @@
         // Hide training panel and stop training when leaving ML mode
         var mlPanel = document.getElementById('ml-panel');
         if (mlPanel) mlPanel.style.display = 'none';
-        if (dqnTraining) { dqnTraining = false; _trainChannel = null; }
+        if (_trainState !== 'idle') setTrainState('idle');
 
         if (mode === 'off') {
             document.getElementById('human-btn').classList.add('active');
@@ -2087,6 +2089,7 @@
         }
     }
     window.setMode = setAIMode;
+    window._setAIMode = setAIMode;
 
     function startRunnerIfNeeded() {
         if (!runner) return;
@@ -2114,15 +2117,100 @@
         }
     };
 
+    // ── State machine: transitions ──
+    function setTrainState(newState) {
+        var old = _trainState;
+        if (old === newState) return;
+        _trainState = newState;
+        dqnTraining = (newState === 'running' || newState === 'paused');
+
+        // --- Enter 'running' ---
+        if (newState === 'running') {
+            if (old === 'idle' || old === 'snapshot') {
+                // Fresh start: mute, stop game loop, init swarm
+                if (runner) {
+                    if (!runner._origPlaySound) runner._origPlaySound = runner.playSound;
+                    runner.playSound = function () {};
+                    if (runner.raqId) { cancelAnimationFrame(runner.raqId); runner.raqId = 0; }
+                }
+                trainRestart();
+                resetVDinos();
+            }
+            // Start (or resume) the training loop
+            requestAnimationFrame(dqnTrainTick);
+        }
+
+        // --- Enter 'idle' or 'snapshot': restore game ---
+        if (newState === 'idle' || newState === 'snapshot') {
+            _trainSlowMo = false;
+            saveTrainingState();
+            if (runner && runner._origPlaySound) {
+                runner.playSound = runner._origPlaySound;
+                runner._origPlaySound = null;
+            }
+            if (runner) {
+                runner.paused = false;
+                runner.slowMo = false;
+                runner.time = performance.now();
+                runner.scheduleNextUpdate();
+            }
+        }
+
+        // --- Update all UI ---
+        var trainBtn = document.getElementById('dqn-train-btn');
+        var pauseBtn = document.getElementById('pause-btn');
+        var slowBtn = document.getElementById('slow-mo-btn2');
+        var badge = document.getElementById('status-badge');
+
+        if (trainBtn) {
+            trainBtn.textContent = (newState === 'running' || newState === 'paused') ? 'STOP' : 'TRAIN';
+            trainBtn.classList.toggle('active', newState === 'running' || newState === 'paused');
+            trainBtn.classList.toggle('primary', newState === 'idle' || newState === 'snapshot');
+        }
+        if (pauseBtn) {
+            pauseBtn.classList.toggle('active', newState === 'paused');
+        }
+        if (slowBtn) {
+            slowBtn.classList.toggle('active', _trainSlowMo && newState === 'running');
+        }
+        if (badge) {
+            if (newState === 'running') {
+                badge.style.display = '';
+                badge.className = 'status-badge training';
+                badge.textContent = 'TRAINING';
+            } else if (newState === 'paused') {
+                badge.style.display = '';
+                badge.className = 'status-badge';
+                badge.textContent = 'PAUSED';
+            } else {
+                badge.style.display = 'none';
+            }
+        }
+    }
+
+    // ── Button handlers ──
+    window.toggleTrain = function () {
+        if (_trainState === 'idle' || _trainState === 'snapshot') {
+            setTrainState('running');
+        } else {
+            setTrainState('idle');
+        }
+    };
+
     window.togglePause = function () {
         if (!runner) return;
-        var btn = document.getElementById('pause-btn');
-        if (dqnTraining) {
-            _trainPaused = !_trainPaused;
-            btn.classList.toggle('active', _trainPaused);
+        // During training: toggle pause
+        if (_trainState === 'running') {
+            setTrainState('paused');
             return;
         }
+        if (_trainState === 'paused') {
+            setTrainState('running');
+            return;
+        }
+        // Normal game pause
         if (runner.crashed) return;
+        var btn = document.getElementById('pause-btn');
         if (runner.playing && !runner.paused) {
             runner.stop();
             btn.classList.add('active');
@@ -2136,10 +2224,10 @@
     };
 
     window.toggleSlowMo = function () {
-        if (dqnTraining) {
+        if (_trainState === 'running' || _trainState === 'paused') {
             _trainSlowMo = !_trainSlowMo;
-            var b2t = document.getElementById('slow-mo-btn2');
-            if (b2t) b2t.classList.toggle('active', _trainSlowMo);
+            var sb = document.getElementById('slow-mo-btn2');
+            if (sb) sb.classList.toggle('active', _trainSlowMo);
             return;
         }
         if (!runner) return;
@@ -2148,67 +2236,6 @@
         var b2 = document.getElementById('slow-mo-btn2');
         if (b1) b1.classList.toggle('active', runner.slowMo);
         if (b2) b2.classList.toggle('active', runner.slowMo);
-    };
-
-    window.toggleTrain = function () {
-        dqnTraining = !dqnTraining;
-        var btn = document.getElementById('dqn-train-btn');
-        if (dqnTraining) {
-            btn.textContent = 'PAUSE';
-            btn.classList.remove('primary');
-            btn.classList.add('active');
-
-            // Mute sounds, stop the main game loop during training
-            if (runner) {
-                runner._origPlaySound = runner.playSound;
-                runner.playSound = function () {};
-                runner.paused = false;
-                runner.slowMo = false;
-                // Stop game's render loop — training viz takes over the canvas
-                if (runner.raqId) {
-                    cancelAnimationFrame(runner.raqId);
-                    runner.raqId = 0;
-                }
-            }
-            // Reset training control flags
-            _trainPaused = false;
-            _trainSlowMo = false;
-            document.getElementById('pause-btn').classList.remove('active');
-            var smb = document.getElementById('slow-mo-btn2');
-            if (smb) smb.classList.remove('active');
-
-            // Reset virtual dinos and start parallel training
-            trainRestart();
-            resetVDinos();
-            requestAnimationFrame(dqnTrainTick);
-
-            var badge = document.getElementById('status-badge');
-            if (badge) { badge.style.display = ''; badge.className = 'status-badge training'; badge.textContent = 'TRAINING'; }
-        } else {
-            btn.textContent = 'TRAIN';
-            btn.classList.add('primary');
-            btn.classList.remove('active');
-            saveTrainingState();
-
-            // Restore sounds, clear flags, restart game render loop
-            if (runner && runner._origPlaySound) {
-                runner.playSound = runner._origPlaySound;
-                runner._origPlaySound = null;
-            }
-            if (runner) {
-                runner.paused = false;
-                runner.slowMo = false;
-                runner.time = performance.now();
-                runner.scheduleNextUpdate();
-            }
-            document.getElementById('pause-btn').classList.remove('active');
-            var smb2 = document.getElementById('slow-mo-btn2');
-            if (smb2) smb2.classList.remove('active');
-
-
-            var badge = document.getElementById('status-badge');
-            if (badge) badge.style.display = 'none';
-        }
     };
 
     var _trainVizInterval = null;
@@ -2432,12 +2459,14 @@
     }
 
     // --- Wrap setMode: viz OFF by default, show/hide viz button ---
-    var origSetMode = window.setMode;
+    var _origSetMode = null;
     window.setMode = function (mode) {
         var r = window.runner;
         // Ensure audio is initialized (normally happens on first keypress)
         if (r && !r.audioContext) r.loadSounds();
-        origSetMode(mode);
+        // Lazy-bind: setAIMode is set asynchronously in waitForRunner
+        if (!_origSetMode) _origSetMode = window._setAIMode;
+        if (_origSetMode) _origSetMode(mode);
         var simAgent = window._simAgent;
         var simViz = window._simVisualizer;
         // Turn viz ON by default when entering AI mode
