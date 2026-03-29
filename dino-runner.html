@@ -1849,13 +1849,17 @@
             var vd = _vdinos[i];
 
             if (!vd.alive) {
-                var fade = Math.max(0, 1 - (_evalSteps - vd.deathFrame) / 30);
+                var fade = Math.max(0, 1 - (_evalSteps - vd.deathFrame) / 40);
                 if (fade <= 0) continue;
-                ctx.globalAlpha = fade * 0.15;
-            } else {
-                ctx.globalAlpha = 0.2;
+                // Red death flash
+                ctx.globalAlpha = fade * 0.4;
+                ctx.fillStyle = '#ff3b30';
+                var dw2 = vd.ducking ? 59 : 44;
+                ctx.fillRect(vd.xPos, vd.yPos, dw2, 47);
+                continue;
             }
 
+            ctx.globalAlpha = 0.2;
             if (vd.ducking) {
                 ctx.drawImage(sprite,
                     trexBase.x + duckFrame, trexBase.y, sDW, sH,
