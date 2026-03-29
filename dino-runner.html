@@ -1732,7 +1732,7 @@
         var speed = r.currentSpeed;
         var dt = 1000 / 60;
 
-        var stepsThisTick = _trainSlowMo ? 2 : SIM_SPEED;
+        var stepsThisTick = _trainSlowMo ? 1 : SIM_SPEED;
 
         for (var s = 0; s < stepsThisTick; s++) {
             // Advance shared obstacles
@@ -2143,6 +2143,7 @@
                     // which prevents update() from re-scheduling itself
                     runner.stop();
                 }
+                _trainSlowMo = false;
                 trainRestart();
                 resetVDinos();
                 // Start the single rAF loop (flag-guarded, can't duplicate)
