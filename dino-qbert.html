@@ -949,6 +949,7 @@ function drawVizPath() {
         var e = enemies[ei];
         if (e.type === 'spawn-timer') continue;
         enemyTiles[e.row + ',' + e.col] = true;
+        if (e.destRow != null) enemyTiles[e.destRow + ',' + e.destCol] = true;
     }
     for (var key in aiDangerTiles) {
         if (enemyTiles[key]) continue; // enemy is visibly there, no overlay needed
