@@ -88,7 +88,9 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts) {
     }
 
     var isToggle = lv >= 3;
-    var REVERT_PENALTY = isToggle ? 2 : 0;
+    // On L5+ (full cycle), traversing a completed cube costs 3 extra hops to fix (2→0, then 0→1→2)
+    // On L3-4 (toggle/partial revert), cost is lower
+    var REVERT_PENALTY = lv >= 5 ? 4 : (isToggle ? 2 : 0);
     var curIdx = startIdx;
     var totalHops = 0;
 
@@ -102,6 +104,8 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts) {
                     var d = dijk.dist[i];
                     // Deprioritize frequently-reverted cubes — go to fresh ones first
                     if (revertCounts && revertCounts[i] > 1) d += (revertCounts[i] - 1) * 3;
+                    // L5+: prefer bottom-row cubes to avoid backtracking through completed upper cubes
+                    if (lv >= 5) d -= idxToPos[i][0]; // lower row = lower cost
                     if (d < bestDist || (d === bestDist && (bestIdx === -1 || i < bestIdx))) {
                         bestDist = d; bestIdx = i;
                     }
