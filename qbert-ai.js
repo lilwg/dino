@@ -1035,6 +1035,26 @@ function aiPickBestDir() {
         }
     }
 
+    // L5+ parity fix: if in bad parity with no even-row discs left, jump off an odd row
+    if (gs.lv >= 5 && aiNoProgressCount > 50) {
+        var evenDiscs = gs.evenRowDiscs || 0;
+        var oddFalls = gs.oddRowFalls || 0;
+        if (((evenDiscs - oddFalls) % 3 + 3) % 3 === 1) {
+            // Bad parity — check if any even-row disc remains
+            var hasEvenDisc = false;
+            for (var edi = 0; edi < gs.discs.length; edi++)
+                if (gs.discs[edi].active && gs.discs[edi].row % 2 === 0) hasEvenDisc = true;
+            if (!hasEvenDisc && gs.player.row % 2 === 1) {
+                // On odd row, no even discs — jump off edge to fix parity
+                for (var fk = 0; fk < DIR_KEYS.length; fk++) {
+                    var fd = DIRS[DIR_KEYS[fk]];
+                    var fnr = gs.player.row + fd.dr, fnc = gs.player.col + fd.dc;
+                    if (!isValidPos(fnr, fnc)) { result = DIR_KEYS[fk]; break; }
+                }
+            }
+        }
+    }
+
     // No-progress breaker: escalating urgency when stuck without reducing remaining cubes.
     // Phase 1 (>10 moves): try to land on adjacent unfinished cube (safe only)
     // Phase 2 (>20 moves): use tour direction even if not immediately on unfinished cube
