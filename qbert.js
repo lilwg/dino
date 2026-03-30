@@ -373,6 +373,9 @@ function simSpawnEnemy(gs, forcedType) {
     }
     var spawnCol = Math.floor(simRng() * 2);
     var interval = enemyMoveInterval(type, gs.sm);
+    // Arcade: enemies drop in from off-screen before becoming active.
+    // spawnAnimTimer counts down during drop-in; enemy is visible but not collidable.
+    var spawnAnim = 20; // ~20 frames of drop-in animation
     if (type === 'ugg') {
         gs.enemies.push({ type: 'ugg', row: ROWS-1, col: ROWS-1,
             jumping: false, jumpT: 0, jumpDur: ENEMY_JUMP_DUR * gs.sm,
@@ -388,7 +391,7 @@ function simSpawnEnemy(gs, forcedType) {
         gs.enemies.push({ type: type, row: 1, col: spawnCol, hops: 0,
             jumping: false, jumpT: 0, jumpDur: ENEMY_JUMP_DUR * gs.sm,
             moveTimer: 0, moveInterval: interval, destRow: null, destCol: null,
-            dirBits: dirBits });
+            dirBits: dirBits, spawnAnimTimer: spawnAnim });
     }
 }
 
@@ -480,6 +483,9 @@ function simUpdateEnemies(gs) {
     for (var i = gs.enemies.length - 1; i >= 0; i--) {
         var e = gs.enemies[i];
         if (e.type === 'spawn-timer') continue;
+
+        // Drop-in animation: enemy is visible but not active yet
+        if (e.spawnAnimTimer > 0) { e.spawnAnimTimer--; continue; }
 
         // Jump animation
         if (e.jumping) {
@@ -636,6 +642,7 @@ function simCheckCollision(gs) {
     for (var i = 0; i < gs.enemies.length; i++) {
         var e = gs.enemies[i];
         if (e.type === 'spawn-timer') continue;
+        if (e.spawnAnimTimer > 0) continue; // dropping in, not active yet
         var et = collisionTile(e);
         if (!et) continue; // enemy at apex, immune
         // Same-tile collision
