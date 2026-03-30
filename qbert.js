@@ -113,8 +113,8 @@ function discConfig(rnd) {
     var count = discCount(r);
     var ri = ((r - 1) % 4);
     var result = [];
-    result.push({side: [0,1,0,1][ri], row: [2,3,2,3][ri]});
-    result.push({side: [1,0,1,0][ri], row: [3,2,3,2][ri]});
+    result.push({side: 0, row: [2,3,2,3][ri]});
+    result.push({side: 1, row: [3,2,3,2][ri]});
     if (count >= 3) result.push({side: [0,1,0,1][ri], row: [4,4,5,4][ri]});
     if (count >= 4) result.push({side: [1,0,1,0][ri], row: [5,5,4,5][ri]});
     if (count >= 5) result.push({side: 0, row: [5,4,3,5][ri]});
