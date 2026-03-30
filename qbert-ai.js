@@ -767,16 +767,32 @@ function unifiedPick(gs, coilyActive) {
                         if (!isExhaustiveSafe(hop1States[si2], d2dir)) { d2ok = false; break; }
                     }
                 }
-                // Hop 3: verify at least one safe escape from hop-2 state (anti-cornering)
+                // Hop 3+4: verify a safe escape chain from hop-2 state (anti-cornering)
                 if (d2ok && hop2States.length > 0) {
                     var has3rdSafe = false;
                     for (var d3k = 0; d3k < DIR_KEYS_WITH_STAY.length; d3k++) {
                         var d3dir = DIR_KEYS_WITH_STAY[d3k];
                         var d3ok = true;
+                        var hop3States = [];
                         for (var si3 = 0; si3 < hop2States.length; si3++) {
                             simSeed(k * 10000 + d2k * 1000 + d3k * 100 + si3);
                             var d3c = simDeepClone(hop2States[si3]);
                             if (!simStep(d3c, d3dir)) { d3ok = false; break; }
+                            else if (coilyActive && si3 === 0) hop3States.push(d3c);
+                        }
+                        // Hop 4: when Coily active, verify one more escape exists
+                        if (d3ok && coilyActive && hop3States.length > 0) {
+                            var has4th = false;
+                            for (var d4k = 0; d4k < DIR_KEYS_WITH_STAY.length; d4k++) {
+                                var d4ok = true;
+                                for (var si4 = 0; si4 < hop3States.length; si4++) {
+                                    simSeed(k * 100000 + d3k * 1000 + d4k * 100 + si4);
+                                    var d4c = simDeepClone(hop3States[si4]);
+                                    if (!simStep(d4c, DIR_KEYS_WITH_STAY[d4k])) { d4ok = false; break; }
+                                }
+                                if (d4ok) { has4th = true; break; }
+                            }
+                            if (!has4th) d3ok = false;
                         }
                         if (d3ok) { has3rdSafe = true; break; }
                     }
