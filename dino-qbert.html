@@ -943,16 +943,17 @@ function drawVizPath() {
     var hw = TILE_W / 2, hh = TILE_H / 2;
     var ds = 5; // diamond half-size for direction indicators
 
-    // ── 1. Danger tiles: subtle red tint (skip tiles with an enemy on them) ──
+    // ── 1. Danger tiles: subtle outline (skip tiles with an enemy on them) ──
     var enemyTiles = {};
     for (var ei = 0; ei < enemies.length; ei++) {
         var e = enemies[ei];
         if (e.type === 'spawn-timer') continue;
         enemyTiles[e.row + ',' + e.col] = true;
         if (e.destRow != null) enemyTiles[e.destRow + ',' + e.destCol] = true;
+        if (e.jumpSrcRow != null) enemyTiles[e.jumpSrcRow + ',' + e.jumpSrcCol] = true;
     }
     for (var key in aiDangerTiles) {
-        if (enemyTiles[key]) continue; // enemy is visibly there, no overlay needed
+        if (enemyTiles[key]) continue;
         var parts = key.split(',');
         var dr = parseInt(parts[0]), dc = parseInt(parts[1]);
         if (!isValidPos(dr, dc)) continue;
@@ -961,8 +962,9 @@ function drawVizPath() {
         ctx.moveTo(dp.cx, dp.cy - hh); ctx.lineTo(dp.cx + hw, dp.cy);
         ctx.lineTo(dp.cx, dp.cy + hh); ctx.lineTo(dp.cx - hw, dp.cy);
         ctx.closePath();
-        ctx.fillStyle = 'rgba(255,40,40,0.08)';
-        ctx.fill();
+        ctx.strokeStyle = inverted ? 'rgba(255,80,80,0.2)' : 'rgba(200,40,40,0.12)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
     }
 
     // ── 2. Tour path: greedy route through unfinished cubes ──
