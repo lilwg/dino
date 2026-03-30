@@ -949,38 +949,99 @@ function drawDiscs() {
 
 function drawVizPath() {
     ctx.save();
+    var hw = TILE_W / 2, hh = TILE_H / 2;
 
-    // Draw mode label
-    if (typeof aiMode !== 'undefined' && aiMode > 0) {
-        ctx.font = '10px monospace';
-        ctx.textAlign = 'left';
-        ctx.fillStyle = 'rgba(100,200,255,0.8)';
-        ctx.fillText('AI', 8, 14);
-    }
-
-    // Draw search scores on adjacent cubes
-    // DIR_KEYS_WITH_STAY from qbert.js
-    var hasScores = false;
-    var maxVal = -Infinity, minVal = Infinity;
-    for (var i = 0; i < DIR_KEYS_WITH_STAY.length; i++) {
-        var v = aiMoveScores[DIR_KEYS_WITH_STAY[i]];
-        if (v !== undefined) {
-            hasScores = true;
-            if (v > maxVal) maxVal = v;
-            if (v < minVal) minVal = v;
+    // ── 1. Unfinished cubes: small dots on cubes that still need stomping ──
+    var tgt = targetState();
+    ctx.fillStyle = 'rgba(255,255,255,0.4)';
+    for (var ci = 0; ci < cubeStates.length; ci++) {
+        if (cubeStates[ci].state < tgt) {
+            var cp = cubeXY(cubeStates[ci].row, cubeStates[ci].col);
+            ctx.beginPath();
+            ctx.arc(cp.cx, cp.cy, 2, 0, Math.PI * 2);
+            ctx.fill();
         }
     }
+
+    // ── 2. Tour path: route through unfinished cubes (WHERE to go) ──
+    if (aiTourPath.length >= 2) {
+        ctx.beginPath();
+        var tp0 = cubeXY(aiTourPath[0].row, aiTourPath[0].col);
+        ctx.moveTo(tp0.cx, tp0.cy);
+        for (var j = 1; j < aiTourPath.length; j++) {
+            var tp = cubeXY(aiTourPath[j].row, aiTourPath[j].col);
+            ctx.lineTo(tp.cx, tp.cy);
+        }
+        ctx.strokeStyle = 'rgba(255,200,0,0.3)';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([4, 3]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+    }
+
+    // ── 3. Danger tiles: red overlay (enemy threat zones) ──
+    for (var key in aiDangerTiles) {
+        var parts = key.split(',');
+        var dr = parseInt(parts[0]), dc = parseInt(parts[1]);
+        if (!isValidPos(dr, dc)) continue;
+        var dp = cubeXY(dr, dc);
+        ctx.beginPath();
+        ctx.moveTo(dp.cx, dp.cy - hh);
+        ctx.lineTo(dp.cx + hw, dp.cy);
+        ctx.lineTo(dp.cx, dp.cy + hh);
+        ctx.lineTo(dp.cx - hw, dp.cy);
+        ctx.closePath();
+        ctx.fillStyle = 'rgba(255,40,40,0.2)';
+        ctx.fill();
+    }
+
+    // ── 4. Coily predicted path ──
+    if (aiCoilyPred.length > 0) {
+        var coilyStart = null;
+        for (var ei = 0; ei < enemies.length; ei++) {
+            if (enemies[ei].type === 'coily') {
+                var epos = enemyEffectivePos(enemies[ei]);
+                coilyStart = cubeXY(epos.row, epos.col);
+                break;
+            }
+        }
+        if (coilyStart) {
+            ctx.beginPath();
+            ctx.moveTo(coilyStart.cx, coilyStart.cy);
+            for (var j = 0; j < aiCoilyPred.length; j++) {
+                var cpv = cubeXY(aiCoilyPred[j].row, aiCoilyPred[j].col);
+                ctx.lineTo(cpv.cx, cpv.cy);
+            }
+            ctx.strokeStyle = 'rgba(180,60,255,0.5)';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([3, 2]);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            for (var j = 0; j < aiCoilyPred.length; j++) {
+                var cpv = cubeXY(aiCoilyPred[j].row, aiCoilyPred[j].col);
+                ctx.beginPath();
+                ctx.arc(cpv.cx, cpv.cy, 4, 0, Math.PI * 2);
+                ctx.fillStyle = 'rgba(180,60,255,' + (0.6 - j * 0.15) + ')';
+                ctx.fill();
+            }
+        }
+    }
+
+    // ── 5. Per-direction safety + tour cost (core decision viz) ──
+    var hasScores = false;
+    for (var i = 0; i < DIR_KEYS_WITH_STAY.length; i++)
+        if (aiMoveScores[DIR_KEYS_WITH_STAY[i]] !== undefined) { hasScores = true; break; }
+
     if (hasScores) {
-        var range = maxVal - minVal;
-        if (range < 1) range = 1;
         for (var i = 0; i < DIR_KEYS_WITH_STAY.length; i++) {
             var dk = DIR_KEYS_WITH_STAY[i];
             var v = aiMoveScores[dk];
             if (v === undefined) continue;
             var isBest = (dk === aiBestDir);
+
+            // Position of the indicator
             var pt;
             if (dk === 'STAY') {
-                // Draw STAY score on the player's current cube
                 pt = cubeXY(player.row, player.col);
                 pt = { cx: pt.cx, cy: pt.cy + 14 };
             } else {
@@ -994,51 +1055,49 @@ function drawVizPath() {
                 }
             }
 
-            // Color: green=best, red=worst, yellow=middle
-            var t = (v - minVal) / range; // 0=worst, 1=best
-            var r2 = Math.round(255 * (1 - t));
-            var g2 = Math.round(255 * t);
-            var alpha = isBest ? 0.85 : 0.50;
+            // Safety tier determines color:
+            //   ≥ 0: safe (hop 1+2+3 pass) → green
+            //   -5000: anti-corner fail (hop 1+2 ok, hop 3 blocked) → orange
+            //   -8000: exhaustive fail → red outline
+            //   ≤ -10000: death → red filled
+            //   < 0 other: partial survival → yellow with %
+            var col, label;
+            if (v <= -10000)     { col = 'rgba(220,40,40,0.8)';  label = 'X'; }
+            else if (v <= -8000) { col = 'rgba(220,80,40,0.7)';  label = '!'; }
+            else if (v <= -5000) { col = 'rgba(220,160,40,0.7)'; label = '!!'; }
+            else if (v < 0)      { col = 'rgba(220,200,40,0.6)'; label = Math.max(0, Math.round(v + 100)) + '%'; }
+            else if (v >= 9000)  { col = 'rgba(40,220,40,0.9)';  label = 'WIN'; }
+            else                 { col = 'rgba(40,200,40,0.6)';   label = '' + Math.round(10000 - v); }
 
-            // Draw circle indicator
-            var radius = isBest ? 8 : 6;
+            var radius = isBest ? 9 : 6;
             ctx.beginPath();
             ctx.arc(pt.cx, pt.cy, radius, 0, Math.PI * 2);
-            ctx.fillStyle = 'rgba(' + r2 + ',' + g2 + ',0,' + alpha + ')';
+            ctx.fillStyle = col;
             ctx.fill();
             if (isBest) {
                 ctx.lineWidth = 2;
-                ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+                ctx.strokeStyle = '#fff';
                 ctx.stroke();
             }
 
-            // Draw value text — show tour cost for safe moves, survival % for unsafe
-            var label;
-            if (v <= -10000) label = 'DIE';
-            else if (v >= 9000) label = 'WIN';
-            else if (v >= 0) label = Math.round(10000 - v).toString();
-            else label = Math.max(0, Math.round(v + 100)) + '%';
-            ctx.font = '9px monospace';
+            // Label
+            ctx.font = isBest ? 'bold 9px monospace' : '8px monospace';
             ctx.textAlign = 'center';
-            ctx.fillStyle = isBest ? '#fff' : 'rgba(255,255,255,0.7)';
-            ctx.fillText(label, pt.cx, pt.cy - radius - 3);
+            ctx.fillStyle = isBest ? '#fff' : 'rgba(255,255,255,0.8)';
+            ctx.fillText(label, pt.cx, pt.cy - radius - 2);
         }
 
-        // Draw arrow from player to best move
+        // Arrow to best direction
         if (aiBestDir && aiBestDir !== 'STAY') {
             var dd2 = DIRS[aiBestDir];
             var nr2 = player.row + dd2.dr, nc2 = player.col + dd2.dc;
             var from = cubeXY(player.row, player.col);
-            var to;
-            if (isValidPos(nr2, nc2)) {
-                to = cubeXY(nr2, nc2);
-            } else {
-                to = { cx: from.cx + dd2.dc * 50 - dd2.dr * 30, cy: from.cy + dd2.dr * -30 };
-            }
+            var to = isValidPos(nr2, nc2) ? cubeXY(nr2, nc2)
+                : { cx: from.cx + dd2.dc * 50 - dd2.dr * 30, cy: from.cy + dd2.dr * -30 };
             ctx.beginPath();
             ctx.moveTo(from.cx, from.cy);
             ctx.lineTo(to.cx, to.cy);
-            ctx.strokeStyle = 'rgba(0,255,0,0.7)';
+            ctx.strokeStyle = 'rgba(40,220,40,0.7)';
             ctx.lineWidth = 2;
             ctx.setLineDash([3, 3]);
             ctx.stroke();
@@ -1046,87 +1105,23 @@ function drawVizPath() {
         }
     }
 
-    // ── Danger zone overlays: red-tinted cube tops ──
-    var hw = TILE_W / 2, hh = TILE_H / 2;
-    for (var key in aiDangerTiles) {
-        var parts = key.split(',');
-        var dr = parseInt(parts[0]), dc = parseInt(parts[1]);
-        if (!isValidPos(dr, dc)) continue;
-        var dp = cubeXY(dr, dc);
-        ctx.beginPath();
-        ctx.moveTo(dp.cx, dp.cy - hh);
-        ctx.lineTo(dp.cx + hw, dp.cy);
-        ctx.lineTo(dp.cx, dp.cy + hh);
-        ctx.lineTo(dp.cx - hw, dp.cy);
-        ctx.closePath();
-        ctx.fillStyle = 'rgba(255,40,40,0.25)';
-        ctx.fill();
+    // ── 6. AI state indicator ──
+    var stateLabel = '';
+    if (aiNoProgressCount > 30) stateLabel = 'UNSTUCK-3';
+    else if (aiNoProgressCount > 20) stateLabel = 'UNSTUCK-2';
+    else if (aiNoProgressCount > 10) stateLabel = 'UNSTUCK-1';
+    else if (aiStayCount > 2) stateLabel = 'FORCED';
+    else if (aiPosHistory.length >= 8) {
+        var uniq = {};
+        for (var hi = Math.max(0, aiPosHistory.length - 8); hi < aiPosHistory.length; hi++)
+            uniq[aiPosHistory[hi]] = true;
+        if (Object.keys(uniq).length <= 3) stateLabel = 'OSCILLATING';
     }
-
-    // ── Tour path: connected line through remaining cubes ──
-    if (aiTourPath.length >= 2) {
-        ctx.beginPath();
-        var tp0 = cubeXY(aiTourPath[0].row, aiTourPath[0].col);
-        ctx.moveTo(tp0.cx, tp0.cy);
-        for (var j = 1; j < aiTourPath.length; j++) {
-            var tp = cubeXY(aiTourPath[j].row, aiTourPath[j].col);
-            ctx.lineTo(tp.cx, tp.cy);
-        }
-        ctx.strokeStyle = 'rgba(255,200,0,0.35)';
-        ctx.lineWidth = 1.5;
-        ctx.setLineDash([4, 3]);
-        ctx.stroke();
-        ctx.setLineDash([]);
-
-        // Numbered dots at each tour stop
-        for (var j = 1; j < aiTourPath.length; j++) {
-            var tp = cubeXY(aiTourPath[j].row, aiTourPath[j].col);
-            ctx.beginPath();
-            ctx.arc(tp.cx, tp.cy, 5, 0, Math.PI * 2);
-            ctx.fillStyle = 'rgba(255,200,0,0.5)'; ctx.fill();
-            ctx.font = '7px monospace';
-            ctx.textAlign = 'center';
-            ctx.fillStyle = 'rgba(0,0,0,0.7)';
-            ctx.fillText(j.toString(), tp.cx, tp.cy + 2.5);
-        }
-    }
-
-    // ── Coily predicted path: purple chain ──
-    if (aiCoilyPred.length > 0) {
-        // Find current Coily position to start the chain
-        var coilyStart = null;
-        for (var ei = 0; ei < enemies.length; ei++) {
-            if (enemies[ei].type === 'coily') {
-                var epos = enemyEffectivePos(enemies[ei]);
-                coilyStart = cubeXY(epos.row, epos.col);
-                break;
-            }
-        }
-        if (coilyStart) {
-            ctx.beginPath();
-            ctx.moveTo(coilyStart.cx, coilyStart.cy);
-            for (var j = 0; j < aiCoilyPred.length; j++) {
-                var cp = cubeXY(aiCoilyPred[j].row, aiCoilyPred[j].col);
-                ctx.lineTo(cp.cx, cp.cy);
-            }
-            ctx.strokeStyle = 'rgba(180,60,255,0.6)';
-            ctx.lineWidth = 2;
-            ctx.setLineDash([3, 2]);
-            ctx.stroke();
-            ctx.setLineDash([]);
-
-            // Dots at each predicted position with step number
-            for (var j = 0; j < aiCoilyPred.length; j++) {
-                var cp = cubeXY(aiCoilyPred[j].row, aiCoilyPred[j].col);
-                var stepAlpha = 0.7 - j * 0.15;
-                ctx.beginPath();
-                ctx.arc(cp.cx, cp.cy, 5, 0, Math.PI * 2);
-                ctx.fillStyle = 'rgba(180,60,255,' + stepAlpha + ')'; ctx.fill();
-                ctx.strokeStyle = 'rgba(255,255,255,0.5)';
-                ctx.lineWidth = 1;
-                ctx.stroke();
-            }
-        }
+    if (stateLabel) {
+        ctx.font = 'bold 9px monospace';
+        ctx.textAlign = 'left';
+        ctx.fillStyle = stateLabel === 'OSCILLATING' ? 'rgba(255,180,40,0.8)' : 'rgba(255,80,80,0.8)';
+        ctx.fillText(stateLabel, 8, CH - 8);
     }
 
     ctx.restore();
