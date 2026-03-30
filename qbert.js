@@ -90,10 +90,11 @@ function discCount(rnd) {
     var lv = arcadeLevel(rnd);
     var r = (((rnd !== undefined ? rnd : round) - 1) % 4);
     if (lv === 1) return 2;
-    if (lv === 2) return [3, 3, 3, 2][r];
+    if (lv === 2) return [3, 3, 2, 2][r];
     if (lv === 3) return [4, 4, 3, 3][r];
     if (lv === 4) return [6, 6, 5, 4][r];
-    return [7, 6, 6, 5][r];
+    if (lv === 5) return [7, 6, 5, 5][r];
+    return 5; // levels 6-9: always 5 discs
 }
 
 function hasRedBall(rnd) {
@@ -108,18 +109,47 @@ function hasUggWrongway(rnd) { return ((rnd !== undefined) ? rnd : round) >= 3; 
 function hasSlick(rnd) { return ((rnd !== undefined) ? rnd : round) >= 4; }
 function hasGreenBall(rnd) { return ((rnd !== undefined) ? rnd : round) >= 6; }
 
+// Arcade-accurate disc positions per level and sub-round.
+// Notation: {side: 0=left 1=right, row: 0-indexed from apex}.
+// Source: verified against arcade gameplay.
+var DISC_TABLE = [
+    // Level 1: 2 discs per round
+    [[{side:0,row:4},{side:1,row:4}],
+     [{side:0,row:5},{side:1,row:6}],
+     [{side:0,row:3},{side:1,row:5}],
+     [{side:0,row:0},{side:1,row:6}]],
+    // Level 2: 3,3,2,2 discs
+    [[{side:0,row:3},{side:1,row:0},{side:1,row:4}],
+     [{side:0,row:5},{side:1,row:0},{side:1,row:5}],
+     [{side:0,row:2},{side:1,row:5}],
+     [{side:0,row:1},{side:1,row:3}]],
+    // Level 3: 4,4,3,3 discs
+    [[{side:0,row:2},{side:0,row:4},{side:1,row:2},{side:1,row:3}],
+     [{side:0,row:2},{side:0,row:3},{side:1,row:3},{side:1,row:5}],
+     [{side:0,row:0},{side:0,row:2},{side:1,row:4}],
+     [{side:1,row:1},{side:1,row:4},{side:1,row:6}]],
+    // Level 4: 6,6,5,4 discs
+    [[{side:0,row:0},{side:0,row:3},{side:0,row:5},{side:1,row:1},{side:1,row:5},{side:1,row:6}],
+     [{side:0,row:0},{side:0,row:4},{side:0,row:5},{side:1,row:1},{side:1,row:5},{side:1,row:6}],
+     [{side:0,row:2},{side:0,row:4},{side:1,row:1},{side:1,row:2},{side:1,row:4}],
+     [{side:0,row:0},{side:0,row:1},{side:1,row:3},{side:1,row:6}]],
+    // Level 5: 7,6,5,5 discs
+    [[{side:0,row:0},{side:0,row:1},{side:0,row:3},{side:0,row:5},{side:1,row:0},{side:1,row:2},{side:1,row:6}],
+     [{side:0,row:0},{side:0,row:4},{side:0,row:5},{side:1,row:1},{side:1,row:3},{side:1,row:4}],
+     [{side:0,row:2},{side:0,row:4},{side:1,row:2},{side:1,row:3},{side:1,row:6}],
+     [{side:0,row:2},{side:0,row:4},{side:1,row:2},{side:1,row:3},{side:1,row:6}]]
+    // Levels 6-9: same as level 5 round 4 (5 discs)
+];
+
 function discConfig(rnd) {
     var r = (rnd !== undefined) ? rnd : round;
-    var count = discCount(r);
+    var lv = arcadeLevel(rnd);
     var ri = ((r - 1) % 4);
+    var tableIdx = Math.min(lv, 5) - 1;
+    var roundDiscs = DISC_TABLE[tableIdx][ri];
     var result = [];
-    result.push({side: 0, row: [2,3,2,3][ri]});
-    result.push({side: 1, row: [3,2,3,2][ri]});
-    if (count >= 3) result.push({side: [0,1,0,1][ri], row: [4,4,5,4][ri]});
-    if (count >= 4) result.push({side: [1,0,1,0][ri], row: [5,5,4,5][ri]});
-    if (count >= 5) result.push({side: 0, row: [5,4,3,5][ri]});
-    if (count >= 6) result.push({side: 1, row: [4,5,5,3][ri]});
-    if (count >= 7) result.push({side: [0,1,0,1][ri], row: [3,3,4,4][ri]});
+    for (var i = 0; i < roundDiscs.length; i++)
+        result.push({side: roundDiscs[i].side, row: roundDiscs[i].row, active: true});
     return result;
 }
 
