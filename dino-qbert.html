@@ -524,7 +524,7 @@ function tryMove(dirKey) {
                 DinoSounds.press();
                 var dpPos = discScreenPos(disc);
                 player.jumping = true; player.jumpT = 0;
-                player.jumpDur = 0.028 * (typeof speedMultiplier === 'function' ? speedMultiplier() : gs.sm);
+                player.jumpDur = PLAYER_JUMP_DUR * (typeof speedMultiplier === 'function' ? speedMultiplier() : gs.sm);
                 player.jumpSX = player.px; player.jumpSY = player.py;
                 player.jumpTX = dpPos.x; player.jumpTY = dpPos.y;
                 player.spriteFrame = 0; player.frameTimer = 0;

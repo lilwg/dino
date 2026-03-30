@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic  (v2 — oscillation fix + revert penalty)
-var AI_VERSION = 'v5-routing-safety';
+var AI_VERSION = 'v5.1-arcade-mechanics';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -217,7 +217,7 @@ function predictCoilyNext(coilyR, coilyC, targetR, targetC) {
 function buildDangerSet() {
     var danger = {};
     var sm = (typeof speedMultiplier === 'function') ? speedMultiplier() : 1;
-    var framesPerHop = Math.ceil(1 / (0.028 * sm));
+    var framesPerHop = Math.ceil(1 / (PLAYER_JUMP_DUR * sm));
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
         if (e.type === 'slick' || e.type === 'greenball') continue;
