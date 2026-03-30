@@ -238,7 +238,8 @@ function buildDangerSet() {
             if (isValidPos(er + 1, ec)) danger[(er + 1) + ',' + ec] = true;
             if (isValidPos(er + 1, ec + 1)) danger[(er + 1) + ',' + (ec + 1)] = true;
             // Egg about to hatch into Coily — mark all adjacent tiles dangerous
-            if (e.type === 'egg' && ((e.hops || 0) >= 4 || e.willHatch)) {
+            if (e.type === 'egg' && ((e.hops || 0) >= 5 || e.willHatch)) {
+                // Egg about to hatch into Coily — mark all 4 adjacent tiles
                 for (var ek = 0; ek < DIR_KEYS.length; ek++) {
                     var edk = DIRS[DIR_KEYS[ek]];
                     var enr = er + edk.dr, enc = ec + edk.dc;
