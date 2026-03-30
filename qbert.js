@@ -518,6 +518,7 @@ function simUpdateEnemies(gs) {
                     e.willHatch = false;
                     e.type = 'coily';
                     e.moveInterval = enemyMoveInterval('coily', gs.sm);
+                    e.spawnAnimTimer = 0; // hatched Coily is immediately active
                 }
                 // Slick reverts cube on landing
                 if (e.type === 'slick') {
@@ -824,6 +825,10 @@ function simStep(gs, dir) {
         }
         return true;
     }
+
+    // Check collision before starting the move (enemy may already be on player's tile)
+    simCheckCollision(gs);
+    if (!gs.alive) return false;
 
     // Try to move
     if (!simTryMove(gs, dir)) return gs.alive;
