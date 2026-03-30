@@ -685,6 +685,8 @@ function simCheckCollision(gs) {
 function simUseDisc(gs, idx) {
     var disc = gs.discs[idx];
     disc.active = false;
+    // Track even-row disc usage for L5+ parity
+    if (disc.row % 2 === 0) gs.evenRowDiscs = (gs.evenRowDiscs || 0) + 1;
     // Set lure on Coily — it will chase toward the disc exit and fall off naturally
     // Left side lure: col -1 (off left edge). Right side lure: col disc.row
     // (the rightmost valid column on that row, so UR takes Coily off the grid).
@@ -730,6 +732,8 @@ function simTryMove(gs, dirKey) {
         gs.alive = false;
         gs.player.dead = true;
         gs.deathEnemy = 'fall';
+        // Track odd-row falls for L5+ parity
+        if (gs.player.row % 2 === 1) gs.oddRowFalls = (gs.oddRowFalls || 0) + 1;
         return false;
     }
 

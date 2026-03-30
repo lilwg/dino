@@ -670,30 +670,26 @@ function unifiedPick(gs, coilyActive) {
             if (!isValidPos(dnr, dnc)) continue;
         }
 
-        // L5+ disc parity: the pyramid is bipartite (even/odd rows). The sum
-        // constraint (N ≡ target_sum mod 3) and bipartite constraint (partition
-        // stomp totals) become incompatible when disc_rides ≡ 1 mod 3.
-        // Only disc rides stomp the apex (deaths don't in the arcade).
-        // Block disc if it would make disc count ≡ 1 mod 3.
+        // L5+ bipartite parity: bad when (even_row_discs - odd_row_falls) ≡ 1 mod 3.
+        // Odd-row discs and even-row falls don't affect parity.
+        // Block even-row disc if it would create bad parity with no fix available.
         if (gs.lv >= 5 && dir !== 'STAY') {
             var dpd = DIRS[dir];
             var dpnr = gs.player.row + dpd.dr, dpnc = gs.player.col + dpd.dc;
             if (!isValidPos(dpnr, dpnc)) {
-                // Check if this is a disc move
-                var dpIsDisc = false;
+                var dpDiscRow = -1;
                 for (var dpi = 0; dpi < gs.discs.length; dpi++) {
                     var dpc = gs.discs[dpi];
                     if (!dpc.active) continue;
                     if ((dpc.side === 0 && dir === 'UL' && gs.player.col === 0 && gs.player.row === dpc.row) ||
                         (dpc.side === 1 && dir === 'UR' && gs.player.col === gs.player.row && gs.player.row === dpc.row))
-                        dpIsDisc = true;
+                        dpDiscRow = dpc.row;
                 }
-                if (dpIsDisc) {
-                    // Count disc rides so far this round (count consumed discs)
-                    var discCount = 0;
-                    for (var dci = 0; dci < gs.discs.length; dci++)
-                        if (!gs.discs[dci].active) discCount++;
-                    if ((discCount + 1) % 3 === 1) continue; // would create impossible parity
+                if (dpDiscRow >= 0 && dpDiscRow % 2 === 0) {
+                    // Even-row disc — check if it would create bad parity
+                    var newEvenDiscs = (gs.evenRowDiscs || 0) + 1;
+                    var oddFalls = gs.oddRowFalls || 0;
+                    if (((newEvenDiscs - oddFalls) % 3 + 3) % 3 === 1) continue;
                 }
             }
         }
