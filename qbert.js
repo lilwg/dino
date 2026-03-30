@@ -38,8 +38,10 @@ var DIR_KEYS_WITH_STAY = ['UL', 'UR', 'DL', 'DR', 'STAY'];
 // Frame timing (per-frame jumpT increments)
 var PLAYER_JUMP_DUR = 0.028;
 var ENEMY_JUMP_DUR  = 0.030;
+// Arcade-accurate idle frames between hops (ROM verified).
+// Total hop cycle = flight (~30 frames) + idle wait.
 var BASE_ENEMY_INTERVALS = {
-    egg: 4, coily: 4, redball: 4, greenball: 12, slick: 20, ugg: 4, wrongway: 4
+    egg: 12, coily: 16, redball: 12, greenball: 12, slick: 3, ugg: 12, wrongway: 12
 };
 
 // ─── Board utilities ─────────────────────────────────────────────────────────
@@ -322,11 +324,11 @@ function simScheduleInitialEnemies(gs) {
 function simScheduleRespawnEnemies(gs) {
     var rnd = gs.round;
     simScheduleSpawn(gs, 180);                                           // Coily egg
-    if (hasRedBall(rnd))     simScheduleSpawn(gs, 240, 'redball');
+    if (hasRedBall(rnd))     simScheduleSpawn(gs, Math.max(120, 240 - Math.floor(rnd / 2) * 15), 'redball');
     if (hasSlick(rnd))       simScheduleSpawn(gs, 720, 'slick');
-    if (hasGreenBall(rnd))   simScheduleSpawn(gs, 480, 'greenball');
+    if (hasGreenBall(rnd))   simScheduleSpawn(gs, 540, 'greenball');  // was 480
     if (hasUggWrongway(rnd)) simScheduleSpawn(gs, 540, 'ugg');
-    if (hasUggWrongway(rnd)) simScheduleSpawn(gs, 660, 'wrongway');
+    if (hasUggWrongway(rnd)) simScheduleSpawn(gs, 600, 'wrongway');   // was 660
 }
 
 // Spawn an enemy into the game state
@@ -349,9 +351,13 @@ function simSpawnEnemy(gs, forcedType) {
             jumping: false, jumpT: 0, jumpDur: ENEMY_JUMP_DUR * gs.sm,
             moveTimer: 0, moveInterval: interval, destRow: null, destCol: null });
     } else {
+        // ROM $B506: balls get a 7-bit random direction path at spawn
+        var dirBits = (type === 'redball' || type === 'greenball' || type === 'slick')
+            ? Math.floor(simRng() * 128) : undefined;
         gs.enemies.push({ type: type, row: 1, col: spawnCol, hops: 0,
             jumping: false, jumpT: 0, jumpDur: ENEMY_JUMP_DUR * gs.sm,
-            moveTimer: 0, moveInterval: interval, destRow: null, destCol: null });
+            moveTimer: 0, moveInterval: interval, destRow: null, destCol: null,
+            dirBits: dirBits });
     }
 }
 
@@ -512,31 +518,54 @@ function simUpdateEnemies(gs) {
             if (!isValidPos(nr, nc)) e.falling = true;
             else if (e.hops >= 6 || nr >= ROWS - 1) e.willHatch = true;
         } else if (e.type === 'coily') {
-            var bestDir = null, bestDist = Infinity;
-            // Coily chases player (or lure target if set)
+            // ROM $B6EA: Coily chases Q*bert's PREVIOUS position.
+            // Exception: if Coily IS at previous, chase CURRENT.
             var hasLure = e.lureRow != null;
-            var targetR = hasLure ? e.lureRow : gs.player.row;
-            var targetC = hasLure ? e.lureCol : gs.player.col;
+            var targetR, targetC;
+            if (hasLure) {
+                targetR = e.lureRow; targetC = e.lureCol;
+            } else {
+                var prevR = gs.player.prevRow != null ? gs.player.prevRow : gs.player.row;
+                var prevC = gs.player.prevCol != null ? gs.player.prevCol : gs.player.col;
+                if (e.row === prevR && e.col === prevC) {
+                    targetR = gs.player.row; targetC = gs.player.col;
+                } else {
+                    targetR = prevR; targetC = prevC;
+                }
+            }
+            // Grid word comparison (ROM algorithm):
+            // gw1 = row - col + 1; compare rows then gw1 values
+            var c_gw1 = e.row - e.col + 1;
+            var t_gw1 = targetR - targetC + 1;
+            var enr, enc;
+            if (targetR > e.row) { // target below → go DOWN
+                if (t_gw1 > c_gw1) { enr = e.row + 1; enc = e.col; }     // DOWN-LEFT
+                else                { enr = e.row + 1; enc = e.col + 1; } // DOWN-RIGHT
+            } else {               // target above or same → go UP
+                if (t_gw1 < c_gw1) { enr = e.row - 1; enc = e.col; }     // UP-RIGHT
+                else                { enr = e.row - 1; enc = e.col - 1; } // UP-LEFT
+            }
             // When lured and on the disc's row, allow jumping off the edge
             var canExit = hasLure && e.row === e.lureRow;
-            for (var k = 0; k < 4; k++) {
-                var dk = DIRS[DIR_KEYS[k]];
-                var enr = e.row + dk.dr, enc = e.col + dk.dc;
-                if (!canExit && !isValidPos(enr, enc)) continue;
-                var dist = Math.abs(targetR - enr) + Math.abs(targetC - enc);
-                if (dist < bestDist) { bestDist = dist; bestDir = { nr: enr, nc: enc }; }
-            }
-            if (bestDir) {
-                simEnemyJumpTo(e, bestDir.nr, bestDir.nc, gs.sm);
-                if (!isValidPos(bestDir.nr, bestDir.nc)) e.falling = true;
-            } else {
-                simEnemyJumpTo(e, e.row, e.col, gs.sm);
+            if (!canExit && !isValidPos(enr, enc)) {
                 e.falling = true;
             }
+            simEnemyJumpTo(e, enr, enc, gs.sm);
+            if (!isValidPos(enr, enc)) e.falling = true;
         } else if (e.type === 'redball' || e.type === 'greenball' || e.type === 'slick') {
-            var dir = simRng() < 0.5 ? 'DL' : 'DR';
-            var delta = DIRS[dir];
-            var nr = e.row + delta.dr, nc = e.col + delta.dc;
+            // ROM $B506: Ball path is predetermined by 7-bit direction_bits at spawn.
+            // Each hop: consume bit 0 (shift right). 1=DR, 0=DL.
+            var nr, nc;
+            if (e.dirBits != null) {
+                if (e.dirBits & 1) { nr = e.row + 1; nc = e.col + 1; } // DR
+                else               { nr = e.row + 1; nc = e.col; }     // DL
+                e.dirBits >>= 1;
+            } else {
+                // Fallback for legacy: random per hop
+                var dir = simRng() < 0.5 ? 'DL' : 'DR';
+                var delta = DIRS[dir];
+                nr = e.row + delta.dr; nc = e.col + delta.dc;
+            }
             simEnemyJumpTo(e, nr, nc, gs.sm);
             if (!isValidPos(nr, nc)) e.falling = true;
         } else if (e.type === 'ugg') {
