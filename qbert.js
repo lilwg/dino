@@ -679,7 +679,7 @@ function simUseDisc(gs, idx) {
     // Left side lure: col -1 (off left edge). Right side lure: col disc.row
     // (the rightmost valid column on that row, so UR takes Coily off the grid).
     var lureRow = disc.row;
-    var lureCol = disc.side === 0 ? -1 : disc.row;
+    var lureCol = disc.side === 0 ? -1 : disc.row + 1;
     for (var i = 0; i < gs.enemies.length; i++) {
         if (gs.enemies[i].type === 'coily') {
             gs.enemies[i].lureRow = lureRow;
