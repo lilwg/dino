@@ -888,10 +888,7 @@ function draw() {
     applyNight(ctx);
 
     // AI viz (drawn post-inversion so colors stay consistent day/night)
-    if (vizOn) {
-        aiDangerTiles = buildDangerSet(); // refresh every frame for accurate viz
-        drawVizPath();
-    }
+    if (vizOn) drawVizPath();
 
     // Post-inversion: redraw cube tops with true colors, then redraw
     // entities on top. Entities are drawn to a temp canvas, inverted to
@@ -946,18 +943,8 @@ function drawVizPath() {
     var hw = TILE_W / 2, hh = TILE_H / 2;
     var ds = 5; // diamond half-size for direction indicators
 
-    // ── 1. Danger tiles: subtle outline (skip tiles with an enemy on them) ──
-    var enemyTiles = {};
-    for (var ei = 0; ei < enemies.length; ei++) {
-        var e = enemies[ei];
-        if (e.type === 'spawn-timer') continue;
-        if (e.spawnAnimTimer > 0) continue; // still dropping in — show danger on landing tile
-        enemyTiles[e.row + ',' + e.col] = true;
-        if (e.destRow != null) enemyTiles[e.destRow + ',' + e.destCol] = true;
-        if (e.jumpSrcRow != null) enemyTiles[e.jumpSrcRow + ',' + e.jumpSrcCol] = true;
-    }
+    // ── 1. Danger tiles: show exactly what the AI sees ──
     for (var key in aiDangerTiles) {
-        if (enemyTiles[key]) continue;
         var parts = key.split(',');
         var dr = parseInt(parts[0]), dc = parseInt(parts[1]);
         if (!isValidPos(dr, dc)) continue;
