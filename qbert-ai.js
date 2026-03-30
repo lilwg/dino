@@ -670,35 +670,10 @@ function unifiedPick(gs, coilyActive) {
             if (!isValidPos(dnr, dnc)) continue;
         }
 
-        // L5+ parity check: the pyramid is bipartite (even/odd rows).
-        // Invariant I = (D_B - D_A) % 3 where D = sum of deficits per partition.
-        // State (I=2, player at even row) and (I=1, player at odd row) are UNSOLVABLE.
-        // Disc ride: I→I+1, player→even (apex). Don't use disc if I==1 (creates I=2,even = impossible).
-        if (gs.lv >= 5 && dir !== 'STAY') {
-            var ddd = DIRS[dir];
-            var dnr3 = gs.player.row + ddd.dr, dnc3 = gs.player.col + ddd.dc;
-            if (!isValidPos(dnr3, dnc3)) {
-                // Off-grid move — check if it's a disc
-                var isDiscMove = false;
-                for (var dci = 0; dci < gs.discs.length; dci++) {
-                    var dsc = gs.discs[dci];
-                    if (!dsc.active) continue;
-                    if ((dsc.side === 0 && dir === 'UL' && gs.player.col === 0 && gs.player.row === dsc.row) ||
-                        (dsc.side === 1 && dir === 'UR' && gs.player.col === gs.player.row && gs.player.row === dsc.row))
-                        isDiscMove = true;
-                }
-                if (isDiscMove) {
-                    // Compute bipartite deficit invariant
-                    var dA = 0, dB = 0;
-                    for (var ci = 0; ci < gs.cubes.length; ci++) {
-                        var def = (gs.tgt - gs.cubes[ci].state + 3) % 3;
-                        if (gs.cubes[ci].row % 2 === 0) dA += def; else dB += def;
-                    }
-                    var parI = ((dB - dA) % 3 + 3) % 3;
-                    if (parI === 1) continue; // disc would create unsolvable parity (I=2, P=even)
-                }
-            }
-        }
+        // Note: L5+ parity was thought to be constrained by bipartite invariant,
+        // but computation shows all mod-3 states are reachable — no mathematical
+        // impossibility from disc rides. The practical difficulty comes from
+        // cascading fix chains in the tour routing, not from invariant violations.
 
         // Never enter a completed dead-end cube (e.g. bottom corners) — no reason to visit
         if (dir !== 'STAY') {
