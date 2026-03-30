@@ -699,6 +699,11 @@ function simTryMove(gs, dirKey) {
     var d = DIRS[dirKey]; if (!d) return false;
     var nr = gs.player.row + d.dr, nc = gs.player.col + d.dc;
 
+    // ROM: grid words update at hop trigger — set previous position for ALL moves
+    // (including disc use, so Coily chases correctly after disc rides)
+    gs.player.prevRow = gs.player.row;
+    gs.player.prevCol = gs.player.col;
+
     if (!isValidPos(nr, nc)) {
         // Check for disc
         for (var di = 0; di < gs.discs.length; di++) {
@@ -717,9 +722,6 @@ function simTryMove(gs, dirKey) {
         return false;
     }
 
-    // ROM: grid words update at hop trigger — set previous position at hop start
-    gs.player.prevRow = gs.player.row;
-    gs.player.prevCol = gs.player.col;
     gs.player.jumpSrcRow = gs.player.row;
     gs.player.jumpSrcCol = gs.player.col;
     gs.player.jumping = true;
