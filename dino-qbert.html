@@ -622,12 +622,12 @@ function computeAIMove() {
     for (var vi = 0; vi < cubeStates.length; vi++)
         if (cubeStates[vi].state < tgt) aiTourDots.push({ row: cubeStates[vi].row, col: cubeStates[vi].col });
 
-    // Build greedy nearest-neighbor tour through all unfinished cubes for viz
+    // Build greedy nearest-neighbor tour with full BFS paths between waypoints
     aiTourPath.push({ row: player.row, col: player.col });
     if (aiTourDots.length > 0) {
         var visited = {};
         var cr = player.row, cc = player.col;
-        for (var ti = 0; ti < aiTourDots.length && ti < 15; ti++) {
+        for (var ti = 0; ti < aiTourDots.length && ti < 10; ti++) {
             var bestTi = -1, bestDist = Infinity;
             for (var ui = 0; ui < aiTourDots.length; ui++) {
                 var uk = aiTourDots[ui].row + ',' + aiTourDots[ui].col;
@@ -636,9 +636,21 @@ function computeAIMove() {
                 if (d < bestDist) { bestDist = d; bestTi = ui; }
             }
             if (bestTi < 0) break;
-            visited[aiTourDots[bestTi].row + ',' + aiTourDots[bestTi].col] = true;
-            aiTourPath.push({ row: aiTourDots[bestTi].row, col: aiTourDots[bestTi].col });
-            cr = aiTourDots[bestTi].row; cc = aiTourDots[bestTi].col;
+            var tr = aiTourDots[bestTi].row, tc = aiTourDots[bestTi].col;
+            visited[tr + ',' + tc] = true;
+            // Expand BFS path step by step
+            var bfs = bfsTo(cr, cc, tr, tc);
+            if (bfs) {
+                var wr = cr, wc = cc;
+                for (var wi = 0; wi < bfs.path.length; wi++) {
+                    var wd = DIRS[bfs.path[wi]];
+                    wr += wd.dr; wc += wd.dc;
+                    aiTourPath.push({ row: wr, col: wc });
+                }
+            } else {
+                aiTourPath.push({ row: tr, col: tc });
+            }
+            cr = tr; cc = tc;
         }
     }
 
