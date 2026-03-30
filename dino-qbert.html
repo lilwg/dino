@@ -203,30 +203,31 @@ var ARCADE_PALETTES = [
     { left:'#707888', right:'#586898', top:['#a8a8a8','#d88888','#d8c838'], bg:'#000' },  // D: blue-grey sides
     { left:'#181818', right:'#181818', top:['#d88888','#4848d8','#d8c838'], bg:'#986060' } // E: dark sides, pink bg
 ];
-// Per-round config: [paletteIdx, startTopIdx, midTopIdx, targetTopIdx].
+// Per-round config: [paletteIdx, state0topIdx, state1topIdx, state2topIdx].
+// Maps cube state (0,1,2) to which of the palette's 3 top colors to use.
 // Rounds 1-36, indexed by (round-1). Levels 5-9 repeat the same 4-round cycle.
 var ROUND_COLORS = [
-    // Level 1 (1-hop: start→target, mid unused)
-    [0, 0, 0, 1],  // R1: pal A, blue→yellow
-    [1, 0, 0, 1],  // R2: pal B, yellow→blue
-    [2, 0, 0, 1],  // R3: pal C, lt grey→dk grey
-    [3, 0, 0, 2],  // R4: pal D, grey→yellow
-    // Level 2 (2-hop: start→mid→target)
+    // Level 1 (1-hop: state 0→1)
+    [0, 0, 1, 1],  // R1: pal A, blue→yellow
+    [1, 0, 1, 1],  // R2: pal B, yellow→blue
+    [2, 0, 1, 1],  // R3: pal C, lt grey→dk grey
+    [3, 0, 2, 2],  // R4: pal D, grey→yellow
+    // Level 2 (2-hop: state 0→1→2)
     [1, 0, 1, 2],  // R1: pal B, yellow→blue→green
     [3, 0, 1, 2],  // R2: pal D, grey→pink→yellow
     [0, 0, 1, 2],  // R3: pal A, blue→yellow→pink
     [4, 0, 1, 2],  // R4: pal E, pink→blue→yellow
-    // Level 3 (toggle: start↔target)
-    [1, 0, 0, 1],  // R1: pal B, yellow↔blue
-    [2, 0, 0, 1],  // R2: pal C, lt grey↔dk grey
+    // Level 3 (toggle: state 0↔1)
+    [1, 0, 1, 1],  // R1: pal B, yellow↔blue
+    [2, 0, 1, 1],  // R2: pal C, lt grey↔dk grey
     [1, 1, 0, 0],  // R3: pal B, blue↔yellow
     [0, 1, 0, 0],  // R4: pal A, yellow↔blue
-    // Level 4 (2-hop+revert: start→mid→target, re-step reverts)
+    // Level 4 (2-hop+revert: state 0→1→2)
     [1, 0, 1, 2],  // R1: pal B, yellow→blue→green
     [4, 0, 1, 2],  // R2: pal E, pink→blue→yellow
     [0, 1, 2, 0],  // R3: pal A, yellow→pink→blue
     [3, 0, 1, 2],  // R4: pal D, grey→pink→yellow
-    // Level 5+ (2-hop+cycle: start→mid→target→start...)
+    // Level 5+ (2-hop+cycle: state 0→1→2→0...)
     // This 4-round pattern repeats for levels 5-9
     [0, 1, 2, 0],  // R1: pal A, yellow→pink→blue
     [1, 1, 2, 0],  // R2: pal B, blue→green→yellow
