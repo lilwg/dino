@@ -729,6 +729,7 @@ function simTryMove(gs, dirKey) {
         // Fall off edge
         gs.alive = false;
         gs.player.dead = true;
+        gs.deathEnemy = 'fall';
         return false;
     }
 
