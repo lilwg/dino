@@ -888,7 +888,10 @@ function draw() {
     applyNight(ctx);
 
     // AI viz (drawn post-inversion so colors stay consistent day/night)
-    if (vizOn) drawVizPath();
+    if (vizOn) {
+        aiDangerTiles = buildDangerSet(); // refresh every frame for accurate viz
+        drawVizPath();
+    }
 
     // Post-inversion: redraw cube tops with true colors, then redraw
     // entities on top. Entities are drawn to a temp canvas, inverted to
