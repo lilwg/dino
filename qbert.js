@@ -35,9 +35,10 @@ var DIRS = { UL: {dr:-1, dc:-1}, UR: {dr:-1, dc:0}, DL: {dr:1, dc:0}, DR: {dr:1,
 var DIR_KEYS = ['UL', 'UR', 'DL', 'DR'];
 var DIR_KEYS_WITH_STAY = ['UL', 'UR', 'DL', 'DR', 'STAY'];
 
-// Frame timing (per-frame jumpT increments)
-var PLAYER_JUMP_DUR = 0.028;
-var ENEMY_JUMP_DUR  = 0.030;
+// Frame timing (per-frame jumpT increments).
+// Arcade MAME-verified: player hop-to-hop ~35f, enemy flight ~30f.
+var PLAYER_JUMP_DUR = 1 / 35;   // 35 frames flight (arcade: 35f total cycle)
+var ENEMY_JUMP_DUR  = 1 / 30;   // 30 frames flight + idle = arcade-accurate totals
 // Arcade-accurate idle frames between hops (ROM verified).
 // Total hop cycle = flight (~30 frames) + idle wait.
 var BASE_ENEMY_INTERVALS = {
@@ -420,6 +421,9 @@ function simUpdatePlayer(gs) {
     if (gs.player.jumpT >= 1) {
         gs.player.jumpT = 1;
         gs.player.jumping = false;
+        // Track previous position for Coily's chase algorithm (ROM $B6EA)
+        gs.player.prevRow = gs.player.row;
+        gs.player.prevCol = gs.player.col;
         gs.player.row = gs.player.destRow;
         gs.player.col = gs.player.destCol;
         gs.player.destRow = null;
@@ -575,6 +579,9 @@ function simUpdateEnemies(gs) {
             simEnemyJumpTo(e, unr, unc, gs.sm);
             if (!isValidPos(unr, unc)) e.falling = true;
         } else if (e.type === 'wrongway') {
+            // On-grid approximation of arcade off-grid left-face crawling.
+            // Arcade: always col+1 (from col=-1 toward edge). On-grid: stay
+            // at col=0 when going up to remain a left-edge threat (symmetric with Ugg).
             var wdir = simRng() < 0.5;
             var wnr = wdir ? e.row - 1 : e.row;
             var wnc = wdir ? e.col : e.col + 1;
@@ -604,7 +611,17 @@ function simCheckCollision(gs) {
         if (e.type === 'spawn-timer') continue;
         var et = collisionTile(e);
         if (!et) continue; // enemy at apex, immune
-        if (et.row === pt.row && et.col === pt.col) {
+        // Same-tile collision
+        var hit = (et.row === pt.row && et.col === pt.col);
+        // Cross-path collision (ROM $BD1E): entities swapping positions mid-jump
+        if (!hit && gs.player.jumping && e.jumping &&
+            gs.player.destRow != null && e.destRow != null &&
+            gs.player.jumpSrcRow != null && e.jumpSrcRow != null &&
+            gs.player.destRow === e.jumpSrcRow && gs.player.destCol === e.jumpSrcCol &&
+            gs.player.jumpSrcRow === e.destRow && gs.player.jumpSrcCol === e.destCol) {
+            hit = true;
+        }
+        if (hit) {
             if (e.type === 'slick') {
                 gs.score += 300;
                 gs.enemies.splice(i, 1); i--;
@@ -700,9 +717,11 @@ function simDeepClone(gs) {
             ens[i] = { type: e.type, row: e.row, col: e.col,
                        jumping: e.jumping, jumpT: e.jumpT, jumpDur: e.jumpDur,
                        destRow: e.destRow, destCol: e.destCol,
+                       jumpSrcRow: e.jumpSrcRow, jumpSrcCol: e.jumpSrcCol,
                        moveTimer: e.moveTimer, moveInterval: e.moveInterval,
                        falling: e.falling || false, willHatch: e.willHatch || false,
                        hops: e.hops || 0 };
+            if (e.dirBits != null) ens[i].dirBits = e.dirBits;
             if (e.lureRow != null) { ens[i].lureRow = e.lureRow; ens[i].lureCol = e.lureCol; }
         }
     }
@@ -713,9 +732,11 @@ function simDeepClone(gs) {
 
     return {
         player: { row: gs.player.row, col: gs.player.col,
+                  prevRow: gs.player.prevRow, prevCol: gs.player.prevCol,
                   dead: gs.player.dead, deathTimer: gs.player.deathTimer || 0,
                   jumping: gs.player.jumping, jumpT: gs.player.jumpT,
                   jumpDur: gs.player.jumpDur,
+                  jumpSrcRow: gs.player.jumpSrcRow, jumpSrcCol: gs.player.jumpSrcCol,
                   destRow: gs.player.destRow, destCol: gs.player.destCol },
         enemies: ens,
         cubes: cubes,
@@ -737,7 +758,7 @@ function simStep(gs, dir) {
         // Advance enemies until the nearest Coily completes its current jump
         // and starts its next one. This models waiting for the right moment.
         var coilyLanded = false;
-        var maxWait = Math.ceil(1.0 / (gs.player.jumpDur || 0.028)) + 8;
+        var maxWait = Math.ceil(1.0 / (gs.player.jumpDur || PLAYER_JUMP_DUR)) + 8;
         for (var f = 0; f < maxWait; f++) {
             // Check if any Coily just landed this frame
             var anyCoilyJumping = false;
@@ -837,10 +858,12 @@ function simCloneGameState() {
                    jumpDur: e.jumpDur != null ? e.jumpDur : ENEMY_JUMP_DUR * sm,
                    destRow: e.destRow != null ? e.destRow : null,
                    destCol: e.destCol != null ? e.destCol : null,
+                   jumpSrcRow: e.jumpSrcRow, jumpSrcCol: e.jumpSrcCol,
                    moveTimer: e.moveTimer != null ? e.moveTimer : 0,
                    moveInterval: e.moveInterval != null ? e.moveInterval : enemyMoveInterval(e.type, sm),
                    falling: !!e.falling, willHatch: !!e.willHatch,
                    hops: e.hops || 0 };
+        if (e.dirBits != null) en.dirBits = e.dirBits;
         if (e.lureRow != null) { en.lureRow = e.lureRow; en.lureCol = e.lureCol; }
         ens.push(en);
     }
@@ -856,9 +879,11 @@ function simCloneGameState() {
 
     return {
         player: { row: player.row, col: player.col,
+                  prevRow: player.prevRow, prevCol: player.prevCol,
                   dead: !!player.dead, deathTimer: player.deathTimer || 0,
                   jumping: !!player.jumping, jumpT: player.jumpT != null ? player.jumpT : 0,
                   jumpDur: player.jumpDur != null ? player.jumpDur : PLAYER_JUMP_DUR * sm,
+                  jumpSrcRow: player.jumpSrcRow, jumpSrcCol: player.jumpSrcCol,
                   destRow: player.destRow != null ? player.destRow : null,
                   destCol: player.destCol != null ? player.destCol : null },
         enemies: ens,
