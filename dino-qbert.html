@@ -194,57 +194,43 @@ function cubeXY(row, col) {
     };
 }
 
-// Arcade-accurate per-round color palettes (from video analysis).
-// 5 base palettes, each with: leftFace, rightFace, 3 topColors, bgColor.
-var ARCADE_PALETTES = [
-    { left:'#4a9898', right:'#387070', top:['#4848d8','#d8c838','#d88888'], bg:'#000' },  // A: teal sides
-    { left:'#885518', right:'#cc8830', top:['#d8c838','#4848d8','#40b840'], bg:'#000' },  // B: orange sides
-    { left:'#606060', right:'#909090', top:['#c8c8c8','#484848','#4848d8'], bg:'#000' },  // C: grey sides
-    { left:'#707888', right:'#586898', top:['#a8a8a8','#d88888','#d8c838'], bg:'#000' },  // D: blue-grey sides
-    { left:'#181818', right:'#181818', top:['#d88888','#4848d8','#d8c838'], bg:'#986060' } // E: dark sides, pink bg
-];
-// Per-round config: [paletteIdx, state0topIdx, state1topIdx, state2topIdx].
-// Maps cube state (0,1,2) to which of the palette's 3 top colors to use.
-// Rounds 1-36, indexed by (round-1). Levels 5-9 repeat the same 4-round cycle.
-var ROUND_COLORS = [
+// Per-round color definitions: {left, right, top:[state0, state1, state2]}.
+// Verified against arcade MAME side-by-side screenshots.
+// top[0]=start, top[1]=after 1 hop, top[2]=after 2 hops (for 2-hop levels).
+var ROUND_COLOR_TABLE = [
     // Level 1 (1-hop: state 0→1)
-    [0, 0, 1, 1],  // R1: pal A, blue→yellow
-    [1, 0, 1, 1],  // R2: pal B, yellow→blue
-    [2, 0, 1, 1],  // R3: pal C, lt grey→dk grey
-    [3, 0, 2, 2],  // R4: pal D, grey→yellow
+    {left:'#4a9898',right:'#387070',top:['#4848d8','#d8c838','#d8c838']},  // L1-1: blue→yellow, teal sides
+    {left:'#885518',right:'#cc8830',top:['#d8c838','#4848d8','#4848d8']},  // L1-2: yellow→blue, orange sides
+    {left:'#606060',right:'#909090',top:['#c8c8c8','#484848','#484848']},  // L1-3: lt grey→dk grey, grey sides
+    {left:'#707888',right:'#586898',top:['#4848d8','#c8c838','#c8c838']},  // L1-4: blue→yellow, blue-grey sides
     // Level 2 (2-hop: state 0→1→2)
-    [1, 0, 1, 2],  // R1: pal B, yellow→blue→green
-    [3, 0, 1, 2],  // R2: pal D, grey→pink→yellow
-    [0, 0, 1, 2],  // R3: pal A, blue→yellow→pink
-    [4, 0, 1, 2],  // R4: pal E, pink→blue→yellow
+    {left:'#885518',right:'#cc8830',top:['#4848d8','#d88830','#40b840']},  // L2-1: blue→orange→green, orange sides
+    {left:'#606060',right:'#707888',top:['#a838a8','#4848d8','#d8c838']},  // L2-2: purple→blue→yellow, grey sides
+    {left:'#4a9898',right:'#387070',top:['#4848d8','#d8c838','#d88888']},  // L2-3: blue→yellow→pink, teal sides
+    {left:'#181818',right:'#181818',top:['#d88888','#4848d8','#d8c838']},  // L2-4: pink→blue→yellow, dark sides
     // Level 3 (toggle: state 0↔1)
-    [1, 0, 1, 1],  // R1: pal B, yellow↔blue
-    [2, 0, 1, 1],  // R2: pal C, lt grey↔dk grey
-    [1, 1, 0, 0],  // R3: pal B, blue↔yellow
-    [0, 1, 0, 0],  // R4: pal A, yellow↔blue
+    {left:'#c0a030',right:'#d05040',top:['#d8c838','#4848d8','#4848d8']},  // L3-1: yellow↔blue, yellow+red sides
+    {left:'#606060',right:'#909090',top:['#c8c8c8','#484848','#484848']},  // L3-2: lt grey↔dk grey, grey sides
+    {left:'#885518',right:'#cc8830',top:['#4848d8','#d8c838','#d8c838']},  // L3-3: blue↔yellow, orange sides
+    {left:'#4a9898',right:'#387070',top:['#d8c838','#4848d8','#4848d8']},  // L3-4: yellow↔blue, teal sides
     // Level 4 (2-hop+revert: state 0→1→2)
-    [1, 0, 1, 2],  // R1: pal B, yellow→blue→green
-    [4, 0, 1, 2],  // R2: pal E, pink→blue→yellow
-    [0, 1, 2, 0],  // R3: pal A, yellow→pink→blue
-    [3, 0, 1, 2],  // R4: pal D, grey→pink→yellow
+    {left:'#885518',right:'#cc8830',top:['#d8c838','#4848d8','#40b840']},  // L4-1: yellow→blue→green, orange sides
+    {left:'#181818',right:'#181818',top:['#d88888','#4848d8','#d8c838']},  // L4-2: pink→blue→yellow, dark sides
+    {left:'#4a9898',right:'#387070',top:['#d8c838','#d88888','#4848d8']},  // L4-3: yellow→pink→blue, teal sides
+    {left:'#707888',right:'#586898',top:['#a8a8a8','#d88888','#d8c838']},  // L4-4: grey→pink→yellow, blue-grey sides
     // Level 5+ (2-hop+cycle: state 0→1→2→0...)
-    // This 4-round pattern repeats for levels 5-9
-    [0, 1, 2, 0],  // R1: pal A, yellow→pink→blue
-    [1, 1, 2, 0],  // R2: pal B, blue→green→yellow
-    [2, 0, 2, 1],  // R3: pal C, lt grey→blue→dk grey
-    [3, 0, 1, 2]   // R4: pal D, grey→pink→yellow
+    {left:'#4a9898',right:'#387070',top:['#d8c838','#d88888','#4848d8']},  // L5-1: yellow→pink→blue, teal sides
+    {left:'#885518',right:'#cc8830',top:['#4848d8','#40b840','#d8c838']},  // L5-2: blue→green→yellow, orange sides
+    {left:'#606060',right:'#909090',top:['#c8c8c8','#4848d8','#484848']},  // L5-3: lt grey→blue→dk grey, grey sides
+    {left:'#707888',right:'#586898',top:['#a8a8a8','#d88888','#d8c838']}   // L5-4: grey→pink→yellow, blue-grey sides
+    // Levels 6-9 repeat the level 5 pattern (same 4-round cycle)
 ];
 
 function getRoundColors() {
     var ri = round - 1;
     if (ri >= 20) ri = 16 + ((ri - 16) % 4); // levels 6-9 repeat level 5 pattern
-    var cfg = ROUND_COLORS[Math.min(ri, ROUND_COLORS.length - 1)];
-    var pal = ARCADE_PALETTES[cfg[0]];
-    return {
-        top: [pal.top[cfg[1]], pal.top[cfg[2]], pal.top[cfg[3]]],
-        left: pal.left, right: pal.right, bg: pal.bg,
-        stroke: pal.left
-    };
+    ri = Math.max(0, Math.min(ri, ROUND_COLOR_TABLE.length - 1));
+    return ROUND_COLOR_TABLE[ri];
 }
 
 // Inversion: complement of the round colors
@@ -261,7 +247,7 @@ function drawCube(c, cx, cy, state) {
     var topCol = inverted ? invertColor(rc.top[state] || rc.top[0]) : (rc.top[state] || rc.top[0]);
     var leftCol  = inverted ? invertColor(rc.left) : rc.left;
     var rightCol = inverted ? invertColor(rc.right) : rc.right;
-    var stroke   = inverted ? invertColor(rc.stroke) : rc.stroke;
+    var stroke   = leftCol;
 
     function face(pts, col) {
         c.beginPath();
