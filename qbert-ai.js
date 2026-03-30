@@ -686,10 +686,20 @@ function unifiedPick(gs, coilyActive) {
                         dpDiscRow = dpc.row;
                 }
                 if (dpDiscRow >= 0 && dpDiscRow % 2 === 0) {
-                    // Even-row disc — check if it would create bad parity
-                    var newEvenDiscs = (gs.evenRowDiscs || 0) + 1;
+                    // Count even-row discs: used so far + this one
+                    var evenUsed = 1; // counting this disc
+                    var evenRemaining = 0;
+                    for (var eri = 0; eri < gs.discs.length; eri++) {
+                        if (gs.discs[eri].row % 2 !== 0) continue;
+                        if (!gs.discs[eri].active) evenUsed++;
+                        else if (gs.discs[eri].row !== dpDiscRow || gs.discs[eri].active) evenRemaining++;
+                    }
+                    // Subtract this disc from remaining (it's about to be used)
+                    evenRemaining = Math.max(0, evenRemaining - 1);
                     var oddFalls = gs.oddRowFalls || 0;
-                    if (((newEvenDiscs - oddFalls) % 3 + 3) % 3 === 1) continue;
+                    var gap = ((evenUsed - oddFalls) % 3 + 3) % 3;
+                    // Block only if bad parity AND no more even discs to fix it
+                    if (gap === 1 && evenRemaining === 0) continue;
                 }
             }
         }
