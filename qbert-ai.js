@@ -235,8 +235,14 @@ function buildDangerSet() {
         var er = pos.row, ec = pos.col;
         danger[er + ',' + ec] = true;
         if (e.type === 'egg' || e.type === 'redball') {
-            if (isValidPos(er + 1, ec)) danger[(er + 1) + ',' + ec] = true;
-            if (isValidPos(er + 1, ec + 1)) danger[(er + 1) + ',' + (ec + 1)] = true;
+            if (e.jumping && e.destRow != null) {
+                // Mid-jump: only the committed destination is dangerous
+                danger[e.destRow + ',' + e.destCol] = true;
+            } else {
+                // Idle: both DL and DR are possible next hops
+                if (isValidPos(er + 1, ec)) danger[(er + 1) + ',' + ec] = true;
+                if (isValidPos(er + 1, ec + 1)) danger[(er + 1) + ',' + (ec + 1)] = true;
+            }
             // Egg about to hatch into Coily — mark all adjacent tiles dangerous
             if (e.type === 'egg' && ((e.hops || 0) >= 5 || e.willHatch)) {
                 // Egg about to hatch into Coily — mark all 4 adjacent tiles
