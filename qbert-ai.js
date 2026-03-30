@@ -221,7 +221,19 @@ function buildDangerSet() {
     for (var i = 0; i < enemies.length; i++) {
         var e = enemies[i];
         if (e.type === 'slick' || e.type === 'greenball') continue;
-        if (e.type === 'coily') continue;
+        if (e.type === 'coily') {
+            // Mark Coily's current position + predicted next 3 hops
+            var cpos = enemyEffectivePos(e);
+            danger[cpos.row + ',' + cpos.col] = true;
+            var pr = cpos.row, pc = cpos.col;
+            for (var cs = 0; cs < 3; cs++) {
+                var cp = predictCoilyPos({ row: pr, col: pc }, player.row, player.col, 1);
+                if (!isValidPos(cp.row, cp.col)) break;
+                danger[cp.row + ',' + cp.col] = true;
+                pr = cp.row; pc = cp.col;
+            }
+            continue;
+        }
         if (e.type === 'spawn-timer') {
             if (e.timer <= framesPerHop) {
                 var ft = e.forcedType;
