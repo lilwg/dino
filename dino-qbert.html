@@ -194,53 +194,91 @@ function cubeXY(row, col) {
     };
 }
 
-// Per-level top-face color palettes [state0, state1, state2] — hoisted for perf
-var CUBE_TOP_COLORS = [
-    ['#ebebeb', '#3060d0', '#30b030'],   // lv 1-2: grey → blue → green
-    ['#ebebeb', '#6868a8', '#d04840'],   // lv 3-4: grey → purple → red
-    ['#ebebeb', '#3878c8', '#48c078'],   // lv 5-6: grey → blue → green
-    ['#ebebeb', '#50b0d0', '#d06040']    // lv 7+:  grey → cyan → orange-red
+// Arcade-accurate per-round color palettes (from video analysis).
+// 5 base palettes, each with: leftFace, rightFace, 3 topColors, bgColor.
+var ARCADE_PALETTES = [
+    { left:'#4a9898', right:'#387070', top:['#4848d8','#d8c838','#d88888'], bg:'#000' },  // A: teal sides
+    { left:'#885518', right:'#cc8830', top:['#d8c838','#4848d8','#40b840'], bg:'#000' },  // B: orange sides
+    { left:'#606060', right:'#909090', top:['#c8c8c8','#484848','#4848d8'], bg:'#000' },  // C: grey sides
+    { left:'#707888', right:'#586898', top:['#a8a8a8','#d88888','#d8c838'], bg:'#000' },  // D: blue-grey sides
+    { left:'#181818', right:'#181818', top:['#d88888','#4848d8','#d8c838'], bg:'#986060' } // E: dark sides, pink bg
 ];
-var CUBE_TOP_COLORS_INV = [
-    ['#141414', '#cf9f2f', '#cf4fcf'],
-    ['#141414', '#979757', '#2fb7bf'],
-    ['#141414', '#c78737', '#b73f87'],
-    ['#141414', '#af4f2f', '#2f9fbf']
+// Per-round config: [paletteIdx, startTopIdx, midTopIdx, targetTopIdx].
+// Rounds 1-36, indexed by (round-1). Levels 5-9 repeat the same 4-round cycle.
+var ROUND_COLORS = [
+    // Level 1 (1-hop: start→target, mid unused)
+    [0, 0, 0, 1],  // R1: pal A, blue→yellow
+    [1, 0, 0, 1],  // R2: pal B, yellow→blue
+    [2, 0, 0, 1],  // R3: pal C, lt grey→dk grey
+    [3, 0, 0, 2],  // R4: pal D, grey→yellow
+    // Level 2 (2-hop: start→mid→target)
+    [1, 0, 1, 2],  // R1: pal B, yellow→blue→green
+    [3, 0, 1, 2],  // R2: pal D, grey→pink→yellow
+    [0, 0, 1, 2],  // R3: pal A, blue→yellow→pink
+    [4, 0, 1, 2],  // R4: pal E, pink→blue→yellow
+    // Level 3 (toggle: start↔target)
+    [1, 0, 0, 1],  // R1: pal B, yellow↔blue
+    [2, 0, 0, 1],  // R2: pal C, lt grey↔dk grey
+    [1, 1, 0, 0],  // R3: pal B, blue↔yellow
+    [0, 1, 0, 0],  // R4: pal A, yellow↔blue
+    // Level 4 (2-hop+revert: start→mid→target, re-step reverts)
+    [1, 0, 1, 2],  // R1: pal B, yellow→blue→green
+    [4, 0, 1, 2],  // R2: pal E, pink→blue→yellow
+    [0, 1, 2, 0],  // R3: pal A, yellow→pink→blue
+    [3, 0, 1, 2],  // R4: pal D, grey→pink→yellow
+    // Level 5+ (2-hop+cycle: start→mid→target→start...)
+    // This 4-round pattern repeats for levels 5-9
+    [0, 1, 2, 0],  // R1: pal A, yellow→pink→blue
+    [1, 1, 2, 0],  // R2: pal B, blue→green→yellow
+    [2, 0, 2, 1],  // R3: pal C, lt grey→blue→dk grey
+    [3, 0, 1, 2]   // R4: pal D, grey→pink→yellow
 ];
+
+function getRoundColors() {
+    var ri = round - 1;
+    if (ri >= 20) ri = 16 + ((ri - 16) % 4); // levels 6-9 repeat level 5 pattern
+    var cfg = ROUND_COLORS[Math.min(ri, ROUND_COLORS.length - 1)];
+    var pal = ARCADE_PALETTES[cfg[0]];
+    return {
+        top: [pal.top[cfg[1]], pal.top[cfg[2]], pal.top[cfg[3]]],
+        left: pal.left, right: pal.right, bg: pal.bg,
+        stroke: pal.left
+    };
+}
+
+// Inversion: complement of the round colors
+function invertColor(hex) {
+    var r = 255 - parseInt(hex.slice(1,3),16);
+    var g = 255 - parseInt(hex.slice(3,5),16);
+    var b = 255 - parseInt(hex.slice(5,7),16);
+    return '#'+((1<<24)+(r<<16)+(g<<8)+b).toString(16).slice(1);
+}
 
 function drawCube(c, cx, cy, state) {
     var hw = TILE_W / 2, hh = TILE_H / 2;
-    var lv = arcadeLevel();
-    var palIdx = lv <= 2 ? 0 : lv <= 4 ? 1 : lv <= 6 ? 2 : 3;
-    var topPal   = inverted ? CUBE_TOP_COLORS_INV[palIdx] : CUBE_TOP_COLORS[palIdx];
-    var topCol   = topPal[state] || topPal[0];
-    // Round 4 of even levels (2, 4, 6, 8): invisible sides (flat diamonds like the arcade)
-    var r4 = ((round - 1) % 4) === 3 && lv % 2 === 0;
-    var leftCol  = r4 ? '#000' : '#a8a8a8';
-    var rightCol = r4 ? '#000' : '#909090';
-    var stroke   = r4 ? '#000' : '#a0a0a0';
+    var rc = getRoundColors();
+    var topCol = inverted ? invertColor(rc.top[state] || rc.top[0]) : (rc.top[state] || rc.top[0]);
+    var leftCol  = inverted ? invertColor(rc.left) : rc.left;
+    var rightCol = inverted ? invertColor(rc.right) : rc.right;
+    var stroke   = inverted ? invertColor(rc.stroke) : rc.stroke;
 
-    function face(pts, col, noStroke) {
+    function face(pts, col) {
         c.beginPath();
         c.moveTo(pts[0], pts[1]);
         for (var i = 2; i < pts.length; i += 2) c.lineTo(pts[i], pts[i + 1]);
         c.closePath();
         c.fillStyle = col; c.fill();
-        if (!noStroke) { c.strokeStyle = stroke; c.lineWidth = 0.5; c.stroke(); }
+        c.strokeStyle = stroke; c.lineWidth = 0.5; c.stroke();
     }
-    face([cx, cy-hh, cx+hw, cy, cx, cy+hh, cx-hw, cy], topCol, r4);                          // top
-    if (!r4) {
-        face([cx-hw, cy, cx, cy+hh, cx, cy+hh+CUBE_DEPTH, cx-hw, cy+CUBE_DEPTH], leftCol);   // left
-        face([cx+hw, cy, cx, cy+hh, cx, cy+hh+CUBE_DEPTH, cx+hw, cy+CUBE_DEPTH], rightCol);   // right
-    }
+    face([cx, cy-hh, cx+hw, cy, cx, cy+hh, cx-hw, cy], topCol);                              // top
+    face([cx-hw, cy, cx, cy+hh, cx, cy+hh+CUBE_DEPTH, cx-hw, cy+CUBE_DEPTH], leftCol);       // left
+    face([cx+hw, cy, cx, cy+hh, cx, cy+hh+CUBE_DEPTH, cx+hw, cy+CUBE_DEPTH], rightCol);      // right
 }
 
 function drawCubeTop(c, cx, cy, state) {
     var hw = TILE_W / 2, hh = TILE_H / 2;
-    var lv = arcadeLevel();
-    var palIdx = lv <= 2 ? 0 : lv <= 4 ? 1 : lv <= 6 ? 2 : 3;
-    var pal = inverted ? CUBE_TOP_COLORS_INV[palIdx] : CUBE_TOP_COLORS[palIdx];
-    var topCol = pal[state] || pal[0];
+    var rc = getRoundColors();
+    var topCol = inverted ? invertColor(rc.top[state] || rc.top[0]) : (rc.top[state] || rc.top[0]);
     c.beginPath();
     c.moveTo(cx, cy - hh);
     c.lineTo(cx + hw, cy);
