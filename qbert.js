@@ -379,11 +379,13 @@ function simSpawnEnemy(gs, forcedType) {
     if (type === 'ugg') {
         gs.enemies.push({ type: 'ugg', row: ROWS-1, col: ROWS-1,
             jumping: false, jumpT: 0, jumpDur: ENEMY_JUMP_DUR * gs.sm,
-            moveTimer: 0, moveInterval: interval, destRow: null, destCol: null });
+            moveTimer: 0, moveInterval: interval, destRow: null, destCol: null,
+            spawnAnimTimer: spawnAnim });
     } else if (type === 'wrongway') {
         gs.enemies.push({ type: 'wrongway', row: ROWS-1, col: 0,
             jumping: false, jumpT: 0, jumpDur: ENEMY_JUMP_DUR * gs.sm,
-            moveTimer: 0, moveInterval: interval, destRow: null, destCol: null });
+            moveTimer: 0, moveInterval: interval, destRow: null, destCol: null,
+            spawnAnimTimer: spawnAnim });
     } else {
         // ROM $B506: balls get a 7-bit random direction path at spawn
         var dirBits = (type === 'redball' || type === 'greenball' || type === 'slick')

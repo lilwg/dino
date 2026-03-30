@@ -245,10 +245,10 @@ function drawCube(c, cx, cy, state) {
     var hw = TILE_W / 2, hh = TILE_H / 2;
     var rc = getRoundColors();
     var topCol = inverted ? invertColor(rc.top[state] || rc.top[0]) : (rc.top[state] || rc.top[0]);
-    // Dark-sided cubes (e.g. L2-4): in day mode swap to light so they don't blend with bg
+    // Dark-sided cubes (e.g. L2-4): match background so sides are invisible (like arcade)
     var isDarkSides = parseInt(rc.left.slice(1,3),16) < 0x30;
-    var leftCol  = inverted ? invertColor(rc.left) : (isDarkSides ? '#e0e0e0' : rc.left);
-    var rightCol = inverted ? invertColor(rc.right) : (isDarkSides ? '#c8c8c8' : rc.right);
+    var leftCol  = inverted ? invertColor(rc.left) : (isDarkSides ? '#f7f7f7' : rc.left);
+    var rightCol = inverted ? invertColor(rc.right) : (isDarkSides ? '#f7f7f7' : rc.right);
     var stroke   = leftCol;
 
     function face(pts, col) {
@@ -374,12 +374,20 @@ function syncVisuals() {
         // Sprite animation
         e.frameTimer = (e.frameTimer || 0) + 1;
         if (e.frameTimer > 8) { e.frameTimer = 0; e.frame = (e.frame || 0) ^ 1; }
-        // Drop-in animation: enemy falls from off-screen to grid position
+        // Spawn animation: drop from above (top enemies) or slide from side (crawlers)
         if (e.spawnAnimTimer > 0) {
             var pos = cubeXY(e.row, e.col);
             var t = 1 - (e.spawnAnimTimer / 20); // 0→1 over 20 frames
-            e.px = pos.cx;
-            e.py = pos.cy - (1 - t) * 120; // drop from 120px above
+            if (e.type === 'ugg') {
+                e.px = pos.cx + (1 - t) * 120; // slide in from right
+                e.py = pos.cy;
+            } else if (e.type === 'wrongway') {
+                e.px = pos.cx - (1 - t) * 120; // slide in from left
+                e.py = pos.cy;
+            } else {
+                e.px = pos.cx;
+                e.py = pos.cy - (1 - t) * 120; // drop from above
+            }
         } else if (e.jumping) {
             var srcR = e.jumpSrcRow != null ? e.jumpSrcRow : e.row;
             var srcC = e.jumpSrcCol != null ? e.jumpSrcCol : e.col;
