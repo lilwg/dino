@@ -761,7 +761,8 @@ function simDeepClone(gs) {
                        jumpSrcRow: e.jumpSrcRow, jumpSrcCol: e.jumpSrcCol,
                        moveTimer: e.moveTimer, moveInterval: e.moveInterval,
                        falling: e.falling || false, willHatch: e.willHatch || false,
-                       hops: e.hops || 0 };
+                       hops: e.hops || 0,
+                       spawnAnimTimer: e.spawnAnimTimer || 0 };
             if (e.dirBits != null) ens[i].dirBits = e.dirBits;
             if (e.lureRow != null) { ens[i].lureRow = e.lureRow; ens[i].lureCol = e.lureCol; }
         }
@@ -903,7 +904,8 @@ function simCloneGameState() {
                    moveTimer: e.moveTimer != null ? e.moveTimer : 0,
                    moveInterval: e.moveInterval != null ? e.moveInterval : enemyMoveInterval(e.type, sm),
                    falling: !!e.falling, willHatch: !!e.willHatch,
-                   hops: e.hops || 0 };
+                   hops: e.hops || 0,
+                   spawnAnimTimer: e.spawnAnimTimer || 0 };
         if (e.dirBits != null) en.dirBits = e.dirBits;
         if (e.lureRow != null) { en.lureRow = e.lureRow; en.lureCol = e.lureCol; }
         ens.push(en);

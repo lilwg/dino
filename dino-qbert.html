@@ -850,9 +850,6 @@ function draw() {
     // Discs
     drawDiscs();
 
-    // AI viz path (before inversion — color elements excluded from inversion)
-    if (vizOn) drawVizPath();
-
     // Shade enemy collision faces red (debug/viz mode)
     if (debugEnemies || vizOn) drawEnemyCollisionFaces();
 
@@ -889,6 +886,9 @@ function draw() {
 
     // Night inversion
     applyNight(ctx);
+
+    // AI viz (drawn post-inversion so colors stay consistent day/night)
+    if (vizOn) drawVizPath();
 
     // Post-inversion: redraw cube tops with true colors, then redraw
     // entities on top. Entities are drawn to a temp canvas, inverted to
@@ -943,8 +943,15 @@ function drawVizPath() {
     var hw = TILE_W / 2, hh = TILE_H / 2;
     var ds = 5; // diamond half-size for direction indicators
 
-    // ── 1. Danger tiles: subtle red tint ──
+    // ── 1. Danger tiles: subtle red tint (skip tiles with an enemy on them) ──
+    var enemyTiles = {};
+    for (var ei = 0; ei < enemies.length; ei++) {
+        var e = enemies[ei];
+        if (e.type === 'spawn-timer') continue;
+        enemyTiles[e.row + ',' + e.col] = true;
+    }
     for (var key in aiDangerTiles) {
+        if (enemyTiles[key]) continue; // enemy is visibly there, no overlay needed
         var parts = key.split(',');
         var dr = parseInt(parts[0]), dc = parseInt(parts[1]);
         if (!isValidPos(dr, dc)) continue;
