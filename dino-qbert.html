@@ -621,33 +621,23 @@ function computeAIMove() {
     for (var vi = 0; vi < cubeStates.length; vi++)
         if (cubeStates[vi].state < tgt) aiTourDots.push({ row: cubeStates[vi].row, col: cubeStates[vi].col });
 
-    if (bestDir && bestDir !== 'STAY') {
-        var dd = DIRS[bestDir];
-        var nr = player.row + dd.dr, nc = player.col + dd.dc;
-        if (isValidPos(nr, nc)) {
-            // Use dynamicTourMove's BFS to find the target the AI is heading toward
-            var gs2 = simCloneGameState();
-            gs2.player.row = nr; gs2.player.col = nc;
-            // Find the nearest unfinished cube via BFS from landing tile
-            var vizTarget = null, vizBestDist = Infinity;
-            for (var vti = 0; vti < aiTourDots.length; vti++) {
-                var vr = bfsTo(nr, nc, aiTourDots[vti].row, aiTourDots[vti].col);
-                if (vr && vr.dist < vizBestDist) { vizBestDist = vr.dist; vizTarget = vti; }
+    // Build greedy nearest-neighbor tour through all unfinished cubes for viz
+    aiTourPath.push({ row: player.row, col: player.col });
+    if (aiTourDots.length > 0) {
+        var visited = {};
+        var cr = player.row, cc = player.col;
+        for (var ti = 0; ti < aiTourDots.length && ti < 15; ti++) {
+            var bestTi = -1, bestDist = Infinity;
+            for (var ui = 0; ui < aiTourDots.length; ui++) {
+                var uk = aiTourDots[ui].row + ',' + aiTourDots[ui].col;
+                if (visited[uk]) continue;
+                var d = exBfsDist(cr, cc, aiTourDots[ui].row, aiTourDots[ui].col);
+                if (d < bestDist) { bestDist = d; bestTi = ui; }
             }
-            // Build path: player → landing → BFS to target
-            aiTourPath.push({ row: player.row, col: player.col });
-            aiTourPath.push({ row: nr, col: nc });
-            if (vizTarget !== null) {
-                var vres = bfsTo(nr, nc, aiTourDots[vizTarget].row, aiTourDots[vizTarget].col);
-                if (vres) {
-                    var vpr = nr, vpc = nc;
-                    for (var vpi = 0; vpi < vres.path.length; vpi++) {
-                        var vpd = DIRS[vres.path[vpi]];
-                        vpr += vpd.dr; vpc += vpd.dc;
-                        aiTourPath.push({ row: vpr, col: vpc });
-                    }
-                }
-            }
+            if (bestTi < 0) break;
+            visited[aiTourDots[bestTi].row + ',' + aiTourDots[bestTi].col] = true;
+            aiTourPath.push({ row: aiTourDots[bestTi].row, col: aiTourDots[bestTi].col });
+            cr = aiTourDots[bestTi].row; cc = aiTourDots[bestTi].col;
         }
     }
 
@@ -950,21 +940,25 @@ function drawDiscs() {
 function drawVizPath() {
     ctx.save();
     var hw = TILE_W / 2, hh = TILE_H / 2;
+    var ds = 5; // diamond half-size for direction indicators
 
-    // ── 1. Unfinished cubes: small dots on cubes that still need stomping ──
-    var tgt = targetState();
-    ctx.fillStyle = 'rgba(255,255,255,0.4)';
-    for (var ci = 0; ci < cubeStates.length; ci++) {
-        if (cubeStates[ci].state < tgt) {
-            var cp = cubeXY(cubeStates[ci].row, cubeStates[ci].col);
-            ctx.beginPath();
-            ctx.arc(cp.cx, cp.cy, 2, 0, Math.PI * 2);
-            ctx.fill();
-        }
+    // ── 1. Danger tiles: subtle red tint ──
+    for (var key in aiDangerTiles) {
+        var parts = key.split(',');
+        var dr = parseInt(parts[0]), dc = parseInt(parts[1]);
+        if (!isValidPos(dr, dc)) continue;
+        var dp = cubeXY(dr, dc);
+        ctx.beginPath();
+        ctx.moveTo(dp.cx, dp.cy - hh); ctx.lineTo(dp.cx + hw, dp.cy);
+        ctx.lineTo(dp.cx, dp.cy + hh); ctx.lineTo(dp.cx - hw, dp.cy);
+        ctx.closePath();
+        ctx.fillStyle = 'rgba(255,40,40,0.18)';
+        ctx.fill();
     }
 
-    // ── 2. Tour path: route through unfinished cubes (WHERE to go) ──
+    // ── 2. Tour path: greedy route through unfinished cubes ──
     if (aiTourPath.length >= 2) {
+        // Draw lines connecting waypoints
         ctx.beginPath();
         var tp0 = cubeXY(aiTourPath[0].row, aiTourPath[0].col);
         ctx.moveTo(tp0.cx, tp0.cy);
@@ -972,30 +966,25 @@ function drawVizPath() {
             var tp = cubeXY(aiTourPath[j].row, aiTourPath[j].col);
             ctx.lineTo(tp.cx, tp.cy);
         }
-        ctx.strokeStyle = 'rgba(255,200,0,0.3)';
-        ctx.lineWidth = 1.5;
-        ctx.setLineDash([4, 3]);
+        ctx.strokeStyle = 'rgba(255,180,0,0.4)';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([5, 4]);
         ctx.stroke();
         ctx.setLineDash([]);
+
+        // Small numbered dots at each tour stop (skip first = player position)
+        for (var j = 1; j < Math.min(aiTourPath.length, 8); j++) {
+            var tp = cubeXY(aiTourPath[j].row, aiTourPath[j].col);
+            ctx.beginPath();
+            ctx.arc(tp.cx, tp.cy, 4, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(255,180,0,0.45)'; ctx.fill();
+            ctx.font = '7px monospace'; ctx.textAlign = 'center';
+            ctx.fillStyle = 'rgba(0,0,0,0.6)';
+            ctx.fillText(j.toString(), tp.cx, tp.cy + 2.5);
+        }
     }
 
-    // ── 3. Danger tiles: red overlay (enemy threat zones) ──
-    for (var key in aiDangerTiles) {
-        var parts = key.split(',');
-        var dr = parseInt(parts[0]), dc = parseInt(parts[1]);
-        if (!isValidPos(dr, dc)) continue;
-        var dp = cubeXY(dr, dc);
-        ctx.beginPath();
-        ctx.moveTo(dp.cx, dp.cy - hh);
-        ctx.lineTo(dp.cx + hw, dp.cy);
-        ctx.lineTo(dp.cx, dp.cy + hh);
-        ctx.lineTo(dp.cx - hw, dp.cy);
-        ctx.closePath();
-        ctx.fillStyle = 'rgba(255,40,40,0.2)';
-        ctx.fill();
-    }
-
-    // ── 4. Coily predicted path ──
+    // ── 3. Coily prediction ──
     if (aiCoilyPred.length > 0) {
         var coilyStart = null;
         for (var ei = 0; ei < enemies.length; ei++) {
@@ -1012,22 +1001,19 @@ function drawVizPath() {
                 var cpv = cubeXY(aiCoilyPred[j].row, aiCoilyPred[j].col);
                 ctx.lineTo(cpv.cx, cpv.cy);
             }
-            ctx.strokeStyle = 'rgba(180,60,255,0.5)';
-            ctx.lineWidth = 2;
-            ctx.setLineDash([3, 2]);
-            ctx.stroke();
-            ctx.setLineDash([]);
+            ctx.strokeStyle = 'rgba(160,50,220,0.45)';
+            ctx.lineWidth = 1.5; ctx.setLineDash([3, 2]);
+            ctx.stroke(); ctx.setLineDash([]);
             for (var j = 0; j < aiCoilyPred.length; j++) {
                 var cpv = cubeXY(aiCoilyPred[j].row, aiCoilyPred[j].col);
                 ctx.beginPath();
-                ctx.arc(cpv.cx, cpv.cy, 4, 0, Math.PI * 2);
-                ctx.fillStyle = 'rgba(180,60,255,' + (0.6 - j * 0.15) + ')';
-                ctx.fill();
+                ctx.arc(cpv.cx, cpv.cy, 3, 0, Math.PI * 2);
+                ctx.fillStyle = 'rgba(160,50,220,' + (0.5 - j * 0.12) + ')'; ctx.fill();
             }
         }
     }
 
-    // ── 5. Per-direction safety + tour cost (core decision viz) ──
+    // ── 4. Direction indicators: small diamonds on adjacent tiles ──
     var hasScores = false;
     for (var i = 0; i < DIR_KEYS_WITH_STAY.length; i++)
         if (aiMoveScores[DIR_KEYS_WITH_STAY[i]] !== undefined) { hasScores = true; break; }
@@ -1039,73 +1025,46 @@ function drawVizPath() {
             if (v === undefined) continue;
             var isBest = (dk === aiBestDir);
 
-            // Position of the indicator
             var pt;
             if (dk === 'STAY') {
                 pt = cubeXY(player.row, player.col);
-                pt = { cx: pt.cx, cy: pt.cy + 14 };
+                pt = { cx: pt.cx, cy: pt.cy + 12 };
             } else {
                 var dd = DIRS[dk];
                 var nr = player.row + dd.dr, nc = player.col + dd.dc;
-                if (isValidPos(nr, nc)) {
-                    pt = cubeXY(nr, nc);
-                } else {
-                    var pp = cubeXY(player.row, player.col);
-                    pt = { cx: pp.cx + dd.dc * 50 - dd.dr * 30, cy: pp.cy + dd.dr * -30 };
-                }
+                pt = isValidPos(nr, nc) ? cubeXY(nr, nc)
+                    : { cx: cubeXY(player.row, player.col).cx + dd.dc * 45 - dd.dr * 25,
+                        cy: cubeXY(player.row, player.col).cy + dd.dr * -25 };
             }
 
-            // Safety tier determines color:
-            //   ≥ 0: safe (hop 1+2+3 pass) → green
-            //   -5000: anti-corner fail (hop 1+2 ok, hop 3 blocked) → orange
-            //   -8000: exhaustive fail → red outline
-            //   ≤ -10000: death → red filled
-            //   < 0 other: partial survival → yellow with %
-            var col, label;
-            if (v <= -10000)     { col = 'rgba(220,40,40,0.8)';  label = 'X'; }
-            else if (v <= -8000) { col = 'rgba(220,80,40,0.7)';  label = '!'; }
-            else if (v <= -5000) { col = 'rgba(220,160,40,0.7)'; label = '!!'; }
-            else if (v < 0)      { col = 'rgba(220,200,40,0.6)'; label = Math.max(0, Math.round(v + 100)) + '%'; }
-            else if (v >= 9000)  { col = 'rgba(40,220,40,0.9)';  label = 'WIN'; }
-            else                 { col = 'rgba(40,200,40,0.6)';   label = '' + Math.round(10000 - v); }
+            // Color by safety tier
+            var col;
+            if (v <= -10000) col = 'rgba(200,30,30,0.7)';
+            else if (v < 0)  col = 'rgba(200,120,30,0.55)';
+            else              col = 'rgba(30,180,30,0.55)';
 
-            var radius = isBest ? 9 : 6;
+            // Diamond shape
+            var sz = isBest ? ds + 2 : ds;
             ctx.beginPath();
-            ctx.arc(pt.cx, pt.cy, radius, 0, Math.PI * 2);
-            ctx.fillStyle = col;
-            ctx.fill();
+            ctx.moveTo(pt.cx, pt.cy - sz); ctx.lineTo(pt.cx + sz, pt.cy);
+            ctx.lineTo(pt.cx, pt.cy + sz); ctx.lineTo(pt.cx - sz, pt.cy);
+            ctx.closePath();
+            ctx.fillStyle = col; ctx.fill();
             if (isBest) {
-                ctx.lineWidth = 2;
-                ctx.strokeStyle = '#fff';
-                ctx.stroke();
+                ctx.strokeStyle = 'rgba(255,255,255,0.9)'; ctx.lineWidth = 1.5; ctx.stroke();
             }
 
-            // Label
-            ctx.font = isBest ? 'bold 9px monospace' : '8px monospace';
-            ctx.textAlign = 'center';
-            ctx.fillStyle = isBest ? '#fff' : 'rgba(255,255,255,0.8)';
-            ctx.fillText(label, pt.cx, pt.cy - radius - 2);
-        }
-
-        // Arrow to best direction
-        if (aiBestDir && aiBestDir !== 'STAY') {
-            var dd2 = DIRS[aiBestDir];
-            var nr2 = player.row + dd2.dr, nc2 = player.col + dd2.dc;
-            var from = cubeXY(player.row, player.col);
-            var to = isValidPos(nr2, nc2) ? cubeXY(nr2, nc2)
-                : { cx: from.cx + dd2.dc * 50 - dd2.dr * 30, cy: from.cy + dd2.dr * -30 };
-            ctx.beginPath();
-            ctx.moveTo(from.cx, from.cy);
-            ctx.lineTo(to.cx, to.cy);
-            ctx.strokeStyle = 'rgba(40,220,40,0.7)';
-            ctx.lineWidth = 2;
-            ctx.setLineDash([3, 3]);
-            ctx.stroke();
-            ctx.setLineDash([]);
+            // Tour cost label for safe moves only
+            if (v >= 0 && v < 9000) {
+                var cost = Math.round(10000 - v);
+                ctx.font = '7px monospace'; ctx.textAlign = 'center';
+                ctx.fillStyle = 'rgba(255,255,255,0.7)';
+                ctx.fillText(cost, pt.cx, pt.cy - sz - 2);
+            }
         }
     }
 
-    // ── 6. AI state indicator ──
+    // ── 5. AI state badge ──
     var stateLabel = '';
     if (aiNoProgressCount > 30) stateLabel = 'UNSTUCK-3';
     else if (aiNoProgressCount > 20) stateLabel = 'UNSTUCK-2';
@@ -1115,12 +1074,11 @@ function drawVizPath() {
         var uniq = {};
         for (var hi = Math.max(0, aiPosHistory.length - 8); hi < aiPosHistory.length; hi++)
             uniq[aiPosHistory[hi]] = true;
-        if (Object.keys(uniq).length <= 3) stateLabel = 'OSCILLATING';
+        if (Object.keys(uniq).length <= 3) stateLabel = 'LOOP';
     }
     if (stateLabel) {
-        ctx.font = 'bold 9px monospace';
-        ctx.textAlign = 'left';
-        ctx.fillStyle = stateLabel === 'OSCILLATING' ? 'rgba(255,180,40,0.8)' : 'rgba(255,80,80,0.8)';
+        ctx.font = 'bold 9px monospace'; ctx.textAlign = 'left';
+        ctx.fillStyle = 'rgba(255,120,40,0.75)';
         ctx.fillText(stateLabel, 8, CH - 8);
     }
 
