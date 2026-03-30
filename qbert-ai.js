@@ -670,10 +670,33 @@ function unifiedPick(gs, coilyActive) {
             if (!isValidPos(dnr, dnc)) continue;
         }
 
-        // Note: L5+ parity was thought to be constrained by bipartite invariant,
-        // but computation shows all mod-3 states are reachable — no mathematical
-        // impossibility from disc rides. The practical difficulty comes from
-        // cascading fix chains in the tour routing, not from invariant violations.
+        // L5+ disc parity: the pyramid is bipartite (even/odd rows). The sum
+        // constraint (N ≡ target_sum mod 3) and bipartite constraint (partition
+        // stomp totals) become incompatible when disc_rides ≡ 1 mod 3.
+        // Only disc rides stomp the apex (deaths don't in the arcade).
+        // Block disc if it would make disc count ≡ 1 mod 3.
+        if (gs.lv >= 5 && dir !== 'STAY') {
+            var dpd = DIRS[dir];
+            var dpnr = gs.player.row + dpd.dr, dpnc = gs.player.col + dpd.dc;
+            if (!isValidPos(dpnr, dpnc)) {
+                // Check if this is a disc move
+                var dpIsDisc = false;
+                for (var dpi = 0; dpi < gs.discs.length; dpi++) {
+                    var dpc = gs.discs[dpi];
+                    if (!dpc.active) continue;
+                    if ((dpc.side === 0 && dir === 'UL' && gs.player.col === 0 && gs.player.row === dpc.row) ||
+                        (dpc.side === 1 && dir === 'UR' && gs.player.col === gs.player.row && gs.player.row === dpc.row))
+                        dpIsDisc = true;
+                }
+                if (dpIsDisc) {
+                    // Count disc rides so far this round (count consumed discs)
+                    var discCount = 0;
+                    for (var dci = 0; dci < gs.discs.length; dci++)
+                        if (!gs.discs[dci].active) discCount++;
+                    if ((discCount + 1) % 3 === 1) continue; // would create impossible parity
+                }
+            }
+        }
 
         // Never enter a completed dead-end cube (e.g. bottom corners) — no reason to visit
         if (dir !== 'STAY') {
