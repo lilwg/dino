@@ -223,7 +223,7 @@ function buildDangerSet() {
         if (e.type === 'slick' || e.type === 'greenball') continue;
         if (e.type === 'coily') continue;
         if (e.type === 'spawn-timer') {
-            if (e.timer <= framesPerHop * 2) {
+            if (e.timer <= framesPerHop) {
                 var ft = e.forcedType;
                 if (ft === 'ugg') danger[(ROWS-1) + ',' + (ROWS-1)] = true;
                 else if (ft === 'wrongway') danger[(ROWS-1) + ',0'] = true;
