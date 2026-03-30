@@ -318,9 +318,10 @@ var discRide    = null;  // { side, t, sx, sy, tx, ty } — player riding disc t
 // AI functions (aiPickBestDir, buildDangerSet) from qbert-ai.js
 
 function checkExtraLife() {
-    while (score >= nextExtraLife) {
+    // Arcade: single extra life at 8000 points (not repeating)
+    if (nextExtraLife > 0 && score >= nextExtraLife) {
         lives++;
-        nextExtraLife += 14000;
+        nextExtraLife = 0; // no more extra lives
     }
 }
 
