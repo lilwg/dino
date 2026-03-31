@@ -988,8 +988,9 @@ function unifiedPick(gs, coilyActive) {
         }
 
         // Deep survival DFS: frame-accurate enemy timeline + Coily chase.
-        // Pre-compute non-Coily positions once, DFS over player moves with Coily per-path.
-        if (safe1[dir] && coilyActive && dir !== 'STAY') {
+        // Runs on ALL directions (not just MC-safe ones) — DFS is the final arbiter.
+        // If DFS finds a surviving path, it can RESCUE a direction rejected by MC/exhaustive.
+        if (coilyActive && dir !== 'STAY') {
             if (!deepTimeline) deepTimeline = precomputeFrameTimeline(gs, 400);
             var dd_ds = DIRS[dir];
             var dsR = gs.player.row + dd_ds.dr, dsC = gs.player.col + dd_ds.dc;
@@ -1006,10 +1007,18 @@ function unifiedPick(gs, coilyActive) {
                 }
                 if (dsCoily) {
                     var jumpFrames = Math.ceil(1 / (PLAYER_JUMP_DUR * gs.sm));
-                    if (!dfsSurvive(dsR, dsC, gs.player.row, gs.player.col, dsCoily,
-                                    deepTimeline, jumpFrames, 9, gs.sm)) {
+                    var dfsSafe = dfsSurvive(dsR, dsC, gs.player.row, gs.player.col, dsCoily,
+                                    deepTimeline, jumpFrames, 9, gs.sm);
+                    if (!dfsSafe) {
                         safe1[dir] = false;
                         hop1Surv[dir] = 0;
+                    } else if (!safe1[dir]) {
+                        // DFS found a surviving path — rescue this direction
+                        safe1[dir] = true;
+                        hop1Surv[dir] = 1;
+                        if (aiMoveScores[dir] === undefined || aiMoveScores[dir] < 0) {
+                            aiMoveScores[dir] = 10000 - simTourCost(gs); // approximate tour cost
+                        }
                     }
                 }
             }
