@@ -819,6 +819,16 @@ function update() {
     // Accept input / AI when player is ready
     if (!player.jumping && !player.dead && !discRide && !levelWon) {
         if (gameMode === 'rules') {
+            // Safety net: check if any enemy is currently on the player's tile
+            // (catches the 1-frame gap where Coily lands between AI eval and move)
+            simCheckCollision(gs);
+            if (!gs.alive) {
+                gs.alive = true;
+                gs.player.deathTimer = 100;
+                killPlayerVisual();
+                syncVisuals();
+                return;
+            }
             var dir = computeAIMove();
             if (dir === 'STAY') {
                 // AI chose to wait
