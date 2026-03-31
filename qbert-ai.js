@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic  (v2 — oscillation fix + revert penalty)
-var AI_VERSION = 'v5.1-arcade-mechanics';
+var AI_VERSION = 'v5.2-arcade-mechanics';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -870,6 +870,9 @@ function unifiedPick(gs, coilyActive) {
     function simSeed(sampleIdx) { simRng = createSeededRng(baseSeed + sampleIdx * 9973); }
     function restoreRng() { simRng = savedRng; }
 
+    // Reset prediction timeline for validation harness
+    window.aiPredictedTimeline = null;
+
 
     // MC samples for safety validation — enough to catch random enemy moves
     var hasEnemies = gs.enemies.length > 0;
@@ -1032,7 +1035,10 @@ function unifiedPick(gs, coilyActive) {
         // Runs on ALL directions (not just MC-safe ones) — DFS is the final arbiter.
         // If DFS finds a surviving path, it can RESCUE a direction rejected by MC/exhaustive.
         if (coilyActive && dir !== 'STAY') {
-            if (!deepTimeline) deepTimeline = precomputeFrameTimeline(gs, 400);
+            if (!deepTimeline) {
+                deepTimeline = precomputeFrameTimeline(gs, 400);
+                window.aiPredictedTimeline = deepTimeline; // export for validation harness
+            }
             var dd_ds = DIRS[dir];
             var dsR = gs.player.row + dd_ds.dr, dsC = gs.player.col + dd_ds.dc;
             if (isValidPos(dsR, dsC)) {
