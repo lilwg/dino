@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic  (v2 — oscillation fix + revert penalty)
-var AI_VERSION = 'v5.3-fast-andor';
+var AI_VERSION = 'v5.4-per-combo-andor';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -1066,114 +1066,107 @@ function unifiedPick(gs, coilyActive) {
         }
     }
 
-    // AND-OR tree: can the player survive `depth` hops?
-    // Key optimization: Coily is deterministic (independent of combo), so:
-    //   1. Simulate Coily once per direction (not 8× per combo)
-    //   2. Check 8 combos only for non-Coily threats (no recursion in combo loop)
-    //   3. Recurse ONCE with Coily end state
-    // This reduces complexity from O(32^D) to O(4^D), and memoization further
-    // reduces to O(unique_states × D) ≈ O(784 × D).
-    // Memo persists across calls: entries from previous AI call are reused when
-    // the timelines haven't changed, so only the new deepest level is computed.
+    // AND-OR tree with correct game-theoretic semantics:
+    //   AND over combos: every possible enemy future must be survivable
+    //   OR over player directions: player reacts to the actual situation
+    //
+    // At the top level (forced direction): player commits to this move,
+    // then each combo must independently have a surviving continuation.
+    // At inner nodes: player observes the actual enemy positions and picks
+    // the best response — different combos can take different paths.
+    //
+    // Previous code was too conservative: it required each hop to be safe
+    // against ALL combos simultaneously, which fails when combo 1 blocks
+    // tile A and combo 2 blocks tile B — the player can't go anywhere even
+    // though combo 1 allows B and combo 2 allows A.
 
-    function andOrSurvive(pR, pC, coily, frame, depth, forcedDir) {
+    // Simulate Coily for one hop from (pR,pC) to (nr,nc).
+    // Returns new Coily state, or null if Coily kills the player.
+    function simCoilyHop(pR, pC, nr, nc, coily) {
+        var cr = coily.row, cc = coily.col;
+        var cj = coily.jumping, ct = coily.jumpT || 0, cm = coily.moveTimer || 0;
+        var cdr = coily.destRow, cdc = coily.destCol;
+        for (var f = 1; f <= pJumpFrames; f++) {
+            var playerT = f * pJumpDur;
+            if (cj) {
+                ct += cJumpDur;
+                if (ct >= 1) { cj = false; ct = 0; cm = 0; cr = cdr; cc = cdc; cdr = null; cdc = null; }
+            } else {
+                cm++;
+                if (cm >= cIdleFrames) {
+                    var cn = coilyChaseStep(cr, cc, pR, pC);
+                    if (cn) { cj = true; ct = 0; cm = 0; cdr = cn.row; cdc = cn.col; }
+                }
+            }
+            var ptR, ptC;
+            if (playerT < 0.33) { ptR = pR; ptC = pC; }
+            else if (playerT >= 0.67) { ptR = nr; ptC = nc; }
+            else continue;
+            var ctR, ctC;
+            if (cj) {
+                if (ct < 0.33) { ctR = cr; ctC = cc; }
+                else if (ct >= 0.67 && cdr != null) { ctR = cdr; ctC = cdc; }
+                else { ctR = -99; ctC = -99; }
+            } else { ctR = cr; ctC = cc; }
+            if (ptR === ctR && ptC === ctC) return null;
+            if (cj && cdr != null && nr === cr && nc === cc && pR === cdr && pC === cdc) return null;
+        }
+        return { row: cr, col: cc, jumping: cj, jumpT: ct, moveTimer: cm, destRow: cdr, destCol: cdc };
+    }
+
+    // Check if a hop from (pR,pC) to (nr,nc) is safe for one specific combo's threats
+    function isHopSafe(pR, pC, nr, nc, frame, combo) {
+        for (var f = 1; f <= pJumpFrames; f++) {
+            var playerT = f * pJumpDur;
+            var fi = Math.min(frame + f, timelines[combo].length - 1);
+            var ptR, ptC;
+            if (playerT < 0.33) { ptR = pR; ptC = pC; }
+            else if (playerT >= 0.67) { ptR = nr; ptC = nc; }
+            else continue;
+            if (timelines[combo][fi] && timelines[combo][fi][ptR + ',' + ptC]) return false;
+        }
+        return true;
+    }
+
+    // Per-combo survival: can the player survive `depth` more hops
+    // given this specific combo's enemy timeline?
+    // OR over directions: player picks the best move for this specific future.
+    function comboSurvive(pR, pC, coily, frame, depth, combo) {
         if (depth <= 0) return true;
-        var tryDirs = forcedDir ? [forcedDir] : DIR_KEYS;
-
-        // Memoize free-choice (non-forced) calls for cross-timestep reuse
-        var mKey;
-        if (!forcedDir) {
-            mKey = pR + '|' + pC + '|' + coily.row + '|' + coily.col + '|' +
+        var mKey = combo + '|' + pR + '|' + pC + '|' + coily.row + '|' + coily.col + '|' +
                    (coily.jumping ? 1 : 0) + '|' + Math.round((coily.jumpT || 0) * 30) + '|' +
                    (coily.moveTimer || 0) + '|' + (coily.destRow != null ? coily.destRow : 9) + '|' +
                    (coily.destCol != null ? coily.destCol : 9) + '|' + frame + '|' + depth;
-            if (memo[mKey] !== undefined) return memo[mKey];
-        }
-
+        if (memo[mKey] !== undefined) return memo[mKey];
         var result = false;
-
-        // OR: at least one player direction survives all hops
-        for (var dk = 0; dk < tryDirs.length && !result; dk++) {
-            var d = DIRS[tryDirs[dk]];
+        for (var dk = 0; dk < DIR_KEYS.length && !result; dk++) {
+            var d = DIRS[DIR_KEYS[dk]];
             var nr = pR + d.dr, nc = pC + d.dc;
             if (!isValidPos(nr, nc)) continue;
-
-            // Step 1: Simulate Coily for one hop (deterministic, combo-independent)
-            // In the game, Coily chases gs.player.prevRow which equals pR (set at hop start).
-            var cr = coily.row, cc = coily.col;
-            var cj = coily.jumping, ct = coily.jumpT || 0, cm = coily.moveTimer || 0;
-            var cdr = coily.destRow, cdc = coily.destCol;
-            var coilyKills = false;
-
-            for (var f = 1; f <= pJumpFrames; f++) {
-                var playerT = f * pJumpDur;
-                // Advance Coily 1 frame
-                if (cj) {
-                    ct += cJumpDur;
-                    if (ct >= 1) {
-                        cj = false; ct = 0; cm = 0;
-                        cr = cdr; cc = cdc; cdr = null; cdc = null;
-                    }
-                } else {
-                    cm++;
-                    if (cm >= cIdleFrames) {
-                        // Chase target = player's position at hop start (pR,pC)
-                        var cn = coilyChaseStep(cr, cc, pR, pC);
-                        if (cn) {
-                            cj = true; ct = 0; cm = 0;
-                            cdr = cn.row; cdc = cn.col;
-                        }
-                    }
-                }
-                // Player collision tile
-                var ptR, ptC;
-                if (playerT < 0.33) { ptR = pR; ptC = pC; }
-                else if (playerT >= 0.67) { ptR = nr; ptC = nc; }
-                else continue; // immune at apex
-                // Coily collision tile
-                var ctR, ctC;
-                if (cj) {
-                    if (ct < 0.33) { ctR = cr; ctC = cc; }
-                    else if (ct >= 0.67 && cdr != null) { ctR = cdr; ctC = cdc; }
-                    else { ctR = -99; ctC = -99; }
-                } else { ctR = cr; ctC = cc; }
-                // Same-tile collision
-                if (ptR === ctR && ptC === ctC) { coilyKills = true; break; }
-                // Cross-path collision (ROM $BD1E): player and Coily swapping mid-jump
-                if (cj && cdr != null &&
-                    nr === cr && nc === cc && pR === cdr && pC === cdc) {
-                    coilyKills = true; break;
-                }
-            }
-            if (coilyKills) continue;
-
-            // Step 2: Check ALL 8 combos for non-Coily enemy survival (no recursion)
-            var allCombosOK = true;
-            for (var c2 = 0; c2 < COMBOS && allCombosOK; c2++) {
-                for (var f2 = 1; f2 <= pJumpFrames; f2++) {
-                    var playerT2 = f2 * pJumpDur;
-                    var fi = Math.min(frame + f2, timelines[c2].length - 1);
-                    var ptR2, ptC2;
-                    if (playerT2 < 0.33) { ptR2 = pR; ptC2 = pC; }
-                    else if (playerT2 >= 0.67) { ptR2 = nr; ptC2 = nc; }
-                    else continue;
-                    if (timelines[c2][fi] && timelines[c2][fi][ptR2 + ',' + ptC2]) {
-                        allCombosOK = false; break;
-                    }
-                }
-            }
-            if (!allCombosOK) continue;
-
-            // Step 3: Recurse ONCE with Coily end state (not 8 times!)
-            var newCoily = { row: cr, col: cc, jumping: cj, jumpT: ct,
-                moveTimer: cm, destRow: cdr, destCol: cdc };
-            if (andOrSurvive(nr, nc, newCoily, frame + pJumpFrames, depth - 1)) {
+            var newCoily = simCoilyHop(pR, pC, nr, nc, coily);
+            if (!newCoily) continue;
+            if (!isHopSafe(pR, pC, nr, nc, frame, combo)) continue;
+            if (comboSurvive(nr, nc, newCoily, frame + pJumpFrames, depth - 1, combo)) {
                 result = true;
             }
         }
-
-        if (mKey) memo[mKey] = result;
+        memo[mKey] = result;
         return result;
+    }
+
+    // Top-level: does the player survive DEPTH hops if they pick direction `dir`?
+    // AND over combos: must survive every possible enemy future.
+    function dirSurvives(pR, pC, coily, frame, depth, dir) {
+        var d = DIRS[dir];
+        var nr = pR + d.dr, nc = pC + d.dc;
+        if (!isValidPos(nr, nc)) return false;
+        var newCoily = simCoilyHop(pR, pC, nr, nc, coily);
+        if (!newCoily) return false;
+        for (var c = 0; c < COMBOS; c++) {
+            if (!isHopSafe(pR, pC, nr, nc, frame, c)) return false;
+            if (!comboSurvive(nr, nc, newCoily, frame + pJumpFrames, depth - 1, c)) return false;
+        }
+        return true;
     }
 
     // Disc lure — use when Coily is active
@@ -1235,7 +1228,7 @@ function unifiedPick(gs, coilyActive) {
         if (hasEnemies && DEPTH > 0 && timelines) {
             var ci0 = coilyInit || { row:-99, col:-99, jumping:false, jumpT:0,
                 moveTimer:0, destRow:null, destCol:null };
-            if (!andOrSurvive(gs.player.row, gs.player.col, ci0, startFrame, DEPTH, dir)) {
+            if (!dirSurvives(gs.player.row, gs.player.col, ci0, startFrame, DEPTH, dir)) {
                 aiMoveScores[dir] = -10000;
                 hop1Surv[dir] = 0;
                 continue;
@@ -1286,8 +1279,38 @@ function unifiedPick(gs, coilyActive) {
     }
     if (bestDir) { restoreRng(); return bestDir; }
 
-    // No fully-safe option — prefer STAY to wait for better timing
-    // Only move if STAY itself has poor survival or we'd die anyway
+    // No fully-safe option — verify with simStep (AND-OR tree may be too conservative)
+    // If simStep finds a surviving direction, use it
+    if (!bestDir) {
+        for (var vk = 0; vk < DIR_KEYS_WITH_STAY.length; vk++) {
+            var vDir = DIR_KEYS_WITH_STAY[vk];
+            if (!simCanMove(gs, vDir)) continue;
+            simSeed(vk * 100 + 7777);
+            var vClone = simDeepClone(gs);
+            if (simStep(vClone, vDir)) {
+                // simStep survived — AND-OR tree was too conservative
+                console.log('AND-OR OVERRIDE: ' + vDir + ' survives simStep but AND-OR said -10000 @(' +
+                    gs.player.row + ',' + gs.player.col + ')');
+                safe1[vDir] = true; safe2[vDir] = true;
+                hop1Surv[vDir] = 1;
+                var vTc = vClone.levelWon ? -1000 : simTourCost(vClone);
+                if (vDir === 'STAY') vTc += 2;
+                tourCosts[vDir] = vTc;
+                aiMoveScores[vDir] = 5000 - vTc; // lower priority than AND-OR-safe moves
+            }
+        }
+        // Re-pick best
+        bestDir = null; bestCost = Infinity;
+        for (var fk2 = 0; fk2 < DIR_KEYS_WITH_STAY.length; fk2++) {
+            var fd2 = DIR_KEYS_WITH_STAY[fk2];
+            if (!safe1[fd2] || !safe2[fd2]) continue;
+            var fc2 = tourCosts[fd2];
+            if (fc2 !== undefined && fc2 < bestCost) { bestCost = fc2; bestDir = fd2; }
+        }
+        if (bestDir) { restoreRng(); return bestDir; }
+    }
+
+    // Still no safe option — prefer STAY to wait for better timing
     if (hop1Surv['STAY'] !== undefined && hop1Surv['STAY'] >= 1) {
         restoreRng(); return 'STAY';
     }
