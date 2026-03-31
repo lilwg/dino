@@ -771,19 +771,31 @@ function update() {
                 var actual = {};
                 for (var vi = 0; vi < gs.enemies.length; vi++) {
                     var ve = gs.enemies[vi];
-                    if (ve.type === 'coily') continue; // Coily handled separately in DFS
+                    // Match precomputeFrameTimeline filters
+                    if (ve.type === 'coily' || ve.type === 'spawn-timer') continue;
                     if (ve.spawnAnimTimer > 0) continue;
                     if (ve.type === 'slick' || ve.type === 'greenball') continue;
                     var vt = collisionTile(ve);
-                    if (vt) actual[vt.row + ',' + vt.col] = true;
+                    if (vt && vt.row != null && vt.col != null && isValidPos(vt.row, vt.col))
+                        actual[vt.row + ',' + vt.col] = true;
                 }
                 // Check for unpredicted threats (actual but not predicted)
                 for (var aKey in actual) {
                     if (!predicted[aKey]) {
+                        // Find which enemy is at this position
+                        var aType = '?';
+                        for (var afi = 0; afi < gs.enemies.length; afi++) {
+                            var afe = gs.enemies[afi];
+                            if (afe.type === 'coily' || afe.type === 'spawn-timer') continue;
+                            if (afe.type === 'slick' || afe.type === 'greenball') continue;
+                            var aft = collisionTile(afe);
+                            if (aft && aft.row + ',' + aft.col === aKey) { aType = afe.type; break; }
+                        }
                         window.aiPredictionDivergences = (window.aiPredictionDivergences || 0) + 1;
-                        console.log('DIVERGENCE at prediction frame ' + predFrame +
-                            ' (game frame ' + frameCount + '): enemy at (' + aKey +
-                            ') not predicted. Total divergences: ' + window.aiPredictionDivergences);
+                        if (window.aiPredictionDivergences <= 20) {
+                            console.log('DIVERGENCE f' + predFrame + ': ' + aType + ' at (' + aKey +
+                                ') not predicted. #' + window.aiPredictionDivergences);
+                        }
                     }
                 }
                 // Check for predicted threats that didn't materialize
