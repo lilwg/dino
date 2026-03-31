@@ -695,13 +695,9 @@ function unifiedPick(gs, coilyActive) {
                     dcW = ((dcW - 1) % 3 + 3) % 3; // apex stomp decreases W deficit
                     var dcGap = ((dcW - dcB) % 3 + 3) % 3;
                     // After disc, player at even row. Bad if gap ≡ 1.
-                    if (dcGap === 1) {
-                        // Check if another even-row disc remains to fix it
-                        var dcEvenLeft = 0;
-                        for (var dci4 = 0; dci4 < gs.discs.length; dci4++)
-                            if (gs.discs[dci4].active && gs.discs[dci4].row % 2 === 0) dcEvenLeft++;
-                        if (dcEvenLeft <= 1) continue; // last even disc, block
-                    }
+                    // Block even-row disc that creates bad parity — don't rely on
+                    // using another disc later to fix it.
+                    if (dcGap === 1) continue;
                 }
             }
         }
