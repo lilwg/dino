@@ -90,7 +90,7 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts) {
     var isToggle = lv >= 3;
     // On L5+ (full cycle), traversing a completed cube costs 3 extra hops to fix (2→0, then 0→1→2)
     // On L3-4 (toggle/partial revert), cost is lower
-    var REVERT_PENALTY = lv >= 5 ? 4 : (isToggle ? 2 : 0);
+    var REVERT_PENALTY = lv >= 5 ? 10 : (isToggle ? 2 : 0);
     var curIdx = startIdx;
     var totalHops = 0;
 
@@ -104,8 +104,8 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts) {
                     var d = dijk.dist[i];
                     // Deprioritize frequently-reverted cubes — go to fresh ones first
                     if (revertCounts && revertCounts[i] > 1) d += (revertCounts[i] - 1) * 3;
-                    // L5+: prefer bottom-row cubes to avoid backtracking through completed upper cubes
-                    if (lv >= 5) d -= idxToPos[i][0]; // lower row = lower cost
+                    // L5+: strongly prefer bottom-row cubes and nearby clusters
+                    if (lv >= 5) d -= idxToPos[i][0] * 2; // lower row = much lower cost
                     if (d < bestDist || (d === bestDist && (bestIdx === -1 || i < bestIdx))) {
                         bestDist = d; bestIdx = i;
                     }
@@ -1141,13 +1141,45 @@ function aiPickBestDir() {
                     }
                 }
             }
-            // Phase 3 (>30): pick any safe move (still requires 100% safety — never gamble)
+            // Phase 3 (>30): on L5+, pick direction toward nearest unfinished cube
+            // avoiding completed cubes. Otherwise pick any safe move.
             if (!bestProgDir && aiNoProgressCount > 30) {
-                for (var pk3 = 0; pk3 < DIR_KEYS.length; pk3++) {
-                    if (!simCanMove(gs, DIR_KEYS[pk3])) continue;
-                    var pk3sc = aiMoveScores[DIR_KEYS[pk3]];
-                    if (pk3sc !== undefined && pk3sc >= 0) {
-                        bestProgDir = DIR_KEYS[pk3]; break;
+                if (gs.lv >= 5) {
+                    // BFS avoiding completed cubes to find nearest unfinished
+                    var avoidSet = {};
+                    for (var avi2 = 0; avi2 < gs.cubes.length; avi2++)
+                        if (gs.cubes[avi2].state >= gs.tgt)
+                            avoidSet[gs.cubes[avi2].row + ',' + gs.cubes[avi2].col] = true;
+                    // Try BFS with avoid set first, then without
+                    for (var avoidPass = 0; avoidPass < 2 && !bestProgDir; avoidPass++) {
+                        var useAvoid = (avoidPass === 0) ? avoidSet : null;
+                        for (var pk3 = 0; pk3 < DIR_KEYS.length; pk3++) {
+                            if (!simCanMove(gs, DIR_KEYS[pk3])) continue;
+                            var pk3sc = aiMoveScores[DIR_KEYS[pk3]];
+                            if (pk3sc === undefined || pk3sc < 0) continue;
+                            var pk3d = DIRS[DIR_KEYS[pk3]];
+                            var pk3r = gs.player.row + pk3d.dr, pk3c = gs.player.col + pk3d.dc;
+                            if (!isValidPos(pk3r, pk3c)) continue;
+                            // Check if this direction leads toward an unfinished cube
+                            var pk3bfs = bfsTo(pk3r, pk3c, -1, -1, useAvoid);
+                            // Find nearest unfinished via BFS
+                            for (var uf3 = 0; uf3 < gs.cubes.length; uf3++) {
+                                if (gs.cubes[uf3].state >= gs.tgt) continue;
+                                var uf3path = bfsTo(pk3r, pk3c, gs.cubes[uf3].row, gs.cubes[uf3].col, useAvoid);
+                                if (uf3path && (!bestProgDir || uf3path.dist < bestProgScore)) {
+                                    bestProgScore = uf3path.dist; bestProgDir = DIR_KEYS[pk3];
+                                }
+                            }
+                        }
+                    }
+                }
+                if (!bestProgDir) {
+                    for (var pk3b = 0; pk3b < DIR_KEYS.length; pk3b++) {
+                        if (!simCanMove(gs, DIR_KEYS[pk3b])) continue;
+                        var pk3bsc = aiMoveScores[DIR_KEYS[pk3b]];
+                        if (pk3bsc !== undefined && pk3bsc >= 0) {
+                            bestProgDir = DIR_KEYS[pk3b]; break;
+                        }
                     }
                 }
             }
