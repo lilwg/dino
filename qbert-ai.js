@@ -200,6 +200,86 @@ function coilyChaseStep(cr, cc, targetR, targetC) {
     return isValidPos(nr, nc) ? { row: nr, col: nc } : null;
 }
 
+// Pre-compute enemy positions frame-by-frame using actual game code.
+// Removes Coily (handled per-path) and player (independent).
+// Returns array of threat sets per frame: threats[frame] = {"row,col": true}
+function precomputeFrameTimeline(gs, maxFrames) {
+    var clone = simDeepClone(gs);
+    // Remove Coily and player influence
+    clone.enemies = clone.enemies.filter(function(e) {
+        return e.type !== 'coily' && e.type !== 'spawn-timer';
+    });
+    clone.player.row = -10; clone.player.col = -10; // move player off-grid
+    clone.freezeTimer = 0;
+
+    var timeline = [];
+    for (var f = 0; f <= maxFrames; f++) {
+        var threats = {};
+        for (var ei = 0; ei < clone.enemies.length; ei++) {
+            var e = clone.enemies[ei];
+            if (e.spawnAnimTimer > 0) continue;
+            if (e.type === 'slick' || e.type === 'greenball') continue; // harmless
+            var t = collisionTile(e);
+            if (t) threats[t.row + ',' + t.col] = true;
+        }
+        timeline.push(threats);
+        simUpdateEnemies(clone);
+    }
+    return timeline;
+}
+
+// DFS: can the player survive for `maxHops` hops?
+// Uses pre-computed enemy timeline + deterministic Coily simulation.
+// Player hop = ~35 frames. Checks collision at each frame against timeline.
+function dfsSurvive(pR, pC, prevR, prevC, coily, frameThreat, frame, hopsLeft, sm) {
+    if (hopsLeft <= 0) return true;
+    var jumpDur = PLAYER_JUMP_DUR * sm;
+
+    for (var dk = 0; dk < DIR_KEYS.length; dk++) {
+        var dd = DIRS[DIR_KEYS[dk]];
+        var nr = pR + dd.dr, nc = pC + dd.dc;
+        if (!isValidPos(nr, nc)) continue;
+
+        // Simulate this hop frame by frame
+        var alive = true;
+        var jumpFrames = Math.ceil(1 / jumpDur);
+        var cr = coily.row, cc = coily.col, cPrevR = coily.prevR, cPrevC = coily.prevC;
+
+        for (var f = 0; f < jumpFrames && alive; f++) {
+            var t = f / jumpFrames; // jumpT
+            var fi = Math.min(frame + f, frameThreat.length - 1);
+
+            // Player collision tile based on jump phase
+            var ptR, ptC;
+            if (t < 0.33) { ptR = pR; ptC = pC; }
+            else if (t >= 0.67) { ptR = nr; ptC = nc; }
+            else continue; // immune at apex
+
+            // Check non-Coily threats
+            if (frameThreat[fi][ptR + ',' + ptC]) { alive = false; break; }
+            // Check Coily
+            if (ptR === cr && ptC === cc) { alive = false; break; }
+        }
+
+        if (!alive) continue;
+
+        // Advance Coily by ~1 hop (Coily hops every ~46 frames)
+        var cTargetR = cPrevR, cTargetC = cPrevC;
+        if (cr === cTargetR && cc === cTargetC) { cTargetR = pR; cTargetC = pC; }
+        var cNext = coilyChaseStep(cr, cc, cTargetR, cTargetC);
+        var newCoily = {
+            row: cNext ? cNext.row : cr, col: cNext ? cNext.col : cc,
+            prevR: cr, prevC: cc
+        };
+
+        if (dfsSurvive(nr, nc, pR, pC, newCoily, frameThreat,
+                       frame + jumpFrames, hopsLeft - 1, sm)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // Pre-compute non-Coily enemy POSSIBLE positions for N hops ahead.
 // For deterministic enemies (red ball/dirBits): exactly 1 position per hop.
 // For random enemies (egg, ugg, wrongway): enumerate ALL possible positions.
@@ -772,7 +852,7 @@ function unifiedPick(gs, coilyActive) {
     // A direction is "safe" if hop 1 survives AND at least one follow-up hop 2 survives.
 
     var safe1 = {};      // dir -> true if 100% survival on hop 1
-    var deepEnemyTimeline = null; // pre-computed once, shared across directions
+    var deepTimeline = null; // pre-computed enemy positions, shared across directions
     var safe2 = {};      // dir -> true if at least one hop 2 option also survives
     var tourCosts = {};  // dir -> avg tour cost after hop 1
     var hop1Surv = {};   // dir -> survival rate (for fallback)
@@ -907,26 +987,30 @@ function unifiedPick(gs, coilyActive) {
             }
         }
 
-        // Deep survival check: can the player survive 10 hops from this direction?
-        // Pre-computed enemy timeline (shared), deterministic Coily (per-path).
+        // Deep survival DFS: frame-accurate enemy timeline + Coily chase.
+        // Pre-compute non-Coily positions once, DFS over player moves with Coily per-path.
         if (safe1[dir] && coilyActive && dir !== 'STAY') {
-            if (!deepEnemyTimeline) deepEnemyTimeline = precomputeEnemyTimeline(gs, 12);
-            var dd_ce = DIRS[dir];
-            var ceDestR = gs.player.row + dd_ce.dr, ceDestC = gs.player.col + dd_ce.dc;
-            if (isValidPos(ceDestR, ceDestC)) {
-                var coilyR = -1, coilyC = -1, coilyPR = -1, coilyPC = -1;
-                for (var cei = 0; cei < gs.enemies.length; cei++) {
-                    var ce = gs.enemies[cei];
-                    if (ce.type !== 'coily') continue;
-                    var cePos = enemyEffectivePos(ce);
-                    coilyR = cePos.row; coilyC = cePos.col;
-                    coilyPR = gs.player.prevRow != null ? gs.player.prevRow : gs.player.row;
-                    coilyPC = gs.player.prevCol != null ? gs.player.prevCol : gs.player.col;
+            if (!deepTimeline) deepTimeline = precomputeFrameTimeline(gs, 400);
+            var dd_ds = DIRS[dir];
+            var dsR = gs.player.row + dd_ds.dr, dsC = gs.player.col + dd_ds.dc;
+            if (isValidPos(dsR, dsC)) {
+                // Find Coily for initial state
+                var dsCoily = null;
+                for (var dci5 = 0; dci5 < gs.enemies.length; dci5++) {
+                    if (gs.enemies[dci5].type === 'coily') {
+                        var cp = enemyEffectivePos(gs.enemies[dci5]);
+                        var cpR = gs.player.prevRow != null ? gs.player.prevRow : gs.player.row;
+                        var cpC = gs.player.prevCol != null ? gs.player.prevCol : gs.player.col;
+                        dsCoily = { row: cp.row, col: cp.col, prevR: cpR, prevC: cpC };
+                    }
                 }
-                if (coilyR >= 0 && !canSurviveDeep(ceDestR, ceDestC, gs.player.row, gs.player.col,
-                        coilyR, coilyC, coilyPR, coilyPC, deepEnemyTimeline, 0, 10)) {
-                    safe1[dir] = false;
-                    hop1Surv[dir] = 0;
+                if (dsCoily) {
+                    var jumpFrames = Math.ceil(1 / (PLAYER_JUMP_DUR * gs.sm));
+                    if (!dfsSurvive(dsR, dsC, gs.player.row, gs.player.col, dsCoily,
+                                    deepTimeline, jumpFrames, 9, gs.sm)) {
+                        safe1[dir] = false;
+                        hop1Surv[dir] = 0;
+                    }
                 }
             }
         }
