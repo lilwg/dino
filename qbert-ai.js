@@ -1001,11 +1001,8 @@ function unifiedPick(gs, coilyActive) {
     window.aiPredictedTimeline = null;
 
     var hasEnemies = gs.enemies.length > 0;
-    // Number of random seeds to check (AND over all — must survive every one)
-    // DFS depth in player hops
-    var DEPTH = hasEnemies ? 4 : 0;
-    // Enumerate all random outcomes: 8 deterministic RNGs covering 3 binary decisions
-    var COMBOS = 8;
+    var DEPTH = hasEnemies ? 6 : 0;
+    var COMBOS = 8; // 2^3 covers 3 binary random decisions per hop
 
     // Deterministic RNG: returns predetermined bits for each simRng call
     function createEnumRng(bits) {
@@ -1013,22 +1010,132 @@ function unifiedPick(gs, coilyActive) {
         return function() { return ((bits >> (call++)) & 1) ? 0.75 : 0.25; };
     }
 
-    // AND-OR tree: can the player survive `depth` hops for ALL enemy random outcomes?
-    // AND over enemy outcomes (exhaustive enumeration), OR over player directions.
-    function andOrSurvive(state, depth, seedBase, forcedDir) {
+    // Pre-compute 8 enemy timelines (one per random combo).
+    // Each timeline has EXACT enemy positions at each frame (no union).
+    var timelines = null;
+    if (hasEnemies) {
+        var maxFrames = Math.ceil(DEPTH / (PLAYER_JUMP_DUR * gs.sm)) + 50;
+        timelines = [];
+        for (var c = 0; c < COMBOS; c++) {
+            var clone = simDeepClone(gs);
+            clone.enemies = clone.enemies.filter(function(e) { return e.type !== 'coily'; });
+            clone.player.row = -10; clone.player.col = -10;
+            clone.freezeTimer = 0;
+            simRng = createEnumRng(c * 37);
+            var tl = [];
+            for (var f = 0; f <= maxFrames; f++) {
+                var threats = {};
+                for (var ei = 0; ei < clone.enemies.length; ei++) {
+                    var e = clone.enemies[ei];
+                    if (e.type === 'spawn-timer') continue;
+                    if (e.spawnAnimTimer > 0) continue;
+                    if (e.type === 'slick' || e.type === 'greenball') continue;
+                    var t = collisionTile(e);
+                    if (t && t.row != null && t.col != null) threats[t.row + ',' + t.col] = true;
+                }
+                tl.push(threats);
+                simUpdateEnemies(clone);
+            }
+            timelines.push(tl);
+        }
+    }
+
+    // Find Coily state (shared)
+    var coilyInit = null;
+    for (var ci = 0; ci < gs.enemies.length; ci++) {
+        var ce = gs.enemies[ci];
+        if (ce.type === 'coily') {
+            coilyInit = {
+                row: ce.row, col: ce.col,
+                jumping: !!ce.jumping, jumpT: ce.jumpT || 0,
+                moveTimer: ce.moveTimer || 0,
+                destRow: ce.destRow, destCol: ce.destCol,
+                prevR: gs.player.prevRow != null ? gs.player.prevRow : gs.player.row,
+                prevC: gs.player.prevCol != null ? gs.player.prevCol : gs.player.col
+            };
+        }
+    }
+
+    var pJumpDur = PLAYER_JUMP_DUR * gs.sm;
+    var pJumpFrames = Math.ceil(1 / pJumpDur);
+    var cJumpDur = ENEMY_JUMP_DUR * gs.sm;
+    var cIdleFrames = enemyMoveInterval('coily', gs.sm);
+
+    // Lightweight AND-OR tree using pre-computed timelines.
+    // Only tracks player pos + Coily state. No cloning, no simStep.
+    var memo = {}; // memoization: combo × state → true/false
+
+    function andOrSurvive(pR, pC, coily, frame, depth, forcedDir) {
         if (depth <= 0) return true;
-        // OR: player needs at least one safe direction
-        // If forcedDir is set, only try that direction (top-level call)
         var tryDirs = forcedDir ? [forcedDir] : DIR_KEYS;
+
+        // OR: at least one player direction survives
         for (var dk = 0; dk < tryDirs.length; dk++) {
-            var d = tryDirs[dk];
-            if (!simCanMove(state, d)) continue;
-            // AND: must survive ALL 8 random outcome combinations
+            var d = DIRS[tryDirs[dk]];
+            var nr = pR + d.dr, nc = pC + d.dc;
+            if (!isValidPos(nr, nc)) continue;
+
+            // AND: must survive ALL 8 combos for this direction
             var allOK = true;
             for (var c = 0; c < COMBOS && allOK; c++) {
-                simRng = createEnumRng(seedBase + c * 37); // deterministic, covers all combos
-                var clone = simDeepClone(state);
-                if (!simStep(clone, d) || !andOrSurvive(clone, depth - 1, seedBase + 8)) {
+                // (memoization disabled — key doesn't capture enough Coily state)
+                // Simulate player hop + Coily frame by frame
+                var cr = coily.row, cc = coily.col;
+                var cj = coily.jumping, ct = coily.jumpT, cm = coily.moveTimer;
+                var cdr = coily.destRow, cdc = coily.destCol;
+                var cpr = coily.prevR, cpc = coily.prevC;
+                var alive = true;
+
+                for (var f = 1; f <= pJumpFrames && alive; f++) {
+                    var playerT = f * pJumpDur;
+                    var fi = Math.min(frame + f, timelines[c].length - 1);
+
+                    // Advance Coily 1 frame
+                    if (cj) {
+                        ct += cJumpDur;
+                        if (ct >= 1) {
+                            cj = false; ct = 0; cm = 0;
+                            cr = cdr; cc = cdc; cdr = null; cdc = null;
+                        }
+                    } else {
+                        cm++;
+                        if (cm >= cIdleFrames) {
+                            var tR = cpr, tC = cpc;
+                            if (cr === tR && cc === tC) { tR = pR; tC = pC; }
+                            var cn = coilyChaseStep(cr, cc, tR, tC);
+                            if (cn) {
+                                cj = true; ct = 0; cm = 0;
+                                cdr = cn.row; cdc = cn.col;
+                                cpr = cr; cpc = cc;
+                            }
+                        }
+                    }
+
+                    // Player collision tile
+                    var ptR, ptC;
+                    if (playerT < 0.33) { ptR = pR; ptC = pC; }
+                    else if (playerT >= 0.67) { ptR = nr; ptC = nc; }
+                    else continue; // immune
+
+                    // Coily collision tile
+                    var ctR, ctC;
+                    if (cj) {
+                        if (ct < 0.33) { ctR = cr; ctC = cc; }
+                        else if (ct >= 0.67 && cdr != null) { ctR = cdr; ctC = cdc; }
+                        else { ctR = -99; ctC = -99; }
+                    } else { ctR = cr; ctC = cc; }
+
+                    // Check collisions
+                    if (timelines[c][fi] && timelines[c][fi][ptR + ',' + ptC]) alive = false;
+                    if (ptR === ctR && ptC === ctC) alive = false;
+                }
+
+                if (!alive) { allOK = false; break; }
+
+                // Recurse with updated Coily state
+                var newCoily = { row: cr, col: cc, jumping: cj, jumpT: ct,
+                    moveTimer: cm, destRow: cdr, destCol: cdc, prevR: cpr, prevC: cpc };
+                if (!andOrSurvive(nr, nc, newCoily, frame + pJumpFrames, depth - 1)) {
                     allOK = false;
                 }
             }
@@ -1093,8 +1200,10 @@ function unifiedPick(gs, coilyActive) {
 
         // AND-OR tree: can the player survive DEPTH hops
         // for ALL random enemy outcomes? (hop 1 is the first level)
-        if (hasEnemies && DEPTH > 0) {
-            if (!andOrSurvive(gs, DEPTH, k * 10000, dir)) {
+        if (hasEnemies && DEPTH > 0 && timelines) {
+            var ci0 = coilyInit || { row:-99, col:-99, jumping:false, jumpT:0,
+                moveTimer:0, destRow:null, destCol:null, prevR:-99, prevC:-99 };
+            if (!andOrSurvive(gs.player.row, gs.player.col, ci0, 0, DEPTH, dir)) {
                 aiMoveScores[dir] = -10000;
                 hop1Surv[dir] = 0;
                 continue;
