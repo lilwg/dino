@@ -686,20 +686,22 @@ function unifiedPick(gs, coilyActive) {
                         dpDiscRow = dpc.row;
                 }
                 if (dpDiscRow >= 0 && dpDiscRow % 2 === 0) {
-                    // Count even-row discs: used so far + this one
-                    var evenUsed = 1; // counting this disc
-                    var evenRemaining = 0;
-                    for (var eri = 0; eri < gs.discs.length; eri++) {
-                        if (gs.discs[eri].row % 2 !== 0) continue;
-                        if (!gs.discs[eri].active) evenUsed++;
-                        else if (gs.discs[eri].row !== dpDiscRow || gs.discs[eri].active) evenRemaining++;
+                    // Dynamic check: compute (W-B) after this disc stomp
+                    var dcW = 0, dcB = 0;
+                    for (var dci3 = 0; dci3 < gs.cubes.length; dci3++) {
+                        var dcDef = (gs.tgt - gs.cubes[dci3].state + 3) % 3;
+                        if (gs.cubes[dci3].row % 2 === 0) dcW += dcDef; else dcB += dcDef;
                     }
-                    // Subtract this disc from remaining (it's about to be used)
-                    evenRemaining = Math.max(0, evenRemaining - 1);
-                    var oddFalls = gs.oddRowFalls || 0;
-                    var gap = ((evenUsed - oddFalls) % 3 + 3) % 3;
-                    // Block only if bad parity AND no more even discs to fix it
-                    if (gap === 1 && evenRemaining === 0) continue;
+                    dcW = ((dcW - 1) % 3 + 3) % 3; // apex stomp decreases W deficit
+                    var dcGap = ((dcW - dcB) % 3 + 3) % 3;
+                    // After disc, player at even row. Bad if gap ≡ 1.
+                    if (dcGap === 1) {
+                        // Check if another even-row disc remains to fix it
+                        var dcEvenLeft = 0;
+                        for (var dci4 = 0; dci4 < gs.discs.length; dci4++)
+                            if (gs.discs[dci4].active && gs.discs[dci4].row % 2 === 0) dcEvenLeft++;
+                        if (dcEvenLeft <= 1) continue; // last even disc, block
+                    }
                 }
             }
         }
@@ -1045,23 +1047,35 @@ function aiPickBestDir() {
         }
     }
 
-    // L5+ parity fix: if in bad parity with no even-row discs left, jump off an odd row
+    // L5+ parity fix: compute (W-B) mod 3 from actual cube states.
+    // Unsolvable when (W-B) ≡ 1 mod 3 from even row, or ≡ 2 from odd row.
+    // If stuck in bad parity, jump off an odd row to shift it.
     if (gs.lv >= 5 && aiNoProgressCount > 50) {
-        var evenDiscs = gs.evenRowDiscs || 0;
-        var oddFalls = gs.oddRowFalls || 0;
-        if (((evenDiscs - oddFalls) % 3 + 3) % 3 === 1) {
-            // Bad parity — check if any even-row disc remains
-            var hasEvenDisc = false;
-            for (var edi = 0; edi < gs.discs.length; edi++)
-                if (gs.discs[edi].active && gs.discs[edi].row % 2 === 0) hasEvenDisc = true;
-            if (!hasEvenDisc && gs.player.row % 2 === 1) {
-                // On odd row, no even discs — jump off edge to fix parity
-                for (var fk = 0; fk < DIR_KEYS.length; fk++) {
-                    var fd = DIRS[DIR_KEYS[fk]];
-                    var fnr = gs.player.row + fd.dr, fnc = gs.player.col + fd.dc;
-                    if (!isValidPos(fnr, fnc)) { result = DIR_KEYS[fk]; break; }
+        var parW = 0, parB = 0;
+        for (var pi = 0; pi < gs.cubes.length; pi++) {
+            var pdef = (gs.tgt - gs.cubes[pi].state + 3) % 3;
+            if (gs.cubes[pi].row % 2 === 0) parW += pdef; else parB += pdef;
+        }
+        var parGap = ((parW - parB) % 3 + 3) % 3;
+        var playerEven = gs.player.row % 2 === 0;
+        var parBad = (playerEven && parGap === 1) || (!playerEven && parGap === 2);
+        if (parBad && gs.player.row % 2 === 1) {
+            // On odd row with bad parity — jump off edge to fix
+            for (var fk = 0; fk < DIR_KEYS.length; fk++) {
+                var fd = DIRS[DIR_KEYS[fk]];
+                var fnr = gs.player.row + fd.dr, fnc = gs.player.col + fd.dc;
+                if (!isValidPos(fnr, fnc)) { result = DIR_KEYS[fk]; break; }
+                // Also check discs — don't jump onto a disc
+                var isDiscJump = false;
+                for (var fdi = 0; fdi < gs.discs.length; fdi++) {
+                    var fdc = gs.discs[fdi];
+                    if (fdc.active && fdc.row === gs.player.row) isDiscJump = true;
                 }
+                if (!isDiscJump && !isValidPos(fnr, fnc)) { result = DIR_KEYS[fk]; break; }
             }
+        } else if (parBad && playerEven) {
+            // On even row — need to get to odd row first, then fall
+            // Just let the normal AI move to an odd row; the fall will trigger next time
         }
     }
 
