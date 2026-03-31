@@ -606,6 +606,10 @@ function computeAIMove() {
     var bestDir = aiPickBestDir();
     aiBestDir = bestDir;
 
+    // Validation harness: reset frame counter for prediction vs reality comparison
+    window.aiPredictionFrame = 0;
+    window.aiPredictionDivergences = 0;
+
     // Populate danger tiles and Coily predictions for viz
     aiDangerTiles = buildDangerSet();
     aiCoilyPred = [];
@@ -758,6 +762,42 @@ function update() {
         freezeTimer = gs.freezeTimer;
         enemies = gs.enemies; // array may change from spawns/removals
 
+        // Validation harness: compare actual enemy positions vs AI prediction
+        if (window.aiPredictedTimeline && window.aiPredictionFrame !== undefined) {
+            var predFrame = window.aiPredictionFrame;
+            if (predFrame < window.aiPredictedTimeline.length) {
+                var predicted = window.aiPredictedTimeline[predFrame];
+                // Build actual threat set (same logic as precomputeFrameTimeline)
+                var actual = {};
+                for (var vi = 0; vi < gs.enemies.length; vi++) {
+                    var ve = gs.enemies[vi];
+                    if (ve.type === 'coily') continue; // Coily handled separately in DFS
+                    if (ve.spawnAnimTimer > 0) continue;
+                    if (ve.type === 'slick' || ve.type === 'greenball') continue;
+                    var vt = collisionTile(ve);
+                    if (vt) actual[vt.row + ',' + vt.col] = true;
+                }
+                // Check for unpredicted threats (actual but not predicted)
+                for (var aKey in actual) {
+                    if (!predicted[aKey]) {
+                        window.aiPredictionDivergences = (window.aiPredictionDivergences || 0) + 1;
+                        console.log('DIVERGENCE at prediction frame ' + predFrame +
+                            ' (game frame ' + frameCount + '): enemy at (' + aKey +
+                            ') not predicted. Total divergences: ' + window.aiPredictionDivergences);
+                    }
+                }
+                // Check for predicted threats that didn't materialize
+                for (var pKey in predicted) {
+                    if (!actual[pKey]) {
+                        console.log('PHANTOM at prediction frame ' + predFrame +
+                            ' (game frame ' + frameCount + '): predicted enemy at (' + pKey +
+                            ') not present in reality');
+                    }
+                }
+            }
+            window.aiPredictionFrame++;
+        }
+
         // Per-frame collision check
         if (enemiesEnabled) simCheckCollision(gs);
         if (!gs.alive) {
@@ -771,6 +811,7 @@ function update() {
             console.log('DEATH: ' + (gs.deathEnemy||'?') + ' at (' + gs.player.row + ',' + gs.player.col + ')' +
                 ' frame=' + frameCount + ' round=' + round + ' lv=' + arcadeLevel() +
                 ' freezeTimer=' + gs.freezeTimer + ' enemies=' + enemyDetail);
+            window.aiPredictedTimeline = null; // reset validation harness on death
             gs.alive = true;
             gs.player.deathTimer = 100;
             killPlayerVisual();
@@ -792,6 +833,7 @@ function update() {
                     ' frame=' + frameCount + ' round=' + round + ' lv=' + arcadeLevel() +
                     ' freezeTimer=' + gs.freezeTimer +
                     ' enemies=' + gs.enemies.map(function(e){return e.type+'@('+e.row+','+e.col+')'}).join(' '));
+                window.aiPredictedTimeline = null; // reset validation harness on death
                 gs.alive = true;
                 gs.player.deathTimer = 100;
                 killPlayerVisual();
@@ -801,6 +843,7 @@ function update() {
 
             // Level complete?
             if (simAllColored(gs)) {
+                window.aiPredictedTimeline = null; // reset validation harness on round change
                 score += roundCompletionBonus();
                 score += unusedDiscBonus(gs.discs);
                 checkExtraLife();
