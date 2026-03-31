@@ -90,11 +90,7 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts) {
     var isToggle = lv >= 3;
     // On L5+ (full cycle), traversing a completed cube costs 3 extra hops to fix (2→0, then 0→1→2)
     // On L3-4 (toggle/partial revert), cost is lower
-    // Adaptive revert penalty: high early (avoid reverting), lower when few cubes remain
-    // (must traverse through completed cubes to reach isolated ones)
-    var unfinished = 0;
-    for (var ui = 0; ui < POS_COUNT; ui++) if (stomps[ui] > 0) unfinished++;
-    var REVERT_PENALTY = lv >= 5 ? (unfinished <= 8 ? 4 : 8) : (isToggle ? 2 : 0);
+    var REVERT_PENALTY = isToggle ? 2 : 0;
     var curIdx = startIdx;
     var totalHops = 0;
 
@@ -108,8 +104,8 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts) {
                     var d = dijk.dist[i];
                     // Deprioritize frequently-reverted cubes — go to fresh ones first
                     if (revertCounts && revertCounts[i] > 1) d += (revertCounts[i] - 1) * 3;
-                    // L5+: strongly prefer bottom-row cubes and nearby clusters
-                    if (lv >= 5) d -= idxToPos[i][0] * 2; // lower row = much lower cost
+                    // L5+: prefer bottom-row cubes to avoid backtracking through completed upper cubes
+                    if (lv >= 5) d -= idxToPos[i][0];
                     if (d < bestDist || (d === bestDist && (bestIdx === -1 || i < bestIdx))) {
                         bestDist = d; bestIdx = i;
                     }
@@ -837,24 +833,19 @@ function unifiedPick(gs, coilyActive) {
                             if (!simStep(d3c, d3dir)) { d3ok = false; break; }
                             else if (coilyActive && si3 === 0) hop3States.push(d3c);
                         }
-                        // Hops 4-6: when Coily active, verify a safe chain continues
+                        // Hop 4: when Coily active, verify one more escape exists
                         if (d3ok && coilyActive && hop3States.length > 0) {
-                            var prevStates = hop3States;
-                            for (var depth = 4; depth <= 6 && d3ok; depth++) {
-                                var hasNext = false;
-                                for (var dnk = 0; dnk < DIR_KEYS_WITH_STAY.length; dnk++) {
-                                    var dnOk = true;
-                                    var nextStates = [];
-                                    for (var sn = 0; sn < prevStates.length; sn++) {
-                                        simSeed(k * 100000 + depth * 10000 + dnk * 100 + sn);
-                                        var dnc = simDeepClone(prevStates[sn]);
-                                        if (!simStep(dnc, DIR_KEYS_WITH_STAY[dnk])) { dnOk = false; break; }
-                                        else if (sn === 0) nextStates.push(dnc);
-                                    }
-                                    if (dnOk) { hasNext = true; prevStates = nextStates; break; }
+                            var has4th = false;
+                            for (var d4k = 0; d4k < DIR_KEYS_WITH_STAY.length; d4k++) {
+                                var d4ok = true;
+                                for (var si4 = 0; si4 < hop3States.length; si4++) {
+                                    simSeed(k * 100000 + d3k * 1000 + d4k * 100 + si4);
+                                    var d4c = simDeepClone(hop3States[si4]);
+                                    if (!simStep(d4c, DIR_KEYS_WITH_STAY[d4k])) { d4ok = false; break; }
                                 }
-                                if (!hasNext) d3ok = false;
+                                if (d4ok) { has4th = true; break; }
                             }
+                            if (!has4th) d3ok = false;
                         }
                         if (d3ok) { has3rdSafe = true; break; }
                     }
