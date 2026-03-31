@@ -837,19 +837,24 @@ function unifiedPick(gs, coilyActive) {
                             if (!simStep(d3c, d3dir)) { d3ok = false; break; }
                             else if (coilyActive && si3 === 0) hop3States.push(d3c);
                         }
-                        // Hop 4: when Coily active, verify one more escape exists
+                        // Hops 4-6: when Coily active, verify a safe chain continues
                         if (d3ok && coilyActive && hop3States.length > 0) {
-                            var has4th = false;
-                            for (var d4k = 0; d4k < DIR_KEYS_WITH_STAY.length; d4k++) {
-                                var d4ok = true;
-                                for (var si4 = 0; si4 < hop3States.length; si4++) {
-                                    simSeed(k * 100000 + d3k * 1000 + d4k * 100 + si4);
-                                    var d4c = simDeepClone(hop3States[si4]);
-                                    if (!simStep(d4c, DIR_KEYS_WITH_STAY[d4k])) { d4ok = false; break; }
+                            var prevStates = hop3States;
+                            for (var depth = 4; depth <= 6 && d3ok; depth++) {
+                                var hasNext = false;
+                                for (var dnk = 0; dnk < DIR_KEYS_WITH_STAY.length; dnk++) {
+                                    var dnOk = true;
+                                    var nextStates = [];
+                                    for (var sn = 0; sn < prevStates.length; sn++) {
+                                        simSeed(k * 100000 + depth * 10000 + dnk * 100 + sn);
+                                        var dnc = simDeepClone(prevStates[sn]);
+                                        if (!simStep(dnc, DIR_KEYS_WITH_STAY[dnk])) { dnOk = false; break; }
+                                        else if (sn === 0) nextStates.push(dnc);
+                                    }
+                                    if (dnOk) { hasNext = true; prevStates = nextStates; break; }
                                 }
-                                if (d4ok) { has4th = true; break; }
+                                if (!hasNext) d3ok = false;
                             }
-                            if (!has4th) d3ok = false;
                         }
                         if (d3ok) { has3rdSafe = true; break; }
                     }
