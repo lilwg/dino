@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic  (v2 — oscillation fix + revert penalty)
-var AI_VERSION = 'v5.2-arcade-mechanics';
+var AI_VERSION = 'v5.3-fast-andor';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -986,10 +986,11 @@ function evalDiscLure() {
 
 // ─── Scoring helpers (removed — safety is now handled by 2-hop MC simulation) ─
 
-// ─── Route-first AI: plan optimal path, validate safety via 2-hop simulation ─
-// Philosophy: tour planner decides WHERE to go (optimal routing), simulation
-// validates IF it's safe (next 2 hops collision-free). If not safe, STAY.
-// No heuristic scoring — just routing + timing.
+// ─── Route-first AI: plan optimal path, validate safety via AND-OR tree ──────
+// Philosophy: tour planner decides WHERE to go (optimal routing), AND-OR tree
+// validates IF it's safe (can survive DEPTH hops against all enemy combos).
+
+// (Cross-timestep memo can be added later with proper timeline versioning)
 
 function unifiedPick(gs, coilyActive) {
     var savedRng = simRng;
@@ -1001,7 +1002,7 @@ function unifiedPick(gs, coilyActive) {
     window.aiPredictedTimeline = null;
 
     var hasEnemies = gs.enemies.length > 0;
-    var DEPTH = hasEnemies ? 6 : 0;
+    var DEPTH = hasEnemies ? 8 : 0;
     var COMBOS = 8; // 2^3 covers 3 binary random decisions per hop
 
     // Deterministic RNG: returns predetermined bits for each simRng call
@@ -1010,11 +1011,21 @@ function unifiedPick(gs, coilyActive) {
         return function() { return ((bits >> (call++)) & 1) ? 0.75 : 0.25; };
     }
 
-    // Pre-compute 8 enemy timelines (one per random combo).
-    // Each timeline has EXACT enemy positions at each frame (no union).
+    var pJumpDur = PLAYER_JUMP_DUR * gs.sm;
+    // +1 for the post-landing idle frame: simStep runs simUpdateEnemies + simCheckCollision
+    // one extra frame after the player lands, before the next move decision
+    var pJumpFrames = Math.ceil(1 / pJumpDur) + 1;
+    var cJumpDur = ENEMY_JUMP_DUR * gs.sm;
+    var cIdleFrames = enemyMoveInterval('coily', gs.sm);
+
+    // ── Pre-compute 8 enemy timelines (one per random combo) ──
+    // Each timeline has EXACT enemy positions at each frame.
+    // Recomputed fresh each call to ensure accuracy vs current enemy state.
     var timelines = null;
+    var startFrame = 0;
+    var memo = {};  // Within-call memo for AND-OR tree (cleared each call)
     if (hasEnemies) {
-        var maxFrames = Math.ceil(DEPTH / (PLAYER_JUMP_DUR * gs.sm)) + 50;
+        var maxFrames = (DEPTH + 1) * pJumpFrames + 50;
         timelines = [];
         for (var c = 0; c < COMBOS; c++) {
             var clone = simDeepClone(gs);
@@ -1040,7 +1051,7 @@ function unifiedPick(gs, coilyActive) {
         }
     }
 
-    // Find Coily state (shared)
+    // Find Coily state
     var coilyInit = null;
     for (var ci = 0; ci < gs.enemies.length; ci++) {
         var ce = gs.enemies[ci];
@@ -1049,99 +1060,120 @@ function unifiedPick(gs, coilyActive) {
                 row: ce.row, col: ce.col,
                 jumping: !!ce.jumping, jumpT: ce.jumpT || 0,
                 moveTimer: ce.moveTimer || 0,
-                destRow: ce.destRow, destCol: ce.destCol,
-                prevR: gs.player.prevRow != null ? gs.player.prevRow : gs.player.row,
-                prevC: gs.player.prevCol != null ? gs.player.prevCol : gs.player.col
+                destRow: ce.destRow, destCol: ce.destCol
+                // prevR/C not needed — Coily always chases (pR,pC) from function args
             };
         }
     }
 
-    var pJumpDur = PLAYER_JUMP_DUR * gs.sm;
-    var pJumpFrames = Math.ceil(1 / pJumpDur);
-    var cJumpDur = ENEMY_JUMP_DUR * gs.sm;
-    var cIdleFrames = enemyMoveInterval('coily', gs.sm);
-
-    // Lightweight AND-OR tree using pre-computed timelines.
-    // Only tracks player pos + Coily state. No cloning, no simStep.
-    var memo = {}; // memoization: combo × state → true/false
+    // AND-OR tree: can the player survive `depth` hops?
+    // Key optimization: Coily is deterministic (independent of combo), so:
+    //   1. Simulate Coily once per direction (not 8× per combo)
+    //   2. Check 8 combos only for non-Coily threats (no recursion in combo loop)
+    //   3. Recurse ONCE with Coily end state
+    // This reduces complexity from O(32^D) to O(4^D), and memoization further
+    // reduces to O(unique_states × D) ≈ O(784 × D).
+    // Memo persists across calls: entries from previous AI call are reused when
+    // the timelines haven't changed, so only the new deepest level is computed.
 
     function andOrSurvive(pR, pC, coily, frame, depth, forcedDir) {
         if (depth <= 0) return true;
         var tryDirs = forcedDir ? [forcedDir] : DIR_KEYS;
 
-        // OR: at least one player direction survives
-        for (var dk = 0; dk < tryDirs.length; dk++) {
+        // Memoize free-choice (non-forced) calls for cross-timestep reuse
+        var mKey;
+        if (!forcedDir) {
+            mKey = pR + '|' + pC + '|' + coily.row + '|' + coily.col + '|' +
+                   (coily.jumping ? 1 : 0) + '|' + Math.round((coily.jumpT || 0) * 30) + '|' +
+                   (coily.moveTimer || 0) + '|' + (coily.destRow != null ? coily.destRow : 9) + '|' +
+                   (coily.destCol != null ? coily.destCol : 9) + '|' + frame + '|' + depth;
+            if (memo[mKey] !== undefined) return memo[mKey];
+        }
+
+        var result = false;
+
+        // OR: at least one player direction survives all hops
+        for (var dk = 0; dk < tryDirs.length && !result; dk++) {
             var d = DIRS[tryDirs[dk]];
             var nr = pR + d.dr, nc = pC + d.dc;
             if (!isValidPos(nr, nc)) continue;
 
-            // AND: must survive ALL 8 combos for this direction
-            var allOK = true;
-            for (var c = 0; c < COMBOS && allOK; c++) {
-                // (memoization disabled — key doesn't capture enough Coily state)
-                // Simulate player hop + Coily frame by frame
-                var cr = coily.row, cc = coily.col;
-                var cj = coily.jumping, ct = coily.jumpT, cm = coily.moveTimer;
-                var cdr = coily.destRow, cdc = coily.destCol;
-                var cpr = coily.prevR, cpc = coily.prevC;
-                var alive = true;
+            // Step 1: Simulate Coily for one hop (deterministic, combo-independent)
+            // In the game, Coily chases gs.player.prevRow which equals pR (set at hop start).
+            var cr = coily.row, cc = coily.col;
+            var cj = coily.jumping, ct = coily.jumpT || 0, cm = coily.moveTimer || 0;
+            var cdr = coily.destRow, cdc = coily.destCol;
+            var coilyKills = false;
 
-                for (var f = 1; f <= pJumpFrames && alive; f++) {
-                    var playerT = f * pJumpDur;
-                    var fi = Math.min(frame + f, timelines[c].length - 1);
-
-                    // Advance Coily 1 frame
-                    if (cj) {
-                        ct += cJumpDur;
-                        if (ct >= 1) {
-                            cj = false; ct = 0; cm = 0;
-                            cr = cdr; cc = cdc; cdr = null; cdc = null;
-                        }
-                    } else {
-                        cm++;
-                        if (cm >= cIdleFrames) {
-                            var tR = cpr, tC = cpc;
-                            if (cr === tR && cc === tC) { tR = pR; tC = pC; }
-                            var cn = coilyChaseStep(cr, cc, tR, tC);
-                            if (cn) {
-                                cj = true; ct = 0; cm = 0;
-                                cdr = cn.row; cdc = cn.col;
-                                cpr = cr; cpc = cc;
-                            }
+            for (var f = 1; f <= pJumpFrames; f++) {
+                var playerT = f * pJumpDur;
+                // Advance Coily 1 frame
+                if (cj) {
+                    ct += cJumpDur;
+                    if (ct >= 1) {
+                        cj = false; ct = 0; cm = 0;
+                        cr = cdr; cc = cdc; cdr = null; cdc = null;
+                    }
+                } else {
+                    cm++;
+                    if (cm >= cIdleFrames) {
+                        // Chase target = player's position at hop start (pR,pC)
+                        var cn = coilyChaseStep(cr, cc, pR, pC);
+                        if (cn) {
+                            cj = true; ct = 0; cm = 0;
+                            cdr = cn.row; cdc = cn.col;
                         }
                     }
-
-                    // Player collision tile
-                    var ptR, ptC;
-                    if (playerT < 0.33) { ptR = pR; ptC = pC; }
-                    else if (playerT >= 0.67) { ptR = nr; ptC = nc; }
-                    else continue; // immune
-
-                    // Coily collision tile
-                    var ctR, ctC;
-                    if (cj) {
-                        if (ct < 0.33) { ctR = cr; ctC = cc; }
-                        else if (ct >= 0.67 && cdr != null) { ctR = cdr; ctC = cdc; }
-                        else { ctR = -99; ctC = -99; }
-                    } else { ctR = cr; ctC = cc; }
-
-                    // Check collisions
-                    if (timelines[c][fi] && timelines[c][fi][ptR + ',' + ptC]) alive = false;
-                    if (ptR === ctR && ptC === ctC) alive = false;
                 }
-
-                if (!alive) { allOK = false; break; }
-
-                // Recurse with updated Coily state
-                var newCoily = { row: cr, col: cc, jumping: cj, jumpT: ct,
-                    moveTimer: cm, destRow: cdr, destCol: cdc, prevR: cpr, prevC: cpc };
-                if (!andOrSurvive(nr, nc, newCoily, frame + pJumpFrames, depth - 1)) {
-                    allOK = false;
+                // Player collision tile
+                var ptR, ptC;
+                if (playerT < 0.33) { ptR = pR; ptC = pC; }
+                else if (playerT >= 0.67) { ptR = nr; ptC = nc; }
+                else continue; // immune at apex
+                // Coily collision tile
+                var ctR, ctC;
+                if (cj) {
+                    if (ct < 0.33) { ctR = cr; ctC = cc; }
+                    else if (ct >= 0.67 && cdr != null) { ctR = cdr; ctC = cdc; }
+                    else { ctR = -99; ctC = -99; }
+                } else { ctR = cr; ctC = cc; }
+                // Same-tile collision
+                if (ptR === ctR && ptC === ctC) { coilyKills = true; break; }
+                // Cross-path collision (ROM $BD1E): player and Coily swapping mid-jump
+                if (cj && cdr != null &&
+                    nr === cr && nc === cc && pR === cdr && pC === cdc) {
+                    coilyKills = true; break;
                 }
             }
-            if (allOK) return true;
+            if (coilyKills) continue;
+
+            // Step 2: Check ALL 8 combos for non-Coily enemy survival (no recursion)
+            var allCombosOK = true;
+            for (var c2 = 0; c2 < COMBOS && allCombosOK; c2++) {
+                for (var f2 = 1; f2 <= pJumpFrames; f2++) {
+                    var playerT2 = f2 * pJumpDur;
+                    var fi = Math.min(frame + f2, timelines[c2].length - 1);
+                    var ptR2, ptC2;
+                    if (playerT2 < 0.33) { ptR2 = pR; ptC2 = pC; }
+                    else if (playerT2 >= 0.67) { ptR2 = nr; ptC2 = nc; }
+                    else continue;
+                    if (timelines[c2][fi] && timelines[c2][fi][ptR2 + ',' + ptC2]) {
+                        allCombosOK = false; break;
+                    }
+                }
+            }
+            if (!allCombosOK) continue;
+
+            // Step 3: Recurse ONCE with Coily end state (not 8 times!)
+            var newCoily = { row: cr, col: cc, jumping: cj, jumpT: ct,
+                moveTimer: cm, destRow: cdr, destCol: cdc };
+            if (andOrSurvive(nr, nc, newCoily, frame + pJumpFrames, depth - 1)) {
+                result = true;
+            }
         }
-        return false;
+
+        if (mKey) memo[mKey] = result;
+        return result;
     }
 
     // Disc lure — use when Coily is active
@@ -1202,8 +1234,8 @@ function unifiedPick(gs, coilyActive) {
         // for ALL random enemy outcomes? (hop 1 is the first level)
         if (hasEnemies && DEPTH > 0 && timelines) {
             var ci0 = coilyInit || { row:-99, col:-99, jumping:false, jumpT:0,
-                moveTimer:0, destRow:null, destCol:null, prevR:-99, prevC:-99 };
-            if (!andOrSurvive(gs.player.row, gs.player.col, ci0, 0, DEPTH, dir)) {
+                moveTimer:0, destRow:null, destCol:null };
+            if (!andOrSurvive(gs.player.row, gs.player.col, ci0, startFrame, DEPTH, dir)) {
                 aiMoveScores[dir] = -10000;
                 hop1Surv[dir] = 0;
                 continue;
