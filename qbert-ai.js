@@ -185,20 +185,55 @@ function simTourCost(gs) {
 
 // ─── Danger zone assessment ──────────────────────────────────────────────────
 
+// Simulate Coily chase using actual ROM grid-word algorithm (deterministic)
+function coilyChaseStep(cr, cc, targetR, targetC) {
+    var c_gw1 = cr - cc + 1;
+    var t_gw1 = targetR - targetC + 1;
+    var nr, nc;
+    if (targetR > cr) {
+        if (t_gw1 > c_gw1) { nr = cr + 1; nc = cc; }
+        else                { nr = cr + 1; nc = cc + 1; }
+    } else {
+        if (t_gw1 < c_gw1) { nr = cr - 1; nc = cc; }
+        else                { nr = cr - 1; nc = cc - 1; }
+    }
+    return isValidPos(nr, nc) ? { row: nr, col: nc } : null;
+}
+
+// Check if a position has enough exits not blocked by Coily's predicted path
+function isCoilyTrapped(playerR, playerC, coilyR, coilyC, prevR, prevC, maxDepth) {
+    // Simulate Coily forward, check if player has escape at each step
+    var cr = coilyR, cc = coilyC;
+    var targetR = prevR, targetC = prevC;
+    for (var d = 0; d < maxDepth; d++) {
+        // Coily chases prev; if at prev, chases current
+        if (cr === targetR && cc === targetC) { targetR = playerR; targetC = playerC; }
+        var next = coilyChaseStep(cr, cc, targetR, targetC);
+        if (!next) break;
+        cr = next.row; cc = next.col;
+        // Check: is Coily now adjacent to or on the player?
+        if (cr === playerR && cc === playerC) return true; // caught!
+        var dist = exBfsDist(cr, cc, playerR, playerC);
+        if (dist <= 1) {
+            // Coily is adjacent — does player have safe exits?
+            var safeExits = 0;
+            for (var ek = 0; ek < DIR_KEYS.length; ek++) {
+                var ed = DIRS[DIR_KEYS[ek]];
+                var er = playerR + ed.dr, ec = playerC + ed.dc;
+                if (isValidPos(er, ec) && !(er === cr && ec === cc)) safeExits++;
+            }
+            if (safeExits === 0) return true; // trapped
+        }
+    }
+    return false;
+}
+
 function predictCoilyPos(coily, targetRow, targetCol, steps) {
     var cr = coily.row, cc = coily.col;
     for (var s = 0; s < steps; s++) {
-        var bestDir = null, bestDist = Infinity;
-        for (var k = 0; k < DIR_KEYS.length; k++) {
-            var dk = DIRS[DIR_KEYS[k]];
-            var nr = cr + dk.dr, nc = cc + dk.dc;
-            if (!isValidPos(nr, nc)) continue;
-            var dist = Math.abs(targetRow - nr) + Math.abs(targetCol - nc);
-            if (dist < bestDist) { bestDist = dist; bestDir = k; }
-        }
-        if (bestDir === null) break;
-        var dd = DIRS[DIR_KEYS[bestDir]];
-        cr += dd.dr; cc += dd.dc;
+        var next = coilyChaseStep(cr, cc, targetRow, targetCol);
+        if (!next) break;
+        cr = next.row; cc = next.col;
     }
     return { row: cr, col: cc };
 }
