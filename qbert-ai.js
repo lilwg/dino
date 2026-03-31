@@ -1000,33 +1000,58 @@ function unifiedPick(gs, coilyActive) {
     // Reset prediction timeline for validation harness
     window.aiPredictedTimeline = null;
 
-
-    // MC samples for safety validation — enough to catch random enemy moves
     var hasEnemies = gs.enemies.length > 0;
-    var SAMPLES = coilyActive ? 20 : (hasEnemies ? 12 : 4);
+    // Number of random seeds to check (AND over all — must survive every one)
+    // DFS depth in player hops
+    var DEPTH = hasEnemies ? 4 : 0;
+    // Enumerate all random outcomes: 8 deterministic RNGs covering 3 binary decisions
+    var COMBOS = 8;
+
+    // Deterministic RNG: returns predetermined bits for each simRng call
+    function createEnumRng(bits) {
+        var call = 0;
+        return function() { return ((bits >> (call++)) & 1) ? 0.75 : 0.25; };
+    }
+
+    // AND-OR tree: can the player survive `depth` hops for ALL enemy random outcomes?
+    // AND over enemy outcomes (exhaustive enumeration), OR over player directions.
+    function andOrSurvive(state, depth, seedBase) {
+        if (depth <= 0) return true;
+        // OR: player needs at least one safe direction
+        for (var dk = 0; dk < DIR_KEYS.length; dk++) {
+            var d = DIR_KEYS[dk];
+            if (!simCanMove(state, d)) continue;
+            // AND: must survive ALL 8 random outcome combinations
+            var allOK = true;
+            for (var c = 0; c < COMBOS && allOK; c++) {
+                simRng = createEnumRng(seedBase + c * 37); // deterministic, covers all combos
+                var clone = simDeepClone(state);
+                if (!simStep(clone, d) || !andOrSurvive(clone, depth - 1, seedBase + 8)) {
+                    allOK = false;
+                }
+            }
+            if (allOK) return true;
+        }
+        return false;
+    }
 
     // Disc lure — use when Coily is active
     if (coilyActive) {
         var lureDir = evalDiscLure();
         if (lureDir) {
-            var lureSafe = 0;
-            for (var ls = 0; ls < SAMPLES; ls++) {
-                simSeed(ls);
-                var lc = simDeepClone(gs);
-                if (simStep(lc, lureDir)) lureSafe++;
-            }
-            if (lureSafe === SAMPLES && isExhaustiveSafe(gs, lureDir)) { restoreRng(); return lureDir; }
+            simSeed(0);
+            var lc = simDeepClone(gs);
+            if (simStep(lc, lureDir)) { restoreRng(); return lureDir; }
         }
     }
 
-    // ── Core: check each direction for 2-hop safety ──
-    // A direction is "safe" if hop 1 survives AND at least one follow-up hop 2 survives.
+    // ── Core: AND-OR tree safety check per direction ──
+    // For each direction: survive hop 1 (all seeds), then DFS depth-6 AND-OR tree.
 
-    var safe1 = {};      // dir -> true if 100% survival on hop 1
-    var deepTimeline = null; // pre-computed enemy positions, shared across directions
-    var safe2 = {};      // dir -> true if at least one hop 2 option also survives
-    var tourCosts = {};  // dir -> avg tour cost after hop 1
-    var hop1Surv = {};   // dir -> survival rate (for fallback)
+    var safe1 = {};
+    var safe2 = {};
+    var tourCosts = {};
+    var hop1Surv = {};
 
     for (var k = 0; k < DIR_KEYS_WITH_STAY.length; k++) {
         var dir = DIR_KEYS_WITH_STAY[k];
@@ -1039,9 +1064,7 @@ function unifiedPick(gs, coilyActive) {
             if (!isValidPos(dnr, dnc)) continue;
         }
 
-        // L5+ bipartite parity: bad when (even_row_discs - odd_row_falls) ≡ 1 mod 3.
-        // Odd-row discs and even-row falls don't affect parity.
-        // Block even-row disc if it would create bad parity with no fix available.
+        // L5+ disc parity check
         if (gs.lv >= 5 && dir !== 'STAY') {
             var dpd = DIRS[dir];
             var dpnr = gs.player.row + dpd.dr, dpnc = gs.player.col + dpd.dc;
@@ -1055,234 +1078,53 @@ function unifiedPick(gs, coilyActive) {
                         dpDiscRow = dpc.row;
                 }
                 if (dpDiscRow >= 0 && dpDiscRow % 2 === 0) {
-                    // Dynamic check: compute (W-B) after this disc stomp
                     var dcW = 0, dcB = 0;
                     for (var dci3 = 0; dci3 < gs.cubes.length; dci3++) {
                         var dcDef = (gs.tgt - gs.cubes[dci3].state + 3) % 3;
                         if (gs.cubes[dci3].row % 2 === 0) dcW += dcDef; else dcB += dcDef;
                     }
-                    dcW = ((dcW - 1) % 3 + 3) % 3; // apex stomp decreases W deficit
-                    var dcGap = ((dcW - dcB) % 3 + 3) % 3;
-                    // After disc, player at even row. Bad if gap ≡ 1.
-                    // Block even-row disc that creates bad parity — don't rely on
-                    // using another disc later to fix it.
-                    if (dcGap === 1) continue;
+                    dcW = ((dcW - 1) % 3 + 3) % 3;
+                    if (((dcW - dcB) % 3 + 3) % 3 === 1) continue;
                 }
             }
         }
 
-        // Avoid apex when Coily is within 2 hops — apex has only 2 exits, easy to trap
-        if (coilyActive && dir !== 'STAY') {
-            var avd = DIRS[dir];
-            var avr = gs.player.row + avd.dr, avc = gs.player.col + avd.dc;
-            if (avr === 0 && avc === 0) {
-                var apexBlocked = false;
-                for (var avi = 0; avi < gs.enemies.length; avi++) {
-                    var ave = gs.enemies[avi];
-                    if (ave.type === 'coily') {
-                        var avPos = enemyEffectivePos(ave);
-                        if (avPos.row <= 2) apexBlocked = true;
-                    }
-                }
-                if (apexBlocked) continue;
-            }
-        }
-
-        // Never enter a completed dead-end cube (e.g. bottom corners) — no reason to visit
-        if (dir !== 'STAY') {
-            var dde = DIRS[dir];
-            var lr = gs.player.row + dde.dr, lc = gs.player.col + dde.dc;
-            if (isValidPos(lr, lc)) {
-                var lidx = posToIdx[lr * ROWS + lc];
-                if (lidx >= 0 && posAdj[lidx].length <= 1) {
-                    var cubeComplete = false;
-                    for (var ci = 0; ci < gs.cubes.length; ci++) {
-                        if (gs.cubes[ci].row === lr && gs.cubes[ci].col === lc && gs.cubes[ci].state >= gs.tgt) {
-                            cubeComplete = true; break;
-                        }
-                    }
-                    if (cubeComplete) continue;
-                }
-            }
-        }
-
-        // Hop 1: simulate this direction
-        var survived = 0, totalTC = 0;
-        var hop1States = [];  // save states for hop 2+ check
-        for (var s = 0; s < SAMPLES; s++) {
-            simSeed(k * 100 + s);
+        // Hop 1: survive ALL random outcome combinations (AND)
+        var allSurvived = true;
+        var tc = 0;
+        for (var c = 0; c < COMBOS; c++) {
+            simRng = createEnumRng(k * 100 + c * 37);
             var child = simDeepClone(gs);
-            var alive = simStep(child, dir);
-            if (alive) {
-                survived++;
-                if (child.levelWon) totalTC -= 1000;
-                else totalTC += simTourCost(child);
-                if (hop1States.length < 10) hop1States.push(child);
-            }
+            if (!simStep(child, dir)) { allSurvived = false; break; }
+            if (c === 0) tc = child.levelWon ? -1000 : simTourCost(child);
         }
 
-        hop1Surv[dir] = survived / SAMPLES;
-        if (survived === SAMPLES) {
-            safe1[dir] = true;
-            tourCosts[dir] = totalTC / survived;
-            if (dir === 'STAY') tourCosts[dir] += 2;  // slight penalty for waiting
+        if (!allSurvived) {
+            aiMoveScores[dir] = -10000;
+            hop1Surv[dir] = 0;
+            continue;
         }
 
-        // Exhaustive nearby-enemy check: MC may miss rare collision paths
-        // (e.g. ugg/wrongway with 12% hit probability → 8% miss rate at 20 samples).
-        // The exhaustive check enumerates ALL possible paths for nearby enemies.
-        if (safe1[dir] && hasEnemies) {
-            restoreRng();
-            if (dir === 'STAY') {
-                // Short-window exhaustive for STAY: only check 1 enemy hop cycle
-                // (full window causes false positives from distant enemies).
-                var stayFrames = 10;
-                var stayTiles = [];
-                for (var sf = 0; sf < stayFrames; sf++) stayTiles.push({ row: gs.player.row, col: gs.player.col });
-                var stayUnsafe = false;
-                for (var sei = 0; sei < gs.enemies.length; sei++) {
-                    var se = gs.enemies[sei];
-                    if (se.type === 'spawn-timer' || se.type === 'slick' || se.type === 'greenball' || se.type === 'coily') continue;
-                    var ser = se.jumping && se.jumpT >= 0.67 ? (se.destRow != null ? se.destRow : se.row) : se.row;
-                    var sec = se.jumping && se.jumpT >= 0.67 ? (se.destCol != null ? se.destCol : se.col) : se.col;
-                    if (Math.abs(ser - gs.player.row) + Math.abs(sec - gs.player.col) > 2) continue;
-                    var seClone = cloneEnemyLight(se);
-                    if (enemyPathCollides(seClone, stayTiles, 0, stayFrames, gs.player.row, gs.player.col, gs.sm)) {
-                        stayUnsafe = true; break;
-                    }
-                }
-                if (stayUnsafe) { safe1[dir] = false; hop1Surv[dir] = 0; }
-            } else if (!isExhaustiveSafe(gs, dir)) {
-                safe1[dir] = false;
-                hop1Surv[dir] = 0;
-            }
-        }
-
-        // Deep survival DFS: frame-accurate enemy timeline + Coily chase.
-        // Runs on ALL directions (not just MC-safe ones) — DFS is the final arbiter.
-        // If DFS finds a surviving path, it can RESCUE a direction rejected by MC/exhaustive.
-        if (coilyActive && dir !== 'STAY') {
-            if (!deepTimeline) {
-                deepTimeline = precomputeFrameTimeline(gs, 400);
-                window.aiPredictedTimeline = deepTimeline; // export for validation harness
-            }
-            var dd_ds = DIRS[dir];
-            var dsR = gs.player.row + dd_ds.dr, dsC = gs.player.col + dd_ds.dc;
-            if (isValidPos(dsR, dsC)) {
-                // Find Coily for initial state
-                var dsCoily = null;
-                for (var dci5 = 0; dci5 < gs.enemies.length; dci5++) {
-                    var ce = gs.enemies[dci5];
-                    if (ce.type === 'coily') {
-                        var cpR = gs.player.prevRow != null ? gs.player.prevRow : gs.player.row;
-                        var cpC = gs.player.prevCol != null ? gs.player.prevCol : gs.player.col;
-                        dsCoily = {
-                            row: ce.row, col: ce.col,
-                            jumping: !!ce.jumping, jumpT: ce.jumpT || 0,
-                            moveTimer: ce.moveTimer || 0,
-                            destRow: ce.destRow, destCol: ce.destCol,
-                            prevR: cpR, prevC: cpC
-                        };
-                    }
-                }
-                if (dsCoily) {
-                    var jumpFrames = Math.ceil(1 / (PLAYER_JUMP_DUR * gs.sm));
-                    var dfsSafe = dfsSurvive(dsR, dsC, gs.player.row, gs.player.col, dsCoily,
-                                    deepTimeline, jumpFrames, 9, gs.sm);
-                    if (!dfsSafe) {
-                        safe1[dir] = false;
-                        hop1Surv[dir] = 0;
-                    } else if (!safe1[dir]) {
-                        // DFS found a surviving path — rescue this direction
-                        safe1[dir] = true;
-                        hop1Surv[dir] = 1;
-                        if (aiMoveScores[dir] === undefined || aiMoveScores[dir] < 0) {
-                            aiMoveScores[dir] = 10000 - simTourCost(gs); // approximate tour cost
-                        }
-                    }
-                }
-            }
-        }
-
-        // Export for viz
-        if (!safe1[dir] && survived === SAMPLES) aiMoveScores[dir] = -8000; // exhaustive check blocked
-        else if (survived === 0) aiMoveScores[dir] = -10000;
-        else if (survived === SAMPLES && safe1[dir]) aiMoveScores[dir] = 10000 - (totalTC / survived);
-        else aiMoveScores[dir] = (survived / SAMPLES) * 100 - 100;
-
-        // Hop 2+3: if hop 1 is safe and enemies exist, verify a safe 3-hop chain.
-        // Hop 2: MC (3 seeds) + exhaustive. Hop 3: MC only (avoids cornering).
-        if (safe1[dir] && hasEnemies && dir !== 'STAY') {
-            var has2ndSafe = false;
-            for (var d2k = 0; d2k < DIR_KEYS_WITH_STAY.length; d2k++) {
-                var d2dir = DIR_KEYS_WITH_STAY[d2k];
-                var d2ok = true;
-                var hop2States = [];
-                // MC check: multiple seeds per hop1State for reliability
-                for (var si = 0; si < hop1States.length; si++) {
-                    var stateOk = true;
-                    for (var s2 = 0; s2 < 3; s2++) {
-                        simSeed(k * 1000 + d2k * 100 + si * 10 + s2);
-                        var d2c = simDeepClone(hop1States[si]);
-                        if (!simStep(d2c, d2dir)) { stateOk = false; break; }
-                        else if (s2 === 0 && hop2States.length < 6) hop2States.push(d2c);
-                    }
-                    if (!stateOk) { d2ok = false; break; }
-                }
-                // Exhaustive check on hop-2: catch rare enemy paths MC misses
-                if (d2ok && d2dir !== 'STAY') {
-                    for (var si2 = 0; si2 < hop1States.length; si2++) {
-                        if (!isExhaustiveSafe(hop1States[si2], d2dir)) { d2ok = false; break; }
-                    }
-                }
-                // Hop 3+4: verify a safe escape chain from hop-2 state (anti-cornering)
-                if (d2ok && hop2States.length > 0) {
-                    var has3rdSafe = false;
-                    for (var d3k = 0; d3k < DIR_KEYS_WITH_STAY.length; d3k++) {
-                        var d3dir = DIR_KEYS_WITH_STAY[d3k];
-                        var d3ok = true;
-                        var hop3States = [];
-                        for (var si3 = 0; si3 < hop2States.length; si3++) {
-                            simSeed(k * 10000 + d2k * 1000 + d3k * 100 + si3);
-                            var d3c = simDeepClone(hop2States[si3]);
-                            if (!simStep(d3c, d3dir)) { d3ok = false; break; }
-                            else if (coilyActive && si3 === 0) hop3States.push(d3c);
-                        }
-                        // Hop 4: when Coily active, verify one more escape exists
-                        if (d3ok && coilyActive && hop3States.length > 0) {
-                            var has4th = false;
-                            for (var d4k = 0; d4k < DIR_KEYS_WITH_STAY.length; d4k++) {
-                                var d4ok = true;
-                                for (var si4 = 0; si4 < hop3States.length; si4++) {
-                                    simSeed(k * 100000 + d3k * 1000 + d4k * 100 + si4);
-                                    var d4c = simDeepClone(hop3States[si4]);
-                                    if (!simStep(d4c, DIR_KEYS_WITH_STAY[d4k])) { d4ok = false; break; }
-                                }
-                                if (d4ok) { has4th = true; break; }
-                            }
-                            if (!has4th) d3ok = false;
-                        }
-                        if (d3ok) { has3rdSafe = true; break; }
-                    }
-                    if (!has3rdSafe) d2ok = false;
-                }
-                if (d2ok && hop1States.length > 0) { has2ndSafe = true; break; }
-            }
-            safe2[dir] = has2ndSafe;
-            if (!has2ndSafe) {
+        // Deep AND-OR tree: can the player survive DEPTH more hops
+        // for ALL random enemy outcomes?
+        if (hasEnemies && dir !== 'STAY' && DEPTH > 0) {
+            simSeed(k * 100);
+            var hop1State = simDeepClone(gs);
+            simStep(hop1State, dir);
+            if (!andOrSurvive(hop1State, DEPTH, k * 10000)) {
                 aiMoveScores[dir] = -5000;
+                hop1Surv[dir] = 0;
+                continue;
             }
-        } else if (dir === 'STAY' && hasEnemies) {
-            // STAY is safe2 only if at least one movement direction passed safe1.
-            // Prevents sitting in danger zones while Coily closes in.
-            var canEscape = false;
-            for (var ek = 0; ek < DIR_KEYS.length; ek++) {
-                if (safe1[DIR_KEYS[ek]]) { canEscape = true; break; }
-            }
-            safe2[dir] = canEscape;
-        } else {
-            safe2[dir] = true;  // no enemies — skip hop 2+3 check
         }
+
+        // Passed all checks
+        safe1[dir] = true;
+        safe2[dir] = true;
+        hop1Surv[dir] = 1;
+        if (dir === 'STAY') tc += 2;
+        tourCosts[dir] = tc;
+        aiMoveScores[dir] = 10000 - tc;
     }
 
     aiLastHop1Surv = hop1Surv;
