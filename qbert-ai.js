@@ -1015,11 +1015,13 @@ function unifiedPick(gs, coilyActive) {
 
     // AND-OR tree: can the player survive `depth` hops for ALL enemy random outcomes?
     // AND over enemy outcomes (exhaustive enumeration), OR over player directions.
-    function andOrSurvive(state, depth, seedBase) {
+    function andOrSurvive(state, depth, seedBase, forcedDir) {
         if (depth <= 0) return true;
         // OR: player needs at least one safe direction
-        for (var dk = 0; dk < DIR_KEYS.length; dk++) {
-            var d = DIR_KEYS[dk];
+        // If forcedDir is set, only try that direction (top-level call)
+        var tryDirs = forcedDir ? [forcedDir] : DIR_KEYS;
+        for (var dk = 0; dk < tryDirs.length; dk++) {
+            var d = tryDirs[dk];
             if (!simCanMove(state, d)) continue;
             // AND: must survive ALL 8 random outcome combinations
             var allOK = true;
@@ -1089,39 +1091,24 @@ function unifiedPick(gs, coilyActive) {
             }
         }
 
-        // Hop 1: survive ALL random outcome combinations (AND)
-        var allSurvived = true;
-        var tc = 0;
-        for (var c = 0; c < COMBOS; c++) {
-            simRng = createEnumRng(k * 100 + c * 37);
-            var child = simDeepClone(gs);
-            if (!simStep(child, dir)) { allSurvived = false; break; }
-            if (c === 0) tc = child.levelWon ? -1000 : simTourCost(child);
-        }
-
-        if (!allSurvived) {
-            aiMoveScores[dir] = -10000;
-            hop1Surv[dir] = 0;
-            continue;
-        }
-
-        // Deep AND-OR tree: can the player survive DEPTH more hops
-        // for ALL random enemy outcomes?
-        if (hasEnemies && dir !== 'STAY' && DEPTH > 0) {
-            simSeed(k * 100);
-            var hop1State = simDeepClone(gs);
-            simStep(hop1State, dir);
-            if (!andOrSurvive(hop1State, DEPTH, k * 10000)) {
-                aiMoveScores[dir] = -5000;
+        // AND-OR tree: can the player survive DEPTH hops
+        // for ALL random enemy outcomes? (hop 1 is the first level)
+        if (hasEnemies && DEPTH > 0) {
+            if (!andOrSurvive(gs, DEPTH, k * 10000, dir)) {
+                aiMoveScores[dir] = -10000;
                 hop1Surv[dir] = 0;
                 continue;
             }
         }
 
-        // Passed all checks
+        // Passed — compute tour cost from hop 1 result
         safe1[dir] = true;
         safe2[dir] = true;
         hop1Surv[dir] = 1;
+        simSeed(k * 100);
+        var tcClone = simDeepClone(gs);
+        var tcAlive = simStep(tcClone, dir);
+        var tc = tcAlive ? (tcClone.levelWon ? -1000 : simTourCost(tcClone)) : 9999;
         if (dir === 'STAY') tc += 2;
         tourCosts[dir] = tc;
         aiMoveScores[dir] = 10000 - tc;
