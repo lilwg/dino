@@ -207,7 +207,7 @@ function precomputeFrameTimeline(gs, maxFrames) {
     var clone = simDeepClone(gs);
     // Remove Coily and player influence
     clone.enemies = clone.enemies.filter(function(e) {
-        return e.type !== 'coily' && e.type !== 'spawn-timer';
+        return e.type !== 'coily'; // keep spawn-timers — they create new enemies
     });
     clone.player.row = -10; clone.player.col = -10; // move player off-grid
     clone.freezeTimer = 0;

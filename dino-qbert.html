@@ -761,10 +761,16 @@ function update() {
         // Per-frame collision check
         if (enemiesEnabled) simCheckCollision(gs);
         if (!gs.alive) {
+            // Log full enemy state for debugging simulation accuracy
+            var enemyDetail = gs.enemies.map(function(e) {
+                if (e.type === 'spawn-timer') return 'timer(' + e.timer + ')';
+                return e.type + '@(' + e.row + ',' + e.col + ')' +
+                    (e.jumping ? ' jt=' + e.jumpT.toFixed(2) : '') +
+                    (e.moveTimer ? ' mt=' + e.moveTimer : '');
+            }).join(' ');
             console.log('DEATH: ' + (gs.deathEnemy||'?') + ' at (' + gs.player.row + ',' + gs.player.col + ')' +
                 ' frame=' + frameCount + ' round=' + round + ' lv=' + arcadeLevel() +
-                ' freezeTimer=' + gs.freezeTimer +
-                ' enemies=' + gs.enemies.map(function(e){return e.type+'@('+e.row+','+e.col+')'}).join(' '));
+                ' freezeTimer=' + gs.freezeTimer + ' enemies=' + enemyDetail);
             gs.alive = true;
             gs.player.deathTimer = 100;
             killPlayerVisual();
