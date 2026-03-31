@@ -198,31 +198,31 @@ function cubeXY(row, col) {
 // Verified against arcade MAME side-by-side screenshots.
 // top[0]=start, top[1]=after 1 hop, top[2]=after 2 hops (for 2-hop levels).
 var ROUND_COLOR_TABLE = [
-    // Level 1 (1-hop: state 0→1)
+    // Level 1 (1-hop: state 0→1) — verified against chaptered longplay
     {left:'#4a9898',right:'#387070',top:['#4848d8','#d8c838','#d8c838']},  // L1-1: blue→yellow, teal sides
     {left:'#885518',right:'#cc8830',top:['#d8c838','#4848d8','#4848d8']},  // L1-2: yellow→blue, orange sides
     {left:'#606060',right:'#909090',top:['#c8c8c8','#484848','#484848']},  // L1-3: lt grey→dk grey, grey sides
     {left:'#707888',right:'#586898',top:['#4848d8','#c8c838','#c8c838']},  // L1-4: blue→yellow, blue-grey sides
     // Level 2 (2-hop: state 0→1→2)
-    {left:'#885518',right:'#cc8830',top:['#4848d8','#d88830','#40b840']},  // L2-1: blue→orange→green, orange sides
-    {left:'#606060',right:'#707888',top:['#a838a8','#4848d8','#d8c838']},  // L2-2: purple→blue→yellow, grey sides
-    {left:'#4a9898',right:'#387070',top:['#4848d8','#d8c838','#d88888']},  // L2-3: blue→yellow→pink, teal sides
-    {left:'#181818',right:'#181818',top:['#d88888','#4848d8','#d8c838']},  // L2-4: pink→blue→yellow, dark sides
+    {left:'#885518',right:'#cc8830',top:['#d8c838','#4848d8','#40b840']},  // L2-1: yellow→blue→green, orange sides
+    {left:'#606060',right:'#707888',top:['#4848d8','#d888a8','#d8c838']},  // L2-2: blue→pink→yellow, grey sides
+    {left:'#4a9898',right:'#387070',top:['#d88888','#4848d8','#d8c838']},  // L2-3: pink→blue→yellow, teal sides
+    {left:'#181818',right:'#181818',top:['#4848d8','#d8c838','#d88888']},  // L2-4: blue→yellow→pink, dark sides
     // Level 3 (toggle: state 0↔1)
     {left:'#c0a030',right:'#d05040',top:['#d8c838','#4848d8','#4848d8']},  // L3-1: yellow↔blue, yellow+red sides
     {left:'#606060',right:'#909090',top:['#c8c8c8','#484848','#484848']},  // L3-2: lt grey↔dk grey, grey sides
-    {left:'#885518',right:'#cc8830',top:['#4848d8','#d8c838','#d8c838']},  // L3-3: blue↔yellow, orange sides
+    {left:'#885518',right:'#cc8830',top:['#d8c838','#4848d8','#4848d8']},  // L3-3: yellow↔blue, orange sides
     {left:'#4a9898',right:'#387070',top:['#d8c838','#4848d8','#4848d8']},  // L3-4: yellow↔blue, teal sides
     // Level 4 (2-hop+revert: state 0→1→2)
-    {left:'#885518',right:'#cc8830',top:['#d8c838','#4848d8','#40b840']},  // L4-1: yellow→blue→green, orange sides
-    {left:'#181818',right:'#181818',top:['#d88888','#4848d8','#d8c838']},  // L4-2: pink→blue→yellow, dark sides
+    {left:'#885518',right:'#cc8830',top:['#d8c838','#40b840','#4848d8']},  // L4-1: yellow→green→blue, orange sides
+    {left:'#181818',right:'#181818',top:['#d88888','#d8c838','#4848d8']},  // L4-2: pink→yellow→blue, dark sides
     {left:'#4a9898',right:'#387070',top:['#d8c838','#d88888','#4848d8']},  // L4-3: yellow→pink→blue, teal sides
-    {left:'#707888',right:'#586898',top:['#a8a8a8','#d88888','#d8c838']},  // L4-4: grey→pink→yellow, blue-grey sides
+    {left:'#707888',right:'#586898',top:['#4848d8','#d88888','#d8c838']},  // L4-4: blue→pink→yellow, blue-grey sides
     // Level 5+ (2-hop+cycle: state 0→1→2→0...)
-    {left:'#4a9898',right:'#387070',top:['#d8c838','#d88888','#4848d8']},  // L5-1: yellow→pink→blue, teal sides
+    {left:'#4a9898',right:'#387070',top:['#d88888','#d8c838','#4848d8']},  // L5-1: pink→yellow→blue, teal sides
     {left:'#885518',right:'#cc8830',top:['#4848d8','#40b840','#d8c838']},  // L5-2: blue→green→yellow, orange sides
     {left:'#606060',right:'#909090',top:['#c8c8c8','#4848d8','#484848']},  // L5-3: lt grey→blue→dk grey, grey sides
-    {left:'#707888',right:'#586898',top:['#a8a8a8','#d88888','#d8c838']}   // L5-4: grey→pink→yellow, blue-grey sides
+    {left:'#707888',right:'#586898',top:['#4848d8','#d8c838','#d88888']}   // L5-4: blue→yellow→pink, blue-grey sides
     // Levels 6-9 repeat the level 5 pattern (same 4-round cycle)
 ];
 
