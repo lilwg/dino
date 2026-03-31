@@ -1151,7 +1151,8 @@ function aiPickBestDir() {
                     }
                 }
             }
-            if (bestProgDir) { result = bestProgDir; aiNoProgressCount = 0; aiPosHistory.length = 0; }
+            if (bestProgDir) { result = bestProgDir; aiPosHistory.length = 0; }
+            // Don't reset aiNoProgressCount here — only reset on actual progress (line ~961)
         }
     }
 
