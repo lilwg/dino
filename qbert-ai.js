@@ -499,7 +499,7 @@ var aiRevertCounts = new Int8Array(POS_COUNT); // per-cube revert counter for to
 var aiPrevCubeStates = null; // previous cube states to detect reverts
 
 function aiTourInit() {
-    aiLastRemaining = 99; aiNoProgressCount = 0; aiStayCount = 0; aiSamePosCount = 0; aiPosHistory = [];
+    aiLastRemaining = 99; aiBestRemaining = 99; aiNoProgressCount = 0; aiStayCount = 0; aiSamePosCount = 0; aiPosHistory = [];
     aiRevertCounts = new Int8Array(POS_COUNT);
     aiPrevCubeStates = null;
 }
@@ -930,6 +930,7 @@ var aiStayCount = 0;    // consecutive STAY decisions — used to break stuck lo
 var aiLastPos = '';     // last position key — used to detect oscillation
 var aiSamePosCount = 0; // frames spent on same tile
 var aiLastRemaining = 99; // cubes remaining last time we checked
+var aiBestRemaining = 99; // historical best (lowest) remaining — only reset on new best
 var aiNoProgressCount = 0; // moves without reducing remaining cubes
 var aiPosHistory = [];  // recent position history for oscillation detection
 var AI_HISTORY_LEN = 12; // how many positions to track
@@ -958,13 +959,14 @@ function aiPickBestDir() {
     var curRemaining = 0;
     for (var ci = 0; ci < gs.cubes.length; ci++)
         if (gs.cubes[ci].state < tgt) curRemaining++;
-    if (curRemaining < aiLastRemaining) {
-        aiLastRemaining = curRemaining;
+    aiLastRemaining = curRemaining;
+    if (curRemaining < aiBestRemaining) {
+        // Real progress — new historical best
+        aiBestRemaining = curRemaining;
         aiNoProgressCount = 0;
-    } else if (gs.lv >= 3 && curRemaining > aiLastRemaining) {
-        // Toggle level: remaining went UP (we reverted cubes) — count faster
+    } else if (gs.lv >= 3 && curRemaining > aiBestRemaining) {
+        // Toggle level: remaining went UP past best — count faster
         aiNoProgressCount += 2;
-        aiLastRemaining = curRemaining; // track actual count, not just best
     } else {
         aiNoProgressCount++;
     }
