@@ -706,6 +706,23 @@ function unifiedPick(gs, coilyActive) {
             }
         }
 
+        // Avoid apex when Coily is within 2 hops — apex has only 2 exits, easy to trap
+        if (coilyActive && dir !== 'STAY') {
+            var avd = DIRS[dir];
+            var avr = gs.player.row + avd.dr, avc = gs.player.col + avd.dc;
+            if (avr === 0 && avc === 0) {
+                var apexBlocked = false;
+                for (var avi = 0; avi < gs.enemies.length; avi++) {
+                    var ave = gs.enemies[avi];
+                    if (ave.type === 'coily') {
+                        var avPos = enemyEffectivePos(ave);
+                        if (avPos.row <= 2) apexBlocked = true;
+                    }
+                }
+                if (apexBlocked) continue;
+            }
+        }
+
         // Never enter a completed dead-end cube (e.g. bottom corners) — no reason to visit
         if (dir !== 'STAY') {
             var dde = DIRS[dir];
@@ -947,6 +964,7 @@ function aiPickBestDir() {
     } else if (gs.lv >= 3 && curRemaining > aiLastRemaining) {
         // Toggle level: remaining went UP (we reverted cubes) — count faster
         aiNoProgressCount += 2;
+        aiLastRemaining = curRemaining; // track actual count, not just best
     } else {
         aiNoProgressCount++;
     }
