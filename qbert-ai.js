@@ -200,29 +200,111 @@ function coilyChaseStep(cr, cc, targetR, targetC) {
     return isValidPos(nr, nc) ? { row: nr, col: nc } : null;
 }
 
-// Check if a position has enough exits not blocked by Coily's predicted path
-function isCoilyTrapped(playerR, playerC, coilyR, coilyC, prevR, prevC, maxDepth) {
-    // Simulate Coily forward, check if player has escape at each step
-    var cr = coilyR, cc = coilyC;
-    var targetR = prevR, targetC = prevC;
-    for (var d = 0; d < maxDepth; d++) {
-        // Coily chases prev; if at prev, chases current
-        if (cr === targetR && cc === targetC) { targetR = playerR; targetC = playerC; }
-        var next = coilyChaseStep(cr, cc, targetR, targetC);
-        if (!next) break;
-        cr = next.row; cc = next.col;
-        // Check: is Coily now adjacent to or on the player?
-        if (cr === playerR && cc === playerC) return true; // caught!
-        var dist = exBfsDist(cr, cc, playerR, playerC);
-        if (dist <= 1) {
-            // Coily is adjacent — does player have safe exits?
-            var safeExits = 0;
-            for (var ek = 0; ek < DIR_KEYS.length; ek++) {
-                var ed = DIRS[DIR_KEYS[ek]];
-                var er = playerR + ed.dr, ec = playerC + ed.dc;
-                if (isValidPos(er, ec) && !(er === cr && ec === cc)) safeExits++;
+// Pre-compute non-Coily enemy POSSIBLE positions for N hops ahead.
+// For deterministic enemies (red ball/dirBits): exactly 1 position per hop.
+// For random enemies (egg, ugg, wrongway): enumerate ALL possible positions.
+// Returns threatSets[hop] = set of "row,col" strings (union of all possibilities).
+function precomputeEnemyTimeline(gs, maxHops) {
+    // Each enemy tracked as a set of possible {row, col, state} tuples
+    var enemySets = [];
+    for (var i = 0; i < gs.enemies.length; i++) {
+        var e = gs.enemies[i];
+        if (e.type === 'coily' || e.type === 'spawn-timer') continue;
+        if (e.type === 'slick' || e.type === 'greenball') continue; // harmless
+        if (e.spawnAnimTimer > 0) continue;
+        var positions = [{ row: e.row, col: e.col, type: e.type, hops: e.hops || 0,
+                           dirBits: e.dirBits }];
+        enemySets.push(positions);
+    }
+
+    var sets = [];
+    for (var hop = 0; hop <= maxHops; hop++) {
+        // Build threat set: union of all possible positions of all enemies
+        var s = {};
+        for (var ei = 0; ei < enemySets.length; ei++) {
+            for (var pi = 0; pi < enemySets[ei].length; pi++) {
+                var p = enemySets[ei][pi];
+                s[p.row + ',' + p.col] = true;
             }
-            if (safeExits === 0) return true; // trapped
+        }
+        sets.push(s);
+
+        // Advance each enemy — expand possible positions
+        for (var ei2 = 0; ei2 < enemySets.length; ei2++) {
+            var nextPositions = [];
+            var seen = {};
+            for (var pi2 = 0; pi2 < enemySets[ei2].length; pi2++) {
+                var pos = enemySets[ei2][pi2];
+                var moves = [];
+                if (pos.type === 'egg') {
+                    moves.push({ row: pos.row + 1, col: pos.col });     // DL
+                    moves.push({ row: pos.row + 1, col: pos.col + 1 }); // DR
+                } else if (pos.type === 'redball') {
+                    if (pos.dirBits != null) {
+                        var nr = pos.row + 1, nc = (pos.dirBits & 1) ? pos.col + 1 : pos.col;
+                        moves.push({ row: nr, col: nc });
+                    } else {
+                        moves.push({ row: pos.row + 1, col: pos.col });
+                        moves.push({ row: pos.row + 1, col: pos.col + 1 });
+                    }
+                } else if (pos.type === 'ugg') {
+                    moves.push({ row: pos.row - 1, col: pos.col - 1 });
+                    moves.push({ row: pos.row, col: pos.col - 1 });
+                } else if (pos.type === 'wrongway') {
+                    moves.push({ row: pos.row - 1, col: pos.col });
+                    moves.push({ row: pos.row, col: pos.col + 1 });
+                }
+                for (var mi = 0; mi < moves.length; mi++) {
+                    var m = moves[mi];
+                    if (!isValidPos(m.row, m.col)) continue;
+                    var key = m.row + ',' + m.col;
+                    if (seen[key]) continue;
+                    seen[key] = true;
+                    nextPositions.push({
+                        row: m.row, col: m.col, type: pos.type,
+                        hops: pos.hops + 1,
+                        dirBits: pos.dirBits != null ? (pos.dirBits >> 1) : undefined
+                    });
+                }
+            }
+            if (nextPositions.length > 0) enemySets[ei2] = nextPositions;
+        }
+    }
+    return sets;
+}
+
+// DFS: can the player survive for `depth` hops?
+// Pre-computed enemyThreat[hop] = set of non-Coily threat positions.
+// Coily simulated per-path (deterministic given player moves).
+// Returns true if ANY player path survives.
+function canSurviveDeep(pR, pC, prevR, prevC, cR, cC, cPrevR, cPrevC,
+                         enemyThreat, hop, maxHop) {
+    if (hop >= maxHop) return true; // survived!
+
+    // Coily chase step (deterministic)
+    var cTargetR = cPrevR, cTargetC = cPrevC;
+    if (cR === cTargetR && cC === cTargetC) { cTargetR = pR; cTargetC = pC; }
+    var cNext = coilyChaseStep(cR, cC, cTargetR, cTargetC);
+    var cNR = cNext ? cNext.row : -99, cNC = cNext ? cNext.col : -99;
+
+    var threats = enemyThreat[Math.min(hop, enemyThreat.length - 1)];
+
+    // Try each player move
+    for (var dk = 0; dk < DIR_KEYS.length; dk++) {
+        var dd = DIRS[DIR_KEYS[dk]];
+        var npR = pR + dd.dr, npC = pC + dd.dc;
+        if (!isValidPos(npR, npC)) continue;
+
+        // Collision with Coily
+        if (npR === cNR && npC === cNC) continue;
+        // Cross-path with Coily
+        if (npR === cR && npC === cC && pR === cNR && pC === cNC) continue;
+        // Collision with non-Coily enemies
+        if (threats[npR + ',' + npC]) continue;
+
+        if (canSurviveDeep(npR, npC, pR, pC, cNR, cNC, cR, cC,
+                           enemyThreat, hop + 1, maxHop)) {
+            return true;
         }
     }
     return false;
@@ -690,6 +772,7 @@ function unifiedPick(gs, coilyActive) {
     // A direction is "safe" if hop 1 survives AND at least one follow-up hop 2 survives.
 
     var safe1 = {};      // dir -> true if 100% survival on hop 1
+    var deepEnemyTimeline = null; // pre-computed once, shared across directions
     var safe2 = {};      // dir -> true if at least one hop 2 option also survives
     var tourCosts = {};  // dir -> avg tour cost after hop 1
     var hop1Surv = {};   // dir -> survival rate (for fallback)
@@ -821,6 +904,30 @@ function unifiedPick(gs, coilyActive) {
             } else if (!isExhaustiveSafe(gs, dir)) {
                 safe1[dir] = false;
                 hop1Surv[dir] = 0;
+            }
+        }
+
+        // Deep survival check: can the player survive 10 hops from this direction?
+        // Pre-computed enemy timeline (shared), deterministic Coily (per-path).
+        if (safe1[dir] && coilyActive && dir !== 'STAY') {
+            if (!deepEnemyTimeline) deepEnemyTimeline = precomputeEnemyTimeline(gs, 12);
+            var dd_ce = DIRS[dir];
+            var ceDestR = gs.player.row + dd_ce.dr, ceDestC = gs.player.col + dd_ce.dc;
+            if (isValidPos(ceDestR, ceDestC)) {
+                var coilyR = -1, coilyC = -1, coilyPR = -1, coilyPC = -1;
+                for (var cei = 0; cei < gs.enemies.length; cei++) {
+                    var ce = gs.enemies[cei];
+                    if (ce.type !== 'coily') continue;
+                    var cePos = enemyEffectivePos(ce);
+                    coilyR = cePos.row; coilyC = cePos.col;
+                    coilyPR = gs.player.prevRow != null ? gs.player.prevRow : gs.player.row;
+                    coilyPC = gs.player.prevCol != null ? gs.player.prevCol : gs.player.col;
+                }
+                if (coilyR >= 0 && !canSurviveDeep(ceDestR, ceDestC, gs.player.row, gs.player.col,
+                        coilyR, coilyC, coilyPR, coilyPC, deepEnemyTimeline, 0, 10)) {
+                    safe1[dir] = false;
+                    hop1Surv[dir] = 0;
+                }
             }
         }
 
