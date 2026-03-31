@@ -607,7 +607,7 @@ function computeAIMove() {
     aiBestDir = bestDir;
 
     // Validation harness: reset frame counter for prediction vs reality comparison
-    window.aiPredictionFrame = 0;
+    window.aiPredictionFrame = 1; // timeline f=0 is the computation state; validation starts 1 frame later
     window.aiPredictionDivergences = 0;
 
     // Populate danger tiles and Coily predictions for viz
@@ -792,9 +792,22 @@ function update() {
                             if (aft && aft.row + ',' + aft.col === aKey) { aType = afe.type; break; }
                         }
                         window.aiPredictionDivergences = (window.aiPredictionDivergences || 0) + 1;
-                        if (window.aiPredictionDivergences <= 20) {
+                        if (window.aiPredictionDivergences <= 5) {
+                            // Log full enemy state for debugging
+                            var aDetail = '';
+                            for (var afi2 = 0; afi2 < gs.enemies.length; afi2++) {
+                                var ae2 = gs.enemies[afi2];
+                                if (ae2.type === 'coily' || ae2.type === 'spawn-timer') continue;
+                                if (ae2.type === 'slick' || ae2.type === 'greenball') continue;
+                                aDetail += ae2.type + '@(' + ae2.row + ',' + ae2.col + ')';
+                                if (ae2.jumping) aDetail += ' jt=' + (ae2.jumpT||0).toFixed(2) + '→(' + ae2.destRow + ',' + ae2.destCol + ')';
+                                else aDetail += ' mt=' + (ae2.moveTimer||0) + '/' + (ae2.moveInterval||0);
+                                if (ae2.dirBits != null) aDetail += ' db=' + ae2.dirBits;
+                                aDetail += ' | ';
+                            }
                             console.log('DIVERGENCE f' + predFrame + ': ' + aType + ' at (' + aKey +
-                                ') not predicted. #' + window.aiPredictionDivergences);
+                                ') not predicted. #' + window.aiPredictionDivergences +
+                                '\n  actual enemies: ' + aDetail);
                         }
                     }
                 }
