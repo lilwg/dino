@@ -231,53 +231,94 @@ function precomputeFrameTimeline(gs, maxFrames) {
 // DFS: can the player survive for `maxHops` hops?
 // Uses pre-computed enemy timeline + deterministic Coily simulation.
 // Player hop = ~35 frames. Checks collision at each frame against timeline.
-function dfsSurvive(pR, pC, prevR, prevC, coily, frameThreat, frame, hopsLeft, sm) {
-    if (hopsLeft <= 0) return true;
-    var jumpDur = PLAYER_JUMP_DUR * sm;
+// Frame-perfect survival check with memoization.
+// Simulates player + Coily frame-by-frame with correct timing.
+// At hop boundaries, paths with same (player, coily, hop) merge.
+function dfsSurvive(pR, pC, prevR, prevC, coily, frameThreat, startFrame, maxHops, sm) {
+    var pJumpDur = PLAYER_JUMP_DUR * sm;
+    var pJumpFrames = Math.ceil(1 / pJumpDur);
+    var cJumpDur = ENEMY_JUMP_DUR * sm;
+    var cIdleFrames = enemyMoveInterval('coily', sm);
+    var memo = {};
 
-    for (var dk = 0; dk < DIR_KEYS.length; dk++) {
-        var dd = DIRS[DIR_KEYS[dk]];
-        var nr = pR + dd.dr, nc = pC + dd.dc;
-        if (!isValidPos(nr, nc)) continue;
+    function search(pR, pC, cR, cC, cJumping, cJumpT, cTimer,
+                    cDestR, cDestC, cPrevR, cPrevC, frame, hop) {
+        if (hop >= maxHops) return true;
 
-        // Simulate this hop frame by frame
-        var alive = true;
-        var jumpFrames = Math.ceil(1 / jumpDur);
-        var cr = coily.row, cc = coily.col, cPrevR = coily.prevR, cPrevC = coily.prevC;
+        var key = pR * 1000000 + pC * 100000 + cR * 10000 + cC * 1000 + hop * 100 +
+                  (cJumping ? 50 : 0) + Math.round((cJumpT || 0) * 10);
+        if (memo[key] !== undefined) return memo[key];
 
-        for (var f = 0; f < jumpFrames && alive; f++) {
-            var t = f / jumpFrames; // jumpT
-            var fi = Math.min(frame + f, frameThreat.length - 1);
+        var result = false;
+        for (var dk = 0; dk < DIR_KEYS.length && !result; dk++) {
+            var dd = DIRS[DIR_KEYS[dk]];
+            var nr = pR + dd.dr, nc = pC + dd.dc;
+            if (!isValidPos(nr, nc)) continue;
 
-            // Player collision tile based on jump phase
-            var ptR, ptC;
-            if (t < 0.33) { ptR = pR; ptC = pC; }
-            else if (t >= 0.67) { ptR = nr; ptC = nc; }
-            else continue; // immune at apex
+            // Simulate this player hop frame by frame
+            var alive = true;
+            var cr = cR, cc = cC, cj = cJumping, ct = cJumpT, cm = cTimer;
+            var cdr = cDestR, cdc = cDestC, cpr = cPrevR, cpc = cPrevC;
 
-            // Check non-Coily threats
-            if (frameThreat[fi][ptR + ',' + ptC]) { alive = false; break; }
-            // Check Coily
-            if (ptR === cr && ptC === cc) { alive = false; break; }
+            for (var f = 1; f <= pJumpFrames && alive; f++) {
+                var playerT = f * pJumpDur;
+                var fi = Math.min(frame + f, frameThreat.length - 1);
+
+                // Advance Coily 1 frame
+                if (cj) {
+                    ct += cJumpDur;
+                    if (ct >= 1) {
+                        cj = false; ct = 0; cm = 0;
+                        cr = cdr; cc = cdc; cdr = null; cdc = null;
+                    }
+                } else {
+                    cm++;
+                    if (cm >= cIdleFrames) {
+                        var tR = cpr, tC = cpc;
+                        if (cr === tR && cc === tC) { tR = pR; tC = pC; }
+                        var cn = coilyChaseStep(cr, cc, tR, tC);
+                        if (cn) {
+                            cj = true; ct = 0; cm = 0;
+                            cdr = cn.row; cdc = cn.col;
+                            cpr = cr; cpc = cc;
+                        }
+                    }
+                }
+
+                // Player collision tile
+                var ptR, ptC;
+                if (playerT < 0.33) { ptR = pR; ptC = pC; }
+                else if (playerT >= 0.67) { ptR = nr; ptC = nc; }
+                else continue; // immune
+
+                // Coily collision tile
+                var ctR, ctC;
+                if (cj) {
+                    if (ct < 0.33) { ctR = cr; ctC = cc; }
+                    else if (ct >= 0.67 && cdr != null) { ctR = cdr; ctC = cdc; }
+                    else { ctR = -99; ctC = -99; }
+                } else {
+                    ctR = cr; ctC = cc;
+                }
+
+                if (frameThreat[fi] && frameThreat[fi][ptR + ',' + ptC]) alive = false;
+                if (ptR === ctR && ptC === ctC) alive = false;
+            }
+
+            if (alive) {
+                result = search(nr, nc, cr, cc, cj, ct, cm,
+                               cdr, cdc, cpr, cpc, frame + pJumpFrames, hop + 1);
+            }
         }
 
-        if (!alive) continue;
-
-        // Advance Coily by ~1 hop (Coily hops every ~46 frames)
-        var cTargetR = cPrevR, cTargetC = cPrevC;
-        if (cr === cTargetR && cc === cTargetC) { cTargetR = pR; cTargetC = pC; }
-        var cNext = coilyChaseStep(cr, cc, cTargetR, cTargetC);
-        var newCoily = {
-            row: cNext ? cNext.row : cr, col: cNext ? cNext.col : cc,
-            prevR: cr, prevC: cc
-        };
-
-        if (dfsSurvive(nr, nc, pR, pC, newCoily, frameThreat,
-                       frame + jumpFrames, hopsLeft - 1, sm)) {
-            return true;
-        }
+        memo[key] = result;
+        return result;
     }
-    return false;
+
+    return search(pR, pC, coily.row, coily.col,
+                  coily.jumping || false, coily.jumpT || 0, coily.moveTimer || 0,
+                  coily.destRow || null, coily.destCol || null,
+                  coily.prevR, coily.prevC, startFrame, 0);
 }
 
 // Pre-compute non-Coily enemy POSSIBLE positions for N hops ahead.
@@ -998,11 +1039,17 @@ function unifiedPick(gs, coilyActive) {
                 // Find Coily for initial state
                 var dsCoily = null;
                 for (var dci5 = 0; dci5 < gs.enemies.length; dci5++) {
-                    if (gs.enemies[dci5].type === 'coily') {
-                        var cp = enemyEffectivePos(gs.enemies[dci5]);
+                    var ce = gs.enemies[dci5];
+                    if (ce.type === 'coily') {
                         var cpR = gs.player.prevRow != null ? gs.player.prevRow : gs.player.row;
                         var cpC = gs.player.prevCol != null ? gs.player.prevCol : gs.player.col;
-                        dsCoily = { row: cp.row, col: cp.col, prevR: cpR, prevC: cpC };
+                        dsCoily = {
+                            row: ce.row, col: ce.col,
+                            jumping: !!ce.jumping, jumpT: ce.jumpT || 0,
+                            moveTimer: ce.moveTimer || 0,
+                            destRow: ce.destRow, destCol: ce.destCol,
+                            prevR: cpR, prevC: cpC
+                        };
                     }
                 }
                 if (dsCoily) {
