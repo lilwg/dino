@@ -237,12 +237,38 @@ function precomputeFrameTimeline(gs, maxFrames) {
 
     var timeline = [];
     for (var f = 0; f <= maxFrames; f++) {
+        // Handle spawn timers FIRST (matches simUpdateEnemies order)
+        for (var ti = spawnTimers.length - 1; ti >= 0; ti--) {
+            spawnTimers[ti].timer--;
+            if (spawnTimers[ti].timer <= 0) {
+                var ft = spawnTimers[ti].forcedType || 'redball';
+                var sInterval = enemyMoveInterval(ft, gs.sm);
+                var sStates = [];
+                if (ft === 'ugg') {
+                    sStates.push({ type:'ugg', row:ROWS-1, col:ROWS-1, jumping:false, jumpT:0,
+                        jumpDur:ENEMY_JUMP_DUR*gs.sm, moveTimer:0, moveInterval:sInterval,
+                        hops:0, dirBits:undefined, spawnAnimTimer:20, falling:false });
+                } else if (ft === 'wrongway') {
+                    sStates.push({ type:'wrongway', row:ROWS-1, col:0, jumping:false, jumpT:0,
+                        jumpDur:ENEMY_JUMP_DUR*gs.sm, moveTimer:0, moveInterval:sInterval,
+                        hops:0, dirBits:undefined, spawnAnimTimer:20, falling:false });
+                } else {
+                    for (var sc = 0; sc < 2; sc++) {
+                        sStates.push({ type:ft, row:1, col:sc, jumping:false, jumpT:0,
+                            jumpDur:ENEMY_JUMP_DUR*gs.sm, moveTimer:0, moveInterval:sInterval,
+                            hops:0, dirBits:undefined, spawnAnimTimer:20, falling:false });
+                    }
+                }
+                enemySets.push({ states: sStates });
+                spawnTimers.splice(ti, 1);
+            }
+        }
         // Build threat set from all possible positions
         var threats = {};
         for (var ei = 0; ei < enemySets.length; ei++) {
             for (var si = 0; si < enemySets[ei].states.length; si++) {
                 var s = enemySets[ei].states[si];
-                if (s.falling || s.spawnAnimTimer > 0) continue;
+                if ((s.falling && !s.jumping) || s.spawnAnimTimer > 0) continue;
                 // Collision tile based on jump phase
                 if (!s.jumping) {
                     threats[s.row + ',' + s.col] = true;
@@ -262,7 +288,7 @@ function precomputeFrameTimeline(gs, maxFrames) {
             var seen = {};
             for (var si2 = 0; si2 < enemySets[ei2].states.length; si2++) {
                 var st = enemySets[ei2].states[si2];
-                if (st.falling) continue;
+                if (st.falling && !st.jumping) continue; // remove after landing off-grid
                 if (st.spawnAnimTimer > 0) { st.spawnAnimTimer--; next.push(st); continue; }
 
                 if (st.jumping) {
@@ -302,14 +328,15 @@ function precomputeFrameTimeline(gs, maxFrames) {
                         }
                         for (var di = 0; di < dests.length; di++) {
                             var d = dests[di];
-                            if (!isValidPos(d.r, d.c)) continue;
+                            // Even if destination is invalid (falling off), keep the enemy
+                            // during its jump for collision at the source position
                             var ns = {
                                 type: st.type, row: st.row, col: st.col,
                                 jumping: true, jumpT: 0, jumpDur: st.jumpDur,
                                 destRow: d.r, destCol: d.c,
                                 moveTimer: 0, moveInterval: st.moveInterval,
                                 hops: st.hops + 1, dirBits: d.dirBits !== undefined ? d.dirBits : st.dirBits,
-                                spawnAnimTimer: 0, falling: false
+                                spawnAnimTimer: 0, falling: !isValidPos(d.r, d.c)
                             };
                             var nk = ns.row + ',' + ns.col + '→' + d.r + ',' + d.c;
                             if (!seen[nk]) { seen[nk] = true; next.push(ns); }
@@ -323,29 +350,7 @@ function precomputeFrameTimeline(gs, maxFrames) {
             enemySets[ei2].states = next;
         }
 
-        // Handle spawn timers — create new enemies at BOTH possible columns
-        for (var ti = spawnTimers.length - 1; ti >= 0; ti--) {
-            spawnTimers[ti].timer--;
-            if (spawnTimers[ti].timer <= 0) {
-                var ft = spawnTimers[ti].forcedType || 'redball';
-                if (ft !== 'ugg' && ft !== 'wrongway') {
-                    var interval = enemyMoveInterval(ft, gs.sm);
-                    var spawnStates = [];
-                    for (var sc = 0; sc < 2; sc++) { // both spawn columns
-                        spawnStates.push({
-                            type: ft, row: 1, col: sc,
-                            jumping: false, jumpT: 0, jumpDur: ENEMY_JUMP_DUR * gs.sm,
-                            moveTimer: 0, moveInterval: interval,
-                            hops: 0, dirBits: undefined, // random path for eggs
-                            spawnAnimTimer: 20, falling: false
-                        });
-                    }
-                    enemySets.push({ states: spawnStates });
-                }
-                // Don't handle ugg/wrongway spawns here (they have fixed spawn positions)
-                spawnTimers.splice(ti, 1);
-            }
-        }
+        // (spawn timers handled at top of loop)
     }
     return timeline;
 }
