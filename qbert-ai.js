@@ -90,7 +90,11 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts) {
     var isToggle = lv >= 3;
     // On L5+ (full cycle), traversing a completed cube costs 3 extra hops to fix (2→0, then 0→1→2)
     // On L3-4 (toggle/partial revert), cost is lower
-    var REVERT_PENALTY = lv >= 5 ? 10 : (isToggle ? 2 : 0);
+    // Adaptive revert penalty: high early (avoid reverting), lower when few cubes remain
+    // (must traverse through completed cubes to reach isolated ones)
+    var unfinished = 0;
+    for (var ui = 0; ui < POS_COUNT; ui++) if (stomps[ui] > 0) unfinished++;
+    var REVERT_PENALTY = lv >= 5 ? (unfinished <= 8 ? 4 : 8) : (isToggle ? 2 : 0);
     var curIdx = startIdx;
     var totalHops = 0;
 
@@ -1139,8 +1143,7 @@ function aiPickBestDir() {
                     }
                 }
             }
-            // Phase 3 (>30): on L5+, pick direction toward nearest unfinished cube
-            // avoiding completed cubes. Otherwise pick any safe move.
+            // Phase 3 (>30): pick any safe move
             if (!bestProgDir && aiNoProgressCount > 30) {
                 if (gs.lv >= 5) {
                     // BFS avoiding completed cubes to find nearest unfinished
