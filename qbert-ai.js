@@ -1005,7 +1005,7 @@ function unifiedPick(gs, coilyActive) {
     var DEPTH = hasEnemies ? (window.AI_DEPTH || 8) : 0;
 
     var pJumpDur = PLAYER_JUMP_DUR * gs.sm;
-    var pJumpFrames = Math.ceil(1 / pJumpDur) + 1; // +1 for post-landing idle frame
+    var pJumpFrames = Math.ceil(1 / pJumpDur); // exact frames between AI decisions
     var cJumpDur = ENEMY_JUMP_DUR * gs.sm;
     var cIdleFrames = enemyMoveInterval('coily', gs.sm);
     var memo = {};
@@ -1161,7 +1161,11 @@ function unifiedPick(gs, coilyActive) {
                             e2.row = e2.destRow; e2.col = e2.destCol;
                             e2.destRow = null; e2.destCol = null;
                             if (!isValidPos(e2.row, e2.col)) e2.falling = true;
-                            if (e2.type === 'egg' && (e2.willHatch || e2.hops >= 6)) e2.type = 'dead';
+                            // Egg hatches into Coily — keep tracking it!
+                            if (e2.type === 'egg' && (e2.willHatch || e2.hops >= 6)) {
+                                e2.type = 'coily';
+                                e2.moveInterval = cIdleFrames;
+                            }
                         }
                         continue;
                     }
@@ -1169,8 +1173,18 @@ function unifiedPick(gs, coilyActive) {
                     if (e2.moveTimer < e2.moveInterval) continue;
                     e2.moveTimer = 0;
                     e2.hops = (e2.hops || 0) + 1;
+                    // Hatched Coily: deterministic chase, no branching
+                    if (e2.type === 'coily') {
+                        var cn = coilyChaseStep(e2.row, e2.col, pR, pC);
+                        if (cn) {
+                            e2.jumping = true; e2.jumpT = 0;
+                            e2.destRow = cn.row; e2.destCol = cn.col;
+                            if (!isValidPos(cn.row, cn.col)) e2.falling = true;
+                        }
+                        continue;
+                    }
                     var mvs = enemyMoves(e2);
-                    if (mvs.length === 0) continue; // unknown/dead enemy type
+                    if (mvs.length === 0) continue;
                     var ch = (e2._choice != null) ? e2._choice : 0;
                     e2._choice = undefined;
                     if (e2.dirBits != null) e2.dirBits = e2.dirBits >> 1;
