@@ -1250,21 +1250,22 @@ function unifiedPick(gs, coilyActive) {
                 var res = simOneEnemy(pR, pC, nr, nc, enemies[ei]);
                 var pSafe = 0;
                 var worstEnemy = null;
-                var worstSurv = Infinity;
+                var worstDist = Infinity;
                 for (var bi = 0; bi < res.branches.length; bi++) {
                     if (res.branches[bi].safe) {
                         pSafe += 1.0 / res.count;
-                        // Use worst-case branch (lowest future survival) for recursion
-                        if (res.branches[bi].enemy) {
-                            if (!worstEnemy || bi > 0) worstEnemy = res.branches[bi].enemy;
+                        var be = res.branches[bi].enemy;
+                        if (be) {
+                            // Pick branch where enemy ends closest to player dest (most dangerous)
+                            var eR = be.jumping && be.destRow != null ? be.destRow : be.row;
+                            var eC = be.jumping && be.destCol != null ? be.destCol : be.col;
+                            var dist = Math.abs(eR - nr) + Math.abs(eC - nc);
+                            if (dist < worstDist) { worstDist = dist; worstEnemy = be; }
                         }
                     }
                 }
                 hopProb *= pSafe;
                 if (pSafe <= 0) { allSafe = false; break; }
-                // For branches with only 1 choice (deterministic or unsafe other),
-                // use the safe branch. For 2 safe branches, use the one that makes
-                // the worst-case future (most dangerous enemy position).
                 if (worstEnemy) newEnemies.push(worstEnemy);
             }
             if (!allSafe || hopProb <= 0) continue;
@@ -1299,11 +1300,16 @@ function unifiedPick(gs, coilyActive) {
             var res = simOneEnemy(pR, pC, nr, nc, enemies[ei]);
             var pSafe = 0;
             var worstEnemy = null;
+            var worstDist = Infinity;
             for (var bi = 0; bi < res.branches.length; bi++) {
                 if (res.branches[bi].safe) {
                     pSafe += 1.0 / res.count;
-                    if (res.branches[bi].enemy) {
-                        if (!worstEnemy || bi > 0) worstEnemy = res.branches[bi].enemy;
+                    var be2 = res.branches[bi].enemy;
+                    if (be2) {
+                        var eR2 = be2.jumping && be2.destRow != null ? be2.destRow : be2.row;
+                        var eC2 = be2.jumping && be2.destCol != null ? be2.destCol : be2.col;
+                        var dist2 = Math.abs(eR2 - nr) + Math.abs(eC2 - nc);
+                        if (dist2 < worstDist) { worstDist = dist2; worstEnemy = be2; }
                     }
                 }
             }
