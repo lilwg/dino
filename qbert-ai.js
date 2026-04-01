@@ -1006,8 +1006,9 @@ function unifiedPick(gs, coilyActive) {
     var DEPTH = hasEnemies ? (window.AI_DEPTH || 8) : 0;
 
     var pJumpDur = PLAYER_JUMP_DUR * gs.sm;
-    // simStep runs ceil(1/jumpDur) frames in the while loop + 1 idle frame after landing
-    var pJumpFrames = Math.ceil(1 / pJumpDur) + 1;
+    // Game loop runs ceil(1/jumpDur) frames per hop (no idle frame — game loop
+    // is frame-by-frame, NOT simStep which has an extra idle frame)
+    var pJumpFrames = Math.ceil(1 / pJumpDur);
     var cJumpDur = ENEMY_JUMP_DUR * gs.sm;
     var cIdleFrames = enemyMoveInterval('coily', gs.sm);
     var memo = {};
@@ -1376,40 +1377,6 @@ function unifiedPick(gs, coilyActive) {
         }
         hop1Surv[dir] = survProb;
 
-        // Verification: if P > 0, check that simStep actually survives hop 1
-        if (survProb > 0 && dir !== 'STAY') {
-            simSeed(k * 100 + 5555);
-            var verClone = simDeepClone(gs);
-            var verAlive = simStep(verClone, dir);
-            if (!verAlive && survProb >= 1.0 && !window._verifyDetailDone2) {
-                window._verifyDetailDone2 = true;
-                var d2 = DIRS[dir], vnr2 = gs.player.row+d2.dr, vnc2 = gs.player.col+d2.dc;
-                // Dump all enemies and their collision with the player path
-                var detail = 'VERIFY P=1 DETAIL: ' + dir + ' (' + gs.player.row + ',' + gs.player.col + ')→(' + vnr2 + ',' + vnc2 + ') killer=' + (verClone.deathEnemy||'?');
-                // Show each enemy from gs.enemies
-                for (var vei = 0; vei < gs.enemies.length; vei++) {
-                    var ve = gs.enemies[vei];
-                    if (ve.type === 'spawn-timer' || ve.type === 'slick' || ve.type === 'greenball') continue;
-                    detail += '\n  gs[' + vei + '] ' + ve.type + '@(' + ve.row + ',' + ve.col + ')' +
-                        (ve.jumping ? 'j' + (ve.jumpT||0).toFixed(3) + '→(' + ve.destRow + ',' + ve.destCol + ')' : 't' + (ve.moveTimer||0)) +
-                        ' int=' + (ve.moveInterval||0) + ' hops=' + (ve.hops||0);
-                    if (ve.dirBits != null) detail += ' bits=' + ve.dirBits;
-                }
-                // Show enemyInits
-                for (var vei2 = 0; vei2 < enemyInits.length; vei2++) {
-                    var ve2 = enemyInits[vei2];
-                    detail += '\n  init[' + vei2 + '] ' + ve2.type + '@(' + ve2.row + ',' + ve2.col + ')' +
-                        (ve2.jumping ? 'j' + (ve2.jumpT||0).toFixed(3) + '→(' + ve2.destRow + ',' + ve2.destCol + ')' : 't' + (ve2.moveTimer||0)) +
-                        ' int=' + (ve2.moveInterval||0) + ' sa=' + (ve2.spawnAnimTimer||0);
-                    if (ve2.dirBits != null) detail += ' bits=' + ve2.dirBits;
-                }
-                console.log(detail);
-            }
-            if (!verAlive) {
-                survProb = 0;
-                hop1Surv[dir] = 0;
-            }
-        }
 
         // Compute tour cost — if simStep dies on this RNG seed, use current state estimate
         simSeed(k * 100);
