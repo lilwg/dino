@@ -1237,7 +1237,8 @@ function unifiedPick(gs, coilyActive) {
         for (var mi = 0; mi < enemies.length; mi++) {
             var me = enemies[mi];
             mKey += '|' + me.row + ',' + me.col + ',' + (me.jumping ? 1 : 0) + ',' +
-                    Math.round((me.jumpT || 0) * 30) + ',' + me.moveTimer;
+                    Math.round((me.jumpT || 0) * 30) + ',' + me.moveTimer + ',' +
+                    (me.destRow != null ? me.destRow : 9) + ',' + (me.destCol != null ? me.destCol : 9);
         }
         if (memo[mKey] !== undefined) return memo[mKey];
 
@@ -1488,6 +1489,7 @@ function aiPickBestDir() {
         if (dle.type === 'spawn-timer') continue;
         enemySnap += ' ' + dle.type + '@(' + dle.row + ',' + dle.col + ')';
         if (dle.jumping) enemySnap += 'j' + (dle.jumpT||0).toFixed(2) + '→(' + dle.destRow + ',' + dle.destCol + ')';
+        else enemySnap += 't' + (dle.moveTimer||0);
     }
     var probSnap = '';
     for (var dlk in aiLastHop1Surv) probSnap += ' ' + dlk + '=' + (aiLastHop1Surv[dlk] !== undefined ? aiLastHop1Surv[dlk].toFixed(3) : '?');
@@ -1499,7 +1501,7 @@ function aiPickBestDir() {
         enemies: enemySnap.trim(),
         scores: JSON.parse(JSON.stringify(aiMoveScores))
     });
-    if (window._aiDecisionLog.length > 20) window._aiDecisionLog.shift();
+    if (window._aiDecisionLog.length > 80) window._aiDecisionLog.shift();
 
     // Track position history for oscillation detection
     aiPosHistory.push(posKey);
