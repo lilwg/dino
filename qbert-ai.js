@@ -1224,7 +1224,17 @@ function unifiedPick(gs, coilyActive) {
     function dirSurvivalProb(pR, pC, coily, enemies, depth, dir) {
         var d = DIRS[dir];
         var nr = pR + d.dr, nc = pC + d.dc;
-        if (!isValidPos(nr, nc)) return 0;
+        if (!isValidPos(nr, nc)) {
+            // Off-grid: check if a disc is here — disc ride kills all enemies
+            for (var dci = 0; dci < gs.discs.length; dci++) {
+                var disc = gs.discs[dci];
+                if (!disc.active) continue;
+                if ((disc.side === 0 && dir === 'UL' && pC === 0 && pR === disc.row) ||
+                    (disc.side === 1 && dir === 'UR' && pC === pR && pR === disc.row))
+                    return 1.0; // disc ride: all enemies die, player safe at apex
+            }
+            return 0; // off-grid with no disc = death
+        }
         var newCoily = simCoilyHop(pR, pC, nr, nc, coily);
         if (!newCoily) return 0;
         var branches = simEnemyHop(pR, pC, nr, nc, enemies);
@@ -1237,15 +1247,8 @@ function unifiedPick(gs, coilyActive) {
         return prob / branches.length;
     }
 
-    // Disc lure — use when Coily is active
-    if (coilyActive) {
-        var lureDir = evalDiscLure();
-        if (lureDir) {
-            simSeed(0);
-            var lc = simDeepClone(gs);
-            if (simStep(lc, lureDir)) { restoreRng(); return lureDir; }
-        }
-    }
+    // (Disc lure evaluation is now folded into dirSurvivalProb above —
+    // disc moves get P=1.0 and compete naturally via the scoring formula)
 
     // ── Core: AND-OR tree safety check per direction ──
     // For each direction: survive hop 1 (all seeds), then DFS depth-6 AND-OR tree.
