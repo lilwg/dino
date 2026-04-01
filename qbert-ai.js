@@ -1241,28 +1241,36 @@ function unifiedPick(gs, coilyActive) {
             if (!isValidPos(nr, nc)) continue;
             var newCoily = simCoilyHop(pR, pC, nr, nc, coily);
             if (!newCoily) continue;
-            // Factored: compute P for each enemy independently, multiply
-            var prob = 1.0;
+            // Per-enemy hop safety (factored, O(K)), then joint recursion.
+            // For each enemy: compute hop-level P and worst-case state for recursion.
+            var hopProb = 1.0;
             var newEnemies = [];
-            for (var ei = 0; ei < enemies.length && prob > 0; ei++) {
+            var allSafe = true;
+            for (var ei = 0; ei < enemies.length; ei++) {
                 var res = simOneEnemy(pR, pC, nr, nc, enemies[ei]);
-                // P(enemy i safe) = fraction of safe branches
                 var pSafe = 0;
-                // For recursion: expected enemy state (weighted avg of branches)
-                // Use first safe branch's enemy state as representative
-                var repEnemy = null;
+                var worstEnemy = null;
+                var worstSurv = Infinity;
                 for (var bi = 0; bi < res.branches.length; bi++) {
                     if (res.branches[bi].safe) {
                         pSafe += 1.0 / res.count;
-                        if (!repEnemy) repEnemy = res.branches[bi].enemy;
+                        // Use worst-case branch (lowest future survival) for recursion
+                        if (res.branches[bi].enemy) {
+                            if (!worstEnemy || bi > 0) worstEnemy = res.branches[bi].enemy;
+                        }
                     }
                 }
-                prob *= pSafe;
-                if (repEnemy) newEnemies.push(repEnemy);
+                hopProb *= pSafe;
+                if (pSafe <= 0) { allSafe = false; break; }
+                // For branches with only 1 choice (deterministic or unsafe other),
+                // use the safe branch. For 2 safe branches, use the one that makes
+                // the worst-case future (most dangerous enemy position).
+                if (worstEnemy) newEnemies.push(worstEnemy);
             }
-            if (prob > 0) {
-                prob *= survive(nr, nc, newCoily, newEnemies, depth - 1);
-            }
+            if (!allSafe || hopProb <= 0) continue;
+            // Joint recursion with all enemies' worst-case states
+            var futureProb = survive(nr, nc, newCoily, newEnemies, depth - 1);
+            var prob = hopProb * futureProb;
             if (prob > bestProb) bestProb = prob;
         }
         memo[mKey] = bestProb;
@@ -1285,25 +1293,25 @@ function unifiedPick(gs, coilyActive) {
         }
         var newCoily = simCoilyHop(pR, pC, nr, nc, coily);
         if (!newCoily) return 0;
-        var prob = 1.0;
+        var hopProb = 1.0;
         var newEnemies = [];
-        for (var ei = 0; ei < enemies.length && prob > 0; ei++) {
+        for (var ei = 0; ei < enemies.length; ei++) {
             var res = simOneEnemy(pR, pC, nr, nc, enemies[ei]);
             var pSafe = 0;
-            var repEnemy = null;
+            var worstEnemy = null;
             for (var bi = 0; bi < res.branches.length; bi++) {
                 if (res.branches[bi].safe) {
                     pSafe += 1.0 / res.count;
-                    if (!repEnemy) repEnemy = res.branches[bi].enemy;
+                    if (res.branches[bi].enemy) {
+                        if (!worstEnemy || bi > 0) worstEnemy = res.branches[bi].enemy;
+                    }
                 }
             }
-            prob *= pSafe;
-            if (repEnemy) newEnemies.push(repEnemy);
+            hopProb *= pSafe;
+            if (pSafe <= 0) return 0;
+            if (worstEnemy) newEnemies.push(worstEnemy);
         }
-        if (prob > 0) {
-            prob *= survive(nr, nc, newCoily, newEnemies, depth - 1);
-        }
-        return prob;
+        return hopProb * survive(nr, nc, newCoily, newEnemies, depth - 1);
     }
 
     // (Disc lure evaluation is now folded into dirSurvivalProb above —
