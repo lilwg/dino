@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic  (v2 — oscillation fix + revert penalty)
-var AI_VERSION = 'v5.4-per-combo-andor';
+var AI_VERSION = 'v5.5-32combo-crosspath';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -1003,7 +1003,7 @@ function unifiedPick(gs, coilyActive) {
 
     var hasEnemies = gs.enemies.length > 0;
     var DEPTH = hasEnemies ? 8 : 0;
-    var COMBOS = 8; // 2^3 covers 3 binary random decisions per hop
+    var COMBOS = 32; // 2^5 covers 5 binary random decisions per hop
 
     // Deterministic RNG: returns predetermined bits for each simRng call
     function createEnumRng(bits) {
@@ -1012,18 +1012,17 @@ function unifiedPick(gs, coilyActive) {
     }
 
     var pJumpDur = PLAYER_JUMP_DUR * gs.sm;
-    // +1 for the post-landing idle frame: simStep runs simUpdateEnemies + simCheckCollision
-    // one extra frame after the player lands, before the next move decision
+    // +1 for the post-landing idle frame
     var pJumpFrames = Math.ceil(1 / pJumpDur) + 1;
     var cJumpDur = ENEMY_JUMP_DUR * gs.sm;
     var cIdleFrames = enemyMoveInterval('coily', gs.sm);
 
-    // ── Pre-compute 8 enemy timelines (one per random combo) ──
-    // Each timeline has EXACT enemy positions at each frame.
-    // Recomputed fresh each call to ensure accuracy vs current enemy state.
+    // ── Pre-compute 32 enemy timelines (one per random combo) ──
+    // More combos = better coverage of random enemy trajectories.
+    // Per-combo OR-trees let the player react differently to each future.
     var timelines = null;
     var startFrame = 0;
-    var memo = {};  // Within-call memo for AND-OR tree (cleared each call)
+    var memo = {};
     if (hasEnemies) {
         var maxFrames = (DEPTH + 1) * pJumpFrames + 50;
         timelines = [];
@@ -1043,6 +1042,11 @@ function unifiedPick(gs, coilyActive) {
                     if (e.type === 'slick' || e.type === 'greenball') continue;
                     var t = collisionTile(e);
                     if (t && t.row != null && t.col != null) threats[t.row + ',' + t.col] = true;
+                    // Cross-path data: track jumping enemies' src→dest
+                    if (e.jumping && e.destRow != null) {
+                        if (!threats._swaps) threats._swaps = {};
+                        threats._swaps[e.row + ',' + e.col + '>' + e.destRow + ',' + e.destCol] = true;
+                    }
                 }
                 tl.push(threats);
                 simUpdateEnemies(clone);
@@ -1114,23 +1118,25 @@ function unifiedPick(gs, coilyActive) {
         return { row: cr, col: cc, jumping: cj, jumpT: ct, moveTimer: cm, destRow: cdr, destCol: cdc };
     }
 
-    // Check if a hop from (pR,pC) to (nr,nc) is safe for one specific combo's threats
+    // Check if a hop is safe for one specific combo's threats (including cross-path)
     function isHopSafe(pR, pC, nr, nc, frame, combo) {
+        var crossKey = nr + ',' + nc + '>' + pR + ',' + pC;
         for (var f = 1; f <= pJumpFrames; f++) {
             var playerT = f * pJumpDur;
             var fi = Math.min(frame + f, timelines[combo].length - 1);
+            var tf = timelines[combo][fi];
+            if (!tf) continue;
             var ptR, ptC;
             if (playerT < 0.33) { ptR = pR; ptC = pC; }
             else if (playerT >= 0.67) { ptR = nr; ptC = nc; }
-            else continue;
-            if (timelines[combo][fi] && timelines[combo][fi][ptR + ',' + ptC]) return false;
+            else { ptR = -99; ptC = -99; }
+            if (ptR >= 0 && tf[ptR + ',' + ptC]) return false;
+            if (tf._swaps && tf._swaps[crossKey]) return false;
         }
         return true;
     }
 
-    // Per-combo survival: can the player survive `depth` more hops
-    // given this specific combo's enemy timeline?
-    // OR over directions: player picks the best move for this specific future.
+    // Per-combo survival: player reacts to this specific enemy future.
     function comboSurvive(pR, pC, coily, frame, depth, combo) {
         if (depth <= 0) return true;
         var mKey = combo + '|' + pR + '|' + pC + '|' + coily.row + '|' + coily.col + '|' +
@@ -1155,7 +1161,7 @@ function unifiedPick(gs, coilyActive) {
     }
 
     // Top-level: does the player survive DEPTH hops if they pick direction `dir`?
-    // AND over combos: must survive every possible enemy future.
+    // AND over combos: must survive every sampled enemy future.
     function dirSurvives(pR, pC, coily, frame, depth, dir) {
         var d = DIRS[dir];
         var nr = pR + d.dr, nc = pC + d.dc;
