@@ -1146,9 +1146,17 @@ function unifiedPick(gs, coilyActive) {
                 ens[deciders[di]]._choice = (combo >> di) & 1;
             }
 
-            // Simulate frame by frame, checking collisions
+            // Pre-move collision: check if enemy already on player's tile (frame 0)
             var safe = true;
-            var _dbgHop = false;
+            for (var ei0 = 0; ei0 < ens.length && safe; ei0++) {
+                var e0 = ens[ei0];
+                if (e0.spawnAnimTimer > 0 || e0.type === 'dead') continue;
+                if (e0.jumping) {
+                    if (e0.jumpT < 0.33 && e0.row === pR && e0.col === pC) safe = false;
+                    else if (e0.jumpT >= 0.67 && e0.destRow === pR && e0.destCol === pC) safe = false;
+                } else if (e0.row === pR && e0.col === pC) safe = false;
+            }
+            // Frame-by-frame collision during hop
             for (var f = 1; f <= pJumpFrames && safe; f++) {
                 var playerT = f * pJumpDur;
                 // Advance each enemy
@@ -1203,7 +1211,9 @@ function unifiedPick(gs, coilyActive) {
                 else { ptR = -99; ptC = -99; }
                 for (var ei3 = 0; ei3 < ens.length && safe; ei3++) {
                     var e3 = ens[ei3];
-                    if (e3.falling || e3.spawnAnimTimer > 0 || e3.type === 'dead') continue;
+                    if (e3.spawnAnimTimer > 0 || e3.type === 'dead') continue;
+                    // Note: DON'T skip falling enemies — they still have collision
+                    // tiles until they leave the grid (jumpT < 0.33 = source tile)
                     // Same-tile
                     if (ptR >= 0) {
                         if (e3.jumping) {
@@ -1357,9 +1367,29 @@ function unifiedPick(gs, coilyActive) {
             simSeed(k * 100 + 5555);
             var verClone = simDeepClone(gs);
             var verAlive = simStep(verClone, dir);
-            if (!verAlive && survProb >= 1.0) {
-                console.log('VERIFY FAIL P=1: ' + dir + ' @(' + gs.player.row + ',' + gs.player.col +
-                    ') deathEnemy=' + (verClone.deathEnemy || '?'));
+            if (!verAlive && survProb >= 1.0 && !window._verifyDetailDone2) {
+                window._verifyDetailDone2 = true;
+                var d2 = DIRS[dir], vnr2 = gs.player.row+d2.dr, vnc2 = gs.player.col+d2.dc;
+                // Dump all enemies and their collision with the player path
+                var detail = 'VERIFY P=1 DETAIL: ' + dir + ' (' + gs.player.row + ',' + gs.player.col + ')→(' + vnr2 + ',' + vnc2 + ') killer=' + (verClone.deathEnemy||'?');
+                // Show each enemy from gs.enemies
+                for (var vei = 0; vei < gs.enemies.length; vei++) {
+                    var ve = gs.enemies[vei];
+                    if (ve.type === 'spawn-timer' || ve.type === 'slick' || ve.type === 'greenball') continue;
+                    detail += '\n  gs[' + vei + '] ' + ve.type + '@(' + ve.row + ',' + ve.col + ')' +
+                        (ve.jumping ? 'j' + (ve.jumpT||0).toFixed(3) + '→(' + ve.destRow + ',' + ve.destCol + ')' : 't' + (ve.moveTimer||0)) +
+                        ' int=' + (ve.moveInterval||0) + ' hops=' + (ve.hops||0);
+                    if (ve.dirBits != null) detail += ' bits=' + ve.dirBits;
+                }
+                // Show enemyInits
+                for (var vei2 = 0; vei2 < enemyInits.length; vei2++) {
+                    var ve2 = enemyInits[vei2];
+                    detail += '\n  init[' + vei2 + '] ' + ve2.type + '@(' + ve2.row + ',' + ve2.col + ')' +
+                        (ve2.jumping ? 'j' + (ve2.jumpT||0).toFixed(3) + '→(' + ve2.destRow + ',' + ve2.destCol + ')' : 't' + (ve2.moveTimer||0)) +
+                        ' int=' + (ve2.moveInterval||0) + ' sa=' + (ve2.spawnAnimTimer||0);
+                    if (ve2.dirBits != null) detail += ' bits=' + ve2.dirBits;
+                }
+                console.log(detail);
             }
             if (!verAlive) {
                 survProb = 0;
