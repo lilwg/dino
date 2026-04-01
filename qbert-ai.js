@@ -990,7 +990,12 @@ function evalDiscLure() {
 // Philosophy: tour planner decides WHERE to go (optimal routing), AND-OR tree
 // validates IF it's safe (can survive DEPTH hops against all enemy combos).
 
-// (Cross-timestep memo can be added later with proper timeline versioning)
+// Persistent memo: surviveOne and survive results are deterministic given state.
+// Same (player, coily, enemy, depth) always gives same result. No need to clear
+// between AI calls — entries from previous calls are still valid.
+// Only clear when speed multiplier changes (timing parameters change).
+var _persistMemo = {};
+var _persistMemoSm = 0;
 
 function unifiedPick(gs, coilyActive) {
     var _perfStart = typeof performance !== 'undefined' ? performance.now() : 0;
@@ -1006,12 +1011,15 @@ function unifiedPick(gs, coilyActive) {
     var DEPTH = hasEnemies ? (window.AI_DEPTH || 8) : 0;
 
     var pJumpDur = PLAYER_JUMP_DUR * gs.sm;
-    // Game loop runs ceil(1/jumpDur) frames per hop (no idle frame — game loop
-    // is frame-by-frame, NOT simStep which has an extra idle frame)
     var pJumpFrames = Math.ceil(1 / pJumpDur);
     var cJumpDur = ENEMY_JUMP_DUR * gs.sm;
     var cIdleFrames = enemyMoveInterval('coily', gs.sm);
-    var memo = {};
+
+    // Cross-timestep memo: persist across AI calls, clear on speed change or overflow
+    if (gs.sm !== _persistMemoSm || Object.keys(_persistMemo).length > 50000) {
+        _persistMemo = {}; _persistMemoSm = gs.sm;
+    }
+    var memo = _persistMemo;
 
     // ── Collect non-Coily enemy states ──
     var coilyInit = null;
