@@ -1118,23 +1118,23 @@ function unifiedPick(gs, coilyActive) {
     function simOneEnemy(pR, pC, nr, nc, e) {
         var moves = null;
         var isDecider = false;
-        if (!e.falling && e.spawnAnimTimer <= 0) {
-            if (!e.jumping) {
-                // Idle: will it decide within this hop?
-                var framesUntil = e.moveInterval - e.moveTimer;
-                if (framesUntil <= pJumpFrames) {
-                    moves = enemyMoves(e);
-                    if (moves.length > 1) isDecider = true;
-                }
-            } else {
-                // Mid-jump: will it land AND then reach a decision within this hop?
+        if (!e.falling) {
+            // Compute frames until this enemy reaches its first decision point
+            var framesUntilDecision = Infinity;
+            if (e.spawnAnimTimer > 0) {
+                // Still animating: becomes active after spawnAnimTimer frames, then idle at timer=0
+                framesUntilDecision = e.spawnAnimTimer + e.moveInterval;
+            } else if (e.jumping) {
+                // Mid-jump: lands after some frames, then idle at timer=0
                 var framesToLand = Math.ceil((1.0 - e.jumpT) / e.jumpDur);
-                var framesAfterLand = pJumpFrames - framesToLand;
-                // After landing: timer starts at 0, reaches moveInterval after moveInterval frames
-                if (framesAfterLand >= e.moveInterval) {
-                    moves = enemyMoves(e);
-                    if (moves.length > 1) isDecider = true;
-                }
+                framesUntilDecision = framesToLand + e.moveInterval;
+            } else {
+                // Idle: reaches decision when timer hits interval
+                framesUntilDecision = e.moveInterval - e.moveTimer;
+            }
+            if (framesUntilDecision <= pJumpFrames) {
+                moves = enemyMoves(e);
+                if (moves.length > 1) isDecider = true;
             }
         }
         var numChoices = isDecider ? 2 : 1;
