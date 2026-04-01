@@ -1003,7 +1003,7 @@ function unifiedPick(gs, coilyActive) {
     window.aiPredictedTimeline = null;
 
     var hasEnemies = gs.enemies.length > 0;
-    var DEPTH = hasEnemies ? (window.AI_DEPTH || 8) : 0;
+    var DEPTH = hasEnemies ? (window.AI_DEPTH || 6) : 0;
 
     var pJumpDur = PLAYER_JUMP_DUR * gs.sm;
     // Game loop runs ceil(1/jumpDur) frames per hop (no idle frame — game loop
@@ -1243,36 +1243,72 @@ function unifiedPick(gs, coilyActive) {
             if (!isValidPos(nr, nc)) continue;
             var newCoily = simCoilyHop(pR, pC, nr, nc, coily);
             if (!newCoily) continue;
-            // Per-enemy hop safety (factored, O(K)), then joint recursion.
-            // For each enemy: compute hop-level P and worst-case state for recursion.
+            // Per-enemy: factored hop safety × expected future survival.
+            // For enemies with 2 safe branches: recurse on BOTH and average.
+            // This is O(2K) recursive calls, not O(2^K).
             var hopProb = 1.0;
-            var newEnemies = [];
+            var doBothBranches = true; // always recurse both branches for nearest enemy
+            var baseEnemies = [];
+            var branchEnemies = [];
             var allSafe = true;
             for (var ei = 0; ei < enemies.length; ei++) {
                 var res = simOneEnemy(pR, pC, nr, nc, enemies[ei]);
-                var pSafe = 0;
-                var worstEnemy = null;
-                var worstDist = Infinity;
+                var safeBranches = [];
                 for (var bi = 0; bi < res.branches.length; bi++) {
-                    if (res.branches[bi].safe) {
-                        pSafe += 1.0 / res.count;
-                        var be = res.branches[bi].enemy;
-                        if (be) {
-                            // Pick branch where enemy ends closest to player dest (most dangerous)
-                            var eR = be.jumping && be.destRow != null ? be.destRow : be.row;
-                            var eC = be.jumping && be.destCol != null ? be.destCol : be.col;
-                            var dist = Math.abs(eR - nr) + Math.abs(eC - nc);
-                            if (dist < worstDist) { worstDist = dist; worstEnemy = be; }
-                        }
-                    }
+                    if (res.branches[bi].safe) safeBranches.push(res.branches[bi].enemy);
                 }
+                var pSafe = safeBranches.length / res.count;
                 hopProb *= pSafe;
                 if (pSafe <= 0) { allSafe = false; break; }
-                if (worstEnemy) newEnemies.push(worstEnemy);
+                if (safeBranches.length === 1) {
+                    if (safeBranches[0]) baseEnemies.push(safeBranches[0]);
+                } else if (safeBranches.length === 2) {
+                    if (doBothBranches) {
+                        branchEnemies.push(safeBranches);
+                    } else {
+                        // Deep levels: use nearest-to-dest branch (most threatening)
+                        var best = safeBranches[0], bestD = Infinity;
+                        for (var sbi = 0; sbi < safeBranches.length; sbi++) {
+                            if (!safeBranches[sbi]) continue;
+                            var sb = safeBranches[sbi];
+                            var sbR = sb.jumping && sb.destRow != null ? sb.destRow : sb.row;
+                            var sbC = sb.jumping && sb.destCol != null ? sb.destCol : sb.col;
+                            var sbd = Math.abs(sbR - nr) + Math.abs(sbC - nc);
+                            if (sbd < bestD) { bestD = sbd; best = sb; }
+                        }
+                        if (best) baseEnemies.push(best);
+                    }
+                }
             }
             if (!allSafe || hopProb <= 0) continue;
-            // Joint recursion with all enemies' worst-case states
-            var futureProb = survive(nr, nc, newCoily, newEnemies, depth - 1);
+            // Recurse: for branching enemies, compute expected survive over both branches.
+            // Base enemies are fixed. Each branching enemy is swapped in one at a time.
+            var futureProb;
+            if (branchEnemies.length === 0) {
+                futureProb = survive(nr, nc, newCoily, baseEnemies, depth - 1);
+            } else {
+                // For branching enemies: recurse on both branches for the NEAREST one
+                // (most likely to cause collision), use branch[0] for the rest.
+                var nearIdx = 0, nearDist = Infinity;
+                for (var bei = 0; bei < branchEnemies.length; bei++) {
+                    for (var bbi = 0; bbi < 2; bbi++) {
+                        var be3 = branchEnemies[bei][bbi];
+                        if (!be3) continue;
+                        var eR3 = be3.jumping && be3.destRow != null ? be3.destRow : be3.row;
+                        var eC3 = be3.jumping && be3.destCol != null ? be3.destCol : be3.col;
+                        var d3 = Math.abs(eR3 - nr) + Math.abs(eC3 - nc);
+                        if (d3 < nearDist) { nearDist = d3; nearIdx = bei; }
+                    }
+                }
+                // Build enemy list with all branching enemies at branch[0] except nearIdx
+                var ens = baseEnemies.slice();
+                for (var bej = 0; bej < branchEnemies.length; bej++) {
+                    if (bej !== nearIdx && branchEnemies[bej][0]) ens.push(branchEnemies[bej][0]);
+                }
+                var s0 = branchEnemies[nearIdx][0] ? survive(nr, nc, newCoily, ens.concat([branchEnemies[nearIdx][0]]), depth-1) : 1;
+                var s1 = branchEnemies[nearIdx][1] ? survive(nr, nc, newCoily, ens.concat([branchEnemies[nearIdx][1]]), depth-1) : 1;
+                futureProb = 0.5 * s0 + 0.5 * s1;
+            }
             var prob = hopProb * futureProb;
             if (prob > bestProb) bestProb = prob;
         }
@@ -1297,29 +1333,47 @@ function unifiedPick(gs, coilyActive) {
         var newCoily = simCoilyHop(pR, pC, nr, nc, coily);
         if (!newCoily) return 0;
         var hopProb = 1.0;
-        var newEnemies = [];
+        var baseEnemies = [];
+        var branchEnemies = [];
         for (var ei = 0; ei < enemies.length; ei++) {
             var res = simOneEnemy(pR, pC, nr, nc, enemies[ei]);
-            var pSafe = 0;
-            var worstEnemy = null;
-            var worstDist = Infinity;
+            var safeBranches = [];
             for (var bi = 0; bi < res.branches.length; bi++) {
-                if (res.branches[bi].safe) {
-                    pSafe += 1.0 / res.count;
-                    var be2 = res.branches[bi].enemy;
-                    if (be2) {
-                        var eR2 = be2.jumping && be2.destRow != null ? be2.destRow : be2.row;
-                        var eC2 = be2.jumping && be2.destCol != null ? be2.destCol : be2.col;
-                        var dist2 = Math.abs(eR2 - nr) + Math.abs(eC2 - nc);
-                        if (dist2 < worstDist) { worstDist = dist2; worstEnemy = be2; }
-                    }
-                }
+                if (res.branches[bi].safe) safeBranches.push(res.branches[bi].enemy);
             }
+            var pSafe = safeBranches.length / res.count;
             hopProb *= pSafe;
             if (pSafe <= 0) return 0;
-            if (worstEnemy) newEnemies.push(worstEnemy);
+            if (safeBranches.length === 1) {
+                if (safeBranches[0]) baseEnemies.push(safeBranches[0]);
+            } else if (safeBranches.length === 2) {
+                branchEnemies.push(safeBranches);
+            }
         }
-        var fResult = hopProb * survive(nr, nc, newCoily, newEnemies, depth - 1);
+        var futureProb;
+        if (branchEnemies.length === 0) {
+            futureProb = survive(nr, nc, newCoily, baseEnemies, depth - 1);
+        } else {
+            var nearIdx = 0, nearDist = Infinity;
+            for (var bei = 0; bei < branchEnemies.length; bei++) {
+                for (var bbi = 0; bbi < 2; bbi++) {
+                    var be3 = branchEnemies[bei][bbi];
+                    if (!be3) continue;
+                    var eR3 = be3.jumping && be3.destRow != null ? be3.destRow : be3.row;
+                    var eC3 = be3.jumping && be3.destCol != null ? be3.destCol : be3.col;
+                    var d3 = Math.abs(eR3 - nr) + Math.abs(eC3 - nc);
+                    if (d3 < nearDist) { nearDist = d3; nearIdx = bei; }
+                }
+            }
+            var ens = baseEnemies.slice();
+            for (var bej = 0; bej < branchEnemies.length; bej++) {
+                if (bej !== nearIdx && branchEnemies[bej][0]) ens.push(branchEnemies[bej][0]);
+            }
+            var s0 = branchEnemies[nearIdx][0] ? survive(nr, nc, newCoily, ens.concat([branchEnemies[nearIdx][0]]), depth-1) : 1;
+            var s1 = branchEnemies[nearIdx][1] ? survive(nr, nc, newCoily, ens.concat([branchEnemies[nearIdx][1]]), depth-1) : 1;
+            futureProb = 0.5 * s0 + 0.5 * s1;
+        }
+        var fResult = hopProb * futureProb;
         return fResult;
     }
 
