@@ -1256,15 +1256,38 @@ function unifiedPick(gs, coilyActive) {
         return bestProb;
     }
 
-    // Joint survival = product of per-enemy survival (factored, exact for independent enemies).
-    function survive(pR, pC, coily, enemies, depth) {
+    // Joint survival: for each direction, compute per-enemy product, take max.
+    // max_D [∏_i P_i(D)] — NOT ∏_i [max_D P_i(D)].
+    // This ensures one direction must work for ALL enemies simultaneously.
+    // The per-enemy future survival (surviveOne) is still factored at depth-1,
+    // but the direction constraint at each level is joint.
+    function survive(pR, pC, coily, enemies, depth, forcedDir) {
         if (depth <= 0) return 1.0;
-        var prob = 1.0;
-        for (var i = 0; i < enemies.length; i++) {
-            prob *= surviveOne(pR, pC, coily, enemies[i], depth);
-            if (prob <= 0) return 0;
+        var tryDirs = forcedDir ? [forcedDir] : DIR_KEYS_WITH_STAY;
+        var bestProb = 0;
+        for (var dk = 0; dk < tryDirs.length; dk++) {
+            var d = DIRS[tryDirs[dk]];
+            var nr = pR + d.dr, nc = pC + d.dc;
+            if (!isValidPos(nr, nc)) continue; // disc handled in dirSurvivalProb
+            var newCoily = simCoilyHop(pR, pC, nr, nc, coily);
+            if (!newCoily) continue;
+            // Product of per-enemy expected survival for THIS direction
+            var prob = 1.0;
+            for (var ei = 0; ei < enemies.length; ei++) {
+                var res = simOneEnemy(pR, pC, nr, nc, enemies[ei]);
+                var eSurv = 0;
+                for (var bi = 0; bi < res.branches.length; bi++) {
+                    if (res.branches[bi].safe) {
+                        var ne = res.branches[bi].enemy;
+                        eSurv += (ne ? surviveOne(nr, nc, newCoily, ne, depth - 1) : 1.0) / res.count;
+                    }
+                }
+                prob *= eSurv;
+                if (prob <= 0) break;
+            }
+            if (prob > bestProb) bestProb = prob;
         }
-        return prob;
+        return bestProb;
     }
 
     // Top-level: P(survive DEPTH hops | direction dir)
@@ -1281,23 +1304,8 @@ function unifiedPick(gs, coilyActive) {
             }
             return 0;
         }
-        var newCoily = simCoilyHop(pR, pC, nr, nc, coily);
-        if (!newCoily) return 0;
-        // Factored: for the forced direction, check each enemy's hop + future independently
-        var prob = 1.0;
-        for (var ei = 0; ei < enemies.length; ei++) {
-            var res = simOneEnemy(pR, pC, nr, nc, enemies[ei]);
-            var eSurv = 0;
-            for (var bi = 0; bi < res.branches.length; bi++) {
-                if (res.branches[bi].safe) {
-                    var ne = res.branches[bi].enemy;
-                    eSurv += (ne ? surviveOne(nr, nc, newCoily, ne, depth - 1) : 1.0) / res.count;
-                }
-            }
-            prob *= eSurv;
-            if (prob <= 0) return 0;
-        }
-        return prob;
+        // Delegate to survive with forced direction
+        return survive(pR, pC, coily, enemies, depth, dir);
     }
 
     // (Disc lure evaluation is now folded into dirSurvivalProb above —
