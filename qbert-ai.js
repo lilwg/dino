@@ -1287,26 +1287,51 @@ function unifiedPick(gs, coilyActive) {
             if (!isValidPos(nr, nc)) continue; // disc handled in dirSurvivalProb
             var newCoily = simCoilyHop(pR, pC, nr, nc, coily);
             if (!newCoily) continue;
-            // Per-enemy hop safety for THIS direction, then recurse jointly
+            // Per-enemy hop safety + collect branches for recursion
             var prob = 1.0;
-            var nextEnemies = [];
+            var baseEnemies = [];
+            var doBranch = (depth >= DEPTH - 1); // both-branch at top 2 levels only
+            var branchEnemy = null;
+            var branchDist = Infinity;
             for (var ei = 0; ei < enemies.length; ei++) {
                 var res = simOneEnemy(pR, pC, nr, nc, enemies[ei]);
-                var pSafe = 0;
-                var bestBranch = null;
+                var safeBranches = [];
                 for (var bi = 0; bi < res.branches.length; bi++) {
-                    if (res.branches[bi].safe) {
-                        pSafe += 1.0 / res.count;
-                        if (!bestBranch) bestBranch = res.branches[bi].enemy;
-                    }
+                    if (res.branches[bi].safe) safeBranches.push(res.branches[bi].enemy);
                 }
-                prob *= pSafe;
+                prob *= safeBranches.length / res.count;
                 if (prob <= 0) break;
-                if (bestBranch) nextEnemies.push(bestBranch);
+                if (safeBranches.length === 1) {
+                    if (safeBranches[0]) baseEnemies.push(safeBranches[0]);
+                } else if (safeBranches.length === 2) {
+                    if (!doBranch) {
+                        if (safeBranches[0]) baseEnemies.push(safeBranches[0]);
+                    } else {
+                    // Track nearest branching enemy for expected-value recursion
+                    for (var sbi = 0; sbi < 2; sbi++) {
+                        if (!safeBranches[sbi]) continue;
+                        var sb = safeBranches[sbi];
+                        var sbR = sb.jumping && sb.destRow != null ? sb.destRow : sb.row;
+                        var sbC = sb.jumping && sb.destCol != null ? sb.destCol : sb.col;
+                        var sbd = Math.abs(sbR - nr) + Math.abs(sbC - nc);
+                        if (sbd < branchDist) { branchDist = sbd; branchEnemy = safeBranches; }
+                    }
+                    // Non-nearest branching enemies: use first safe branch
+                    if (branchEnemy !== safeBranches) {
+                        if (safeBranches[0]) baseEnemies.push(safeBranches[0]);
+                    }
+                    } // end doBranch
+                }
             }
             if (prob > 0) {
-                // Joint recursion: survive checks all enemies together at depth-1
-                prob *= survive(nr, nc, newCoily, nextEnemies, depth - 1);
+                if (!branchEnemy) {
+                    prob *= survive(nr, nc, newCoily, baseEnemies, depth - 1);
+                } else {
+                    // Expected value over nearest branching enemy's 2 branches
+                    var s0 = branchEnemy[0] ? survive(nr, nc, newCoily, baseEnemies.concat([branchEnemy[0]]), depth-1) : 1;
+                    var s1 = branchEnemy[1] ? survive(nr, nc, newCoily, baseEnemies.concat([branchEnemy[1]]), depth-1) : 1;
+                    prob *= 0.5 * s0 + 0.5 * s1;
+                }
             }
             if (prob > bestProb) bestProb = prob;
         }
