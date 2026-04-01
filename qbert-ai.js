@@ -1229,9 +1229,10 @@ function unifiedPick(gs, coilyActive) {
                    (coily.destCol != null ? coily.destCol : 9) + '|' + depth;
         for (var mi = 0; mi < enemies.length; mi++) {
             var me = enemies[mi];
-            mKey += '|' + me.row + ',' + me.col + ',' + (me.jumping ? 1 : 0) + ',' +
+            mKey += '|' + me.type[0] + me.row + ',' + me.col + ',' + (me.jumping ? 1 : 0) + ',' +
                     Math.round((me.jumpT || 0) * 30) + ',' + me.moveTimer + ',' +
-                    (me.destRow != null ? me.destRow : 9) + ',' + (me.destCol != null ? me.destCol : 9);
+                    (me.destRow != null ? me.destRow : 9) + ',' + (me.destCol != null ? me.destCol : 9) + ',' +
+                    (me.hops || 0) + ',' + (me.dirBits != null ? me.dirBits : 'n');
         }
         if (memo[mKey] !== undefined) return memo[mKey];
 
@@ -1318,7 +1319,8 @@ function unifiedPick(gs, coilyActive) {
             if (pSafe <= 0) return 0;
             if (worstEnemy) newEnemies.push(worstEnemy);
         }
-        return hopProb * survive(nr, nc, newCoily, newEnemies, depth - 1);
+        var fResult = hopProb * survive(nr, nc, newCoily, newEnemies, depth - 1);
+        return fResult;
     }
 
     // (Disc lure evaluation is now folded into dirSurvivalProb above —
