@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic  (v2 — oscillation fix + revert penalty)
-var AI_VERSION = 'v5.6-probabilistic';
+var AI_VERSION = 'v5.7-prob-log-scoring';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -1002,7 +1002,7 @@ function unifiedPick(gs, coilyActive) {
     window.aiPredictedTimeline = null;
 
     var hasEnemies = gs.enemies.length > 0;
-    var DEPTH = hasEnemies ? 8 : 0;
+    var DEPTH = hasEnemies ? (window.AI_DEPTH || 8) : 0;
 
     var pJumpDur = PLAYER_JUMP_DUR * gs.sm;
     var pJumpFrames = Math.ceil(1 / pJumpDur) + 1; // +1 for post-landing idle frame
@@ -1303,23 +1303,36 @@ function unifiedPick(gs, coilyActive) {
         }
         hop1Surv[dir] = survProb;
 
-        // Compute tour cost
+        // Compute tour cost — if simStep dies on this RNG seed, use current state estimate
         simSeed(k * 100);
         var tcClone = simDeepClone(gs);
         var tcAlive = simStep(tcClone, dir);
-        var tc = tcAlive ? (tcClone.levelWon ? -1000 : simTourCost(tcClone)) : 9999;
+        var tc;
+        if (tcAlive) {
+            tc = tcClone.levelWon ? 0 : simTourCost(tcClone);
+        } else {
+            tc = simTourCost(gs) + 1; // simStep failed with this seed; approximate
+        }
         if (dir === 'STAY') tc += 2;
         tourCosts[dir] = tc;
 
-        // Combined score: survival probability × tour value
-        // Higher survival prob and lower tour cost = better
-        if (survProb < 0.01) {
+        // Combined score: P(survive)^SAFETY_EXP × discount^tour_cost
+        // SAFETY_EXP < 1 compresses probabilities toward 1 (less risk-averse)
+        // DISCOUNT < 1 penalizes longer tours (each extra hop = more danger)
+        // PROB_FLOOR: minimum probability to consider (below = give up)
+        // Score = log(P_per_hop) - λ × tour_cost
+        // log(P_per_hop) = log(P_D) / D normalizes danger across depths.
+        // λ controls how much tour progress matters vs survival.
+        var LAMBDA = window.AI_LAMBDA || 0.002;
+        var logPerHop = survProb > 0 ? Math.log(survProb) / DEPTH : -100;
+        var score = logPerHop - LAMBDA * tc;
+        if (survProb <= 0) {
             aiMoveScores[dir] = -10000;
-            continue; // effectively dead — skip
+            continue;
         }
         safe1[dir] = true;
         safe2[dir] = true;
-        aiMoveScores[dir] = Math.round(survProb * 10000) - tc;
+        aiMoveScores[dir] = Math.round(score * 10000);
     }
 
     aiLastHop1Surv = hop1Surv;
