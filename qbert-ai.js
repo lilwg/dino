@@ -1263,6 +1263,22 @@ function unifiedPick(gs, coilyActive) {
     // but the direction constraint at each level is joint.
     function survive(pR, pC, coily, enemies, depth, forcedDir) {
         if (depth <= 0) return 1.0;
+        // Memoize (skip for forced dir — only called once per direction)
+        var mKey;
+        if (!forcedDir) {
+            mKey = pR + ',' + pC + '|' + coily.row + ',' + coily.col + ',' +
+                   (coily.jumping ? 1 : 0) + ',' + Math.round((coily.jumpT || 0) * 30) + ',' +
+                   (coily.moveTimer || 0) + ',' + (coily.destRow != null ? coily.destRow : 9) + ',' +
+                   (coily.destCol != null ? coily.destCol : 9) + '|' + depth;
+            for (var mi = 0; mi < enemies.length; mi++) {
+                var me = enemies[mi];
+                mKey += '|' + me.type[0] + me.row + ',' + me.col + ',' + (me.jumping ? 1 : 0) + ',' +
+                        Math.round((me.jumpT || 0) * 30) + ',' + me.moveTimer + ',' +
+                        (me.destRow != null ? me.destRow : 9) + ',' + (me.destCol != null ? me.destCol : 9) + ',' +
+                        (me.hops || 0) + ',' + (me.dirBits != null ? me.dirBits : 'n');
+            }
+            if (memo[mKey] !== undefined) return memo[mKey];
+        }
         var tryDirs = forcedDir ? [forcedDir] : DIR_KEYS_WITH_STAY;
         var bestProb = 0;
         for (var dk = 0; dk < tryDirs.length; dk++) {
@@ -1271,22 +1287,30 @@ function unifiedPick(gs, coilyActive) {
             if (!isValidPos(nr, nc)) continue; // disc handled in dirSurvivalProb
             var newCoily = simCoilyHop(pR, pC, nr, nc, coily);
             if (!newCoily) continue;
-            // Product of per-enemy expected survival for THIS direction
+            // Per-enemy hop safety for THIS direction, then recurse jointly
             var prob = 1.0;
+            var nextEnemies = [];
             for (var ei = 0; ei < enemies.length; ei++) {
                 var res = simOneEnemy(pR, pC, nr, nc, enemies[ei]);
-                var eSurv = 0;
+                var pSafe = 0;
+                var bestBranch = null;
                 for (var bi = 0; bi < res.branches.length; bi++) {
                     if (res.branches[bi].safe) {
-                        var ne = res.branches[bi].enemy;
-                        eSurv += (ne ? surviveOne(nr, nc, newCoily, ne, depth - 1) : 1.0) / res.count;
+                        pSafe += 1.0 / res.count;
+                        if (!bestBranch) bestBranch = res.branches[bi].enemy;
                     }
                 }
-                prob *= eSurv;
+                prob *= pSafe;
                 if (prob <= 0) break;
+                if (bestBranch) nextEnemies.push(bestBranch);
+            }
+            if (prob > 0) {
+                // Joint recursion: survive checks all enemies together at depth-1
+                prob *= survive(nr, nc, newCoily, nextEnemies, depth - 1);
             }
             if (prob > bestProb) bestProb = prob;
         }
+        if (mKey) memo[mKey] = bestProb;
         return bestProb;
     }
 
