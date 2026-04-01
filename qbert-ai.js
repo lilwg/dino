@@ -1022,7 +1022,37 @@ function unifiedPick(gs, coilyActive) {
             continue;
         }
         if (e.type === 'slick' || e.type === 'greenball') continue;
-        if (e.type === 'spawn-timer') continue; // TODO: handle spawns
+        if (e.type === 'spawn-timer') {
+            // Convert spawn-timer to the enemy it will produce
+            if (e.timer > DEPTH * pJumpFrames + 50) continue; // too far in the future
+            var ft = e.forcedType;
+            if (!ft) {
+                var hasCoilyOrEgg = false;
+                for (var sti = 0; sti < gs.enemies.length; sti++)
+                    if (gs.enemies[sti].type === 'coily' || gs.enemies[sti].type === 'egg') { hasCoilyOrEgg = true; break; }
+                ft = hasCoilyOrEgg ? 'redball' : 'egg';
+            }
+            if (ft === 'ugg') {
+                enemyInits.push({ type: 'ugg', row: ROWS-1, col: ROWS-1, jumping: false, jumpT: 0,
+                    jumpDur: ENEMY_JUMP_DUR * gs.sm, moveTimer: 0,
+                    moveInterval: enemyMoveInterval('ugg', gs.sm), hops: 0, falling: false,
+                    willHatch: false, spawnAnimTimer: e.timer + 20, destRow: null, destCol: null, dirBits: null });
+            } else if (ft === 'wrongway') {
+                enemyInits.push({ type: 'wrongway', row: ROWS-1, col: 0, jumping: false, jumpT: 0,
+                    jumpDur: ENEMY_JUMP_DUR * gs.sm, moveTimer: 0,
+                    moveInterval: enemyMoveInterval('wrongway', gs.sm), hops: 0, falling: false,
+                    willHatch: false, spawnAnimTimer: e.timer + 20, destRow: null, destCol: null, dirBits: null });
+            } else {
+                // egg/redball: spawns at col 0 or col 1 — add both as separate enemies
+                for (var sc = 0; sc < 2; sc++) {
+                    enemyInits.push({ type: ft, row: 1, col: sc, jumping: false, jumpT: 0,
+                        jumpDur: ENEMY_JUMP_DUR * gs.sm, moveTimer: 0,
+                        moveInterval: enemyMoveInterval(ft, gs.sm), hops: 0, falling: false,
+                        willHatch: false, spawnAnimTimer: e.timer + 20, destRow: null, destCol: null, dirBits: null });
+                }
+            }
+            continue;
+        }
         enemyInits.push({ type: e.type, row: e.row, col: e.col,
             jumping: !!e.jumping, jumpT: e.jumpT || 0,
             jumpDur: e.jumpDur || ENEMY_JUMP_DUR * gs.sm,
@@ -1140,6 +1170,7 @@ function unifiedPick(gs, coilyActive) {
                     e2.moveTimer = 0;
                     e2.hops = (e2.hops || 0) + 1;
                     var mvs = enemyMoves(e2);
+                    if (mvs.length === 0) continue; // unknown/dead enemy type
                     var ch = (e2._choice != null) ? e2._choice : 0;
                     e2._choice = undefined;
                     if (e2.dirBits != null) e2.dirBits = e2.dirBits >> 1;
@@ -1198,8 +1229,9 @@ function unifiedPick(gs, coilyActive) {
 
         var bestProb = 0;
         // OR: player picks direction that maximizes survival probability
-        for (var dk = 0; dk < DIR_KEYS.length; dk++) {
-            var d = DIRS[DIR_KEYS[dk]];
+        // Include STAY — player may need to wait for enemies to pass
+        for (var dk = 0; dk < DIR_KEYS_WITH_STAY.length; dk++) {
+            var d = DIRS[DIR_KEYS_WITH_STAY[dk]];
             var nr = pR + d.dr, nc = pC + d.dc;
             if (!isValidPos(nr, nc)) continue;
             var newCoily = simCoilyHop(pR, pC, nr, nc, coily);
@@ -1433,6 +1465,27 @@ function aiPickBestDir() {
     for (var si = 0; si < gs.cubes.length; si++) aiPrevCubeStates[si] = gs.cubes[si].state;
 
     var result = unifiedPick(gs, coilyActive);
+
+    // Record decision history for death diagnosis
+    if (!window._aiDecisionLog) window._aiDecisionLog = [];
+    var enemySnap = '';
+    for (var dli = 0; dli < gs.enemies.length; dli++) {
+        var dle = gs.enemies[dli];
+        if (dle.type === 'spawn-timer') continue;
+        enemySnap += ' ' + dle.type + '@(' + dle.row + ',' + dle.col + ')';
+        if (dle.jumping) enemySnap += 'j' + (dle.jumpT||0).toFixed(2) + '→(' + dle.destRow + ',' + dle.destCol + ')';
+    }
+    var probSnap = '';
+    for (var dlk in aiLastHop1Surv) probSnap += ' ' + dlk + '=' + (aiLastHop1Surv[dlk] !== undefined ? aiLastHop1Surv[dlk].toFixed(3) : '?');
+    window._aiDecisionLog.push({
+        hop: typeof hops !== 'undefined' ? hops : 0,
+        pos: '(' + gs.player.row + ',' + gs.player.col + ')',
+        dir: result,
+        probs: probSnap.trim(),
+        enemies: enemySnap.trim(),
+        scores: JSON.parse(JSON.stringify(aiMoveScores))
+    });
+    if (window._aiDecisionLog.length > 20) window._aiDecisionLog.shift();
 
     // Track position history for oscillation detection
     aiPosHistory.push(posKey);
