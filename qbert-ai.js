@@ -1117,11 +1117,23 @@ function unifiedPick(gs, coilyActive) {
     function simOneEnemy(pR, pC, nr, nc, e) {
         var moves = null;
         var isDecider = false;
-        if (!e.falling && e.spawnAnimTimer <= 0 && !e.jumping) {
-            var framesUntil = e.moveInterval - e.moveTimer;
-            if (framesUntil <= pJumpFrames) {
-                moves = enemyMoves(e);
-                if (moves.length > 1) isDecider = true;
+        if (!e.falling && e.spawnAnimTimer <= 0) {
+            if (!e.jumping) {
+                // Idle: will it decide within this hop?
+                var framesUntil = e.moveInterval - e.moveTimer;
+                if (framesUntil <= pJumpFrames) {
+                    moves = enemyMoves(e);
+                    if (moves.length > 1) isDecider = true;
+                }
+            } else {
+                // Mid-jump: will it land AND then reach a decision within this hop?
+                var framesToLand = Math.ceil((1.0 - e.jumpT) / e.jumpDur);
+                var framesAfterLand = pJumpFrames - framesToLand;
+                // After landing: timer starts at 0, reaches moveInterval after moveInterval frames
+                if (framesAfterLand >= e.moveInterval) {
+                    moves = enemyMoves(e);
+                    if (moves.length > 1) isDecider = true;
+                }
             }
         }
         var numChoices = isDecider ? 2 : 1;
