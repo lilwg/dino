@@ -1005,7 +1005,8 @@ function unifiedPick(gs, coilyActive) {
     var DEPTH = hasEnemies ? (window.AI_DEPTH || 8) : 0;
 
     var pJumpDur = PLAYER_JUMP_DUR * gs.sm;
-    var pJumpFrames = Math.ceil(1 / pJumpDur); // exact frames between AI decisions
+    // simStep runs ceil(1/jumpDur) frames in the while loop + 1 idle frame after landing
+    var pJumpFrames = Math.ceil(1 / pJumpDur) + 1;
     var cJumpDur = ENEMY_JUMP_DUR * gs.sm;
     var cIdleFrames = enemyMoveInterval('coily', gs.sm);
     var memo = {};
@@ -1147,6 +1148,7 @@ function unifiedPick(gs, coilyActive) {
 
             // Simulate frame by frame, checking collisions
             var safe = true;
+            var _dbgHop = false;
             for (var f = 1; f <= pJumpFrames && safe; f++) {
                 var playerT = f * pJumpDur;
                 // Advance each enemy
@@ -1349,6 +1351,21 @@ function unifiedPick(gs, coilyActive) {
             survProb = dirSurvivalProb(gs.player.row, gs.player.col, ci0, enemyInits, DEPTH, dir);
         }
         hop1Surv[dir] = survProb;
+
+        // Verification: if P > 0, check that simStep actually survives hop 1
+        if (survProb > 0 && dir !== 'STAY') {
+            simSeed(k * 100 + 5555);
+            var verClone = simDeepClone(gs);
+            var verAlive = simStep(verClone, dir);
+            if (!verAlive && survProb >= 1.0) {
+                console.log('VERIFY FAIL P=1: ' + dir + ' @(' + gs.player.row + ',' + gs.player.col +
+                    ') deathEnemy=' + (verClone.deathEnemy || '?'));
+            }
+            if (!verAlive) {
+                survProb = 0;
+                hop1Surv[dir] = 0;
+            }
+        }
 
         // Compute tour cost — if simStep dies on this RNG seed, use current state estimate
         simSeed(k * 100);
