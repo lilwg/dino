@@ -993,6 +993,7 @@ function evalDiscLure() {
 // (Cross-timestep memo can be added later with proper timeline versioning)
 
 function unifiedPick(gs, coilyActive) {
+    var _perfStart = typeof performance !== 'undefined' ? performance.now() : 0;
     var savedRng = simRng;
     var baseSeed = (gs.player.row * 7 + gs.player.col) * 10000 + (frameCount || 0);
     function simSeed(sampleIdx) { simRng = createSeededRng(baseSeed + sampleIdx * 9973); }
@@ -1110,135 +1111,102 @@ function unifiedPick(gs, coilyActive) {
         return [];
     }
 
-    // Simulate enemies for one player hop, branching on random decisions.
-    // Returns array of {safe, enemies} — one per combination of enemy choices.
-    // Player hops from (pR,pC) to (nr,nc). Collision checked each frame.
-    function simEnemyHop(pR, pC, nr, nc, enemies) {
-        // Find which enemies make random decisions during this hop
-        var deciders = [];
-        for (var i = 0; i < enemies.length; i++) {
-            var e = enemies[i];
-            if (e.falling || e.spawnAnimTimer > 0) continue;
-            if (e.jumping) continue; // mid-jump, no decision this hop
+    // Simulate ONE enemy for one player hop. Returns:
+    //   {safeBranches: [{safe, enemy}], totalBranches: N}
+    // For deterministic enemies: 1 branch. For random: 2 branches.
+    function simOneEnemy(pR, pC, nr, nc, e) {
+        var moves = null;
+        var isDecider = false;
+        if (!e.falling && e.spawnAnimTimer <= 0 && !e.jumping) {
             var framesUntil = e.moveInterval - e.moveTimer;
             if (framesUntil <= pJumpFrames) {
-                var moves = enemyMoves(e);
-                if (moves.length > 1) deciders.push(i); // only branch on random enemies
+                moves = enemyMoves(e);
+                if (moves.length > 1) isDecider = true;
             }
         }
-        var numBranches = 1 << deciders.length;
+        var numChoices = isDecider ? 2 : 1;
         var results = [];
-
-        for (var combo = 0; combo < numBranches; combo++) {
-            // Clone enemies
-            var ens = new Array(enemies.length);
-            for (var i2 = 0; i2 < enemies.length; i2++) {
-                var s = enemies[i2];
-                ens[i2] = { type:s.type, row:s.row, col:s.col, jumping:s.jumping,
-                    jumpT:s.jumpT, jumpDur:s.jumpDur, moveTimer:s.moveTimer,
-                    moveInterval:s.moveInterval, hops:s.hops, falling:s.falling,
-                    willHatch:s.willHatch, spawnAnimTimer:s.spawnAnimTimer,
-                    destRow:s.destRow, destCol:s.destCol,
-                    dirBits:s.dirBits != null ? s.dirBits : null };
-            }
-            // Pre-assign choices for deciding enemies
-            for (var di = 0; di < deciders.length; di++) {
-                ens[deciders[di]]._choice = (combo >> di) & 1;
-            }
-
-            // Pre-move collision: check if enemy already on player's tile (frame 0)
+        for (var ch = 0; ch < numChoices; ch++) {
+            // Clone enemy
+            var e2 = { type:e.type, row:e.row, col:e.col, jumping:e.jumping,
+                jumpT:e.jumpT, jumpDur:e.jumpDur, moveTimer:e.moveTimer,
+                moveInterval:e.moveInterval, hops:e.hops, falling:e.falling,
+                willHatch:e.willHatch, spawnAnimTimer:e.spawnAnimTimer,
+                destRow:e.destRow, destCol:e.destCol,
+                dirBits:e.dirBits != null ? e.dirBits : null, _choice: isDecider ? ch : undefined };
+            // Pre-move collision (frame 0)
             var safe = true;
-            for (var ei0 = 0; ei0 < ens.length && safe; ei0++) {
-                var e0 = ens[ei0];
-                if (e0.spawnAnimTimer > 0 || e0.type === 'dead') continue;
-                if (e0.jumping) {
-                    if (e0.jumpT < 0.33 && e0.row === pR && e0.col === pC) safe = false;
-                    else if (e0.jumpT >= 0.67 && e0.destRow === pR && e0.destCol === pC) safe = false;
-                } else if (e0.row === pR && e0.col === pC) safe = false;
+            if (e2.spawnAnimTimer <= 0 && e2.type !== 'dead') {
+                if (e2.jumping) {
+                    if (e2.jumpT < 0.33 && e2.row === pR && e2.col === pC) safe = false;
+                    else if (e2.jumpT >= 0.67 && e2.destRow === pR && e2.destCol === pC) safe = false;
+                } else if (e2.row === pR && e2.col === pC) safe = false;
             }
-            // Frame-by-frame collision during hop
+            // Frame-by-frame
             for (var f = 1; f <= pJumpFrames && safe; f++) {
                 var playerT = f * pJumpDur;
-                // Advance each enemy
-                for (var ei2 = 0; ei2 < ens.length; ei2++) {
-                    var e2 = ens[ei2];
-                    if (e2.falling || e2.type === 'dead') continue;
-                    if (e2.spawnAnimTimer > 0) { e2.spawnAnimTimer--; continue; }
-                    if (e2.jumping) {
-                        e2.jumpT += e2.jumpDur;
-                        if (e2.jumpT >= 1) {
-                            e2.jumping = false; e2.jumpT = 0; e2.moveTimer = 0;
-                            e2.row = e2.destRow; e2.col = e2.destCol;
-                            e2.destRow = null; e2.destCol = null;
-                            if (!isValidPos(e2.row, e2.col)) e2.falling = true;
-                            // Egg hatches into Coily — keep tracking it!
-                            if (e2.type === 'egg' && (e2.willHatch || e2.hops >= 6)) {
-                                e2.type = 'coily';
-                                e2.moveInterval = cIdleFrames;
-                            }
+                // Advance enemy
+                if (e2.falling || e2.type === 'dead') break;
+                if (e2.spawnAnimTimer > 0) { e2.spawnAnimTimer--; continue; }
+                if (e2.jumping) {
+                    e2.jumpT += e2.jumpDur;
+                    if (e2.jumpT >= 1) {
+                        e2.jumping = false; e2.jumpT = 0; e2.moveTimer = 0;
+                        e2.row = e2.destRow; e2.col = e2.destCol;
+                        e2.destRow = null; e2.destCol = null;
+                        if (!isValidPos(e2.row, e2.col)) e2.falling = true;
+                        if (e2.type === 'egg' && (e2.willHatch || e2.hops >= 6)) {
+                            e2.type = 'coily'; e2.moveInterval = cIdleFrames;
                         }
-                        continue;
                     }
+                } else {
                     e2.moveTimer++;
-                    if (e2.moveTimer < e2.moveInterval) continue;
-                    e2.moveTimer = 0;
-                    e2.hops = (e2.hops || 0) + 1;
-                    // Hatched Coily: deterministic chase, no branching
-                    if (e2.type === 'coily') {
-                        var cn = coilyChaseStep(e2.row, e2.col, pR, pC);
-                        if (cn) {
-                            e2.jumping = true; e2.jumpT = 0;
-                            e2.destRow = cn.row; e2.destCol = cn.col;
-                            if (!isValidPos(cn.row, cn.col)) e2.falling = true;
+                    if (e2.moveTimer >= e2.moveInterval) {
+                        e2.moveTimer = 0;
+                        e2.hops = (e2.hops || 0) + 1;
+                        if (e2.type === 'coily') {
+                            var cn = coilyChaseStep(e2.row, e2.col, pR, pC);
+                            if (cn) { e2.jumping = true; e2.jumpT = 0; e2.destRow = cn.row; e2.destCol = cn.col;
+                                if (!isValidPos(cn.row, cn.col)) e2.falling = true; }
+                        } else {
+                            var mvs = enemyMoves(e2);
+                            if (mvs.length === 0) continue;
+                            var c2 = (e2._choice != null) ? e2._choice : 0;
+                            e2._choice = undefined;
+                            if (e2.dirBits != null) e2.dirBits = e2.dirBits >> 1;
+                            var m = mvs[Math.min(c2, mvs.length - 1)];
+                            e2.jumping = true; e2.jumpT = 0; e2.destRow = m.r; e2.destCol = m.c;
+                            if (!isValidPos(m.r, m.c)) e2.falling = true;
+                            if (e2.type === 'egg' && (e2.hops >= 6 || m.r >= ROWS - 1)) e2.willHatch = true;
                         }
-                        continue;
                     }
-                    var mvs = enemyMoves(e2);
-                    if (mvs.length === 0) continue;
-                    var ch = (e2._choice != null) ? e2._choice : 0;
-                    e2._choice = undefined;
-                    if (e2.dirBits != null) e2.dirBits = e2.dirBits >> 1;
-                    var m = mvs[Math.min(ch, mvs.length - 1)];
-                    e2.jumping = true; e2.jumpT = 0;
-                    e2.destRow = m.r; e2.destCol = m.c;
-                    if (!isValidPos(m.r, m.c)) e2.falling = true;
-                    if (e2.type === 'egg' && (e2.hops >= 6 || m.r >= ROWS - 1)) e2.willHatch = true;
                 }
-                // Collision checks
+                // Collision check
+                if (e2.spawnAnimTimer > 0 || e2.type === 'dead') continue;
                 var ptR, ptC;
                 if (playerT < 0.33) { ptR = pR; ptC = pC; }
                 else if (playerT >= 0.67) { ptR = nr; ptC = nc; }
                 else { ptR = -99; ptC = -99; }
-                for (var ei3 = 0; ei3 < ens.length && safe; ei3++) {
-                    var e3 = ens[ei3];
-                    if (e3.spawnAnimTimer > 0 || e3.type === 'dead') continue;
-                    // Note: DON'T skip falling enemies — they still have collision
-                    // tiles until they leave the grid (jumpT < 0.33 = source tile)
-                    // Same-tile
-                    if (ptR >= 0) {
-                        if (e3.jumping) {
-                            if (e3.jumpT < 0.33 && e3.row === ptR && e3.col === ptC) safe = false;
-                            else if (e3.jumpT >= 0.67 && e3.destRow === ptR && e3.destCol === ptC) safe = false;
-                        } else if (e3.row === ptR && e3.col === ptC) safe = false;
-                    }
-                    // Cross-path (ROM $BD1E)
-                    if (e3.jumping && e3.destRow != null &&
-                        nr === e3.row && nc === e3.col && pR === e3.destRow && pC === e3.destCol) safe = false;
+                if (ptR >= 0) {
+                    if (e2.jumping) {
+                        if (e2.jumpT < 0.33 && e2.row === ptR && e2.col === ptC) safe = false;
+                        else if (e2.jumpT >= 0.67 && e2.destRow === ptR && e2.destCol === ptC) safe = false;
+                    } else if (e2.row === ptR && e2.col === ptC) safe = false;
                 }
+                if (e2.jumping && e2.destRow != null &&
+                    nr === e2.row && nc === e2.col && pR === e2.destRow && pC === e2.destCol) safe = false;
             }
-            // Collect surviving enemies
-            var live = [];
-            for (var ei4 = 0; ei4 < ens.length; ei4++) {
-                if (!ens[ei4].falling && ens[ei4].type !== 'dead') live.push(ens[ei4]);
+            if (!e2.falling && e2.type !== 'dead') {
+                results.push({ safe: safe, enemy: e2 });
+            } else {
+                results.push({ safe: safe, enemy: null }); // fell off or hatched
             }
-            results.push({ safe: safe, enemies: live });
         }
-        return results;
+        return { branches: results, count: numChoices };
     }
 
-    // Probabilistic survival tree: exact probabilities with per-enemy branching.
-    // OR: player picks direction (max probability).
-    // Enemy choices: weighted average (0.5 left + 0.5 right) instead of AND.
+    // Factored survival: enemies are independent, so P(survive) = ∏ P_i.
+    // Each enemy checked separately — O(K) not O(2^K).
     // Returns P(survive depth hops) ∈ [0, 1].
     function survive(pR, pC, coily, enemies, depth) {
         if (depth <= 0) return 1.0;
@@ -1255,24 +1223,34 @@ function unifiedPick(gs, coilyActive) {
         if (memo[mKey] !== undefined) return memo[mKey];
 
         var bestProb = 0;
-        // OR: player picks direction that maximizes survival probability
-        // Include STAY — player may need to wait for enemies to pass
         for (var dk = 0; dk < DIR_KEYS_WITH_STAY.length; dk++) {
             var d = DIRS[DIR_KEYS_WITH_STAY[dk]];
             var nr = pR + d.dr, nc = pC + d.dc;
             if (!isValidPos(nr, nc)) continue;
             var newCoily = simCoilyHop(pR, pC, nr, nc, coily);
-            if (!newCoily) continue; // Coily kills = P=0
-            var branches = simEnemyHop(pR, pC, nr, nc, enemies);
-            // Weighted average over branches (each equally likely)
-            var prob = 0;
-            for (var bi = 0; bi < branches.length; bi++) {
-                if (branches[bi].safe) {
-                    prob += survive(nr, nc, newCoily, branches[bi].enemies, depth - 1);
+            if (!newCoily) continue;
+            // Factored: compute P for each enemy independently, multiply
+            var prob = 1.0;
+            var newEnemies = [];
+            for (var ei = 0; ei < enemies.length && prob > 0; ei++) {
+                var res = simOneEnemy(pR, pC, nr, nc, enemies[ei]);
+                // P(enemy i safe) = fraction of safe branches
+                var pSafe = 0;
+                // For recursion: expected enemy state (weighted avg of branches)
+                // Use first safe branch's enemy state as representative
+                var repEnemy = null;
+                for (var bi = 0; bi < res.branches.length; bi++) {
+                    if (res.branches[bi].safe) {
+                        pSafe += 1.0 / res.count;
+                        if (!repEnemy) repEnemy = res.branches[bi].enemy;
+                    }
                 }
-                // unsafe branch contributes 0
+                prob *= pSafe;
+                if (repEnemy) newEnemies.push(repEnemy);
             }
-            prob /= branches.length;
+            if (prob > 0) {
+                prob *= survive(nr, nc, newCoily, newEnemies, depth - 1);
+            }
             if (prob > bestProb) bestProb = prob;
         }
         memo[mKey] = bestProb;
@@ -1284,26 +1262,36 @@ function unifiedPick(gs, coilyActive) {
         var d = DIRS[dir];
         var nr = pR + d.dr, nc = pC + d.dc;
         if (!isValidPos(nr, nc)) {
-            // Off-grid: check if a disc is here — disc ride kills all enemies
             for (var dci = 0; dci < gs.discs.length; dci++) {
                 var disc = gs.discs[dci];
                 if (!disc.active) continue;
                 if ((disc.side === 0 && dir === 'UL' && pC === 0 && pR === disc.row) ||
                     (disc.side === 1 && dir === 'UR' && pC === pR && pR === disc.row))
-                    return 1.0; // disc ride: all enemies die, player safe at apex
+                    return 1.0;
             }
-            return 0; // off-grid with no disc = death
+            return 0;
         }
         var newCoily = simCoilyHop(pR, pC, nr, nc, coily);
         if (!newCoily) return 0;
-        var branches = simEnemyHop(pR, pC, nr, nc, enemies);
-        var prob = 0;
-        for (var bi = 0; bi < branches.length; bi++) {
-            if (branches[bi].safe) {
-                prob += survive(nr, nc, newCoily, branches[bi].enemies, depth - 1);
+        var prob = 1.0;
+        var newEnemies = [];
+        for (var ei = 0; ei < enemies.length && prob > 0; ei++) {
+            var res = simOneEnemy(pR, pC, nr, nc, enemies[ei]);
+            var pSafe = 0;
+            var repEnemy = null;
+            for (var bi = 0; bi < res.branches.length; bi++) {
+                if (res.branches[bi].safe) {
+                    pSafe += 1.0 / res.count;
+                    if (!repEnemy) repEnemy = res.branches[bi].enemy;
+                }
             }
+            prob *= pSafe;
+            if (repEnemy) newEnemies.push(repEnemy);
         }
-        return prob / branches.length;
+        if (prob > 0) {
+            prob *= survive(nr, nc, newCoily, newEnemies, depth - 1);
+        }
+        return prob;
     }
 
     // (Disc lure evaluation is now folded into dirSurvivalProb above —
@@ -1458,6 +1446,8 @@ function unifiedPick(gs, coilyActive) {
         if (aiMoveScores[fd] > bestScore) { bestScore = aiMoveScores[fd]; bestDir = fd; }
     }
     restoreRng();
+    var _perfMs = typeof performance !== 'undefined' ? performance.now() - _perfStart : 0;
+    if (_perfMs > 50) console.log('AI SLOW: ' + _perfMs.toFixed(0) + 'ms, enemies=' + enemyInits.length + ' memo=' + Object.keys(memo).length);
     return bestDir || 'STAY';
 }
 
