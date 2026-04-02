@@ -461,9 +461,9 @@ function killPlayerVisual() {
     window._deathDecisionChain = (window._aiDecisionLog || []).slice();
     if (!window._deathChains) window._deathChains = [];
     window._deathChains.push({ info: deathInfo, chain: window._deathDecisionChain.slice(-8) });
-    // Capture death state and enter rewind mode (skip at high speed / headless)
+    // Capture death state and enter rewind mode (skip in headless/automated tests)
     captureRewindSnapshot(gs, true);
-    if (gameSpeed <= 2) {
+    if (!window._headlessTest) {
         rewindMode = true;
         rewindIdx = rewindBuffer.length - 1;
     }
