@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic  (v2 — oscillation fix + revert penalty)
-var AI_VERSION = 'v7.0-coilyPrevChase';
+var AI_VERSION = 'v7.1-coilyGuard';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -1396,7 +1396,16 @@ function unifiedPick(gs, coilyActive) {
             }
             return 0;
         }
-        // Delegate to survive with forced direction
+        // ROM guard: check if Coily (using correct prevR chase) would collide on this hop.
+        // The survive tree uses pR chase (slightly wrong but well-calibrated). This guard
+        // catches the specific case where the correct chase produces a collision the tree misses.
+        if (coily && coily.row >= 0) {
+            var pvR = gs.player.prevRow != null ? gs.player.prevRow : pR;
+            var pvC = gs.player.prevCol != null ? gs.player.prevCol : pC;
+            var correctCoily = simCoilyHop(pR, pC, nr, nc, coily, pvR, pvC);
+            if (!correctCoily) return 0; // Coily collision with correct chase
+        }
+        // Delegate to survive with forced direction (uses pR chase internally)
         return survive(pR, pC, coily, enemies, depth, dir);
     }
 
