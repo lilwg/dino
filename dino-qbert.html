@@ -949,7 +949,10 @@ function update() {
             }
             var dir = computeAIMove();
             if (dir === 'STAY') {
-                // AI chose to wait
+                // Update prevRow/prevCol so Coily chases current position, not stale prev.
+                // Without this, Coily can oscillate indefinitely when prev is on the diagonal.
+                gs.player.prevRow = gs.player.row;
+                gs.player.prevCol = gs.player.col;
             } else if (dir) {
                 tryMove(dir);
             }
