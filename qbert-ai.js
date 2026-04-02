@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic  (v2 — oscillation fix + revert penalty)
-var AI_VERSION = 'v6.6-perfMap';
+var AI_VERSION = 'v6.7-noSlowCalls';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -1009,12 +1009,16 @@ function unifiedPick(gs, coilyActive) {
     window.aiPredictedTimeline = null;
 
     var hasEnemies = gs.enemies.length > 0;
-    var DEPTH = hasEnemies ? (window.AI_DEPTH || 8) : 0;
+    var baseDepth = window.AI_DEPTH || 8;
+    var DEPTH = hasEnemies ? baseDepth : 0;
 
     var pJumpDur = PLAYER_JUMP_DUR * gs.sm;
     var pJumpFrames = Math.ceil(1 / pJumpDur);
     var cJumpDur = ENEMY_JUMP_DUR * gs.sm;
     var cIdleFrames = enemyMoveInterval('coily', gs.sm);
+
+    // Time budget: cap AI computation to avoid frame drops
+    var _aiDeadline = typeof performance !== 'undefined' ? performance.now() + 30 : Infinity;
 
     // Cross-timestep memo: persist across AI calls, clear on speed change or overflow
     if (gs.sm !== _persistMemoSm || _persistMemoCount > 50000) {
@@ -1088,6 +1092,10 @@ function unifiedPick(gs, coilyActive) {
         if (dist <= DEPTH + 3) pruned.push(pe);
     }
     enemyInits = pruned;
+
+    // Adaptive depth: reduce when many enemies to keep calls fast
+    if (enemyInits.length >= 5) DEPTH = Math.min(DEPTH, 6);
+    else if (enemyInits.length >= 4) DEPTH = Math.min(DEPTH, 7);
 
     // Simulate Coily for one hop (deterministic — chases pR,pC)
     function simCoilyHop(pR, pC, nr, nc, coily) {
@@ -1288,6 +1296,8 @@ function unifiedPick(gs, coilyActive) {
     // but the direction constraint at each level is joint.
     function survive(pR, pC, coily, enemies, depth, forcedDir) {
         if (depth <= 0) return 1.0;
+        // Time budget check — return best found so far if over deadline
+        if (typeof performance !== 'undefined' && performance.now() > _aiDeadline) return 0.5;
         // Memoize (skip for forced dir — only called once per direction)
         var mKey;
         if (!forcedDir) {
@@ -1316,7 +1326,7 @@ function unifiedPick(gs, coilyActive) {
             // Per-enemy hop safety + collect branches for recursion
             var prob = 1.0;
             var baseEnemies = [];
-            var doBranch = true; // both-branch at all depth levels
+            var doBranch = (depth >= DEPTH - 3); // both-branch at top 4 levels
             var branchEnemy = null;
             var branchDist = Infinity;
             for (var ei = 0; ei < enemies.length; ei++) {
