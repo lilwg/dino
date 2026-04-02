@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic  (v2 — oscillation fix + revert penalty)
-var AI_VERSION = 'v6.4-overrideSafety';
+var AI_VERSION = 'v6.5-cornerStay+rewind';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -1459,9 +1459,20 @@ function unifiedPick(gs, coilyActive) {
         aiMoveScores[dir] = Math.round(score * 10000);
     }
 
-    // Safety-first: if any direction has P=1.0, never gamble on P<1.0
+    // Safety-first: if any direction has P=1.0, never gamble on P<1.0.
+    // At corner positions (≤2 valid exits), exclude STAY from triggering this rule —
+    // STAY=1.0 at corners leads to horizon traps where enemies converge beyond lookahead.
+    var validExits = 0;
+    for (var vk = 0; vk < DIR_KEYS.length; vk++) {
+        var vd = DIRS[DIR_KEYS[vk]];
+        if (isValidPos(gs.player.row + vd.dr, gs.player.col + vd.dc)) validExits++;
+    }
+    var isCorner = (validExits <= 2);
     var hasPerfect = false;
-    for (var sk in hop1Surv) { if (hop1Surv[sk] >= 1.0 && aiMoveScores[sk] !== undefined) { hasPerfect = true; break; } }
+    for (var sk in hop1Surv) {
+        if (isCorner && sk === 'STAY') continue;
+        if (hop1Surv[sk] >= 1.0 && aiMoveScores[sk] !== undefined) { hasPerfect = true; break; }
+    }
     if (hasPerfect) {
         for (var sk2 in hop1Surv) {
             if (hop1Surv[sk2] < 1.0 && aiMoveScores[sk2] !== undefined && aiMoveScores[sk2] > -10000) {
