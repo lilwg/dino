@@ -121,7 +121,8 @@ function startServer(dir) {
 
     // Final summary
     var final = await page.evaluate(function() {
-        return { roundResults: window._roundResults || [], deathLog: window._deathLog || [] };
+        return { roundResults: window._roundResults || [], deathLog: window._deathLog || [],
+                 deathChains: window._deathChains || [] };
     });
 
     var results = final.roundResults;
@@ -142,6 +143,15 @@ function startServer(dir) {
     if (final.deathLog.length > 0) {
         console.log('\nDeath log:');
         for (var i = 0; i < final.deathLog.length; i++) console.log('  ' + final.deathLog[i]);
+        console.log('\nDeath chains:');
+        for (var i = 0; i < final.deathChains.length; i++) {
+            var dc = final.deathChains[i];
+            console.log('  --- Death ' + (i+1) + ': ' + dc.info.substring(0, 80));
+            for (var j = 0; j < dc.chain.length; j++) {
+                var c = dc.chain[j];
+                console.log('    hop=' + c.hop + ' ' + c.pos + ' ' + c.dir + ' P=[' + c.probs + '] ' + c.enemies);
+            }
+        }
     }
 
     await browser.close();
