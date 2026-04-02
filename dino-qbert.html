@@ -1672,6 +1672,7 @@ function drawPaused() {
 var lastTime = 0;
 var accumulator = 0;
 var SIM_DT = 1000 / 60;  // 16.667ms per simulation tick
+var _frameDeadline = 0;
 
 function loop(timestamp) {
     if (!lastTime) lastTime = timestamp;
@@ -1683,10 +1684,16 @@ function loop(timestamp) {
     // Max ticks scales with speed to allow higher throughput
     var maxTicks = Math.max(4, gameSpeed * 2);
     var ticks = 0;
+    _frameDeadline = performance.now() + 40; // 40ms budget per frame
     while (accumulator >= SIM_DT && ticks < maxTicks) {
         update();
         accumulator -= SIM_DT;
         ticks++;
+        // Don't let simulation ticks exceed frame budget
+        if (performance.now() > _frameDeadline) {
+            if (accumulator > SIM_DT) accumulator = 0;
+            break;
+        }
     }
     // If we hit the cap, discard remaining accumulator to prevent buildup
     if (ticks >= maxTicks && accumulator > SIM_DT) accumulator = 0;

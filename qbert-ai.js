@@ -1460,7 +1460,7 @@ function unifiedPick(gs, coilyActive) {
         } else {
             tc = simTourCost(gs) + 1; // simStep failed with this seed; approximate
         }
-        if (dir === 'STAY') tc += 2;
+        if (dir === 'STAY') tc += 5;
         tourCosts[dir] = tc;
 
         // Combined score: P(survive)^SAFETY_EXP × discount^tour_cost
