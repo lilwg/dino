@@ -1542,7 +1542,31 @@ function unifiedPick(gs, coilyActive) {
     restoreRng();
     var _perfMs = typeof performance !== 'undefined' ? performance.now() - _perfStart : 0;
     if (_perfMs > 50) console.log('AI SLOW: ' + _perfMs.toFixed(0) + 'ms, enemies=' + enemyInits.length + ' memo=' + _persistMemoCount);
-    return bestDir || 'STAY';
+
+    // Coily prediction validation: compare predicted vs actual position
+    var chosenDir = bestDir || 'STAY';
+    if (coilyInit && chosenDir !== 'STAY') {
+        var dd = DIRS[chosenDir];
+        var dnr = gs.player.row + dd.dr, dnc = gs.player.col + dd.dc;
+        if (isValidPos(dnr, dnc)) {
+            var predCoily = simCoilyHop(gs.player.row, gs.player.col, dnr, dnc, coilyInit);
+            if (predCoily) {
+                window._aiPredictedCoily = { row: predCoily.row, col: predCoily.col,
+                    jumping: predCoily.jumping, destRow: predCoily.destRow, destCol: predCoily.destCol };
+            }
+        }
+    }
+    if (window._aiPredictedCoily && coilyInit && coilyInit.row >= 0) {
+        var pc = window._aiPredictedCoily;
+        var ac = coilyInit;
+        if (pc.row !== ac.row || pc.col !== ac.col) {
+            console.log('COILY MISMATCH: predicted (' + pc.row + ',' + pc.col + ') actual (' +
+                ac.row + ',' + ac.col + ') player@(' + gs.player.row + ',' + gs.player.col +
+                ') prev@(' + (gs.player.prevRow||'?') + ',' + (gs.player.prevCol||'?') + ')');
+        }
+    }
+
+    return chosenDir;
 }
 
 // ─── Main entry point ────────────────────────────────────────────────────────
