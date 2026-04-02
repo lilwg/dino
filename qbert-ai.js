@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic  (v2 — oscillation fix + revert penalty)
-var AI_VERSION = 'v6.8-coilyOscFix';
+var AI_VERSION = 'v7.0-coilyPrevChase';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -1097,8 +1097,11 @@ function unifiedPick(gs, coilyActive) {
     if (enemyInits.length >= 5) DEPTH = Math.min(DEPTH, 6);
     else if (enemyInits.length >= 4) DEPTH = Math.min(DEPTH, 7);
 
-    // Simulate Coily for one hop (deterministic — chases pR,pC)
-    function simCoilyHop(pR, pC, nr, nc, coily) {
+    // Simulate Coily for one hop.
+    // ROM: Coily chases prevR/prevC. Exception: if at prev, chase pR/pC.
+    // Optional prevR/prevC — defaults to pR/pC (correct for recursive levels).
+    function simCoilyHop(pR, pC, nr, nc, coily, prevR, prevC) {
+        if (prevR === undefined) { prevR = pR; prevC = pC; }
         var cr = coily.row, cc = coily.col;
         var cj = coily.jumping, ct = coily.jumpT || 0, cm = coily.moveTimer || 0;
         var cdr = coily.destRow, cdc = coily.destCol;
@@ -1110,7 +1113,9 @@ function unifiedPick(gs, coilyActive) {
             } else {
                 cm++;
                 if (cm >= cIdleFrames) {
-                    var cn = coilyChaseStep(cr, cc, pR, pC);
+                    var chaseR = prevR, chaseC = prevC;
+                    if (cr === prevR && cc === prevC) { chaseR = pR; chaseC = pC; }
+                    var cn = coilyChaseStep(cr, cc, chaseR, chaseC);
                     if (cn) { cj = true; ct = 0; cm = 0; cdr = cn.row; cdc = cn.col; }
                 }
             }
@@ -1376,6 +1381,8 @@ function unifiedPick(gs, coilyActive) {
     }
 
     // Top-level: P(survive DEPTH hops | direction dir)
+    // Uses prevR/prevC for ROM-accurate Coily chase on the first hop only.
+    // Recursive levels default to pR/pC which equals prev at those levels.
     function dirSurvivalProb(pR, pC, coily, enemies, depth, dir) {
         var d = DIRS[dir];
         var nr = pR + d.dr, nc = pC + d.dc;
