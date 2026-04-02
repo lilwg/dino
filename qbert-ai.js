@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic  (v2 — oscillation fix + revert penalty)
-var AI_VERSION = 'v6.5-cornerStay+rewind';
+var AI_VERSION = 'v6.6-perfMap';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -994,8 +994,9 @@ function evalDiscLure() {
 // Same (player, coily, enemy, depth) always gives same result. No need to clear
 // between AI calls — entries from previous calls are still valid.
 // Only clear when speed multiplier changes (timing parameters change).
-var _persistMemo = {};
+var _persistMemo = new Map();
 var _persistMemoSm = 0;
+var _persistMemoCount = 0;
 
 function unifiedPick(gs, coilyActive) {
     var _perfStart = typeof performance !== 'undefined' ? performance.now() : 0;
@@ -1016,8 +1017,8 @@ function unifiedPick(gs, coilyActive) {
     var cIdleFrames = enemyMoveInterval('coily', gs.sm);
 
     // Cross-timestep memo: persist across AI calls, clear on speed change or overflow
-    if (gs.sm !== _persistMemoSm || Object.keys(_persistMemo).length > 50000) {
-        _persistMemo = {}; _persistMemoSm = gs.sm;
+    if (gs.sm !== _persistMemoSm || _persistMemoCount > 50000) {
+        _persistMemo = new Map(); _persistMemoSm = gs.sm; _persistMemoCount = 0;
     }
     var memo = _persistMemo;
 
@@ -1075,6 +1076,18 @@ function unifiedPick(gs, coilyActive) {
             destCol: e.destCol != null ? e.destCol : null,
             dirBits: e.dirBits != null ? e.dirBits : null });
     }
+
+    // Prune enemies too far to matter — Manhattan distance > DEPTH means it can't reach
+    var pRow = gs.player.row, pCol = gs.player.col;
+    var pruned = [];
+    for (var pi = 0; pi < enemyInits.length; pi++) {
+        var pe = enemyInits[pi];
+        var eR = pe.jumping && pe.destRow != null ? pe.destRow : pe.row;
+        var eC = pe.jumping && pe.destCol != null ? pe.destCol : pe.col;
+        var dist = Math.abs(eR - pRow) + Math.abs(eC - pCol);
+        if (dist <= DEPTH + 3) pruned.push(pe);
+    }
+    enemyInits = pruned;
 
     // Simulate Coily for one hop (deterministic — chases pR,pC)
     function simCoilyHop(pR, pC, nr, nc, coily) {
@@ -1244,7 +1257,7 @@ function unifiedPick(gs, coilyActive) {
                    (me.destRow != null ? me.destRow : 9) + ',' + (me.destCol != null ? me.destCol : 9) + ',' +
                    (me.hops || 0) + ',' + (me.dirBits != null ? me.dirBits : 'n') + ',' +
                    (me.spawnAnimTimer || 0) + '|' + depth;
-        if (memo[mKey] !== undefined) return memo[mKey];
+        if (memo.has(mKey)) return memo.get(mKey);
 
         var bestProb = 0;
         for (var dk = 0; dk < DIR_KEYS_WITH_STAY.length; dk++) {
@@ -1264,7 +1277,7 @@ function unifiedPick(gs, coilyActive) {
             }
             if (prob > bestProb) bestProb = prob;
         }
-        memo[mKey] = bestProb;
+        memo.set(mKey, bestProb); _persistMemoCount++;
         return bestProb;
     }
 
@@ -1290,7 +1303,7 @@ function unifiedPick(gs, coilyActive) {
                         (me.hops || 0) + ',' + (me.dirBits != null ? me.dirBits : 'n') + ',' +
                         (me.spawnAnimTimer || 0);
             }
-            if (memo[mKey] !== undefined) return memo[mKey];
+            if (memo.has(mKey)) return memo.get(mKey);
         }
         var tryDirs = forcedDir ? [forcedDir] : DIR_KEYS_WITH_STAY;
         var bestProb = 0;
@@ -1348,7 +1361,7 @@ function unifiedPick(gs, coilyActive) {
             }
             if (prob > bestProb) bestProb = prob;
         }
-        if (mKey) memo[mKey] = bestProb;
+        if (mKey) { memo.set(mKey, bestProb); _persistMemoCount++; }
         return bestProb;
     }
 
@@ -1511,7 +1524,7 @@ function unifiedPick(gs, coilyActive) {
     }
     restoreRng();
     var _perfMs = typeof performance !== 'undefined' ? performance.now() - _perfStart : 0;
-    if (_perfMs > 50) console.log('AI SLOW: ' + _perfMs.toFixed(0) + 'ms, enemies=' + enemyInits.length + ' memo=' + Object.keys(memo).length);
+    if (_perfMs > 50) console.log('AI SLOW: ' + _perfMs.toFixed(0) + 'ms, enemies=' + enemyInits.length + ' memo=' + _persistMemoCount);
     return bestDir || 'STAY';
 }
 
