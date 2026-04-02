@@ -1072,36 +1072,40 @@ function drawRewind() {
         }
     }
 
-    // Draw player marker
+    // Draw player sprite at grid position
     var pp = cubeXY(snap.playerRow, snap.playerCol);
-    ctx.beginPath();
-    ctx.arc(pp.cx, pp.cy - 14, 9, 0, Math.PI * 2);
-    ctx.fillStyle = '#00ff80';
-    ctx.fill();
-    ctx.strokeStyle = '#fff';
-    ctx.lineWidth = 2;
-    ctx.stroke();
-    // Player label
-    ctx.font = 'bold 8px monospace';
-    ctx.fillStyle = '#000';
-    ctx.textAlign = 'center';
-    ctx.fillText('Q', pp.cx, pp.cy - 11);
+    var savedPx = player.px, savedPy = player.py, savedDead = player.dead, savedJumping = player.jumping;
+    player.px = pp.cx; player.py = pp.cy; player.dead = false; player.jumping = false;
+    drawPlayer();
+    player.px = savedPx; player.py = savedPy; player.dead = savedDead; player.jumping = savedJumping;
 
     // Draw chosen direction arrow
     if (snap.aiDecision && snap.aiDecision.dir && snap.aiDecision.dir !== 'STAY') {
         var dd = DIRS[snap.aiDecision.dir];
         if (dd) {
-            var destPos = cubeXY(snap.playerRow + dd.dr, snap.playerCol + dd.dc);
-            ctx.beginPath();
-            ctx.moveTo(pp.cx, pp.cy - 14);
-            ctx.lineTo(destPos.cx, destPos.cy - 14);
-            ctx.strokeStyle = snap.isDeath ? '#ff4040' : '#00ff80';
-            ctx.lineWidth = 3;
-            ctx.stroke();
+            var dnr = snap.playerRow + dd.dr, dnc = snap.playerCol + dd.dc;
+            if (isValidPos(dnr, dnc)) {
+                var destPos = cubeXY(dnr, dnc);
+                ctx.beginPath();
+                ctx.moveTo(pp.cx, pp.cy - 14);
+                ctx.lineTo(destPos.cx, destPos.cy - 14);
+                ctx.strokeStyle = snap.isDeath ? '#ff4040' : '#00ff80';
+                ctx.lineWidth = 3;
+                ctx.stroke();
+                // Arrowhead
+                var angle = Math.atan2(destPos.cy - pp.cy, destPos.cx - pp.cx);
+                ctx.beginPath();
+                ctx.moveTo(destPos.cx, destPos.cy - 14);
+                ctx.lineTo(destPos.cx - 8 * Math.cos(angle - 0.4), destPos.cy - 14 - 8 * Math.sin(angle - 0.4));
+                ctx.lineTo(destPos.cx - 8 * Math.cos(angle + 0.4), destPos.cy - 14 - 8 * Math.sin(angle + 0.4));
+                ctx.closePath();
+                ctx.fillStyle = snap.isDeath ? '#ff4040' : '#00ff80';
+                ctx.fill();
+            }
         }
     }
 
-    // Draw enemies
+    // Draw enemies using actual sprite functions
     for (var i = 0; i < snap.enemies.length; i++) {
         var e = snap.enemies[i];
         if (e.spawnAnimTimer > 0) continue;
@@ -1109,21 +1113,15 @@ function drawRewind() {
         var ec = e.jumping && e.jumpT >= 0.5 && e.destCol != null ? e.destCol : e.col;
         if (er < 0 || er >= ROWS || ec < 0 || ec > er) continue;
         var ep = cubeXY(er, ec);
-        var col = e.type === 'coily' ? '#ff40ff' :
-                  (e.type === 'redball' || e.type === 'egg') ? '#ff4040' :
-                  (e.type === 'ugg' || e.type === 'wrongway') ? '#ff8800' :
-                  e.type === 'slick' ? '#40ff40' : '#aaa';
-        ctx.beginPath();
-        ctx.arc(ep.cx, ep.cy - 14, 6, 0, Math.PI * 2);
-        ctx.fillStyle = col;
-        ctx.fill();
-        ctx.strokeStyle = '#000';
-        ctx.lineWidth = 1;
-        ctx.stroke();
+        // Create a temporary enemy-like object for drawEnemy
+        var tempE = { type: e.type, px: ep.cx, py: ep.cy, row: er, col: ec,
+                      jumping: false, frame: 0, facing: 'R', hops: 0 };
+        drawEnemy(tempE);
+        // Label above sprite
         ctx.font = '7px monospace';
         ctx.fillStyle = '#fff';
         ctx.textAlign = 'center';
-        ctx.fillText(e.type.substring(0, 3).toUpperCase(), ep.cx, ep.cy - 23);
+        ctx.fillText(e.type.toUpperCase(), ep.cx, ep.cy - TILE_H - 8);
     }
 
     // HUD
