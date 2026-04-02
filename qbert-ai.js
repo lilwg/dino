@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic  (v2 — oscillation fix + revert penalty)
-var AI_VERSION = 'v7.2-deadCodeCleanup';
+var AI_VERSION = 'v8.1-hybrid-strategy';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -104,8 +104,13 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts) {
                     var d = dijk.dist[i];
                     // Deprioritize frequently-reverted cubes — go to fresh ones first
                     if (revertCounts && revertCounts[i] > 1) d += (revertCounts[i] - 1) * 3;
-                    // L5+: prefer bottom-row cubes to avoid backtracking through completed upper cubes
-                    if (lv >= 5) d -= idxToPos[i][0];
+                    // Bottom-up sweep: prefer bottom-row cubes to avoid backtracking
+                    // through completed upper cubes. Applies to all toggle levels.
+                    var row_i = idxToPos[i][0], col_i = idxToPos[i][1];
+                    d -= row_i * (lv >= 5 ? 1.5 : 1);
+                    // Corner priority: bottom corners (few exits) should be done first
+                    // so we don't have to revisit them later when enemies are dense
+                    if (row_i >= 4 && (col_i <= 1 || col_i >= row_i - 1)) d -= 2;
                     if (d < bestDist || (d === bestDist && (bestIdx === -1 || i < bestIdx))) {
                         bestDist = d; bestIdx = i;
                     }
@@ -733,11 +738,29 @@ function unifiedPick(gs, coilyActive) {
         return survive(pR, pC, coily, enemies, depth, dir);
     }
 
-    // (Disc lure evaluation is now folded into dirSurvivalProb above —
-    // disc moves get P=1.0 and compete naturally via the scoring formula)
+    // ── Disc lure: when Coily is active, find nearest disc for luring ──
+    // If player moves toward a disc and takes it with Coily nearby, Coily dies
+    // and we get a long peaceful window. Reduce tour cost for disc-approaching dirs.
+    var lureDisc = null, lureDiscAdj = null, lureDiscDist = 999;
+    if (coilyInit && coilyInit.row >= 0) {
+        for (var ldi = 0; ldi < gs.discs.length; ldi++) {
+            var ld = gs.discs[ldi];
+            if (!ld.active) continue;
+            var laR = ld.row, laC = ld.side === 0 ? 0 : ld.row;
+            var ldist = exBfsDist(gs.player.row, gs.player.col, laR, laC);
+            if (ldist < lureDiscDist) {
+                lureDiscDist = ldist;
+                lureDisc = ld;
+                lureDiscAdj = { row: laR, col: laC };
+            }
+        }
+        // Only lure on toggle levels (L3+) where peaceful windows are critical,
+        // and only if disc is reasonably reachable and Coily is close enough to follow
+        var coilyPlayerDist = exBfsDist(coilyInit.row, coilyInit.col, gs.player.row, gs.player.col);
+        if (gs.lv < 3 || lureDiscDist > 5 || coilyPlayerDist > 8) lureDisc = null;
+    }
 
-    // ── Core: AND-OR tree safety check per direction ──
-    // For each direction: survive hop 1 (all seeds), then DFS depth-6 AND-OR tree.
+    // ── Core: survival tree safety check + strategy-aware tour cost per direction ──
 
     var safe1 = {};
     var safe2 = {};
@@ -801,6 +824,24 @@ function unifiedPick(gs, coilyActive) {
             tc = simTourCost(gs) + 1; // simStep failed with this seed; approximate
         }
         if (dir === 'STAY') tc += 5;
+
+        // Disc lure bonus: reduce tour cost for directions moving toward disc
+        // Luring Coily = long peaceful window = effectively shorter tour
+        if (lureDisc && dir !== 'STAY') {
+            var dd2 = DIRS[dir];
+            var lnr = gs.player.row + dd2.dr, lnc = gs.player.col + dd2.dc;
+            if (isValidPos(lnr, lnc) && lureDiscAdj) {
+                var distBefore = exBfsDist(gs.player.row, gs.player.col, lureDiscAdj.row, lureDiscAdj.col);
+                var distAfter = exBfsDist(lnr, lnc, lureDiscAdj.row, lureDiscAdj.col);
+                if (distAfter < distBefore) {
+                    // Moving closer to disc — bonus scales with how close Coily is
+                    var coilyDist = exBfsDist(coilyInit.row, coilyInit.col, gs.player.row, gs.player.col);
+                    var lureBonus = coilyDist <= 4 ? 8 : 4;
+                    tc -= lureBonus;
+                }
+            }
+        }
+
         tourCosts[dir] = tc;
 
         // Combined score: P(survive)^SAFETY_EXP × discount^tour_cost
