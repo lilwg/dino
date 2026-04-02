@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic  (v2 — oscillation fix + revert penalty)
-var AI_VERSION = 'v5.7-prob-log-scoring';
+var AI_VERSION = 'v6.3-fixOverrides';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -1167,9 +1167,12 @@ function unifiedPick(gs, coilyActive) {
             for (var f = 1; f <= pJumpFrames && safe; f++) {
                 var playerT = f * pJumpDur;
                 // Advance enemy
-                if (e2.falling || e2.type === 'dead') break;
-                if (e2.spawnAnimTimer > 0) { e2.spawnAnimTimer--; continue; }
-                if (e2.jumping) {
+                if ((e2.falling && !e2.jumping) || e2.type === 'dead') break;
+                if (e2.spawnAnimTimer > 0) {
+                    e2.spawnAnimTimer--;
+                    if (e2.spawnAnimTimer > 0) continue; // still animating, no collision
+                    // Just became active — skip movement but fall through to collision check
+                } else if (e2.jumping) {
                     e2.jumpT += e2.jumpDur;
                     if (e2.jumpT >= 1) {
                         e2.jumping = false; e2.jumpT = 0; e2.moveTimer = 0;
@@ -1239,7 +1242,8 @@ function unifiedPick(gs, coilyActive) {
                    me.type[0] + me.row + ',' + me.col + ',' + (me.jumping ? 1 : 0) + ',' +
                    Math.round((me.jumpT || 0) * 30) + ',' + me.moveTimer + ',' +
                    (me.destRow != null ? me.destRow : 9) + ',' + (me.destCol != null ? me.destCol : 9) + ',' +
-                   (me.hops || 0) + ',' + (me.dirBits != null ? me.dirBits : 'n') + '|' + depth;
+                   (me.hops || 0) + ',' + (me.dirBits != null ? me.dirBits : 'n') + ',' +
+                   (me.spawnAnimTimer || 0) + '|' + depth;
         if (memo[mKey] !== undefined) return memo[mKey];
 
         var bestProb = 0;
@@ -1283,7 +1287,8 @@ function unifiedPick(gs, coilyActive) {
                 mKey += '|' + me.type[0] + me.row + ',' + me.col + ',' + (me.jumping ? 1 : 0) + ',' +
                         Math.round((me.jumpT || 0) * 30) + ',' + me.moveTimer + ',' +
                         (me.destRow != null ? me.destRow : 9) + ',' + (me.destCol != null ? me.destCol : 9) + ',' +
-                        (me.hops || 0) + ',' + (me.dirBits != null ? me.dirBits : 'n');
+                        (me.hops || 0) + ',' + (me.dirBits != null ? me.dirBits : 'n') + ',' +
+                        (me.spawnAnimTimer || 0);
             }
             if (memo[mKey] !== undefined) return memo[mKey];
         }
@@ -1298,7 +1303,7 @@ function unifiedPick(gs, coilyActive) {
             // Per-enemy hop safety + collect branches for recursion
             var prob = 1.0;
             var baseEnemies = [];
-            var doBranch = (depth >= DEPTH - 1); // both-branch at top 2 levels only
+            var doBranch = true; // both-branch at all depth levels
             var branchEnemy = null;
             var branchDist = Infinity;
             for (var ei = 0; ei < enemies.length; ei++) {
@@ -1454,6 +1459,17 @@ function unifiedPick(gs, coilyActive) {
         aiMoveScores[dir] = Math.round(score * 10000);
     }
 
+    // Safety-first: if any direction has P=1.0, never gamble on P<1.0
+    var hasPerfect = false;
+    for (var sk in hop1Surv) { if (hop1Surv[sk] >= 1.0 && aiMoveScores[sk] !== undefined) { hasPerfect = true; break; } }
+    if (hasPerfect) {
+        for (var sk2 in hop1Surv) {
+            if (hop1Surv[sk2] < 1.0 && aiMoveScores[sk2] !== undefined && aiMoveScores[sk2] > -10000) {
+                aiMoveScores[sk2] = -10000;
+            }
+        }
+    }
+
     aiLastHop1Surv = hop1Surv;
     aiLastTourCosts = tourCosts;
 
@@ -1467,7 +1483,7 @@ function unifiedPick(gs, coilyActive) {
                 var sdk = DIRS[DIR_KEYS[sk]];
                 var snr = gs.player.row + sdk.dr, snc = gs.player.col + sdk.dc;
                 if (snr === spos.row && snc === spos.col) {
-                    if (safe1[DIR_KEYS[sk]] && safe2[DIR_KEYS[sk]]) {
+                    if (safe1[DIR_KEYS[sk]] && safe2[DIR_KEYS[sk]] && aiMoveScores[DIR_KEYS[sk]] > -10000) {
                         restoreRng(); return DIR_KEYS[sk];
                     }
                 }
@@ -1562,7 +1578,8 @@ function aiPickBestDir() {
         var dle = gs.enemies[dli];
         if (dle.type === 'spawn-timer') continue;
         enemySnap += ' ' + dle.type + '@(' + dle.row + ',' + dle.col + ')';
-        if (dle.jumping) enemySnap += 'j' + (dle.jumpT||0).toFixed(2) + '→(' + dle.destRow + ',' + dle.destCol + ')';
+        if (dle.spawnAnimTimer > 0) enemySnap += 'sa' + dle.spawnAnimTimer;
+        else if (dle.jumping) enemySnap += 'j' + (dle.jumpT||0).toFixed(2) + '→(' + dle.destRow + ',' + dle.destCol + ')';
         else enemySnap += 't' + (dle.moveTimer||0);
     }
     var probSnap = '';
@@ -1632,8 +1649,8 @@ function aiPickBestDir() {
                     var aKey = (gs.player.row + ad.dr) + ',' + (gs.player.col + ad.dc);
                     if (recentTiles[aKey]) continue;
                     var asc = aiMoveScores[DIR_KEYS[ak]];
-                    // Only accept moves with 100% survival (score >= 0)
-                    if (asc !== undefined && asc < 0) continue;
+                    // Only accept moves that haven't been demoted (not blocked or gamble)
+                    if (asc !== undefined && asc <= -10000) continue;
                     // At level 3+: avoid alternatives that revert completed cubes
                     if (completedCubes[aKey]) continue;
                     if (asc !== undefined && asc > altScore) { altScore = asc; altDir = DIR_KEYS[ak]; }
@@ -1647,7 +1664,7 @@ function aiPickBestDir() {
                         var aKey2 = (gs.player.row + ad2.dr) + ',' + (gs.player.col + ad2.dc);
                         if (recentTiles[aKey2]) continue;
                         var asc2 = aiMoveScores[DIR_KEYS[ak2]];
-                        if (asc2 !== undefined && asc2 < 0) continue;
+                        if (asc2 !== undefined && asc2 <= -10000) continue;
                         if (asc2 !== undefined && asc2 > altScore) { altScore = asc2; altDir = DIR_KEYS[ak2]; }
                     }
                 }
@@ -1712,7 +1729,7 @@ function aiPickBestDir() {
                 for (var pui = 0; pui < gs.cubes.length; pui++) {
                     if (gs.cubes[pui].row === pnr && gs.cubes[pui].col === pnc && gs.cubes[pui].state < gs.tgt) {
                         var psc = aiMoveScores[DIR_KEYS[pk]];
-                        if (psc !== undefined && psc >= 0 && psc > bestProgScore) {
+                        if (psc !== undefined && psc > -10000 && psc > bestProgScore) {
                             bestProgScore = psc; bestProgDir = DIR_KEYS[pk];
                         }
                         break;
@@ -1724,7 +1741,7 @@ function aiPickBestDir() {
                 var bestTC = Infinity;
                 for (var pk2 = 0; pk2 < DIR_KEYS.length; pk2++) {
                     var pk2sc = aiMoveScores[DIR_KEYS[pk2]];
-                    if (pk2sc !== undefined && pk2sc >= 0 && aiLastTourCosts[DIR_KEYS[pk2]] !== undefined) {
+                    if (pk2sc !== undefined && pk2sc > -10000 && aiLastTourCosts[DIR_KEYS[pk2]] !== undefined) {
                         if (aiLastTourCosts[DIR_KEYS[pk2]] < bestTC) {
                             bestTC = aiLastTourCosts[DIR_KEYS[pk2]];
                             bestProgDir = DIR_KEYS[pk2];
@@ -1746,7 +1763,7 @@ function aiPickBestDir() {
                         for (var pk3 = 0; pk3 < DIR_KEYS.length; pk3++) {
                             if (!simCanMove(gs, DIR_KEYS[pk3])) continue;
                             var pk3sc = aiMoveScores[DIR_KEYS[pk3]];
-                            if (pk3sc === undefined || pk3sc < 0) continue;
+                            if (pk3sc === undefined || pk3sc <= -10000) continue;
                             var pk3d = DIRS[DIR_KEYS[pk3]];
                             var pk3r = gs.player.row + pk3d.dr, pk3c = gs.player.col + pk3d.dc;
                             if (!isValidPos(pk3r, pk3c)) continue;

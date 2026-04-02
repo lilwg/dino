@@ -430,6 +430,8 @@ function killPlayerVisual() {
     window._deathLog.push(deathInfo);
     // Snapshot AI decision chain at death for diagnosis
     window._deathDecisionChain = (window._aiDecisionLog || []).slice();
+    if (!window._deathChains) window._deathChains = [];
+    window._deathChains.push({ info: deathInfo, chain: window._deathDecisionChain.slice(-8) });
     if (lives <= 0) {
         setTimeout(function () { gameOver = true; }, 800);
     }
