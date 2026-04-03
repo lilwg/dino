@@ -950,10 +950,8 @@ function update() {
                 return;
             }
             var dir = computeAIMove();
-            if (dir !== 'STAY') captureRewindSnapshot(gs, false); // capture BEFORE hop (skip STAYs to avoid flooding)
+            if (dir !== 'STAY') captureRewindSnapshot(gs, false);
             if (dir === 'STAY') {
-                // Update prevRow/prevCol so Coily chases current position, not stale prev.
-                // Without this, Coily can oscillate indefinitely when prev is on the diagonal.
                 gs.player.prevRow = gs.player.row;
                 gs.player.prevCol = gs.player.col;
             } else if (dir) {

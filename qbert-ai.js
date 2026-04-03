@@ -361,7 +361,7 @@ function unifiedPick(gs, coilyActive) {
     var cIdleFrames = enemyMoveInterval('coily', gs.sm);
 
     // Time budget: cap AI computation to avoid frame drops
-    var _aiDeadline = typeof performance !== 'undefined' ? performance.now() + 30 : Infinity;
+    var _aiDeadline = typeof performance !== 'undefined' ? performance.now() + 50 : Infinity;
 
     // Cross-timestep memo: persist across AI calls, clear on speed change or overflow
     if (gs.sm !== _persistMemoSm || _persistMemoCount > 50000) {
