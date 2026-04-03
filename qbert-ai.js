@@ -522,14 +522,11 @@ function unifiedPick(gs, coilyActive) {
             // Compute frames until this enemy reaches its first decision point
             var framesUntilDecision = Infinity;
             if (e.spawnAnimTimer > 0) {
-                // Still animating: becomes active after spawnAnimTimer frames, then idle at timer=0
                 framesUntilDecision = e.spawnAnimTimer + e.moveInterval;
             } else if (e.jumping) {
-                // Mid-jump: lands after some frames, then idle at timer=0
                 var framesToLand = Math.ceil((1.0 - e.jumpT) / e.jumpDur);
                 framesUntilDecision = framesToLand + e.moveInterval;
             } else {
-                // Idle: reaches decision when timer hits interval
                 framesUntilDecision = e.moveInterval - e.moveTimer;
             }
             if (framesUntilDecision <= pJumpFrames) {
@@ -629,7 +626,8 @@ function unifiedPick(gs, coilyActive) {
         var me = enemy;
         var mKey = pR + ',' + pC + '|' + coily.row + ',' + coily.col + ',' +
                    (coily.jumping ? 1 : 0) + ',' + Math.round((coily.jumpT || 0) * 30) + ',' +
-                   (coily.moveTimer || 0) + ',' + (coily.destRow != null ? coily.destRow : 9) + ',' +
+                   (coily.moveTimer || 0) + ',' +
+                   (coily.destRow != null ? coily.destRow : 9) + ',' +
                    (coily.destCol != null ? coily.destCol : 9) + '|' +
                    me.type[0] + me.row + ',' + me.col + ',' + (me.jumping ? 1 : 0) + ',' +
                    Math.round((me.jumpT || 0) * 30) + ',' + me.moveTimer + ',' +
@@ -674,7 +672,8 @@ function unifiedPick(gs, coilyActive) {
         if (!forcedDir) {
             mKey = pR + ',' + pC + '|' + coily.row + ',' + coily.col + ',' +
                    (coily.jumping ? 1 : 0) + ',' + Math.round((coily.jumpT || 0) * 30) + ',' +
-                   (coily.moveTimer || 0) + ',' + (coily.destRow != null ? coily.destRow : 9) + ',' +
+                   (coily.moveTimer || 0) + ',' +
+                   (coily.destRow != null ? coily.destRow : 9) + ',' +
                    (coily.destCol != null ? coily.destCol : 9) + '|' + depth;
             for (var mi = 0; mi < enemies.length; mi++) {
                 var me = enemies[mi];
@@ -1330,19 +1329,18 @@ function aiPickBestDir() {
         }
     }
 
-    // Break stuck STAY loops — but only if a safe alternative exists
+    // Break stuck STAY loops — only override with equally-safe alternatives
     if (result === 'STAY') {
         aiStayCount++;
         if (aiStayCount >= 3) {
-            // Only override STAY if an alternative has P >= STAY's P
-            var stayP = hop1Surv['STAY'] || 0;
+            var stayP = aiLastHop1Surv['STAY'] || 0;
             var bestAlt = null, bestAltScore = -Infinity;
             for (var k = 0; k < DIR_KEYS.length; k++) {
                 if (simCanMove(gs, DIR_KEYS[k])) {
                     var sc = aiMoveScores[DIR_KEYS[k]];
                     if (sc === undefined || sc <= -10000) continue;
-                    var altP = hop1Surv[DIR_KEYS[k]] || 0;
-                    if (altP < stayP) continue; // don't force into a less safe direction
+                    var altP = aiLastHop1Surv[DIR_KEYS[k]] || 0;
+                    if (altP < stayP) continue;
                     if (sc > bestAltScore) {
                         bestAltScore = sc; bestAlt = DIR_KEYS[k];
                     }
