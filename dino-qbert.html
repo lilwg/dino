@@ -435,7 +435,10 @@ function captureRewindSnapshot(gs, isDeath) {
         snap.discs.push({ active: gs.discs[sdi].active, side: gs.discs[sdi].side, row: gs.discs[sdi].row });
     if (window._aiDecisionLog && window._aiDecisionLog.length > 0) {
         var last = window._aiDecisionLog[window._aiDecisionLog.length - 1];
-        snap.aiDecision = { dir: last.dir, probs: last.probs, scores: JSON.parse(JSON.stringify(last.scores)) };
+        // Use aiBestDir (actual direction after overrides) instead of last.dir
+        // (which is pre-oscillation/no-progress override)
+        var actualDir = (typeof aiBestDir !== 'undefined') ? aiBestDir : last.dir;
+        snap.aiDecision = { dir: actualDir, probs: last.probs, scores: JSON.parse(JSON.stringify(last.scores)) };
     }
     rewindBuffer.push(snap);
     if (rewindBuffer.length > REWIND_MAX) rewindBuffer.shift();
