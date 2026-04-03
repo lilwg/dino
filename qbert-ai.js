@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI: hybrid strategy + survival tree
-var AI_VERSION = 'v8.2-activeLure';
+var AI_VERSION = 'v8.3-lureAwareTree';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -377,7 +377,9 @@ function unifiedPick(gs, coilyActive) {
         if (e.type === 'coily') {
             coilyInit = { row: e.row, col: e.col, jumping: !!e.jumping,
                 jumpT: e.jumpT || 0, moveTimer: e.moveTimer || 0,
-                destRow: e.destRow, destCol: e.destCol };
+                destRow: e.destRow, destCol: e.destCol,
+                lureRow: e.lureRow != null ? e.lureRow : null,
+                lureCol: e.lureCol != null ? e.lureCol : null };
             continue;
         }
         if (e.type === 'slick' || e.type === 'greenball') continue;
@@ -442,24 +444,44 @@ function unifiedPick(gs, coilyActive) {
 
     // Simulate Coily for one hop.
     // ROM: Coily chases prevR/prevC. Exception: if at prev, chase pR/pC.
+    // When lure is active (disc ride), Coily chases lureRow/lureCol instead.
     // Optional prevR/prevC — defaults to pR/pC (correct for recursive levels).
     function simCoilyHop(pR, pC, nr, nc, coily, prevR, prevC) {
         if (prevR === undefined) { prevR = pR; prevC = pC; }
         var cr = coily.row, cc = coily.col;
         var cj = coily.jumping, ct = coily.jumpT || 0, cm = coily.moveTimer || 0;
         var cdr = coily.destRow, cdc = coily.destCol;
+        var hasLure = coily.lureRow != null;
         for (var f = 1; f <= pJumpFrames; f++) {
             var playerT = f * pJumpDur;
             if (cj) {
                 ct += cJumpDur;
-                if (ct >= 1) { cj = false; ct = 0; cm = 0; cr = cdr; cc = cdc; cdr = null; cdc = null; }
+                if (ct >= 1) {
+                    cj = false; ct = 0; cm = 0; cr = cdr; cc = cdc; cdr = null; cdc = null;
+                    // Coily fell off during lure chase — it's gone, no more threat
+                    if (hasLure && !isValidPos(cr, cc)) {
+                        return { row: -99, col: -99, jumping: false, jumpT: 0, moveTimer: 0,
+                                 destRow: null, destCol: null, lureRow: null, lureCol: null };
+                    }
+                }
             } else {
                 cm++;
                 if (cm >= cIdleFrames) {
-                    var chaseR = prevR, chaseC = prevC;
-                    if (cr === prevR && cc === prevC) { chaseR = pR; chaseC = pC; }
+                    var chaseR, chaseC;
+                    if (hasLure) {
+                        chaseR = coily.lureRow; chaseC = coily.lureCol;
+                    } else {
+                        chaseR = prevR; chaseC = prevC;
+                        if (cr === prevR && cc === prevC) { chaseR = pR; chaseC = pC; }
+                    }
                     var cn = coilyChaseStep(cr, cc, chaseR, chaseC);
-                    if (cn) { cj = true; ct = 0; cm = 0; cdr = cn.row; cdc = cn.col; }
+                    if (cn) {
+                        cj = true; ct = 0; cm = 0; cdr = cn.row; cdc = cn.col;
+                    } else if (hasLure) {
+                        // Chase step failed (off grid) — Coily falls off during lure
+                        cj = true; ct = 0; cm = 0;
+                        cdr = chaseR; cdc = chaseC; // off-grid destination
+                    }
                 }
             }
             var ptR, ptC;
@@ -475,7 +497,8 @@ function unifiedPick(gs, coilyActive) {
             if (ptR === ctR && ptC === ctC) return null;
             if (cj && cdr != null && nr === cr && nc === cc && pR === cdr && pC === cdc) return null;
         }
-        return { row: cr, col: cc, jumping: cj, jumpT: ct, moveTimer: cm, destRow: cdr, destCol: cdc };
+        return { row: cr, col: cc, jumping: cj, jumpT: ct, moveTimer: cm, destRow: cdr, destCol: cdc,
+                 lureRow: hasLure ? coily.lureRow : null, lureCol: hasLure ? coily.lureCol : null };
     }
 
     // Get possible moves for an enemy type
