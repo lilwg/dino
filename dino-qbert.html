@@ -1134,7 +1134,7 @@ function drawRewind() {
     if (snap.aiDecision) {
         ctx.font = '11px monospace';
         ctx.fillStyle = '#ccc';
-        ctx.fillText('Dir: ' + snap.aiDecision.dir + '    ' + snap.aiDecision.probs, CW / 2, 36);
+        ctx.fillText('(' + snap.playerRow + ',' + snap.playerCol + ') Dir: ' + snap.aiDecision.dir + '    ' + snap.aiDecision.probs, CW / 2, 36);
         var scoreStr = '';
         for (var sk in snap.aiDecision.scores) scoreStr += sk + '=' + snap.aiDecision.scores[sk] + ' ';
         ctx.fillText(scoreStr.trim(), CW / 2, 50);
