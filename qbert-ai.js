@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI: hybrid strategy + survival tree
-var AI_VERSION = 'v8.3-lureAwareTree';
+var AI_VERSION = 'v8.4-accurateTree';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -697,9 +697,7 @@ function unifiedPick(gs, coilyActive) {
             // Per-enemy hop safety + collect branches for recursion
             var prob = 1.0;
             var baseEnemies = [];
-            var doBranch = (depth >= DEPTH - 3); // both-branch at top 4 levels
-            var branchEnemy = null;
-            var branchDist = Infinity;
+            var branchEnemies = []; // ALL branching enemies get both branches checked
             for (var ei = 0; ei < enemies.length; ei++) {
                 var res = simOneEnemy(pR, pC, nr, nc, enemies[ei]);
                 var safeBranches = [];
@@ -711,33 +709,42 @@ function unifiedPick(gs, coilyActive) {
                 if (safeBranches.length === 1) {
                     if (safeBranches[0]) baseEnemies.push(safeBranches[0]);
                 } else if (safeBranches.length === 2) {
-                    if (!doBranch) {
-                        if (safeBranches[0]) baseEnemies.push(safeBranches[0]);
-                    } else {
-                    // Track nearest branching enemy for expected-value recursion
-                    for (var sbi = 0; sbi < 2; sbi++) {
-                        if (!safeBranches[sbi]) continue;
-                        var sb = safeBranches[sbi];
-                        var sbR = sb.jumping && sb.destRow != null ? sb.destRow : sb.row;
-                        var sbC = sb.jumping && sb.destCol != null ? sb.destCol : sb.col;
-                        var sbd = Math.abs(sbR - nr) + Math.abs(sbC - nc);
-                        if (sbd < branchDist) { branchDist = sbd; branchEnemy = safeBranches; }
-                    }
-                    // Non-nearest branching enemies: use first safe branch
-                    if (branchEnemy !== safeBranches) {
-                        if (safeBranches[0]) baseEnemies.push(safeBranches[0]);
-                    }
-                    } // end doBranch
+                    branchEnemies.push(safeBranches);
                 }
             }
             if (prob > 0) {
-                if (!branchEnemy) {
+                if (branchEnemies.length === 0) {
                     prob *= survive(nr, nc, newCoily, baseEnemies, depth - 1);
+                } else if (branchEnemies.length <= 3) {
+                    // Enumerate all 2^N combinations (up to 8) for joint correctness
+                    var nCombo = 1 << branchEnemies.length;
+                    var comboSum = 0;
+                    for (var ci = 0; ci < nCombo; ci++) {
+                        var comboEnemies = baseEnemies.slice();
+                        for (var cbi = 0; cbi < branchEnemies.length; cbi++) {
+                            var branch = (ci >> cbi) & 1;
+                            if (branchEnemies[cbi][branch]) comboEnemies.push(branchEnemies[cbi][branch]);
+                        }
+                        comboSum += survive(nr, nc, newCoily, comboEnemies, depth - 1);
+                    }
+                    prob *= comboSum / nCombo;
                 } else {
-                    // Expected value over nearest branching enemy's 2 branches
-                    var s0 = branchEnemy[0] ? survive(nr, nc, newCoily, baseEnemies.concat([branchEnemy[0]]), depth-1) : 1;
-                    var s1 = branchEnemy[1] ? survive(nr, nc, newCoily, baseEnemies.concat([branchEnemy[1]]), depth-1) : 1;
-                    prob *= 0.5 * s0 + 0.5 * s1;
+                    // Too many branching enemies — use first branch for extras
+                    var limitBranch = branchEnemies.slice(0, 3);
+                    for (var ebi = 3; ebi < branchEnemies.length; ebi++) {
+                        if (branchEnemies[ebi][0]) baseEnemies.push(branchEnemies[ebi][0]);
+                    }
+                    var nCombo2 = 1 << limitBranch.length;
+                    var comboSum2 = 0;
+                    for (var ci2 = 0; ci2 < nCombo2; ci2++) {
+                        var comboEnemies2 = baseEnemies.slice();
+                        for (var cbi2 = 0; cbi2 < limitBranch.length; cbi2++) {
+                            var branch2 = (ci2 >> cbi2) & 1;
+                            if (limitBranch[cbi2][branch2]) comboEnemies2.push(limitBranch[cbi2][branch2]);
+                        }
+                        comboSum2 += survive(nr, nc, newCoily, comboEnemies2, depth - 1);
+                    }
+                    prob *= comboSum2 / nCombo2;
                 }
             }
             if (prob > bestProb) bestProb = prob;
@@ -757,8 +764,18 @@ function unifiedPick(gs, coilyActive) {
                 var disc = gs.discs[dci];
                 if (!disc.active) continue;
                 if ((disc.side === 0 && dir === 'UL' && pC === 0 && pR === disc.row) ||
-                    (disc.side === 1 && dir === 'UR' && pC === pR && pR === disc.row))
+                    (disc.side === 1 && dir === 'UR' && pC === pR && pR === disc.row)) {
+                    // Verify no enemy is already on player's tile (simStep checks
+                    // collision before the move — disc doesn't help if already dead)
+                    for (var dcei = 0; dcei < enemies.length; dcei++) {
+                        var dce = enemies[dcei];
+                        if (dce.spawnAnimTimer > 0) continue;
+                        if (!dce.jumping && dce.row === pR && dce.col === pC) return 0;
+                        if (dce.jumping && dce.jumpT >= 0.67 && dce.destRow === pR && dce.destCol === pC) return 0;
+                    }
+                    if (coily && coily.row >= 0 && !coily.jumping && coily.row === pR && coily.col === pC) return 0;
                     return 1.0;
+                }
             }
             return 0;
         }
@@ -982,27 +999,6 @@ function unifiedPick(gs, coilyActive) {
         if (aiMoveScores[fd] === undefined) continue;
         if (aiMoveScores[fd] > bestScore) { bestScore = aiMoveScores[fd]; bestDir = fd; }
     }
-    // Validation: if tree says P=1.0 for chosen direction, verify with simStep
-    // If simStep kills player with any seed, the tree has a prediction bug
-    if (bestDir && bestDir !== 'STAY' && hop1Surv[bestDir] >= 1.0) {
-        var valDeaths = 0, VAL_SEEDS = 10;
-        for (var vs = 0; vs < VAL_SEEDS; vs++) {
-            simRng = createSeededRng(baseSeed + vs * 7919);
-            var vc = simDeepClone(gs);
-            if (!simStep(vc, bestDir)) valDeaths++;
-        }
-        if (valDeaths > 0) {
-            console.log('TREE WRONG: ' + bestDir + ' from (' + gs.player.row + ',' + gs.player.col +
-                ') tree=1.000 but simStep killed ' + valDeaths + '/' + VAL_SEEDS +
-                ' seeds. Enemies: ' + enemyInits.map(function(e) {
-                    return e.type + '@(' + e.row + ',' + e.col + ')' +
-                        (e.jumping ? 'j' + (e.jumpT||0).toFixed(2) : 't' + e.moveTimer) +
-                        (e.spawnAnimTimer > 0 ? 'sa' + e.spawnAnimTimer : '') +
-                        (e.dirBits != null ? 'db' + e.dirBits : '');
-                }).join(' '));
-        }
-    }
-
     restoreRng();
     var _perfMs = typeof performance !== 'undefined' ? performance.now() - _perfStart : 0;
     if (_perfMs > 50) console.log('AI SLOW: ' + _perfMs.toFixed(0) + 'ms, enemies=' + enemyInits.length + ' memo=' + _persistMemoCount);
