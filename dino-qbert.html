@@ -893,7 +893,6 @@ function update() {
             score += gs.score; gs.score = 0;
             checkExtraLife();
             hops++;
-            captureRewindSnapshot(gs, false);
 
             // Collision on landing
             if (enemiesEnabled) simCheckCollision(gs);
@@ -948,6 +947,7 @@ function update() {
                 return;
             }
             var dir = computeAIMove();
+            captureRewindSnapshot(gs, false); // capture BEFORE hop, so position = decision point
             if (dir === 'STAY') {
                 // Update prevRow/prevCol so Coily chases current position, not stale prev.
                 // Without this, Coily can oscillate indefinitely when prev is on the diagonal.
