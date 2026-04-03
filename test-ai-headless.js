@@ -10,9 +10,11 @@ var path = require('path');
 var numRounds = 16;
 var noEnemies = false;
 var verbose = false;
+var debug = false;
 for (var i = 2; i < process.argv.length; i++) {
     if (process.argv[i] === '--no-enemies') noEnemies = true;
     else if (process.argv[i] === '-v' || process.argv[i] === '--verbose') verbose = true;
+    else if (process.argv[i] === '-d' || process.argv[i] === '--debug') debug = true;
     else { var n = parseInt(process.argv[i]); if (!isNaN(n) && n > 0) numRounds = n; }
 }
 
@@ -144,13 +146,15 @@ function startServer(dir) {
     if (final.deathLog.length > 0) {
         console.log('\nDeath log:');
         for (var i = 0; i < final.deathLog.length; i++) console.log('  ' + final.deathLog[i]);
-        console.log('\nDeath chains:');
-        for (var i = 0; i < final.deathChains.length; i++) {
-            var dc = final.deathChains[i];
-            console.log('  --- Death ' + (i+1) + ': ' + dc.info.substring(0, 80));
-            for (var j = 0; j < dc.chain.length; j++) {
-                var c = dc.chain[j];
-                console.log('    hop=' + c.hop + ' ' + c.pos + ' ' + c.dir + ' P=[' + c.probs + '] ' + c.enemies);
+        if (debug) {
+            console.log('\nDeath chains:');
+            for (var i = 0; i < final.deathChains.length; i++) {
+                var dc = final.deathChains[i];
+                console.log('  --- Death ' + (i+1) + ': ' + dc.info.substring(0, 80));
+                for (var j = 0; j < dc.chain.length; j++) {
+                    var c = dc.chain[j];
+                    console.log('    hop=' + c.hop + ' ' + c.pos + ' ' + c.dir + ' P=[' + c.probs + '] ' + c.enemies);
+                }
             }
         }
     }

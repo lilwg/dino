@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic  (v2 — oscillation fix + revert penalty)
-var AI_VERSION = 'v8.1-hybrid-strategy';
+var AI_VERSION = 'v8.2-activeLure';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -88,9 +88,9 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts) {
     }
 
     var isToggle = lv >= 3;
-    // On L5+ (full cycle), traversing a completed cube costs 3 extra hops to fix (2→0, then 0→1→2)
-    // On L3-4 (toggle/partial revert), cost is lower
-    var REVERT_PENALTY = isToggle ? 2 : 0;
+    // L3-4 (toggle): penalty 1.5 (lower = allow more backtracking, detours cost more)
+    // L5+ (cycle): penalty 2.5 (higher = reverts cost 3 stomps to fix)
+    var REVERT_PENALTY = lv >= 5 ? 2.5 : (isToggle ? 1.5 : 0);
     var curIdx = startIdx;
     var totalHops = 0;
 
@@ -105,12 +105,16 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts) {
                     // Deprioritize frequently-reverted cubes — go to fresh ones first
                     if (revertCounts && revertCounts[i] > 1) d += (revertCounts[i] - 1) * 3;
                     // Bottom-up sweep: prefer bottom-row cubes to avoid backtracking
-                    // through completed upper cubes. Applies to all toggle levels.
+                    // through completed upper cubes. Stronger on L3-4 where reverts hurt.
                     var row_i = idxToPos[i][0], col_i = idxToPos[i][1];
-                    d -= row_i * (lv >= 5 ? 1.5 : 1);
+                    d -= row_i * (lv >= 5 ? 1.5 : 2);
                     // Corner priority: bottom corners (few exits) should be done first
-                    // so we don't have to revisit them later when enemies are dense
                     if (row_i >= 4 && (col_i <= 1 || col_i >= row_i - 1)) d -= 2;
+                    // Cluster bonus: prefer cubes with unfinished neighbors (sweep clusters together)
+                    var adj = posAdj[i];
+                    for (var ai = 0; ai < adj.length; ai++) {
+                        if (stomps[adj[ai]] > 0) d -= 0.5;
+                    }
                     if (d < bestDist || (d === bestDist && (bestIdx === -1 || i < bestIdx))) {
                         bestDist = d; bestIdx = i;
                     }
@@ -757,7 +761,7 @@ function unifiedPick(gs, coilyActive) {
         // Only lure on toggle levels (L3+) where peaceful windows are critical,
         // and only if disc is reasonably reachable and Coily is close enough to follow
         var coilyPlayerDist = exBfsDist(coilyInit.row, coilyInit.col, gs.player.row, gs.player.col);
-        if (gs.lv < 3 || lureDiscDist > 5 || coilyPlayerDist > 8) lureDisc = null;
+        if (gs.lv < 3 || lureDiscDist > 7 || coilyPlayerDist > 10) lureDisc = null;
     }
 
     // ── Core: survival tree safety check + strategy-aware tour cost per direction ──
@@ -826,7 +830,7 @@ function unifiedPick(gs, coilyActive) {
         if (dir === 'STAY') tc += 5;
 
         // Disc lure bonus: reduce tour cost for directions moving toward disc
-        // Luring Coily = long peaceful window = effectively shorter tour
+        // Luring Coily = long peaceful window (~6 hops of safe progress)
         if (lureDisc && dir !== 'STAY') {
             var dd2 = DIRS[dir];
             var lnr = gs.player.row + dd2.dr, lnc = gs.player.col + dd2.dc;
@@ -834,10 +838,39 @@ function unifiedPick(gs, coilyActive) {
                 var distBefore = exBfsDist(gs.player.row, gs.player.col, lureDiscAdj.row, lureDiscAdj.col);
                 var distAfter = exBfsDist(lnr, lnc, lureDiscAdj.row, lureDiscAdj.col);
                 if (distAfter < distBefore) {
-                    // Moving closer to disc — bonus scales with how close Coily is
                     var coilyDist = exBfsDist(coilyInit.row, coilyInit.col, gs.player.row, gs.player.col);
-                    var lureBonus = coilyDist <= 4 ? 8 : 4;
+                    var lureBonus = coilyDist <= 3 ? 15 : (coilyDist <= 5 ? 10 : 5);
                     tc -= lureBonus;
+                }
+            } else if (!isValidPos(lnr, lnc)) {
+                // Disc-jump direction: if this rides a disc with Coily active, big bonus
+                // (simStep handles the ride, but tc doesn't reflect the peaceful window)
+                for (var dji = 0; dji < gs.discs.length; dji++) {
+                    var djd = gs.discs[dji];
+                    if (!djd.active) continue;
+                    if ((djd.side === 0 && dir === 'UL' && gs.player.col === 0 && gs.player.row === djd.row) ||
+                        (djd.side === 1 && dir === 'UR' && gs.player.col === gs.player.row && gs.player.row === djd.row)) {
+                        tc -= 15;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Corner escape: penalize low-exit tiles when Coily is nearby
+        // Prevents the bot from cornering itself where the next decision has no safe exits
+        if (coilyInit && coilyInit.row >= 0 && dir !== 'STAY') {
+            var ced = DIRS[dir];
+            var cenr = gs.player.row + ced.dr, cenc = gs.player.col + ced.dc;
+            if (isValidPos(cenr, cenc)) {
+                var ceExits = 0;
+                for (var cek = 0; cek < DIR_KEYS.length; cek++) {
+                    var ced2 = DIRS[DIR_KEYS[cek]];
+                    if (isValidPos(cenr + ced2.dr, cenc + ced2.dc)) ceExits++;
+                }
+                if (ceExits <= 2) {
+                    var ceDist = exBfsDist(cenr, cenc, coilyInit.row, coilyInit.col);
+                    if (ceDist <= 5) tc += 3;
                 }
             }
         }
