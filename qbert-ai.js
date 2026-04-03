@@ -1233,7 +1233,9 @@ function aiPickBestDir() {
         if (nearestUnf) {
             var bfs = bfsTo(gs.player.row, gs.player.col, nearestUnf.row, nearestUnf.col);
             if (bfs && bfs.path.length > 0 && simCanMove(gs, bfs.path[0])) {
-                result = bfs.path[0];
+                // Only override if the direction isn't fatal
+                var bfsScore = aiMoveScores[bfs.path[0]];
+                if (bfsScore !== undefined && bfsScore > -10000) result = bfs.path[0];
             }
         }
     }
