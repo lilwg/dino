@@ -786,15 +786,14 @@ function unifiedPick(gs, coilyActive) {
             return 0;
         }
         // ROM guard: check if Coily (using correct prevR chase) would collide on this hop.
-        // The survive tree uses pR chase (slightly wrong but well-calibrated). This guard
-        // catches the specific case where the correct chase produces a collision the tree misses.
         if (coily && coily.row >= 0) {
             var pvR = gs.player.prevRow != null ? gs.player.prevRow : pR;
             var pvC = gs.player.prevCol != null ? gs.player.prevCol : pC;
             var correctCoily = simCoilyHop(pR, pC, nr, nc, coily, pvR, pvC);
             if (!correctCoily) return 0; // Coily collision with correct chase
         }
-        // Delegate to survive with forced direction (uses pR chase internally)
+        // Delegate to survive — at recursive levels, prev defaults to pR which is
+        // correct (prev = position before the hop in the recursive chain).
         return survive(pR, pC, coily, enemies, depth, dir);
     }
 
@@ -1024,7 +1023,9 @@ function unifiedPick(gs, coilyActive) {
         var dd = DIRS[chosenDir];
         var dnr = gs.player.row + dd.dr, dnc = gs.player.col + dd.dc;
         if (isValidPos(dnr, dnc)) {
-            var predCoily = simCoilyHop(gs.player.row, gs.player.col, dnr, dnc, coilyInit);
+            var valPrevR = gs.player.prevRow != null ? gs.player.prevRow : gs.player.row;
+            var valPrevC = gs.player.prevCol != null ? gs.player.prevCol : gs.player.col;
+            var predCoily = simCoilyHop(gs.player.row, gs.player.col, dnr, dnc, coilyInit, valPrevR, valPrevC);
             if (predCoily) {
                 window._aiPredictedCoily = { row: predCoily.row, col: predCoily.col,
                     jumping: predCoily.jumping, destRow: predCoily.destRow, destCol: predCoily.destCol };
@@ -1070,6 +1071,11 @@ function aiPickBestDir() {
     }
 
     var gs = simCloneGameState();
+    // When enemies are disabled via UI, clear them so AI ignores them
+    if (typeof enemiesEnabled !== 'undefined' && !enemiesEnabled) {
+        gs.enemies = [];
+        coilyActive = false;
+    }
     aiMoveScores = {};
     aiMode = 1;
 
