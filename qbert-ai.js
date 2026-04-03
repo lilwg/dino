@@ -982,6 +982,27 @@ function unifiedPick(gs, coilyActive) {
         if (aiMoveScores[fd] === undefined) continue;
         if (aiMoveScores[fd] > bestScore) { bestScore = aiMoveScores[fd]; bestDir = fd; }
     }
+    // Validation: if tree says P=1.0 for chosen direction, verify with simStep
+    // If simStep kills player with any seed, the tree has a prediction bug
+    if (bestDir && bestDir !== 'STAY' && hop1Surv[bestDir] >= 1.0) {
+        var valDeaths = 0, VAL_SEEDS = 10;
+        for (var vs = 0; vs < VAL_SEEDS; vs++) {
+            simRng = createSeededRng(baseSeed + vs * 7919);
+            var vc = simDeepClone(gs);
+            if (!simStep(vc, bestDir)) valDeaths++;
+        }
+        if (valDeaths > 0) {
+            console.log('TREE WRONG: ' + bestDir + ' from (' + gs.player.row + ',' + gs.player.col +
+                ') tree=1.000 but simStep killed ' + valDeaths + '/' + VAL_SEEDS +
+                ' seeds. Enemies: ' + enemyInits.map(function(e) {
+                    return e.type + '@(' + e.row + ',' + e.col + ')' +
+                        (e.jumping ? 'j' + (e.jumpT||0).toFixed(2) : 't' + e.moveTimer) +
+                        (e.spawnAnimTimer > 0 ? 'sa' + e.spawnAnimTimer : '') +
+                        (e.dirBits != null ? 'db' + e.dirBits : '');
+                }).join(' '));
+        }
+    }
+
     restoreRng();
     var _perfMs = typeof performance !== 'undefined' ? performance.now() - _perfStart : 0;
     if (_perfMs > 50) console.log('AI SLOW: ' + _perfMs.toFixed(0) + 'ms, enemies=' + enemyInits.length + ' memo=' + _persistMemoCount);
