@@ -1022,7 +1022,7 @@ function unifiedPick(gs, coilyActive) {
     }
     restoreRng();
     var _perfMs = typeof performance !== 'undefined' ? performance.now() - _perfStart : 0;
-    if (_perfMs > 30) console.log('AI SLOW: ' + _perfMs.toFixed(0) + 'ms, enemies=' + enemyInits.length + ' memo=' + _persistMemoCount + ' pos=(' + gs.player.row + ',' + gs.player.col + ') dir=' + (bestDir||'?'));
+    if (_perfMs > 100) console.log('AI SLOW: ' + _perfMs.toFixed(0) + 'ms, enemies=' + enemyInits.length + ' memo=' + _persistMemoCount + ' pos=(' + gs.player.row + ',' + gs.player.col + ') dir=' + (bestDir||'?'));
 
 
     return bestDir || 'STAY';
