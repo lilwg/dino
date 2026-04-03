@@ -114,6 +114,11 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts) {
                     var d = dijk.dist[i];
                     // Deprioritize frequently-reverted cubes — go to fresh ones first
                     if (revertCounts && revertCounts[i] > 1) d += (revertCounts[i] - 1) * 3;
+                    // Prefer cubes not visited recently — breaks oscillation loops
+                    // by steering toward "forgotten" cubes instead of re-visiting familiar ones
+                    var curHops = typeof hops !== 'undefined' ? hops : 0;
+                    var hopsSinceVisit = curHops - (aiCubeLastVisit[i] || 0);
+                    if (hopsSinceVisit < 20) d += (20 - hopsSinceVisit) * 0.5;
                     // Bottom-up sweep: prefer bottom-row cubes to avoid backtracking
                     // through completed upper cubes. Stronger on L3-4 where reverts hurt.
                     var row_i = idxToPos[i][0], col_i = idxToPos[i][1];
@@ -301,11 +306,13 @@ var aiDetailPath = [], aiTourDots = [];
 
 var aiRevertCounts = new Int8Array(POS_COUNT); // per-cube revert counter for toggle levels
 var aiPrevCubeStates = null; // previous cube states to detect reverts
+var aiCubeLastVisit = new Int32Array(POS_COUNT); // hop number when each cube was last stomped
 
 function aiTourInit() {
     aiLastRemaining = 99; aiBestRemaining = 99; aiNoProgressCount = 0; aiStayCount = 0; aiSamePosCount = 0; aiPosHistory = [];
     aiRevertCounts = new Int8Array(POS_COUNT);
     aiPrevCubeStates = null;
+    aiCubeLastVisit = new Int32Array(POS_COUNT);
 }
 
 // Dijkstra tour planner — nearest unfinished cube via weighted BFS
@@ -450,7 +457,8 @@ function unifiedPick(gs, coilyActive) {
     function simCoilyHop(pR, pC, nr, nc, coily, prevR, prevC) {
         if (prevR === undefined) { prevR = pR; prevC = pC; }
         var cr = coily.row, cc = coily.col;
-        var cj = coily.jumping, ct = coily.jumpT || 0, cm = coily.moveTimer || 0;
+        var cj = coily.jumping, ct = coily.jumpT || 0;
+        var cm = coily.moveTimer || 0;
         var cdr = coily.destRow, cdc = coily.destCol;
         var hasLure = coily.lureRow != null;
         for (var f = 1; f <= pJumpFrames; f++) {
@@ -1083,6 +1091,10 @@ function aiPickBestDir() {
     var posKey = gs.player.row + ',' + gs.player.col;
     if (posKey === aiLastPos) aiSamePosCount++;
     else { aiSamePosCount = 0; aiLastPos = posKey; }
+
+    // Track last visit time for each cube (for oscillation-aware tour planning)
+    var curIdx = posToIdx[gs.player.row * ROWS + gs.player.col];
+    if (curIdx >= 0) aiCubeLastVisit[curIdx] = typeof hops !== 'undefined' ? hops : 0;
 
     // Track progress: count remaining cubes
     var tgt = gs.tgt;
