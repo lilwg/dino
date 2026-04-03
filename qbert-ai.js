@@ -793,12 +793,11 @@ function unifiedPick(gs, coilyActive) {
             }
             return 0;
         }
-        // ROM guard: check if Coily (using correct prevR chase) would collide on this hop.
+        // ROM guard: simTryMove sets prevRow=row BEFORE the hop starts, so during
+        // the hop Coily chases the player's pre-hop position (pR,pC), not the older prev.
         if (coily && coily.row >= 0) {
-            var pvR = gs.player.prevRow != null ? gs.player.prevRow : pR;
-            var pvC = gs.player.prevCol != null ? gs.player.prevCol : pC;
-            var correctCoily = simCoilyHop(pR, pC, nr, nc, coily, pvR, pvC);
-            if (!correctCoily) return 0; // Coily collision with correct chase
+            var correctCoily = simCoilyHop(pR, pC, nr, nc, coily, pR, pC);
+            if (!correctCoily) return 0; // Coily collision
         }
         // Delegate to survive — at recursive levels, prev defaults to pR which is
         // correct (prev = position before the hop in the recursive chain).
@@ -1025,28 +1024,41 @@ function unifiedPick(gs, coilyActive) {
     var _perfMs = typeof performance !== 'undefined' ? performance.now() - _perfStart : 0;
     if (_perfMs > 30) console.log('AI SLOW: ' + _perfMs.toFixed(0) + 'ms, enemies=' + enemyInits.length + ' memo=' + _persistMemoCount + ' pos=(' + gs.player.row + ',' + gs.player.col + ') dir=' + (bestDir||'?'));
 
-    // Coily prediction validation: compare predicted vs actual position
+    // Coily prediction validation: compare simCoilyHop vs simStep ground truth
     var chosenDir = bestDir || 'STAY';
-    if (coilyInit && chosenDir !== 'STAY') {
+    if (coilyInit && coilyInit.row >= 0 && chosenDir !== 'STAY') {
         var dd = DIRS[chosenDir];
         var dnr = gs.player.row + dd.dr, dnc = gs.player.col + dd.dc;
         if (isValidPos(dnr, dnc)) {
-            var valPrevR = gs.player.prevRow != null ? gs.player.prevRow : gs.player.row;
-            var valPrevC = gs.player.prevCol != null ? gs.player.prevCol : gs.player.col;
-            var predCoily = simCoilyHop(gs.player.row, gs.player.col, dnr, dnc, coilyInit, valPrevR, valPrevC);
-            if (predCoily) {
-                window._aiPredictedCoily = { row: predCoily.row, col: predCoily.col,
-                    jumping: predCoily.jumping, destRow: predCoily.destRow, destCol: predCoily.destCol };
+            // simTryMove sets prevRow=row before hop, so Coily chases player's current pos
+            var predCoily = simCoilyHop(gs.player.row, gs.player.col, dnr, dnc, coilyInit, gs.player.row, gs.player.col);
+            // simStep ground truth — run actual game simulation
+            simRng = createSeededRng(baseSeed + 42);
+            var valClone = simDeepClone(gs);
+            simStep(valClone, chosenDir);
+            var actualCoily = null;
+            for (var vci = 0; vci < valClone.enemies.length; vci++) {
+                if (valClone.enemies[vci].type === 'coily') {
+                    actualCoily = valClone.enemies[vci]; break;
+                }
             }
-        }
-    }
-    if (window._aiPredictedCoily && coilyInit && coilyInit.row >= 0) {
-        var pc = window._aiPredictedCoily;
-        var ac = coilyInit;
-        if (pc.row !== ac.row || pc.col !== ac.col) {
-            console.log('COILY MISMATCH: predicted (' + pc.row + ',' + pc.col + ') actual (' +
-                ac.row + ',' + ac.col + ') player@(' + gs.player.row + ',' + gs.player.col +
-                ') prev@(' + (gs.player.prevRow||'?') + ',' + (gs.player.prevCol||'?') + ')');
+            restoreRng();
+            if (predCoily && actualCoily) {
+                var predR = predCoily.jumping && predCoily.destRow != null ? predCoily.destRow : predCoily.row;
+                var predC = predCoily.jumping && predCoily.destCol != null ? predCoily.destCol : predCoily.col;
+                var actR = actualCoily.jumping && actualCoily.destRow != null ? actualCoily.destRow : actualCoily.row;
+                var actC = actualCoily.jumping && actualCoily.destCol != null ? actualCoily.destCol : actualCoily.col;
+                if (predR !== actR || predC !== actC) {
+                    console.log('COILY MISMATCH: pred(' + predCoily.row + ',' + predCoily.col +
+                        (predCoily.jumping ? '→' + predCoily.destRow + ',' + predCoily.destCol : '') +
+                        ') simStep(' + actualCoily.row + ',' + actualCoily.col +
+                        (actualCoily.jumping ? '→' + actualCoily.destRow + ',' + actualCoily.destCol : '') +
+                        ') mt=' + (coilyInit.moveTimer||0) + '/' + cIdleFrames +
+                        ' jt=' + (coilyInit.jumpT||0).toFixed(2) +
+                        ' player(' + gs.player.row + ',' + gs.player.col + ')→(' + dnr + ',' + dnc +
+                        ') prev(' + valPrevR + ',' + valPrevC + ')');
+                }
+            }
         }
     }
 
