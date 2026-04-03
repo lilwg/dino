@@ -1,14 +1,24 @@
-// qbert-ai.js — Q*bert AI logic  (v2 — oscillation fix + revert penalty)
+// qbert-ai.js — Q*bert AI: hybrid strategy + survival tree
 var AI_VERSION = 'v8.2-activeLure';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
 //
-// Unified AI: always tour-plan, validate safety via simulation.
-// No mode switching — Coily just means more safety samples.
+// Architecture: human-style strategy decides WHERE to go, survival tree
+// validates IF it's safe. Best of both worlds.
 //
-// The AI uses the SAME simulation code as the game (simStep from qbert.js).
-// No separate collision model — what the AI predicts IS what the game does.
+// Strategy layer (greedyTourCost):
+//   - Bottom-up sweep: complete lower rows first, never backtrack
+//   - Corner priority: finish low-exit corner cubes early
+//   - Cluster awareness: prefer cubes near other unfinished cubes
+//   - Active disc luring: route toward discs when Coily is active
+//   - Corner escape: avoid low-exit tiles when Coily is nearby
+//
+// Safety layer (survive/surviveOne):
+//   - Factored survival tree: P(survive) = product of per-enemy trees
+//   - Coily simulated deterministically (ROM chase algorithm)
+//   - Frame-accurate collision detection during mid-hop flight
+//   - 8-hop lookahead with memoized AND-OR tree
 
 // ─── Tour planning ───────────────────────────────────────────────────────────
 
@@ -920,6 +930,7 @@ function unifiedPick(gs, coilyActive) {
 
     aiLastHop1Surv = hop1Surv;
     aiLastTourCosts = tourCosts;
+    aiLureTarget = lureDiscAdj; // export for viz
 
     // Slick pursuit on toggle levels — catch them if adjacent and safe
     if (gs.lv >= 3) {
@@ -980,6 +991,7 @@ function unifiedPick(gs, coilyActive) {
 var aiMoveScores = {};  // exported per-direction scores for viz
 var aiLastTourCosts = {};  // last per-direction tour costs from unifiedPick
 var aiLastHop1Surv = {};   // last hop-1 survival rates from unifiedPick
+var aiLureTarget = null;   // disc-adjacent position being targeted for lure {row,col}
 var aiMode = 0;         // 0 = no AI, 1 = unified (always set to 1 now)
 var aiStayCount = 0;    // consecutive STAY decisions — used to break stuck loops
 var aiLastPos = '';     // last position key — used to detect oscillation

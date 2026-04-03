@@ -1261,6 +1261,20 @@ function drawVizPath() {
         }
     }
 
+    // ── 3b. Disc lure target: pulsing ring on disc-adjacent cube ──
+    if (typeof aiLureTarget !== 'undefined' && aiLureTarget) {
+        var lt = cubeXY(aiLureTarget.row, aiLureTarget.col);
+        var pulse = 0.4 + 0.3 * Math.sin(Date.now() / 200);
+        ctx.beginPath();
+        ctx.arc(lt.cx, lt.cy, 10, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(0,200,255,' + pulse.toFixed(2) + ')';
+        ctx.lineWidth = 2; ctx.setLineDash([3, 3]);
+        ctx.stroke(); ctx.setLineDash([]);
+        ctx.font = '7px monospace'; ctx.textAlign = 'center';
+        ctx.fillStyle = 'rgba(0,200,255,0.6)';
+        ctx.fillText('LURE', lt.cx, lt.cy - 13);
+    }
+
     // ── 4. Direction indicators: small diamonds on adjacent tiles ──
     var hasScores = false;
     for (var i = 0; i < DIR_KEYS_WITH_STAY.length; i++)
@@ -1317,6 +1331,7 @@ function drawVizPath() {
     if (aiNoProgressCount > 30) stateLabel = 'UNSTUCK-3';
     else if (aiNoProgressCount > 20) stateLabel = 'UNSTUCK-2';
     else if (aiNoProgressCount > 10) stateLabel = 'UNSTUCK-1';
+    else if (typeof aiLureTarget !== 'undefined' && aiLureTarget) stateLabel = 'LURE';
     else if (aiStayCount > 2) stateLabel = 'FORCED';
     else if (aiPosHistory.length >= 8) {
         var uniq = {};
@@ -1326,7 +1341,7 @@ function drawVizPath() {
     }
     if (stateLabel) {
         ctx.font = 'bold 9px monospace'; ctx.textAlign = 'left';
-        ctx.fillStyle = 'rgba(255,120,40,0.75)';
+        ctx.fillStyle = stateLabel === 'LURE' ? 'rgba(0,200,255,0.75)' : 'rgba(255,120,40,0.75)';
         ctx.fillText(stateLabel, 8, CH - 8);
     }
 
