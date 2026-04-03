@@ -438,9 +438,10 @@ function unifiedPick(gs, coilyActive) {
     }
     enemyInits = pruned;
 
-    // Adaptive depth: reduce when many enemies to keep calls fast
-    if (enemyInits.length >= 5) DEPTH = Math.min(DEPTH, 6);
-    else if (enemyInits.length >= 4) DEPTH = Math.min(DEPTH, 7);
+    // Adaptive depth: reduce when many enemies to avoid timeouts
+    if (enemyInits.length >= 6) DEPTH = Math.min(DEPTH, 4);
+    else if (enemyInits.length >= 5) DEPTH = Math.min(DEPTH, 5);
+    else if (enemyInits.length >= 4) DEPTH = Math.min(DEPTH, 6);
 
     // Simulate Coily for one hop.
     // ROM: Coily chases prevR/prevC. Exception: if at prev, chase pR/pC.
@@ -666,7 +667,7 @@ function unifiedPick(gs, coilyActive) {
     function survive(pR, pC, coily, enemies, depth, forcedDir) {
         if (depth <= 0) return 1.0;
         // Time budget check — return best found so far if over deadline
-        if (typeof performance !== 'undefined' && performance.now() > _aiDeadline) return 0.5;
+        if (typeof performance !== 'undefined' && performance.now() > _aiDeadline) return 1.0;
         // Memoize (skip for forced dir — only called once per direction)
         var mKey;
         if (!forcedDir) {
@@ -862,13 +863,18 @@ function unifiedPick(gs, coilyActive) {
             }
         }
 
-        // Compute survival probability — STAY uses shallow depth (fast)
+        // Iterative deepening: start shallow, go deeper if time permits.
+        // Each completed depth gives a valid answer; timeout keeps the last one.
         var survProb = 1.0;
-        var evalDepth = (dir === 'STAY') ? Math.min(DEPTH, 3) : DEPTH;
-        if (hasEnemies && evalDepth > 0) {
+        var maxDepth = (dir === 'STAY') ? Math.min(DEPTH, 3) : DEPTH;
+        if (hasEnemies && maxDepth > 0) {
             var ci0 = coilyInit || { row:-99, col:-99, jumping:false, jumpT:0,
                 moveTimer:0, destRow:null, destCol:null };
-            survProb = dirSurvivalProb(gs.player.row, gs.player.col, ci0, enemyInits, evalDepth, dir);
+            for (var idDepth = 2; idDepth <= maxDepth; idDepth += 2) {
+                if (typeof performance !== 'undefined' && performance.now() > _aiDeadline) break;
+                survProb = dirSurvivalProb(gs.player.row, gs.player.col, ci0, enemyInits, idDepth, dir);
+                if (survProb <= 0) break; // already dead, no need to go deeper
+            }
         }
         hop1Surv[dir] = survProb;
 
