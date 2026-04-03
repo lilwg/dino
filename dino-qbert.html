@@ -939,8 +939,9 @@ function update() {
     // Accept input / AI when player is ready
     if (!player.jumping && !player.dead && !discRide && !levelWon) {
         if (gameMode === 'rules') {
+            // Skip AI if we've already exceeded frame budget (prevents 1s freezes at 8x)
+            if (typeof _frameDeadline !== 'undefined' && performance.now() > _frameDeadline) return;
             // Safety net: check if any enemy is currently on the player's tile
-            // (catches the 1-frame gap where Coily lands between AI eval and move)
             simCheckCollision(gs);
             if (!gs.alive) {
                 gs.alive = true;

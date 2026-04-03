@@ -862,12 +862,13 @@ function unifiedPick(gs, coilyActive) {
             }
         }
 
-        // Compute survival probability over DEPTH hops
+        // Compute survival probability — STAY uses shallow depth (fast)
         var survProb = 1.0;
-        if (hasEnemies && DEPTH > 0) {
+        var evalDepth = (dir === 'STAY') ? Math.min(DEPTH, 3) : DEPTH;
+        if (hasEnemies && evalDepth > 0) {
             var ci0 = coilyInit || { row:-99, col:-99, jumping:false, jumpT:0,
                 moveTimer:0, destRow:null, destCol:null };
-            survProb = dirSurvivalProb(gs.player.row, gs.player.col, ci0, enemyInits, DEPTH, dir);
+            survProb = dirSurvivalProb(gs.player.row, gs.player.col, ci0, enemyInits, evalDepth, dir);
         }
         hop1Surv[dir] = survProb;
 
@@ -1009,7 +1010,7 @@ function unifiedPick(gs, coilyActive) {
     }
     restoreRng();
     var _perfMs = typeof performance !== 'undefined' ? performance.now() - _perfStart : 0;
-    if (_perfMs > 50) console.log('AI SLOW: ' + _perfMs.toFixed(0) + 'ms, enemies=' + enemyInits.length + ' memo=' + _persistMemoCount);
+    if (_perfMs > 30) console.log('AI SLOW: ' + _perfMs.toFixed(0) + 'ms, enemies=' + enemyInits.length + ' memo=' + _persistMemoCount + ' pos=(' + gs.player.row + ',' + gs.player.col + ') dir=' + (bestDir||'?'));
 
     // Coily prediction validation: compare predicted vs actual position
     var chosenDir = bestDir || 'STAY';
