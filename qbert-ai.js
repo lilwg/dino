@@ -1220,6 +1220,24 @@ function aiPickBestDir() {
         }
     }
 
+    // Hard stuck breaker: at 500+ hops on toggle levels, directly target nearest
+    // unfinished cube regardless of safety — oscillation is worse than a death.
+    if (gs.lv >= 3 && typeof hops !== 'undefined' && hops > 500 && result !== 'STAY') {
+        var nearestUnf = null, nearestUnfDist = 999;
+        for (var nui = 0; nui < gs.cubes.length; nui++) {
+            if (gs.cubes[nui].state < gs.tgt) {
+                var nud = exBfsDist(gs.player.row, gs.player.col, gs.cubes[nui].row, gs.cubes[nui].col);
+                if (nud < nearestUnfDist) { nearestUnfDist = nud; nearestUnf = gs.cubes[nui]; }
+            }
+        }
+        if (nearestUnf) {
+            var bfs = bfsTo(gs.player.row, gs.player.col, nearestUnf.row, nearestUnf.col);
+            if (bfs && bfs.path.length > 0 && simCanMove(gs, bfs.path[0])) {
+                result = bfs.path[0];
+            }
+        }
+    }
+
     // L5+ parity fix: compute (W-B) mod 3 from actual cube states.
     // Unsolvable when (W-B) ≡ 1 mod 3 from even row, or ≡ 2 from odd row.
     // If stuck in bad parity, jump off an odd row to shift it.
