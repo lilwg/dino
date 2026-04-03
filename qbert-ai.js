@@ -697,7 +697,8 @@ function unifiedPick(gs, coilyActive) {
             // Per-enemy hop safety + collect branches for recursion
             var prob = 1.0;
             var baseEnemies = [];
-            var branchEnemies = []; // ALL branching enemies get both branches checked
+            var branchEnemies = []; // branching enemies get both branches checked (top 5 levels)
+            var doBranch = (depth >= DEPTH - 4);
             for (var ei = 0; ei < enemies.length; ei++) {
                 var res = simOneEnemy(pR, pC, nr, nc, enemies[ei]);
                 var safeBranches = [];
@@ -709,7 +710,12 @@ function unifiedPick(gs, coilyActive) {
                 if (safeBranches.length === 1) {
                     if (safeBranches[0]) baseEnemies.push(safeBranches[0]);
                 } else if (safeBranches.length === 2) {
-                    branchEnemies.push(safeBranches);
+                    if (doBranch) {
+                        branchEnemies.push(safeBranches);
+                    } else {
+                        // Deeper levels: use first branch only (performance)
+                        if (safeBranches[0]) baseEnemies.push(safeBranches[0]);
+                    }
                 }
             }
             if (prob > 0) {
@@ -874,6 +880,9 @@ function unifiedPick(gs, coilyActive) {
         var tc;
         if (tcAlive) {
             tc = tcClone.levelWon ? 0 : simTourCost(tcClone);
+            // Level-completing move: override survival to 1.0 — no need to survive
+            // 8 more hops when the level ends on landing
+            if (tcClone.levelWon) { survProb = 1.0; hop1Surv[dir] = 1.0; }
         } else {
             tc = simTourCost(gs) + 1; // simStep failed with this seed; approximate
         }
@@ -1321,16 +1330,19 @@ function aiPickBestDir() {
         }
     }
 
-    // Break stuck STAY loops
+    // Break stuck STAY loops — but only if a safe alternative exists
     if (result === 'STAY') {
         aiStayCount++;
         if (aiStayCount >= 3) {
-            // Pick best safe (non-fatal) alternative direction
+            // Only override STAY if an alternative has P >= STAY's P
+            var stayP = hop1Surv['STAY'] || 0;
             var bestAlt = null, bestAltScore = -Infinity;
             for (var k = 0; k < DIR_KEYS.length; k++) {
                 if (simCanMove(gs, DIR_KEYS[k])) {
                     var sc = aiMoveScores[DIR_KEYS[k]];
-                    if (sc === undefined || sc <= -10000) continue; // skip fatal
+                    if (sc === undefined || sc <= -10000) continue;
+                    var altP = hop1Surv[DIR_KEYS[k]] || 0;
+                    if (altP < stayP) continue; // don't force into a less safe direction
                     if (sc > bestAltScore) {
                         bestAltScore = sc; bestAlt = DIR_KEYS[k];
                     }
