@@ -1024,43 +1024,6 @@ function unifiedPick(gs, coilyActive) {
     var _perfMs = typeof performance !== 'undefined' ? performance.now() - _perfStart : 0;
     if (_perfMs > 30) console.log('AI SLOW: ' + _perfMs.toFixed(0) + 'ms, enemies=' + enemyInits.length + ' memo=' + _persistMemoCount + ' pos=(' + gs.player.row + ',' + gs.player.col + ') dir=' + (bestDir||'?'));
 
-    // Coily prediction validation: compare simCoilyHop vs simStep ground truth
-    var chosenDir = bestDir || 'STAY';
-    if (coilyInit && coilyInit.row >= 0 && chosenDir !== 'STAY') {
-        var dd = DIRS[chosenDir];
-        var dnr = gs.player.row + dd.dr, dnc = gs.player.col + dd.dc;
-        if (isValidPos(dnr, dnc)) {
-            // simTryMove sets prevRow=row before hop, so Coily chases player's current pos
-            var predCoily = simCoilyHop(gs.player.row, gs.player.col, dnr, dnc, coilyInit, gs.player.row, gs.player.col);
-            // simStep ground truth — run actual game simulation
-            simRng = createSeededRng(baseSeed + 42);
-            var valClone = simDeepClone(gs);
-            simStep(valClone, chosenDir);
-            var actualCoily = null;
-            for (var vci = 0; vci < valClone.enemies.length; vci++) {
-                if (valClone.enemies[vci].type === 'coily') {
-                    actualCoily = valClone.enemies[vci]; break;
-                }
-            }
-            restoreRng();
-            if (predCoily && actualCoily) {
-                var predR = predCoily.jumping && predCoily.destRow != null ? predCoily.destRow : predCoily.row;
-                var predC = predCoily.jumping && predCoily.destCol != null ? predCoily.destCol : predCoily.col;
-                var actR = actualCoily.jumping && actualCoily.destRow != null ? actualCoily.destRow : actualCoily.row;
-                var actC = actualCoily.jumping && actualCoily.destCol != null ? actualCoily.destCol : actualCoily.col;
-                if (predR !== actR || predC !== actC) {
-                    console.log('COILY MISMATCH: pred(' + predCoily.row + ',' + predCoily.col +
-                        (predCoily.jumping ? '→' + predCoily.destRow + ',' + predCoily.destCol : '') +
-                        ') simStep(' + actualCoily.row + ',' + actualCoily.col +
-                        (actualCoily.jumping ? '→' + actualCoily.destRow + ',' + actualCoily.destCol : '') +
-                        ') mt=' + (coilyInit.moveTimer||0) + '/' + cIdleFrames +
-                        ' jt=' + (coilyInit.jumpT||0).toFixed(2) +
-                        ' player(' + gs.player.row + ',' + gs.player.col + ')→(' + dnr + ',' + dnc +
-                        ') prev(' + gs.player.row + ',' + gs.player.col + ')');
-                }
-            }
-        }
-    }
 
     return chosenDir;
 }
