@@ -1056,7 +1056,7 @@ function unifiedPick(gs, coilyActive) {
                         ') mt=' + (coilyInit.moveTimer||0) + '/' + cIdleFrames +
                         ' jt=' + (coilyInit.jumpT||0).toFixed(2) +
                         ' player(' + gs.player.row + ',' + gs.player.col + ')→(' + dnr + ',' + dnc +
-                        ') prev(' + valPrevR + ',' + valPrevC + ')');
+                        ') prev(' + gs.player.row + ',' + gs.player.col + ')');
                 }
             }
         }
