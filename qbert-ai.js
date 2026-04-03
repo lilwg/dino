@@ -1025,7 +1025,7 @@ function unifiedPick(gs, coilyActive) {
     if (_perfMs > 30) console.log('AI SLOW: ' + _perfMs.toFixed(0) + 'ms, enemies=' + enemyInits.length + ' memo=' + _persistMemoCount + ' pos=(' + gs.player.row + ',' + gs.player.col + ') dir=' + (bestDir||'?'));
 
 
-    return chosenDir;
+    return bestDir || 'STAY';
 }
 
 // ─── Main entry point ────────────────────────────────────────────────────────
