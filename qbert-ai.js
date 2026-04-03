@@ -860,7 +860,11 @@ function unifiedPick(gs, coilyActive) {
         } else {
             tc = simTourCost(gs) + 1; // simStep failed with this seed; approximate
         }
-        if (dir === 'STAY') tc += 5;
+        // STAY penalty: escalates with consecutive STAYs, much higher during freeze
+        // (freeze = enemies can't move, so STAY wastes the safe window)
+        var stayPenalty = 5 + aiStayCount * 3;
+        if (gs.freezeTimer > 0) stayPenalty += 20;
+        if (dir === 'STAY') tc += stayPenalty;
 
         // Disc lure bonus: reduce tour cost for directions moving toward disc
         // Luring Coily = long peaceful window (~6 hops of safe progress)
@@ -1306,12 +1310,13 @@ function aiPickBestDir() {
     if (result === 'STAY') {
         aiStayCount++;
         if (aiStayCount >= 3) {
+            // Pick best safe (non-fatal) alternative direction
             var bestAlt = null, bestAltScore = -Infinity;
             for (var k = 0; k < DIR_KEYS.length; k++) {
                 if (simCanMove(gs, DIR_KEYS[k])) {
                     var sc = aiMoveScores[DIR_KEYS[k]];
-                    if (sc !== undefined && sc < 0) continue;
-                    if (sc !== undefined && sc > bestAltScore) {
+                    if (sc === undefined || sc <= -10000) continue; // skip fatal
+                    if (sc > bestAltScore) {
                         bestAltScore = sc; bestAlt = DIR_KEYS[k];
                     }
                 }
