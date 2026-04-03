@@ -866,6 +866,21 @@ function unifiedPick(gs, coilyActive) {
         if (gs.freezeTimer > 0) stayPenalty += 20;
         if (dir === 'STAY') tc += stayPenalty;
 
+        // Anti-oscillation: on toggle levels with excessive hops, penalize
+        // directions that land on completed cubes (prevents undo/redo cycles)
+        if (gs.lv >= 3 && dir !== 'STAY' && typeof hops !== 'undefined' && hops > 200) {
+            var aod = DIRS[dir];
+            var aor = gs.player.row + aod.dr, aoc = gs.player.col + aod.dc;
+            if (isValidPos(aor, aoc)) {
+                for (var aoi = 0; aoi < gs.cubes.length; aoi++) {
+                    if (gs.cubes[aoi].row === aor && gs.cubes[aoi].col === aoc && gs.cubes[aoi].state >= gs.tgt) {
+                        tc += 10 + Math.floor(hops / 100) * 5; // 15 at 200 hops, 20 at 300, etc.
+                        break;
+                    }
+                }
+            }
+        }
+
         // Disc lure bonus: reduce tour cost for directions moving toward disc
         // Luring Coily = long peaceful window (~6 hops of safe progress)
         if (lureDisc && dir !== 'STAY') {
@@ -894,23 +909,6 @@ function unifiedPick(gs, coilyActive) {
             }
         }
 
-        // Corner escape: penalize low-exit tiles when Coily is nearby
-        // Prevents the bot from cornering itself where the next decision has no safe exits
-        if (coilyInit && coilyInit.row >= 0 && dir !== 'STAY') {
-            var ced = DIRS[dir];
-            var cenr = gs.player.row + ced.dr, cenc = gs.player.col + ced.dc;
-            if (isValidPos(cenr, cenc)) {
-                var ceExits = 0;
-                for (var cek = 0; cek < DIR_KEYS.length; cek++) {
-                    var ced2 = DIRS[DIR_KEYS[cek]];
-                    if (isValidPos(cenr + ced2.dr, cenc + ced2.dc)) ceExits++;
-                }
-                if (ceExits <= 2) {
-                    var ceDist = exBfsDist(cenr, cenc, coilyInit.row, coilyInit.col);
-                    if (ceDist <= 5) tc += 3;
-                }
-            }
-        }
 
         tourCosts[dir] = tc;
 
