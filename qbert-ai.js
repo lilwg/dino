@@ -890,6 +890,17 @@ function unifiedPick(gs, coilyActive) {
         var tcClone = simDeepClone(gs);
         var tcAlive = simStep(tcClone, dir);
         var tc;
+        // Ground truth: verify with additional simStep seeds.
+        // This catches timing mismatches between the tree and the real engine.
+        if (survProb > 0 && dir !== 'STAY') {
+            var simDeaths = tcAlive ? 0 : 1;
+            for (var gts = 1; gts <= 3; gts++) {
+                simSeed(k * 100 + gts * 37);
+                var gtc = simDeepClone(gs);
+                if (!simStep(gtc, dir)) simDeaths++;
+            }
+            if (simDeaths > 0) { survProb = 0; hop1Surv[dir] = 0; }
+        }
         if (tcAlive) {
             tc = tcClone.levelWon ? 0 : simTourCost(tcClone);
             // Level-completing move: override survival to 1.0 — no need to survive
@@ -1024,6 +1035,26 @@ function unifiedPick(gs, coilyActive) {
     var _perfMs = typeof performance !== 'undefined' ? performance.now() - _perfStart : 0;
     if (_perfMs > 100) console.log('AI SLOW: ' + _perfMs.toFixed(0) + 'ms, enemies=' + enemyInits.length + ' memo=' + _persistMemoCount + ' pos=(' + gs.player.row + ',' + gs.player.col + ') dir=' + (bestDir||'?'));
 
+    // Validate: if tree says safe, verify with simStep. RNG saved/restored carefully.
+    if (bestDir && bestDir !== 'STAY' && hop1Surv[bestDir] >= 0.9) {
+        var _valRng = simRng; // save GAME rng
+        var valDeaths = 0;
+        for (var vs = 0; vs < 5; vs++) {
+            simRng = createSeededRng(baseSeed + vs * 131 + 7);
+            var vc = simDeepClone(gs);
+            if (!simStep(vc, bestDir)) valDeaths++;
+        }
+        simRng = _valRng; // restore GAME rng (critical!)
+        if (valDeaths > 0) {
+            console.log('TREE BUG: ' + bestDir + ' P=' + hop1Surv[bestDir].toFixed(3) +
+                ' but simStep died ' + valDeaths + '/5 from (' + gs.player.row + ',' + gs.player.col +
+                ') enemies: ' + gs.enemies.filter(function(e){ return e.type !== 'spawn-timer'; }).map(function(e){
+                    return e.type + '@(' + e.row + ',' + e.col + ')' +
+                        (e.jumping ? 'j' + (e.jumpT||0).toFixed(2) + '→' + e.destRow + ',' + e.destCol : 't' + (e.moveTimer||0)) +
+                        (e.spawnAnimTimer > 0 ? 'sa' + e.spawnAnimTimer : '');
+                }).join(' '));
+        }
+    }
 
     return bestDir || 'STAY';
 }
