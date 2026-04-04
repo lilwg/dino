@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI: hybrid strategy + survival tree
-var AI_VERSION = 'v9.1-levelComplete';
+var AI_VERSION = 'v9.2';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -963,6 +963,9 @@ function unifiedPick(gs, coilyActive) {
             // 8 more hops when the level ends on landing
             if (tcClone.levelWon) { survProb = 1.0; hop1Surv[dir] = 1.0; }
         } else {
+            // simStep died — override tree's survival probability
+            // (catches disc ride deaths where tree only simulates Coily, not all enemies)
+            survProb = 0; hop1Surv[dir] = 0;
             tc = simTourCost(gs) + 1; // simStep failed with this seed; approximate
         }
         // STAY penalty: escalates with consecutive STAYs, much higher during freeze
@@ -1105,6 +1108,37 @@ function unifiedPick(gs, coilyActive) {
                     ' player=(' + vc.player.row + ',' + vc.player.col + ')' +
                     (vc.player.jumping ? 'j' + (vc.player.jumpT||0).toFixed(2) : '') +
                     ' freeze=' + (vc.freezeTimer||0);
+            }
+        }
+        // Death trap check: if hop 1 survives, check if ALL directions from
+        // landing position are fatal. The tree should have detected this.
+        if (valDeaths === 0) {
+            simRng = createSeededRng(baseSeed + 999);
+            var dtc = simDeepClone(gs);
+            simStep(dtc, bestDir);
+            if (dtc.alive && !dtc.levelWon) {
+                var anyHop2Survive = false;
+                for (var dt2 = 0; dt2 < DIR_KEYS_WITH_STAY.length; dt2++) {
+                    var dt2d = DIR_KEYS_WITH_STAY[dt2];
+                    if (!simCanMove(dtc, dt2d)) continue;
+                    var dtc2 = simDeepClone(dtc);
+                    simRng = createSeededRng(baseSeed + dt2 * 77 + 333);
+                    if (simStep(dtc2, dt2d)) { anyHop2Survive = true; break; }
+                }
+                if (!anyHop2Survive) {
+                    console.log('DEATH TRAP: ' + bestDir + ' P=' + hop1Surv[bestDir].toFixed(3) +
+                        ' from (' + gs.player.row + ',' + gs.player.col + ')→(' +
+                        dtc.player.row + ',' + dtc.player.col + ')');
+                    // Override: tree says safe but destination is a death trap
+                    hop1Surv[bestDir] = 0;
+                    aiMoveScores[bestDir] = -10000;
+                    bestDir = null; bestScore = -Infinity;
+                    for (var dtk = 0; dtk < DIR_KEYS_WITH_STAY.length; dtk++) {
+                        var dtd = DIR_KEYS_WITH_STAY[dtk];
+                        if (aiMoveScores[dtd] === undefined) continue;
+                        if (aiMoveScores[dtd] > bestScore) { bestScore = aiMoveScores[dtd]; bestDir = dtd; }
+                    }
+                }
             }
         }
         simRng = _valRng; // restore GAME rng (critical!)
