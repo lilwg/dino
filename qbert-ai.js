@@ -458,11 +458,24 @@ function findBestSurvival(gs, enemyTables, coilyInit, startFrame, maxFrames) {
     function search(curRow, curCol, depth, curFrame, accumSurv) {
         if (accumSurv <= 0) return 0;
         if (depth >= LOOKAHEAD_DEPTH || curFrame >= maxFrames) {
-            // Leaf: check Coily against full path
-            if (coilyInit) {
-                var ct = buildCoilyDangerTable(coilyInit, waypoints, sm, curFrame);
-                return accumSurv * tableSurvivalProb(timeline, ct, startFrame, curFrame);
+            // Leaf: player sits at curPos for remaining frames.
+            // Fill timeline so Coily + enemy checks cover the full window.
+            var curIdx = posToIdx[curRow * ROWS + curCol];
+            var extEnd = Math.min(curFrame + 40, maxFrames); // check ~1 extra hop of sitting
+            for (var ef = curFrame; ef < extEnd; ef++) timeline[ef] = curIdx;
+
+            // Check non-Coily for the extension
+            for (var t = 0; t < enemyTables.length; t++) {
+                accumSurv *= tableSurvivalProb(timeline, enemyTables[t], curFrame, extEnd);
+                if (accumSurv <= 0) break;
             }
+            // Check Coily against full path including extension
+            if (accumSurv > 0 && coilyInit) {
+                var ct = buildCoilyDangerTable(coilyInit, waypoints, sm, extEnd);
+                accumSurv *= tableSurvivalProb(timeline, ct, startFrame, extEnd);
+            }
+            // Undo extension
+            for (var ef2 = curFrame; ef2 < extEnd; ef2++) timeline[ef2] = -1;
             return accumSurv;
         }
 
