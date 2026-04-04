@@ -800,6 +800,128 @@ function simDeepClone(gs) {
     };
 }
 
+// ─── Fast survival-only simStep ──────────────────────────────────────────────
+// Optimized for expectimax: inlined collision checks (no object allocation),
+// no cube/score modifications, no splice (dead enemies skipped).
+// Returns true if player survived, false if died.
+
+function simStepSurvival(gs, dir) {
+    var p = gs.player, sm = gs.sm;
+    var pJumpDur = PLAYER_JUMP_DUR * sm;
+    var eJumpDur = ENEMY_JUMP_DUR * sm;
+
+    // --- STAY: advance enemies, check collision ---
+    if (dir === 'STAY') {
+        var maxWait = Math.ceil(1.0 / pJumpDur) + 8;
+        for (var f = 0; f < maxWait; f++) {
+            simUpdateEnemies(gs);
+            if (_simCheckFast(gs)) return false;
+        }
+        return true;
+    }
+
+    // --- Pre-move collision ---
+    if (_simCheckFast(gs)) return false;
+
+    // --- Try move ---
+    var d = DIRS[dir];
+    var nr = p.row + d.dr, nc = p.col + d.dc;
+    var validDest = (nr >= 0 && nr < ROWS && nc >= 0 && nc <= nr);
+
+    if (!validDest) {
+        // Disc check
+        for (var di = 0; di < gs.discs.length; di++) {
+            var disc = gs.discs[di];
+            if (!disc.active) continue;
+            var isLeft = (disc.side === 0 && dir === 'UL' && p.col === 0 && p.row === disc.row);
+            var isRight = (disc.side === 1 && dir === 'UR' && p.col === p.row && p.row === disc.row);
+            if (isLeft || isRight) {
+                // Disc ride
+                disc.active = false;
+                var lureRow = disc.row;
+                var lureCol = disc.side === 0 ? -1 : disc.row + 1;
+                for (var ei = 0; ei < gs.enemies.length; ei++)
+                    if (gs.enemies[ei].type === 'coily') {
+                        gs.enemies[ei].lureRow = lureRow; gs.enemies[ei].lureCol = lureCol;
+                    }
+                p.row = disc.row; p.col = disc.side === 0 ? -1 : disc.row + 1;
+                p.jumping = false;
+                for (var f = 0; f < 30; f++) simUpdateEnemies(gs);
+                p.row = 0; p.col = 0;
+                return !_simCheckFast(gs);
+            }
+        }
+        // Fall off
+        gs.alive = false;
+        return false;
+    }
+
+    // --- Normal hop ---
+    p.prevRow = p.row; p.prevCol = p.col;
+    p.jumpSrcRow = p.row; p.jumpSrcCol = p.col;
+    p.jumping = true; p.jumpT = 0; p.jumpDur = pJumpDur;
+    p.destRow = nr; p.destCol = nc;
+
+    // Frame loop — pre-computed count
+    var frames = Math.ceil(1.0 / pJumpDur);
+    for (var f = 0; f < frames; f++) {
+        p.jumpT += pJumpDur;
+        if (p.jumpT >= 1) {
+            p.jumpT = 1; p.jumping = false;
+            p.row = nr; p.col = nc; p.destRow = null; p.destCol = null;
+        }
+        simUpdateEnemies(gs);
+        if (!gs.alive) return false;
+        if (_simCheckFast(gs)) return false;
+    }
+    // Idle frame
+    simUpdateEnemies(gs);
+    if (_simCheckFast(gs)) return false;
+    return true;
+}
+
+// Inlined collision check — no object allocation, returns true if player dies
+function _simCheckFast(gs) {
+    var p = gs.player;
+    // Player collision tile (inlined)
+    var ptR, ptC;
+    if (p.jumping) {
+        if (p.jumpT < 0.33) { ptR = p.row; ptC = p.col; }
+        else if (p.jumpT >= 0.67) { ptR = p.destRow; ptC = p.destCol; }
+        else return false; // immune at apex
+    } else {
+        ptR = p.row; ptC = p.col;
+    }
+    for (var i = 0; i < gs.enemies.length; i++) {
+        var e = gs.enemies[i];
+        if (e.type === 'spawn-timer' || e.spawnAnimTimer > 0) continue;
+        // Enemy collision tile (inlined)
+        var etR, etC;
+        if (e.jumping) {
+            if (e.jumpT < 0.33) { etR = e.row; etC = e.col; }
+            else if (e.jumpT >= 0.67) { etR = e.destRow; etC = e.destCol; }
+            else continue; // immune
+        } else {
+            etR = e.row; etC = e.col;
+        }
+        var hit = (etR === ptR && etC === ptC);
+        // Cross-path
+        if (!hit && p.jumping && e.jumping &&
+            p.destRow === e.jumpSrcRow && p.destCol === e.jumpSrcCol &&
+            p.jumpSrcRow === e.destRow && p.jumpSrcCol === e.destCol) {
+            hit = true;
+        }
+        if (hit) {
+            if (e.type === 'slick') continue; // harmless
+            if (e.type === 'greenball') { gs.freezeTimer = 300; gs.enemies.splice(i, 1); i--; continue; }
+            if (gs.freezeTimer > 0) continue; // frozen = harmless
+            gs.alive = false; p.dead = true;
+            return true;
+        }
+    }
+    return false;
+}
+
 // Fast clone for survival evaluation: shares cubes (read-only for survival),
 // only clones player + enemies + discs. ~3x faster than simDeepClone.
 function simSurvivalClone(gs) {
@@ -951,10 +1073,11 @@ function simHopDecision() {
 
 // simStep with forced enemy hop decisions. Used by expectimax to enumerate
 // all enemy decision combinations without RNG dependency.
+// Uses simStepSurvival when in survivalOnly mode for speed.
 function simStepForced(gs, dir, choices) {
     simHopDecisionQ = choices;
     simHopDecisionIdx = 0;
-    var result = simStep(gs, dir);
+    var result = gs.survivalOnly ? simStepSurvival(gs, dir) : simStep(gs, dir);
     simHopDecisionQ = null;
     return result;
 }
