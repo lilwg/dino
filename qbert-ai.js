@@ -834,47 +834,15 @@ function unifiedPick(gs) {
         return s;
     }).join(' ');
 
-    // ── Safety check for each direction (exhaustive + hop-2/3 chain) ──
-    var safe1 = {};
-    var safe2 = {};
+    // ── Compute 5-hop survival per direction via danger tables ──
     var hop1Surv = {};
 
-    for (var k = 0; k < DIR_KEYS_WITH_STAY.length; k++) {
-        var dir = DIR_KEYS_WITH_STAY[k];
-        if (!simCanMove(gs, dir)) continue;
-
-        // Exhaustive safety check (covers all enemies including Coily)
-        if (!hasEnemies) {
-            safe1[dir] = true;
-        } else if (dir === 'STAY') {
-            var stayFrames = 10;
-            var stayTiles = [];
-            for (var sf = 0; sf < stayFrames; sf++) stayTiles.push({ row: gs.player.row, col: gs.player.col });
-            var stayUnsafe = false;
-            for (var sei = 0; sei < gs.enemies.length; sei++) {
-                var se = gs.enemies[sei];
-                if (se.type === 'spawn-timer' || se.type === 'slick' || se.type === 'sam' || se.type === 'greenball') continue;
-                var ser = se.jumping && se.jumpT >= 0.67 ? (se.destRow != null ? se.destRow : se.row) : se.row;
-                var sec = se.jumping && se.jumpT >= 0.67 ? (se.destCol != null ? se.destCol : se.col) : se.col;
-                if (se.type !== 'coily' && Math.abs(ser - gs.player.row) + Math.abs(sec - gs.player.col) > 2) continue;
-                var seClone = cloneEnemyLight(se);
-                if (enemyPathCollides(seClone, stayTiles, 0, stayFrames, gs.player.row, gs.player.col, gs.sm)) {
-                    stayUnsafe = true; break;
-                }
-            }
-            safe1[dir] = !stayUnsafe;
-        } else {
-            safe1[dir] = isExhaustiveSafe(gs, dir);
+    if (!hasEnemies) {
+        for (var k = 0; k < DIR_KEYS_WITH_STAY.length; k++) {
+            var dir = DIR_KEYS_WITH_STAY[k];
+            if (simCanMove(gs, dir)) { hop1Surv[dir] = 1.0; aiMoveScores[dir] = 10000; }
         }
-        hop1Surv[dir] = safe1[dir] ? 1 : 0;
-        aiMoveScores[dir] = safe1[dir] ? 10000 : 0;
-        safe2[dir] = true; // will be updated by multi-hop check below
-    }
-
-    // ── Multi-hop survival via precomputed danger tables ──
-    // For directions that pass hop-1 safety (isExhaustiveSafe), compute
-    // probabilistic survival over 5 hops using danger tables.
-    if (hasEnemies) {
+    } else {
         var maxFrames = DANGER_MAX_FRAMES;
         var startFrame = Math.min(gs.freezeTimer || 0, maxFrames);
         var enemyTables = [];
@@ -903,21 +871,12 @@ function unifiedPick(gs) {
 
         var multiHop = findMultiHopSurvival(gs, enemyTables, coilyInit, startFrame, maxFrames);
         for (var mdir in multiHop) {
-            if (safe1[mdir]) {
-                // Multi-hop survival modulates the score
-                hop1Surv[mdir] = multiHop[mdir];
-                aiMoveScores[mdir] = Math.round(multiHop[mdir] * 10000);
-                if (multiHop[mdir] < 0.5) {
-                    safe2[mdir] = false;
-                    hop1Surv[mdir] = Math.min(hop1Surv[mdir], 0.45);
-                }
-            }
+            hop1Surv[mdir] = multiHop[mdir];
+            aiMoveScores[mdir] = Math.round(multiHop[mdir] * 10000);
         }
     }
 
     // ── Opportunistic disc usage to kill Coily ──
-    // Disc + lure always kills Coily (lure is off-grid, Coily chases it off edge).
-    // No simulation needed — just check Coily exists and disc is reachable.
     var hasCoily = false;
     for (var ci = 0; ci < gs.enemies.length; ci++) {
         if (gs.enemies[ci].type === 'coily') { hasCoily = true; break; }
@@ -929,29 +888,28 @@ function unifiedPick(gs) {
             var trigRow = disc.row;
             var trigCol = disc.side === 0 ? 0 : disc.row;
 
-            // Case 1: Already at disc trigger position → take disc immediately
             if (gs.player.row === trigRow && gs.player.col === trigCol) {
                 var discDir = disc.side === 0 ? 'UL' : 'UR';
                 console.log('DISC-KILL @(' + gs.player.row + ',' + gs.player.col + ') → ' + discDir);
                 restoreRng(); return discDir;
             }
 
-            // Case 2: One hop away from disc trigger → move toward it if safe
             for (var dk = 0; dk < shuffledDirs.length; dk++) {
                 var ddir = shuffledDirs[dk];
                 var dd = DIRS[ddir];
                 var dr = gs.player.row + dd.dr, dc = gs.player.col + dd.dc;
                 if (dr !== trigRow || dc !== trigCol) continue;
-                if (!safe1[ddir]) continue;
+                if ((hop1Surv[ddir] || 0) < 1.0) continue;
                 console.log('DISC-APPROACH @(' + gs.player.row + ',' + gs.player.col + ') → ' + ddir + ' → disc');
                 restoreRng(); return ddir;
             }
         }
     }
 
-    // ── Peel-based direction selection ──
+    // ── Direction selection: guaranteed-safe with best routing ──
     var targetDist = peelTargetDist(gs);
 
+    // Pass 1: among directions with P=1.0, pick best routing
     var bestDir = null, bestScore = Infinity;
     var _routeDbg = [];
     for (var fk = 0; fk < shuffledDirs.length; fk++) {
@@ -960,84 +918,53 @@ function unifiedPick(gs) {
         var lr = gs.player.row + fdd.dr, lc = gs.player.col + fdd.dc;
         if (!isValidPos(lr, lc)) continue;
         var lidx = posToIdx[lr * ROWS + lc];
-        var _s1 = safe1[fd], _s2 = safe2[fd];
-        if (!_s1 || !_s2) { _routeDbg.push(fd + '→(' + lr + ',' + lc + ') UNSAFE s1=' + _s1 + ' s2=' + _s2); continue; }
+        var surv = hop1Surv[fd] || 0;
+        if (surv < 1.0) { _routeDbg.push(fd + '→(' + lr + ',' + lc + ') P=' + surv.toFixed(2)); continue; }
         if (lidx < 0) continue;
 
         var score = targetDist[lidx];
-        var _stompsHere = 0;
-        for (var _ci = 0; _ci < gs.cubes.length; _ci++) {
-            if (gs.cubes[_ci].row === lr && gs.cubes[_ci].col === lc) {
-                _stompsHere = stompsNeeded(gs.cubes[_ci].state, gs.lv); break;
-            }
-        }
-        _routeDbg.push(fd + '→(' + lr + ',' + lc + ') dist=' + score.toFixed(1) + ' stomps=' + _stompsHere + ' L=' + STATIC_PEEL.layer[lidx]);
+        _routeDbg.push(fd + '→(' + lr + ',' + lc + ') dist=' + score.toFixed(1) + ' P=1 L=' + STATIC_PEEL.layer[lidx]);
         if (score >= 999) continue;
-        // Tiebreaker: prefer cubes with more neighbors (avoid dead-end corners)
         score -= posAdj[lidx].length * 0.01;
         if (score < bestScore) { bestScore = score; bestDir = fd; }
     }
     if (bestDir) {
-        console.log('PEEL-ROUTE @(' + gs.player.row + ',' + gs.player.col + ') → ' + bestDir + ' | ' + _routeDbg.join(' | '));
+        console.log('ROUTE @(' + gs.player.row + ',' + gs.player.col + ') → ' + bestDir + ' | ' + _routeDbg.join(' | '));
         restoreRng(); return bestDir;
     }
 
-    // Peel BFS found no path (e.g. respawn at apex, separated from targets by
-    // removed cubes). Fall back to simple BFS on the full graph to reconnect.
-    // Prefer reverting high-layer (interior) cubes over low-layer (edge) cubes.
+    // Pass 1b: toggle-level fallback BFS
     if (gs.lv >= 3) {
         targetDist = peelTargetDist(gs, true);
-        var maxLayer = 0;
-        for (var pl = 0; pl < POS_COUNT; pl++)
-            if (STATIC_PEEL.layer[pl] > maxLayer) maxLayer = STATIC_PEEL.layer[pl];
         bestDir = null; bestScore = Infinity;
         for (var fk2 = 0; fk2 < shuffledDirs.length; fk2++) {
             var fd2 = shuffledDirs[fk2];
             var fdd2 = DIRS[fd2];
             var lr2 = gs.player.row + fdd2.dr, lc2 = gs.player.col + fdd2.dc;
             if (!isValidPos(lr2, lc2)) continue;
+            if ((hop1Surv[fd2] || 0) < 1.0) continue;
             var lidx2 = posToIdx[lr2 * ROWS + lc2];
-            if (!safe1[fd2] || !safe2[fd2]) continue;
             if (lidx2 < 0) continue;
             var score2 = targetDist[lidx2];
             if (score2 >= 999) continue;
-            // Penalize stepping on low-layer (edge) completed cubes — prefer reverting interior
-            var _stomps2 = 0;
-            for (var _ci2 = 0; _ci2 < gs.cubes.length; _ci2++) {
-                if (gs.cubes[_ci2].row === lr2 && gs.cubes[_ci2].col === lc2) {
-                    _stomps2 = stompsNeeded(gs.cubes[_ci2].state, gs.lv); break;
-                }
-            }
-            if (_stomps2 <= 0) {
-                score2 += (maxLayer - STATIC_PEEL.layer[lidx2]) * 0.3;
-            }
-            // Tiebreaker: prefer cubes with more neighbors (avoid dead-end corners)
             score2 -= posAdj[lidx2].length * 0.01;
             if (score2 < bestScore) { bestScore = score2; bestDir = fd2; }
         }
         if (bestDir) {
-            console.log('PEEL-FALLBACK @(' + gs.player.row + ',' + gs.player.col + ') → ' + bestDir + ' | ' + _routeDbg.join(' | '));
+            console.log('ROUTE-FALLBACK @(' + gs.player.row + ',' + gs.player.col + ') → ' + bestDir);
             restoreRng(); return bestDir;
         }
     }
 
-    console.log('PEEL-NONE @(' + gs.player.row + ',' + gs.player.col + ') | ' + _routeDbg.join(' | '));
-    // No safe movement direction — STAY if it's safe
-    // Don't require safe2 here: delaying death is always better than
-    // choosing an exhaustive-unsafe direction that dies immediately.
-    if (safe1['STAY']) {
-        restoreRng(); return 'STAY';
-    }
-
-    // No fully-safe option — pick by survival, tie-break by routing.
+    // Pass 2: no guaranteed-safe direction — pick highest survival, tiebreak by routing
+    console.log('NO-SAFE @(' + gs.player.row + ',' + gs.player.col + ') | ' + _routeDbg.join(' | '));
     var bestFallback = -Infinity, bestFallbackDir = null;
     for (var uk = 0; uk < shuffledDirsStay.length; uk++) {
         var ud = shuffledDirsStay[uk];
         if (hop1Surv[ud] === undefined) continue;
-        // Primary: survival rate (0-1). Secondary: routing score.
         var fallbackScore = hop1Surv[ud] * 1000;
         if (ud === 'STAY') {
-            fallbackScore -= 50; // penalize staying still
+            fallbackScore -= 50;
         } else {
             var udd = DIRS[ud];
             var fur = gs.player.row + udd.dr, fuc = gs.player.col + udd.dc;
