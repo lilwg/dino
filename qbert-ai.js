@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic (peel routing)
-var AI_VERSION = 'v14.0-dangerTable';
+var AI_VERSION = 'v14.1-multiHopTable';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -103,9 +103,8 @@ function buildDangerSet() {
 // P(survive all enemies) = product of per-enemy P(no collision).
 // This replaces recursive enemyPathCollides with O(frames) table lookups.
 
-// Max frames to check: player hop takes ~25-35 frames, check a bit beyond landing
-// to catch enemies arriving at the destination shortly after
-var DANGER_MAX_FRAMES = 50;
+// Max frames: 3 hops × ~35 frames/hop = ~105, plus buffer
+var DANGER_MAX_FRAMES = 120;
 
 // Accumulate probability at (frame, row, col) in the danger table.
 // table is Float32Array[maxFrames * POS_COUNT].
@@ -354,28 +353,35 @@ function buildSpawnDangerTable(forcedType, spawnDelay, sm, maxFrames) {
     return tables;
 }
 
-// Compute player tile indices for a direction.
-// Returns Int8Array[maxFrames] where -1 = immune, >=0 = posIdx.
-// Called when player idle is complete — jump starts immediately at frame 0.
-function computePlayerTileIndices(pRow, pCol, dir, sm, maxFrames) {
-    var result = new Int8Array(maxFrames);
-    for (var i = 0; i < maxFrames; i++) result[i] = -1;
-    var srcIdx = posToIdx[pRow * ROWS + pCol];
+// ─── Multi-hop player tile timeline ─────────────────────────────────────────
+// Build a player tile index array for a sequence of hops.
+// Returns { idx: Int8Array[maxFrames], endFrame, endRow, endCol } or null if invalid.
+// Each hop: jump frames + PLAYER_IDLE_FRAMES. STAY = sit at current pos for ~35 frames.
 
+function computeHopFrames(sm) {
+    return Math.ceil(1.0 / (PLAYER_JUMP_DUR * sm));
+}
+
+// Append one hop to a player timeline starting at startFrame.
+// Returns the frame after landing idle completes, or -1 if the move is invalid.
+function appendHop(result, pRow, pCol, dir, sm, startFrame, maxFrames) {
     if (dir === 'STAY') {
-        for (var f = 0; f < maxFrames; f++) result[f] = srcIdx;
-        return result;
+        var srcIdx = posToIdx[pRow * ROWS + pCol];
+        var stayLen = computeHopFrames(sm) + PLAYER_IDLE_FRAMES;
+        var endF = Math.min(startFrame + stayLen, maxFrames);
+        for (var f = startFrame; f < endF; f++) result[f] = srcIdx;
+        return { endFrame: endF, endRow: pRow, endCol: pCol };
     }
-
     var d = DIRS[dir];
     var destR = pRow + d.dr, destC = pCol + d.dc;
     if (!isValidPos(destR, destC)) return null;
+    var srcIdx = posToIdx[pRow * ROWS + pCol];
     var dstIdx = posToIdx[destR * ROWS + destC];
     var jumpDur = PLAYER_JUMP_DUR * sm;
     var jumpT = 0;
     var landed = false;
-    var postLandFrames = 0;
-    for (var f = 0; f < maxFrames; f++) {
+    var idleCount = 0;
+    for (var f = startFrame; f < maxFrames; f++) {
         if (!landed) {
             jumpT += jumpDur;
             if (jumpT >= 1) {
@@ -385,21 +391,49 @@ function computePlayerTileIndices(pRow, pCol, dir, sm, maxFrames) {
             }
             if (jumpT < 0.33) result[f] = srcIdx;
             else if (jumpT >= 0.67) result[f] = dstIdx;
-            // else: mid-air immune (-1)
+            // else: immune (-1)
         } else {
             result[f] = dstIdx;
-            postLandFrames++;
-            if (postLandFrames >= 10) break;
+            idleCount++;
+            if (idleCount >= PLAYER_IDLE_FRAMES) {
+                return { endFrame: f + 1, endRow: destR, endCol: destC };
+            }
         }
     }
-    return result;
+    // Ran out of frames
+    return { endFrame: maxFrames, endRow: destR, endCol: destC };
 }
 
-// Compute P(survive) against a single enemy's danger table.
-// P(survive) = product over frames of (1 - P(enemy at player tile at frame f))
-function tableSurvivalProb(playerIdx, dangerTable, startFrame, maxFrames) {
+// Build multi-hop player timeline for a sequence of directions.
+// dirs = ['UL', 'DR', 'STAY'] etc.
+// Returns { idx: Int8Array, endRow, endCol, validHops } or null if first hop invalid.
+function buildMultiHopTimeline(pRow, pCol, dirs, sm, maxFrames) {
+    var result = new Int8Array(maxFrames);
+    for (var i = 0; i < maxFrames; i++) result[i] = -1;
+    var curRow = pRow, curCol = pCol;
+    var frame = 0;
+    var validHops = 0;
+    for (var h = 0; h < dirs.length; h++) {
+        if (frame >= maxFrames) break;
+        var hop = appendHop(result, curRow, curCol, dirs[h], sm, frame, maxFrames);
+        if (!hop) {
+            if (h === 0) return null; // first hop invalid
+            break;
+        }
+        curRow = hop.endRow;
+        curCol = hop.endCol;
+        frame = hop.endFrame;
+        validHops++;
+    }
+    return { idx: result, endRow: curRow, endCol: curCol, validHops: validHops };
+}
+
+// ─── Survival check against prebuilt enemy tables ───────────────────────────
+
+// P(survive) against one enemy table over a player timeline.
+function tableSurvivalProb(playerIdx, dangerTable, startFrame, endFrame) {
     var prob = 1.0;
-    for (var f = startFrame; f < maxFrames; f++) {
+    for (var f = startFrame; f < endFrame; f++) {
         var pi = playerIdx[f];
         if (pi >= 0) {
             var hitProb = dangerTable[f * POS_COUNT + pi];
@@ -410,55 +444,20 @@ function tableSurvivalProb(playerIdx, dangerTable, startFrame, maxFrames) {
     return prob;
 }
 
-// Full survival probability: build danger tables for all enemies,
-// compute P(survive) = product of per-enemy survival probabilities.
-function tableSurvival(gs, dir) {
-    var maxFrames = dir === 'STAY' ? 10 : DANGER_MAX_FRAMES;
-    var playerIdx = computePlayerTileIndices(gs.player.row, gs.player.col, dir, gs.sm, maxFrames);
-    if (!playerIdx) return 1.0;
-    var startFrame = Math.min(gs.freezeTimer || 0, maxFrames);
-
-    // Destination for spawnDrop check
-    var d = DIRS[dir];
-    var destR = dir === 'STAY' ? gs.player.row : gs.player.row + d.dr;
-    var destC = dir === 'STAY' ? gs.player.col : gs.player.col + d.dc;
-
+// Check survival of a player timeline against all prebuilt non-Coily tables
+// and a freshly built Coily table for this specific path.
+function multiHopSurvival(playerTimeline, endFrame, coilyInit, coilyTargetR, coilyTargetC,
+                          enemyTables, sm, startFrame) {
     var survProb = 1.0;
-    for (var i = 0; i < gs.enemies.length; i++) {
-        var e = gs.enemies[i];
-
-        if (e.type === 'spawn-timer') {
-            if (e.timer <= maxFrames) {
-                var ft = e.forcedType;
-                if (!ft) {
-                    var hasCoilyOrEgg = false;
-                    for (var ci = 0; ci < gs.enemies.length; ci++)
-                        if (gs.enemies[ci].type === 'coily' || gs.enemies[ci].type === 'egg') { hasCoilyOrEgg = true; break; }
-                    ft = hasCoilyOrEgg ? 'redball' : 'egg';
-                }
-                var tables = buildSpawnDangerTable(ft, e.timer, gs.sm, maxFrames);
-                for (var ti = 0; ti < tables.length; ti++) {
-                    survProb *= tableSurvivalProb(playerIdx, tables[ti], startFrame, maxFrames);
-                    if (survProb <= 0) return 0;
-                }
-            }
-            continue;
-        }
-
-        if (e.type === 'slick' || e.type === 'sam' || e.type === 'greenball') continue;
-
-        // Don't land on a tile where an enemy is dropping
-        if (e.spawnDrop > 0 && e.row === destR && e.col === destC) return 0;
-
-        var eTable, eSurv;
-        if (e.type === 'coily') {
-            eTable = buildCoilyDangerTable(e, gs.player.row, gs.player.col, gs.sm, maxFrames);
-        } else {
-            eTable = buildEnemyDangerTable(e, gs.sm, maxFrames);
-        }
-        eSurv = tableSurvivalProb(playerIdx, eTable, startFrame, maxFrames);
-        survProb *= eSurv;
+    // Non-Coily enemies (prebuilt, shared across all direction combos)
+    for (var ti = 0; ti < enemyTables.length; ti++) {
+        survProb *= tableSurvivalProb(playerTimeline, enemyTables[ti], startFrame, endFrame);
         if (survProb <= 0) return 0;
+    }
+    // Coily (depends on player path — rebuild per combo)
+    if (coilyInit) {
+        var ct = buildCoilyDangerTable(coilyInit, coilyTargetR, coilyTargetC, sm, endFrame);
+        survProb *= tableSurvivalProb(playerTimeline, ct, startFrame, endFrame);
     }
     return survProb;
 }
@@ -584,8 +583,6 @@ function simCanMove(gs, dirKey) {
 
 function unifiedPick(gs) {
     var savedRng = simRng;
-    var baseSeed = (gs.player.row * 7 + gs.player.col) * 10000 + (frameCount || 0);
-    function simSeed(sampleIdx) { simRng = createSeededRng(baseSeed + sampleIdx * 9973); }
     function restoreRng() { simRng = savedRng; }
 
     // Shuffle direction keys to eliminate iteration-order bias
@@ -610,51 +607,106 @@ function unifiedPick(gs) {
         return s;
     }).join(' ');
 
-    // ── Survival probability for each direction (danger table + multi-hop) ──
+    // ── Build enemy danger tables once (shared across all direction combos) ──
+    var maxFrames = DANGER_MAX_FRAMES;
+    var startFrame = Math.min(gs.freezeTimer || 0, maxFrames);
+    var enemyTables = []; // non-Coily tables
+    var coilyInit = null; // Coily's initial state (if present)
+
+    if (hasEnemies) {
+        for (var ei = 0; ei < gs.enemies.length; ei++) {
+            var e = gs.enemies[ei];
+            if (e.type === 'spawn-timer') {
+                if (e.timer <= maxFrames) {
+                    var ft = e.forcedType;
+                    if (!ft) {
+                        var hasCoilyOrEgg = false;
+                        for (var ci2 = 0; ci2 < gs.enemies.length; ci2++)
+                            if (gs.enemies[ci2].type === 'coily' || gs.enemies[ci2].type === 'egg') { hasCoilyOrEgg = true; break; }
+                        ft = hasCoilyOrEgg ? 'redball' : 'egg';
+                    }
+                    var spTables = buildSpawnDangerTable(ft, e.timer, gs.sm, maxFrames);
+                    for (var sti = 0; sti < spTables.length; sti++) enemyTables.push(spTables[sti]);
+                }
+                continue;
+            }
+            if (e.type === 'slick' || e.type === 'sam' || e.type === 'greenball') continue;
+            if (e.type === 'coily') {
+                coilyInit = e;
+                continue;
+            }
+            enemyTables.push(buildEnemyDangerTable(e, gs.sm, maxFrames));
+        }
+    }
+
+    // ── Multi-hop survival: for each dir1, find best (dir2, dir3) survival ──
     var hop1Surv = {};
+    var LOOKAHEAD_HOPS = 3;
 
     for (var k = 0; k < DIR_KEYS_WITH_STAY.length; k++) {
         var dir = DIR_KEYS_WITH_STAY[k];
         if (!simCanMove(gs, dir)) continue;
 
-        // Hop-1 survival from danger tables (exact probabilistic check)
-        var surv1;
         if (!hasEnemies) {
-            surv1 = 1.0;
-        } else {
-            surv1 = tableSurvival(gs, dir);
+            hop1Surv[dir] = 1.0;
+            aiMoveScores[dir] = 10000;
+            continue;
         }
 
-        // Multi-hop lookahead: if hop-1 is safe, check hop 2+3 via simStep + danger tables
-        var multiHopSurv = surv1;
-        if (surv1 > 0.5 && hasEnemies) {
-            // Sample hop-1 outcomes via simStep to get future states
-            var hop1States = [];
-            for (var s = 0; s < 4; s++) {
-                simSeed(k * 100 + s);
-                var child = simDeepClone(gs);
-                if (simStep(child, dir) && hop1States.length < 3) hop1States.push(child);
-            }
-            if (hop1States.length > 0) {
-                // For each hop-1 state, find best hop-2 survival
-                var best2Surv = 0;
-                for (var d2k = 0; d2k < DIR_KEYS_WITH_STAY.length; d2k++) {
-                    var d2dir = DIR_KEYS_WITH_STAY[d2k];
-                    var d2survMin = 1.0;
-                    for (var si = 0; si < hop1States.length; si++) {
-                        if (!simCanMove(hop1States[si], d2dir)) { d2survMin = 0; break; }
-                        var d2s = tableSurvival(hop1States[si], d2dir);
-                        if (d2s < d2survMin) d2survMin = d2s;
-                    }
-                    if (d2survMin > best2Surv) best2Surv = d2survMin;
-                }
-                multiHopSurv = surv1 * best2Surv;
-            }
+        // Check spawnDrop collision for hop-1 dest
+        var dd1 = DIRS[dir];
+        var dest1R = dir === 'STAY' ? gs.player.row : gs.player.row + dd1.dr;
+        var dest1C = dir === 'STAY' ? gs.player.col : gs.player.col + dd1.dc;
+        var spawnDropBlock = false;
+        for (var sdi = 0; sdi < gs.enemies.length; sdi++) {
+            var sde = gs.enemies[sdi];
+            if (sde.spawnDrop > 0 && sde.row === dest1R && sde.col === dest1C) { spawnDropBlock = true; break; }
+        }
+        if (spawnDropBlock) { hop1Surv[dir] = 0; aiMoveScores[dir] = 0; continue; }
+
+        // Build hop-1 only timeline for quick check
+        var hop1TL = buildMultiHopTimeline(gs.player.row, gs.player.col, [dir], gs.sm, maxFrames);
+        if (!hop1TL) { hop1Surv[dir] = 0; aiMoveScores[dir] = 0; continue; }
+
+        // Coily chases player's current pos during hop-1
+        var hop1Surv1 = multiHopSurvival(hop1TL.idx, hop1TL.endFrame > maxFrames ? maxFrames : hop1TL.endFrame,
+            coilyInit, gs.player.row, gs.player.col, enemyTables, gs.sm, startFrame);
+
+        if (hop1Surv1 <= 0) {
+            hop1Surv[dir] = 0;
+            aiMoveScores[dir] = 0;
+            continue;
         }
 
-        hop1Surv[dir] = multiHopSurv;
-        // Export for viz
-        aiMoveScores[dir] = Math.round(multiHopSurv * 10000);
+        // Multi-hop: find best 3-hop sequence starting with dir
+        var bestMulti = 0;
+        for (var d2k = 0; d2k < DIR_KEYS_WITH_STAY.length; d2k++) {
+            var d2 = DIR_KEYS_WITH_STAY[d2k];
+            // Quick validity check for hop-2
+            if (d2 !== 'STAY' && !isValidPos(dest1R + DIRS[d2].dr, dest1C + DIRS[d2].dc)) continue;
+            var dest2R = d2 === 'STAY' ? dest1R : dest1R + DIRS[d2].dr;
+            var dest2C = d2 === 'STAY' ? dest1C : dest1C + DIRS[d2].dc;
+
+            for (var d3k = 0; d3k < DIR_KEYS_WITH_STAY.length; d3k++) {
+                var d3 = DIR_KEYS_WITH_STAY[d3k];
+                if (d3 !== 'STAY' && !isValidPos(dest2R + DIRS[d3].dr, dest2C + DIRS[d3].dc)) continue;
+
+                var tl = buildMultiHopTimeline(gs.player.row, gs.player.col, [dir, d2, d3], gs.sm, maxFrames);
+                if (!tl || tl.validHops < 1) continue;
+
+                var endF = Math.min(tl.endFrame || maxFrames, maxFrames);
+                // Coily chases player's position; use current pos as target
+                // (Coily doesn't know where player will hop next)
+                var surv = multiHopSurvival(tl.idx, endF,
+                    coilyInit, gs.player.row, gs.player.col, enemyTables, gs.sm, startFrame);
+                if (surv > bestMulti) bestMulti = surv;
+                if (bestMulti >= 1.0) break; // can't do better
+            }
+            if (bestMulti >= 1.0) break;
+        }
+
+        hop1Surv[dir] = bestMulti;
+        aiMoveScores[dir] = Math.round(bestMulti * 10000);
     }
 
     // Safety threshold: directions with survival above this are considered safe
