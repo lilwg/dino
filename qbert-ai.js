@@ -520,6 +520,70 @@ function expandCoilyPaths(table, row, col, jumping, jumpT, jumpDur,
     }
 }
 
+// Fast deterministic Coily table: O(maxFrames) loop, no branching.
+// On ties, picks first best direction (deterministic). Waypoint-aware.
+function buildCoilyDangerTableFast(e, waypoints, sm, maxFrames) {
+    var table = new Float32Array(maxFrames * POS_COUNT);
+    var jumpDur = e.jumpDur || ENEMY_JUMP_DUR * sm;
+    var interval = e.moveInterval || enemyMoveInterval('coily', sm);
+    var row = e.row, col = e.col;
+    var jumping = !!e.jumping, jumpT = e.jumpT || 0;
+    var moveTimer = e.moveTimer || 0;
+    var destRow = e.destRow, destCol = e.destCol;
+    var idleTimer = e.idleTimer || 0;
+    var spawnDrop = e.spawnDrop || 0;
+
+    for (var f = 0; f < maxFrames; f++) {
+        // Get chase target from waypoints
+        var targetR = waypoints[0].row, targetC = waypoints[0].col;
+        for (var w = 1; w < waypoints.length; w++) {
+            if (waypoints[w].frame <= f) { targetR = waypoints[w].row; targetC = waypoints[w].col; }
+            else break;
+        }
+
+        if (spawnDrop > 0) { spawnDrop--; continue; }
+        if (jumping) {
+            jumpT += jumpDur;
+            if (jumpT >= 1) {
+                jumping = false;
+                row = destRow; col = destCol;
+                if (!isValidPos(row, col)) break;
+                dangerAdd(table, f, row, col, 1.0, maxFrames);
+                idleTimer = ENEMY_IDLE_FRAMES;
+                continue;
+            }
+            if (jumpT < 0.33) dangerAdd(table, f, row, col, 1.0, maxFrames);
+            else if (jumpT >= 0.67 && destRow != null) dangerAdd(table, f, destRow, destCol, 1.0, maxFrames);
+            continue;
+        }
+        if (idleTimer > 0) {
+            dangerAdd(table, f, row, col, 1.0, maxFrames);
+            idleTimer--;
+            continue;
+        }
+        moveTimer++;
+        if (moveTimer < interval) {
+            dangerAdd(table, f, row, col, 1.0, maxFrames);
+            continue;
+        }
+        moveTimer = 0;
+        // Chase: pick first best direction (deterministic, no tie branching)
+        var bestDist = Infinity, bestR = row, bestC = col;
+        for (var k = 0; k < 4; k++) {
+            var dk = DIRS[DIR_KEYS[k]];
+            var nr = row + dk.dr, nc = col + dk.dc;
+            if (!isValidPos(nr, nc)) continue;
+            var dist = Math.abs(targetR - nr) + Math.abs(targetC - nc);
+            if (dist < bestDist) { bestDist = dist; bestR = nr; bestC = nc; }
+        }
+        dangerAdd(table, f, row, col, 1.0, maxFrames);
+        destRow = bestR; destCol = bestC;
+        jumping = true; jumpT = 0;
+        if (!isValidPos(bestR, bestC)) break;
+    }
+    return table;
+}
+
 function buildSpawnDangerTable(forcedType, spawnDelay, sm, maxFrames) {
     var jumpDur = ENEMY_JUMP_DUR * sm;
     var interval = enemyMoveInterval(forcedType, sm);
@@ -622,8 +686,9 @@ function findMultiHopSurvival(gs, enemyTables, coilyInit, startFrame, maxFrames)
                 accumSurv *= tableSurvivalProb(timeline, enemyTables[t], curFrame, extEnd);
                 if (accumSurv <= 0) break;
             }
+            // Coily at leaf: deterministic sim (no branching = fast)
             if (accumSurv > 0 && coilyInit) {
-                var ct = buildCoilyDangerTable(coilyInit, waypoints, sm, extEnd);
+                var ct = buildCoilyDangerTableFast(coilyInit, waypoints, sm, extEnd);
                 accumSurv *= tableSurvivalProb(timeline, ct, startFrame, extEnd);
             }
             for (var ef2 = curFrame; ef2 < extEnd; ef2++) timeline[ef2] = -1;
