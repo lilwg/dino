@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI: hybrid strategy + survival tree
-var AI_VERSION = 'v8.4-accurateTree';
+var AI_VERSION = 'v9.0-accurateTree';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -368,7 +368,9 @@ function unifiedPick(gs, coilyActive) {
     var cIdleFrames = enemyMoveInterval('coily', gs.sm);
 
     // Time budget: cap AI computation to avoid frame drops
-    var _aiDeadline = typeof performance !== 'undefined' ? performance.now() + 50 : Infinity;
+    var _aiStartTime = typeof performance !== 'undefined' ? performance.now() : 0;
+    var _aiDeadline = _aiStartTime + 80; // total budget
+    var _dirDeadline = Infinity; // per-direction deadline, set in direction loop
 
     // Cross-timestep memo: persist across AI calls, clear on speed change or overflow
     if (gs.sm !== _persistMemoSm || _persistMemoCount > 50000) {
@@ -461,7 +463,7 @@ function unifiedPick(gs, coilyActive) {
         var cm = coily.moveTimer || 0;
         var cdr = coily.destRow, cdc = coily.destCol;
         var hasLure = coily.lureRow != null;
-        for (var f = 1; f <= pJumpFrames; f++) {
+        for (var f = 1; f <= pJumpFrames + 1; f++) {
             var playerT = f * pJumpDur;
             if (cj) {
                 ct += cJumpDur;
@@ -504,7 +506,7 @@ function unifiedPick(gs, coilyActive) {
                 else { ctR = -99; ctC = -99; }
             } else { ctR = cr; ctC = cc; }
             if (ptR === ctR && ptC === ctC) return null;
-            if (cj && cdr != null && nr === cr && nc === cc && pR === cdr && pC === cdc) return null;
+            if (f <= pJumpFrames && cj && cdr != null && nr === cr && nc === cc && pR === cdr && pC === cdc) return null;
         }
         return { row: cr, col: cc, jumping: cj, jumpT: ct, moveTimer: cm, destRow: cdr, destCol: cdc,
                  lureRow: hasLure ? coily.lureRow : null, lureCol: hasLure ? coily.lureCol : null };
@@ -538,7 +540,7 @@ function unifiedPick(gs, coilyActive) {
             } else {
                 framesUntilDecision = e.moveInterval - e.moveTimer;
             }
-            if (framesUntilDecision <= pJumpFrames) {
+            if (framesUntilDecision <= pJumpFrames + 1) {
                 moves = enemyMoves(e);
                 if (moves.length > 1) isDecider = true;
             }
@@ -562,7 +564,7 @@ function unifiedPick(gs, coilyActive) {
                 } else if (e2.row === pR && e2.col === pC) safe = false;
             }
             // Frame-by-frame
-            for (var f = 1; f <= pJumpFrames && safe; f++) {
+            for (var f = 1; f <= pJumpFrames + 1 && safe; f++) {
                 var playerT = f * pJumpDur;
                 // Advance enemy
                 if ((e2.falling && !e2.jumping) || e2.type === 'dead') break;
@@ -615,7 +617,7 @@ function unifiedPick(gs, coilyActive) {
                         else if (e2.jumpT >= 0.67 && e2.destRow === ptR && e2.destCol === ptC) safe = false;
                     } else if (e2.row === ptR && e2.col === ptC) safe = false;
                 }
-                if (e2.jumping && e2.destRow != null &&
+                if (f <= pJumpFrames && e2.jumping && e2.destRow != null &&
                     nr === e2.row && nc === e2.col && pR === e2.destRow && pC === e2.destCol) safe = false;
             }
             if (!e2.falling && e2.type !== 'dead') {
@@ -674,8 +676,8 @@ function unifiedPick(gs, coilyActive) {
     // but the direction constraint at each level is joint.
     function survive(pR, pC, coily, enemies, depth, forcedDir) {
         if (depth <= 0) return 1.0;
-        // Time budget check — return best found so far if over deadline
-        if (typeof performance !== 'undefined' && performance.now() > _aiDeadline) return 1.0;
+        // Per-direction time check — only for deep levels (depth 2 always completes for safety)
+        if (depth >= 3 && typeof performance !== 'undefined' && performance.now() > _dirDeadline) return 1.0;
         // Memoize (skip for forced dir — only called once per direction)
         var mKey;
         if (!forcedDir) {
@@ -787,17 +789,61 @@ function unifiedPick(gs, coilyActive) {
                         if (!dce.jumping && dce.row === pR && dce.col === pC) return 0;
                         if (dce.jumping && dce.jumpT >= 0.67 && dce.destRow === pR && dce.destCol === pC) return 0;
                     }
-                    if (coily && coily.row >= 0 && !coily.jumping && coily.row === pR && coily.col === pC) return 0;
+                    if (coily && coily.row >= 0) {
+                        var ctr = coily.jumping ? ((coily.jumpT||0) < 0.33 ? coily.row : ((coily.jumpT||0) >= 0.67 ? coily.destRow : -99)) : coily.row;
+                        var ctc = coily.jumping ? ((coily.jumpT||0) < 0.33 ? coily.col : ((coily.jumpT||0) >= 0.67 ? coily.destCol : -99)) : coily.col;
+                        if (ctr === pR && ctc === pC) return 0;
+                        // Simulate Coily during disc ride: 30 frames with lure,
+                        // then check if Coily is at apex (0,0) when player lands
+                        var lureR = disc.row;
+                        var lureC = disc.side === 0 ? -1 : disc.row + 1;
+                        var dcr = coily.row, dcc = coily.col;
+                        var dcj = coily.jumping, dct = coily.jumpT || 0;
+                        var dcm = coily.moveTimer || 0;
+                        var dcdr = coily.destRow, dcdc = coily.destCol;
+                        for (var df = 0; df < 30; df++) {
+                            if (dcj) {
+                                dct += cJumpDur;
+                                if (dct >= 1) {
+                                    dcj = false; dct = 0; dcm = 0; dcr = dcdr; dcc = dcdc; dcdr = null; dcdc = null;
+                                    if (!isValidPos(dcr, dcc)) break; // Coily fell off — safe
+                                }
+                            } else {
+                                dcm++;
+                                if (dcm >= cIdleFrames) {
+                                    var dcn = coilyChaseStep(dcr, dcc, lureR, lureC);
+                                    if (dcn) { dcj = true; dct = 0; dcm = 0; dcdr = dcn.row; dcdc = dcn.col; }
+                                    else { dcj = true; dct = 0; dcm = 0; dcdr = lureR; dcdc = lureC; }
+                                }
+                            }
+                        }
+                        // Check collision at (0,0): Coily collision tile after 30 frames
+                        var dcTileR, dcTileC;
+                        if (dcj) {
+                            if (dct < 0.33) { dcTileR = dcr; dcTileC = dcc; }
+                            else if (dct >= 0.67 && dcdr != null) { dcTileR = dcdr; dcTileC = dcdc; }
+                            else { dcTileR = -99; dcTileC = -99; }
+                        } else { dcTileR = dcr; dcTileC = dcc; }
+                        if (dcTileR === 0 && dcTileC === 0) return 0;
+                    }
                     return 1.0;
                 }
             }
             return 0;
         }
-        // ROM guard: simTryMove sets prevRow=row BEFORE the hop starts, so during
-        // the hop Coily chases the player's pre-hop position (pR,pC), not the older prev.
+        // Pre-move Coily collision: simStep runs simCheckCollision before simTryMove.
+        // If Coily's collision tile is already on the player, it's instant death.
         if (coily && coily.row >= 0) {
+            var coilyTileR, coilyTileC;
+            if (coily.jumping) {
+                if ((coily.jumpT || 0) < 0.33) { coilyTileR = coily.row; coilyTileC = coily.col; }
+                else if ((coily.jumpT || 0) >= 0.67 && coily.destRow != null) { coilyTileR = coily.destRow; coilyTileC = coily.destCol; }
+                else { coilyTileR = -99; coilyTileC = -99; } // mid-air, immune
+            } else { coilyTileR = coily.row; coilyTileC = coily.col; }
+            if (coilyTileR === pR && coilyTileC === pC) return 0;
+            // ROM guard: simTryMove sets prevRow=row BEFORE the hop starts
             var correctCoily = simCoilyHop(pR, pC, nr, nc, coily, pR, pC);
-            if (!correctCoily) return 0; // Coily collision
+            if (!correctCoily) return 0; // Coily collision during hop
         }
         // Delegate to survive — at recursive levels, prev defaults to pR which is
         // correct (prev = position before the hop in the recursive chain).
@@ -836,6 +882,8 @@ function unifiedPick(gs, coilyActive) {
     for (var k = 0; k < DIR_KEYS_WITH_STAY.length; k++) {
         var dir = DIR_KEYS_WITH_STAY[k];
         if (!simCanMove(gs, dir)) continue;
+        // Per-direction deadline: each direction gets fair share of remaining time
+        _dirDeadline = typeof performance !== 'undefined' ? performance.now() + 20 : Infinity;
 
         // Don't waste discs when there's no Coily
         if (!coilyActive && dir !== 'STAY') {
@@ -877,7 +925,8 @@ function unifiedPick(gs, coilyActive) {
             var ci0 = coilyInit || { row:-99, col:-99, jumping:false, jumpT:0,
                 moveTimer:0, destRow:null, destCol:null };
             for (var idDepth = 2; idDepth <= maxDepth; idDepth += 2) {
-                if (typeof performance !== 'undefined' && performance.now() > _aiDeadline) break;
+                // Depth 2 always runs (safety-critical); deeper levels respect per-direction deadline
+                if (idDepth > 2 && typeof performance !== 'undefined' && performance.now() > _dirDeadline) break;
                 survProb = dirSurvivalProb(gs.player.row, gs.player.col, ci0, enemyInits, idDepth, dir);
                 if (survProb <= 0) break; // already dead, no need to go deeper
             }
@@ -890,17 +939,6 @@ function unifiedPick(gs, coilyActive) {
         var tcClone = simDeepClone(gs);
         var tcAlive = simStep(tcClone, dir);
         var tc;
-        // Ground truth: verify with additional simStep seeds.
-        // This catches timing mismatches between the tree and the real engine.
-        if (survProb > 0 && dir !== 'STAY') {
-            var simDeaths = tcAlive ? 0 : 1;
-            for (var gts = 1; gts <= 3; gts++) {
-                simSeed(k * 100 + gts * 37);
-                var gtc = simDeepClone(gs);
-                if (!simStep(gtc, dir)) simDeaths++;
-            }
-            if (simDeaths > 0) { survProb = 0; hop1Surv[dir] = 0; }
-        }
         if (tcAlive) {
             tc = tcClone.levelWon ? 0 : simTourCost(tcClone);
             // Level-completing move: override survival to 1.0 — no need to survive
@@ -1039,20 +1077,40 @@ function unifiedPick(gs, coilyActive) {
     if (bestDir && bestDir !== 'STAY' && hop1Surv[bestDir] >= 0.9) {
         var _valRng = simRng; // save GAME rng
         var valDeaths = 0;
+        var valDeathInfo = '';
         for (var vs = 0; vs < 5; vs++) {
             simRng = createSeededRng(baseSeed + vs * 131 + 7);
             var vc = simDeepClone(gs);
-            if (!simStep(vc, bestDir)) valDeaths++;
+            if (!simStep(vc, bestDir)) {
+                valDeaths++;
+                if (!valDeathInfo) valDeathInfo = ' killed_by=' + (vc.deathEnemy||'?') +
+                    ' player=(' + vc.player.row + ',' + vc.player.col + ')' +
+                    (vc.player.jumping ? 'j' + (vc.player.jumpT||0).toFixed(2) : '') +
+                    ' freeze=' + (vc.freezeTimer||0);
+            }
         }
         simRng = _valRng; // restore GAME rng (critical!)
         if (valDeaths > 0) {
+            var _bd = DIRS[bestDir];
+            var _bnr = gs.player.row + _bd.dr, _bnc = gs.player.col + _bd.dc;
+            var diagParts = [];
+            for (var _di = 0; _di < enemyInits.length; _di++) {
+                var _de = enemyInits[_di];
+                var _dr = simOneEnemy(gs.player.row, gs.player.col, _bnr, _bnc, _de);
+                var _safes = [];
+                for (var _dbi = 0; _dbi < _dr.branches.length; _dbi++) _safes.push(_dr.branches[_dbi].safe);
+                diagParts.push(_de.type + '@(' + _de.row + ',' + _de.col + ')' +
+                    (_de.jumping ? 'j' + (_de.jumpT||0).toFixed(2) + '→' + _de.destRow + ',' + _de.destCol : 't' + _de.moveTimer) +
+                    ' branches=' + _dr.count + ' safe=[' + _safes.join(',') + ']');
+            }
             console.log('TREE BUG: ' + bestDir + ' P=' + hop1Surv[bestDir].toFixed(3) +
-                ' but simStep died ' + valDeaths + '/5 from (' + gs.player.row + ',' + gs.player.col +
+                ' but simStep died ' + valDeaths + '/5' + valDeathInfo + ' from (' + gs.player.row + ',' + gs.player.col +
                 ') enemies: ' + gs.enemies.filter(function(e){ return e.type !== 'spawn-timer'; }).map(function(e){
                     return e.type + '@(' + e.row + ',' + e.col + ')' +
                         (e.jumping ? 'j' + (e.jumpT||0).toFixed(2) + '→' + e.destRow + ',' + e.destCol : 't' + (e.moveTimer||0)) +
                         (e.spawnAnimTimer > 0 ? 'sa' + e.spawnAnimTimer : '');
-                }).join(' '));
+                }).join(' ') +
+                ' | tree: ' + diagParts.join('; '));
         }
     }
 
