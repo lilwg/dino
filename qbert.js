@@ -411,6 +411,7 @@ function simEnemyJumpTo(e, nr, nc, sm) {
 
 // Stomp a cube at position (updates cube state and cubesColored)
 function simStompCube(gs, row, col) {
+    if (gs.survivalOnly) return; // skip cube modification during expectimax
     for (var i = 0; i < gs.cubes.length; i++) {
         if (gs.cubes[i].row === row && gs.cubes[i].col === col) {
             var cube = gs.cubes[i];
@@ -796,6 +797,52 @@ function simDeepClone(gs) {
         freezeTimer: gs.freezeTimer,
         round: gs.round,
         levelWon: gs.levelWon || false
+    };
+}
+
+// Fast clone for survival evaluation: shares cubes (read-only for survival),
+// only clones player + enemies + discs. ~3x faster than simDeepClone.
+function simSurvivalClone(gs) {
+    var ens = new Array(gs.enemies.length);
+    for (var i = 0; i < gs.enemies.length; i++) {
+        var e = gs.enemies[i];
+        if (e.type === 'spawn-timer') {
+            ens[i] = { type: 'spawn-timer', timer: e.timer, forcedType: e.forcedType };
+        } else {
+            ens[i] = { type: e.type, row: e.row, col: e.col,
+                       jumping: e.jumping, jumpT: e.jumpT, jumpDur: e.jumpDur,
+                       destRow: e.destRow, destCol: e.destCol,
+                       jumpSrcRow: e.jumpSrcRow, jumpSrcCol: e.jumpSrcCol,
+                       moveTimer: e.moveTimer, moveInterval: e.moveInterval,
+                       falling: e.falling || false, willHatch: e.willHatch || false,
+                       hops: e.hops || 0,
+                       spawnAnimTimer: e.spawnAnimTimer || 0 };
+            if (e.dirBits != null) ens[i].dirBits = e.dirBits;
+            if (e.lureRow != null) { ens[i].lureRow = e.lureRow; ens[i].lureCol = e.lureCol; }
+        }
+    }
+    var ds = new Array(gs.discs.length);
+    for (var i = 0; i < gs.discs.length; i++)
+        ds[i] = { side: gs.discs[i].side, row: gs.discs[i].row, active: gs.discs[i].active };
+    return {
+        player: { row: gs.player.row, col: gs.player.col,
+                  prevRow: gs.player.prevRow, prevCol: gs.player.prevCol,
+                  dead: false, deathTimer: 0,
+                  jumping: false, jumpT: 0,
+                  jumpDur: gs.player.jumpDur,
+                  jumpSrcRow: null, jumpSrcCol: null,
+                  destRow: null, destCol: null },
+        enemies: ens,
+        cubes: gs.cubes, // shared — simStompCube skips when survivalOnly=true
+        discs: ds,
+        sm: gs.sm, tgt: gs.tgt, lv: gs.lv,
+        cubesColored: gs.cubesColored,
+        score: gs.score,
+        alive: true,
+        freezeTimer: gs.freezeTimer,
+        round: gs.round,
+        levelWon: false,
+        survivalOnly: true
     };
 }
 

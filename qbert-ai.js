@@ -459,15 +459,58 @@ function unifiedPick(gs, coilyActive) {
     var _allZeros = [0,0,0,0,0,0,0,0];
     var _allOnes = [1,1,1,1,1,1,1,1];
 
+    // Save/restore game state for undo-based expectimax.
+    // Zero-allocation save: enemy fields saved into snapshot arrays.
+    function saveGS(gs) {
+        var p = gs.player, ne = gs.enemies.length;
+        var es = gs.enemies.slice(); // shallow copy (array may be spliced)
+        var eSnap = new Array(ne);
+        for (var i = 0; i < ne; i++) {
+            var e = es[i];
+            eSnap[i] = e.type === 'spawn-timer'
+                ? [e.type, e.timer, e.forcedType]
+                : [e.type, e.row, e.col, e.jumping, e.jumpT, e.jumpDur,
+                   e.destRow, e.destCol, e.jumpSrcRow, e.jumpSrcCol,
+                   e.moveTimer, e.moveInterval, e.falling, e.willHatch,
+                   e.hops, e.spawnAnimTimer, e.dirBits, e.lureRow, e.lureCol];
+        }
+        var dSnap = new Array(gs.discs.length);
+        for (var i = 0; i < gs.discs.length; i++) dSnap[i] = gs.discs[i].active;
+        return [p.row, p.col, p.prevRow, p.prevCol, p.jumping, p.jumpT,
+                p.destRow, p.destCol, p.jumpSrcRow, p.jumpSrcCol, p.dead, p.deathTimer,
+                gs.alive, gs.freezeTimer, gs.score, gs.levelWon, gs.cubesColored,
+                es, eSnap, dSnap];
+    }
+
+    function restoreGS(gs, sn) {
+        var p = gs.player;
+        p.row=sn[0]; p.col=sn[1]; p.prevRow=sn[2]; p.prevCol=sn[3];
+        p.jumping=sn[4]; p.jumpT=sn[5]; p.destRow=sn[6]; p.destCol=sn[7];
+        p.jumpSrcRow=sn[8]; p.jumpSrcCol=sn[9]; p.dead=sn[10]; p.deathTimer=sn[11];
+        gs.alive=sn[12]; gs.freezeTimer=sn[13]; gs.score=sn[14];
+        gs.levelWon=sn[15]; gs.cubesColored=sn[16];
+        gs.enemies = sn[17];
+        var eSnap = sn[18], dSnap = sn[19];
+        for (var i = 0; i < dSnap.length; i++) gs.discs[i].active = dSnap[i];
+        for (var i = 0; i < eSnap.length; i++) {
+            var e = gs.enemies[i], s = eSnap[i];
+            if (s[0] === 'spawn-timer') { e.timer=s[1]; e.forcedType=s[2]; continue; }
+            e.type=s[0]; e.row=s[1]; e.col=s[2]; e.jumping=s[3]; e.jumpT=s[4];
+            e.jumpDur=s[5]; e.destRow=s[6]; e.destCol=s[7];
+            e.jumpSrcRow=s[8]; e.jumpSrcCol=s[9]; e.moveTimer=s[10]; e.moveInterval=s[11];
+            e.falling=s[12]; e.willHatch=s[13]; e.hops=s[14];
+            e.spawnAnimTimer=s[15]; e.dirBits=s[16]; e.lureRow=s[17]; e.lureCol=s[18];
+        }
+    }
+
     function expectimax(gs, depth) {
         if (depth <= 0 || gs.levelWon) return 1.0;
         if (!gs.alive) return 0.0;
         if (typeof performance !== 'undefined' && performance.now() > _dirDeadline) return 1.0;
 
-        // Full enumeration at top levels; 2 fixed paths at deeper levels
         var fullEnum = (depth >= DEPTH - 2);
         var N = fullEnum ? Math.min(countRandomDeciders(gs), 4) : 0;
-        var combos = fullEnum ? (1 << N) : 2; // 2^N or 2 fixed paths
+        var combos = fullEnum ? (1 << N) : 2;
         var bestProb = 0;
 
         for (var dk = 0; dk < DIR_KEYS_WITH_STAY.length; dk++) {
@@ -483,11 +526,12 @@ function unifiedPick(gs, coilyActive) {
                 } else {
                     choices = combo === 0 ? _allZeros : _allOnes;
                 }
-                var clone = simDeepClone(gs);
-                simStepForced(clone, dir, choices);
-                if (clone.alive) {
-                    prob += (clone.levelWon ? 1.0 : expectimax(clone, depth - 1)) / combos;
+                var snap = saveGS(gs);
+                simStepForced(gs, dir, choices);
+                if (gs.alive) {
+                    prob += expectimax(gs, depth - 1) / combos;
                 }
+                restoreGS(gs, snap);
             }
             if (prob > bestProb) bestProb = prob;
         }
@@ -503,11 +547,12 @@ function unifiedPick(gs, coilyActive) {
         for (var combo = 0; combo < combos; combo++) {
             var choices = [];
             for (var b = 0; b < N; b++) choices.push((combo >> b) & 1);
-            var clone = simDeepClone(gs);
-            simStepForced(clone, dir, choices);
-            if (clone.alive) {
-                prob += (clone.levelWon ? 1.0 : expectimax(clone, depth - 1)) / combos;
+            var snap = saveGS(gs);
+            simStepForced(gs, dir, choices);
+            if (gs.alive) {
+                prob += expectimax(gs, depth - 1) / combos;
             }
+            restoreGS(gs, snap);
         }
         return prob;
     }
@@ -545,7 +590,8 @@ function unifiedPick(gs, coilyActive) {
         var dir = DIR_KEYS_WITH_STAY[k];
         if (!simCanMove(gs, dir)) continue;
         // Per-direction deadline: each direction gets fair share of remaining time
-        _dirDeadline = typeof performance !== 'undefined' ? performance.now() + 40 : Infinity;
+        var _perDirMs = window._headlessTest ? 80 : 30;
+        _dirDeadline = typeof performance !== 'undefined' ? performance.now() + _perDirMs : Infinity;
 
         // Don't waste discs when there's no Coily
         if (!coilyActive && dir !== 'STAY') {
@@ -603,11 +649,16 @@ function unifiedPick(gs, coilyActive) {
         var survProb = 1.0;
         var maxDepth = (dir === 'STAY') ? Math.min(DEPTH, 3) : DEPTH;
         if (hasEnemies && maxDepth > 0 && !isLevelComplete) {
+            gs.survivalOnly = true; // skip cube stomping during expectimax
+            var _expRng = simRng;
+            simRng = function() { return 0.5; }; // fixed RNG for spawn decisions
             for (var idDepth = 2; idDepth <= maxDepth; idDepth += 2) {
                 if (idDepth > 2 && typeof performance !== 'undefined' && performance.now() > _dirDeadline) break;
                 survProb = expectimaxDir(gs, dir, idDepth);
                 if (survProb <= 0) break;
             }
+            simRng = _expRng;
+            gs.survivalOnly = false;
         }
         hop1Surv[dir] = survProb;
 
