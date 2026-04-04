@@ -882,8 +882,7 @@ function simCloneGameState() {
                    moveTimer: e.moveTimer != null ? e.moveTimer : 0,
                    moveInterval: e.moveInterval != null ? e.moveInterval : enemyMoveInterval(e.type, sm),
                    falling: !!e.falling, willHatch: !!e.willHatch,
-                   hops: e.hops || 0, spawnDrop: e.spawnDrop || 0,
-                   idleTimer: e.idleTimer || 0 };
+                   hops: e.hops || 0, spawnDrop: e.spawnDrop || 0 };
         if (e.lureRow != null) { en.lureRow = e.lureRow; en.lureCol = e.lureCol; }
         ens.push(en);
     }
