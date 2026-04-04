@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI logic (peel routing)
-var AI_VERSION = 'v13.44';
+var AI_VERSION = 'v14.0-dangerTable';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -97,150 +97,333 @@ function buildDangerSet() {
     return danger;
 }
 
-// ─── Exhaustive nearby-enemy safety check ───────────────────────────────────
+// ─── Precomputed enemy danger tables (probabilistic) ────────────────────────
+// For each enemy, precompute P(enemy at posIdx | frame) across all random choices.
+// Non-Coily enemies have player-independent paths (binary random 50/50 per hop).
+// P(survive all enemies) = product of per-enemy P(no collision).
+// This replaces recursive enemyPathCollides with O(frames) table lookups.
 
-var EXHAUSTIVE_RADIUS = 5;
+// Max frames to check: player hop takes ~25-35 frames, check a bit beyond landing
+// to catch enemies arriving at the destination shortly after
+var DANGER_MAX_FRAMES = 50;
 
-function computePlayerTiles(pRow, pCol, dir, sm) {
-    if (dir === 'STAY') {
-        var maxWait = Math.ceil(1.0 / (PLAYER_JUMP_DUR * sm)) + 10;
-        var tiles = [];
-        for (var f = 0; f < maxWait; f++) tiles.push({ row: pRow, col: pCol });
-        return tiles;
-    }
-    var d = DIRS[dir];
-    var destR = pRow + d.dr, destC = pCol + d.dc;
-    if (!isValidPos(destR, destC)) return null;
-    var jumpDur = PLAYER_JUMP_DUR * sm;
-    var tiles = [];
-    var jumpT = 0;
-    var landed = false;
-    var idleFrames = 0;
-    for (var f = 0; f < 120; f++) {
-        if (!landed) {
-            jumpT += jumpDur;
-            if (jumpT >= 1) {
-                landed = true;
-                tiles.push({ row: destR, col: destC });
-                continue;
+// Accumulate probability at (frame, row, col) in the danger table.
+// table is Float32Array[maxFrames * POS_COUNT].
+function dangerAdd(table, frame, row, col, prob, maxFrames) {
+    if (frame >= maxFrames) return;
+    var idx = posToIdx[row * ROWS + col];
+    if (idx >= 0) table[frame * POS_COUNT + idx] += prob;
+}
+
+// Recursively expand all possible enemy paths, accumulating probability.
+// prob = probability of this specific path (halves at each binary branch).
+function expandEnemyPaths(table, type, row, col, jumping, jumpT, jumpDur,
+                          moveTimer, moveInterval, hops, falling, willHatch,
+                          spawnDrop, destRow, destCol, idleTimer,
+                          frame, maxFrames, sm, prob) {
+    if (frame >= maxFrames) return;
+    // Falling enemy: still at source tile during first 1/3 of jump
+    if (falling) {
+        if (jumping) {
+            var newJT = jumpT + jumpDur;
+            if (newJT < 0.33) {
+                dangerAdd(table, frame, row, col, prob, maxFrames);
+                expandEnemyPaths(table, type, row, col, true, newJT, jumpDur,
+                    moveTimer, moveInterval, hops, true, willHatch,
+                    0, destRow, destCol, idleTimer,
+                    frame + 1, maxFrames, sm, prob);
+            } else if (newJT < 0.67) {
+                // mid-air immune, continue ticking
+                expandEnemyPaths(table, type, row, col, true, newJT, jumpDur,
+                    moveTimer, moveInterval, hops, true, willHatch,
+                    0, destRow, destCol, idleTimer,
+                    frame + 1, maxFrames, sm, prob);
             }
-            if (jumpT < 0.33) tiles.push({ row: pRow, col: pCol });
-            else if (jumpT >= 0.67) tiles.push({ row: destR, col: destC });
-            else tiles.push(null);
+            // >= 0.67: at off-board dest, done
+        }
+        return;
+    }
+
+    // Spawn drop: enemy falling from sky, no collision
+    if (spawnDrop > 0) {
+        expandEnemyPaths(table, type, row, col, jumping, jumpT, jumpDur,
+            moveTimer, moveInterval, hops, falling, willHatch,
+            spawnDrop - 1, destRow, destCol, idleTimer,
+            frame + 1, maxFrames, sm, prob);
+        return;
+    }
+
+    // Jumping: advance jumpT
+    if (jumping) {
+        var newJumpT = jumpT + jumpDur;
+        if (newJumpT >= 1) {
+            // Landed
+            var landRow = destRow, landCol = destCol;
+            if (!isValidPos(landRow, landCol)) return; // fell off
+            var newType = type, newInterval = moveInterval, newWillHatch = false;
+            if (type === 'egg' && (hops >= 6 || landRow >= ROWS - 1 || willHatch)) {
+                newType = 'coily';
+                // Egg hatched into Coily — mark landing + extra frames conservatively
+                // (Coily is player-dependent so we can't precompute further)
+                dangerAdd(table, frame, landRow, landCol, prob, maxFrames);
+                for (var ef = 1; ef <= 10; ef++)
+                    dangerAdd(table, frame + ef, landRow, landCol, prob, maxFrames);
+                return;
+            }
+            // Collision tile: last 1/3 of jump = dest
+            dangerAdd(table, frame, landRow, landCol, prob, maxFrames);
+            // Post-landing idle
+            expandEnemyPaths(table, newType, landRow, landCol, false, 0, jumpDur,
+                0, newInterval, hops, false, newWillHatch,
+                0, null, null, ENEMY_IDLE_FRAMES,
+                frame + 1, maxFrames, sm, prob);
         } else {
-            tiles.push({ row: destR, col: destC });
-            idleFrames++;
-            if (idleFrames >= 30) break;
+            // Mid-jump collision tile
+            if (newJumpT < 0.33) {
+                dangerAdd(table, frame, row, col, prob, maxFrames);
+            } else if (newJumpT >= 0.67) {
+                if (destRow != null) dangerAdd(table, frame, destRow, destCol, prob, maxFrames);
+            }
+            // else: mid-air immune
+            expandEnemyPaths(table, type, row, col, true, newJumpT, jumpDur,
+                moveTimer, moveInterval, hops, falling, willHatch,
+                0, destRow, destCol, idleTimer,
+                frame + 1, maxFrames, sm, prob);
         }
+        return;
     }
-    return tiles;
+
+    // Idle timer (post-landing pause)
+    if (idleTimer > 0) {
+        dangerAdd(table, frame, row, col, prob, maxFrames);
+        expandEnemyPaths(table, type, row, col, false, 0, jumpDur,
+            moveTimer, moveInterval, hops, false, willHatch,
+            0, null, null, idleTimer - 1,
+            frame + 1, maxFrames, sm, prob);
+        return;
+    }
+
+    // Move timer tick
+    var newMoveTimer = moveTimer + 1;
+    if (newMoveTimer < moveInterval) {
+        dangerAdd(table, frame, row, col, prob, maxFrames);
+        expandEnemyPaths(table, type, row, col, false, 0, jumpDur,
+            newMoveTimer, moveInterval, hops, false, willHatch,
+            0, null, null, 0,
+            frame + 1, maxFrames, sm, prob);
+        return;
+    }
+
+    // Move! Branch on choices (50/50 each).
+    var choices = getMoveChoicesForType(type, row, col);
+    dangerAdd(table, frame, row, col, prob, maxFrames);
+    var branchProb = choices.length > 0 ? prob / choices.length : prob;
+    for (var ci = 0; ci < choices.length; ci++) {
+        var nr = choices[ci][0], nc = choices[ci][1];
+        var newFalling = !isValidPos(nr, nc);
+        var newHops = hops + 1;
+        var newWH = false;
+        if (type === 'egg' && (newHops >= 6 || nr >= ROWS - 1)) newWH = true;
+        expandEnemyPaths(table, type, row, col, true, 0, jumpDur,
+            0, moveInterval, newHops, newFalling, newWH,
+            0, nr, nc, 0,
+            frame + 1, maxFrames, sm, branchProb);
+    }
 }
 
-function cloneEnemyLight(e) {
-    return {
-        type: e.type, row: e.row, col: e.col,
-        jumping: e.jumping, jumpT: e.jumpT, jumpDur: e.jumpDur,
-        destRow: e.destRow, destCol: e.destCol,
-        moveTimer: e.moveTimer, moveInterval: e.moveInterval,
-        hops: e.hops || 0, falling: e.falling || false,
-        willHatch: e.willHatch || false,
-        spawnDrop: e.spawnDrop || 0
-    };
-}
-
-function getEnemyMoveChoices(e, playerDestR, playerDestC) {
-    if (e.type === 'coily') {
-        var bestDist = Infinity, bestR = e.row, bestC = e.col;
-        for (var k = 0; k < 4; k++) {
-            var dk = DIRS[DIR_KEYS[k]];
-            var tr = e.row + dk.dr, tc = e.col + dk.dc;
-            if (!isValidPos(tr, tc)) continue;
-            var dist = Math.abs(playerDestR - tr) + Math.abs(playerDestC - tc);
-            if (dist < bestDist || (dist === bestDist && simRng() < 0.5)) { bestDist = dist; bestR = tr; bestC = tc; }
-        }
-        return [{ nr: bestR, nc: bestC }];
+// Movement choices by type (player-independent)
+function getMoveChoicesForType(type, row, col) {
+    if (type === 'egg' || type === 'redball') {
+        return [[row + 1, col], [row + 1, col + 1]];
     }
-    if (e.type === 'egg' || e.type === 'redball') {
-        return [{ nr: e.row + 1, nc: e.col }, { nr: e.row + 1, nc: e.col + 1 }];
+    if (type === 'ugg') {
+        return [[row - 1, col - 1], [row, col - 1]];
     }
-    if (e.type === 'ugg') {
-        return [{ nr: e.row - 1, nc: e.col - 1 }, { nr: e.row, nc: e.col - 1 }];
-    }
-    if (e.type === 'wrongway') {
-        return [{ nr: e.row - 1, nc: e.col }, { nr: e.row, nc: e.col + 1 }];
+    if (type === 'wrongway') {
+        return [[row - 1, col], [row, col + 1]];
     }
     return [];
 }
 
-function enemyCollisionTile(e) {
-    if (!e.jumping) return { row: e.row, col: e.col };
-    if (e.jumpT < 0.33) return { row: e.row, col: e.col };
-    if (e.jumpT >= 0.67) return { row: e.destRow, col: e.destCol };
-    return null;
+// Build probabilistic danger table for a non-Coily enemy.
+// Returns Float32Array[maxFrames * POS_COUNT] with P(enemy here at frame).
+function buildEnemyDangerTable(e, sm, maxFrames) {
+    var table = new Float32Array(maxFrames * POS_COUNT);
+    var jumpDur = e.jumpDur || ENEMY_JUMP_DUR * sm;
+    var interval = e.moveInterval || enemyMoveInterval(e.type, sm);
+    expandEnemyPaths(table, e.type, e.row, e.col,
+        !!e.jumping, e.jumpT || 0, jumpDur,
+        e.moveTimer || 0, interval, e.hops || 0,
+        !!e.falling, !!e.willHatch,
+        e.spawnDrop || 0,
+        e.destRow != null ? e.destRow : null,
+        e.destCol != null ? e.destCol : null,
+        e.idleTimer || 0,
+        0, maxFrames, sm, 1.0);
+    return table;
 }
 
-function enemyPathCollides(e, playerTiles, frame, maxFrames, pDestR, pDestC, sm) {
-    if (frame >= maxFrames || e.falling) return false;
+// Build danger table for Coily (deterministic — chases a fixed target).
+// Returns Float32Array with P=1.0 at Coily's position each frame.
+function buildCoilyDangerTable(e, targetR, targetC, sm, maxFrames) {
+    var table = new Float32Array(maxFrames * POS_COUNT);
+    var jumpDur = e.jumpDur || ENEMY_JUMP_DUR * sm;
+    var interval = e.moveInterval || enemyMoveInterval('coily', sm);
+    var row = e.row, col = e.col;
+    var jumping = !!e.jumping, jumpT = e.jumpT || 0;
+    var moveTimer = e.moveTimer || 0;
+    var destRow = e.destRow, destCol = e.destCol;
+    var idleTimer = e.idleTimer || 0;
+    var spawnDrop = e.spawnDrop || 0;
 
-    // Still dropping from sky — no collision, just tick down
-    if (e.spawnDrop > 0) {
-        e.spawnDrop--;
-        return enemyPathCollides(e, playerTiles, frame + 1, maxFrames, pDestR, pDestC, sm);
-    }
+    for (var f = 0; f < maxFrames; f++) {
+        if (spawnDrop > 0) { spawnDrop--; continue; }
 
-    if (e.jumping) {
-        e.jumpT += e.jumpDur;
-        if (e.jumpT >= 1) {
-            e.jumping = false;
-            e.row = e.destRow; e.col = e.destCol;
-            if (!isValidPos(e.row, e.col)) return false;
-            if (e.type === 'egg' && ((e.hops || 0) >= 6 || e.row >= ROWS - 1)) {
-                e.type = 'coily';
-                e.moveInterval = enemyMoveInterval('coily', sm);
+        if (jumping) {
+            jumpT += jumpDur;
+            if (jumpT >= 1) {
+                jumping = false;
+                row = destRow; col = destCol;
+                if (!isValidPos(row, col)) break;
+                dangerAdd(table, f, row, col, 1.0, maxFrames);
+                idleTimer = ENEMY_IDLE_FRAMES;
+                continue;
             }
+            if (jumpT < 0.33) dangerAdd(table, f, row, col, 1.0, maxFrames);
+            else if (jumpT >= 0.67 && destRow != null) dangerAdd(table, f, destRow, destCol, 1.0, maxFrames);
+            continue;
         }
-        var et = enemyCollisionTile(e);
-        var pt = playerTiles[frame];
-        if (et && pt && et.row === pt.row && et.col === pt.col) return true;
-        return enemyPathCollides(e, playerTiles, frame + 1, maxFrames, pDestR, pDestC, sm);
-    }
 
-    e.moveTimer++;
-    if (e.moveTimer < e.moveInterval) {
-        var pt2 = playerTiles[frame];
-        if (pt2 && pt2.row === e.row && pt2.col === e.col) return true;
-        return enemyPathCollides(e, playerTiles, frame + 1, maxFrames, pDestR, pDestC, sm);
-    }
-
-    e.moveTimer = 0;
-    var choices = getEnemyMoveChoices(e, pDestR, pDestC);
-    for (var ci = 0; ci < choices.length; ci++) {
-        var ec = cloneEnemyLight(e);
-        ec.jumping = true;
-        ec.jumpT = 0;
-        ec.destRow = choices[ci].nr;
-        ec.destCol = choices[ci].nc;
-        ec.hops++;
-        if (!isValidPos(choices[ci].nr, choices[ci].nc)) ec.falling = true;
-        var pt3 = playerTiles[frame];
-        if (pt3 && pt3.row === ec.row && pt3.col === ec.col) return true;
-        if (enemyPathCollides(ec, playerTiles, frame + 1, maxFrames, pDestR, pDestC, sm)) {
-            return true;
+        if (idleTimer > 0) {
+            dangerAdd(table, f, row, col, 1.0, maxFrames);
+            idleTimer--;
+            continue;
         }
+
+        moveTimer++;
+        if (moveTimer < interval) {
+            dangerAdd(table, f, row, col, 1.0, maxFrames);
+            continue;
+        }
+        moveTimer = 0;
+
+        // Coily chase: pick direction closest to target
+        var bestDist = Infinity, bestR = row, bestC = col;
+        for (var k = 0; k < 4; k++) {
+            var dk = DIRS[DIR_KEYS[k]];
+            var nr = row + dk.dr, nc = col + dk.dc;
+            if (!isValidPos(nr, nc)) continue;
+            var dist = Math.abs(targetR - nr) + Math.abs(targetC - nc);
+            if (dist < bestDist) { bestDist = dist; bestR = nr; bestC = nc; }
+        }
+        dangerAdd(table, f, row, col, 1.0, maxFrames);
+        destRow = bestR; destCol = bestC;
+        jumping = true; jumpT = 0;
+        if (!isValidPos(bestR, bestC)) break;
     }
-    return false;
+    return table;
 }
 
-function isExhaustiveSafe(gs, dir) {
-    var playerTiles = computePlayerTiles(gs.player.row, gs.player.col, dir, gs.sm);
-    if (!playerTiles) return true;
+// Build danger table for a spawn-timer enemy.
+function buildSpawnDangerTable(forcedType, spawnDelay, sm, maxFrames) {
+    var jumpDur = ENEMY_JUMP_DUR * sm;
+    var interval = enemyMoveInterval(forcedType, sm);
+    if (forcedType === 'ugg') {
+        var table = new Float32Array(maxFrames * POS_COUNT);
+        expandEnemyPaths(table, 'ugg', ROWS-1, ROWS, true, 0, jumpDur,
+            0, interval, 0, false, false, 0, ROWS-1, ROWS-1, 0,
+            spawnDelay, maxFrames, sm, 1.0);
+        return [table];
+    }
+    if (forcedType === 'wrongway') {
+        var table = new Float32Array(maxFrames * POS_COUNT);
+        expandEnemyPaths(table, 'wrongway', ROWS-1, -1, true, 0, jumpDur,
+            0, interval, 0, false, false, 0, ROWS-1, 0, 0,
+            spawnDelay, maxFrames, sm, 1.0);
+        return [table];
+    }
+    // egg/redball: spawns at col 0 or col 1 (50/50)
+    var tables = [];
+    for (var sc = 0; sc < 2; sc++) {
+        var t = new Float32Array(maxFrames * POS_COUNT);
+        expandEnemyPaths(t, forcedType, 1, sc, false, 0, jumpDur,
+            0, interval, 0, false, false, 60, null, null, 0,
+            spawnDelay, maxFrames, sm, 0.5);
+        tables.push(t);
+    }
+    return tables;
+}
 
+// Compute player tile indices for a direction.
+// Returns Int8Array[maxFrames] where -1 = immune, >=0 = posIdx.
+// Called when player idle is complete — jump starts immediately at frame 0.
+function computePlayerTileIndices(pRow, pCol, dir, sm, maxFrames) {
+    var result = new Int8Array(maxFrames);
+    for (var i = 0; i < maxFrames; i++) result[i] = -1;
+    var srcIdx = posToIdx[pRow * ROWS + pCol];
+
+    if (dir === 'STAY') {
+        for (var f = 0; f < maxFrames; f++) result[f] = srcIdx;
+        return result;
+    }
+
+    var d = DIRS[dir];
+    var destR = pRow + d.dr, destC = pCol + d.dc;
+    if (!isValidPos(destR, destC)) return null;
+    var dstIdx = posToIdx[destR * ROWS + destC];
+    var jumpDur = PLAYER_JUMP_DUR * sm;
+    var jumpT = 0;
+    var landed = false;
+    var postLandFrames = 0;
+    for (var f = 0; f < maxFrames; f++) {
+        if (!landed) {
+            jumpT += jumpDur;
+            if (jumpT >= 1) {
+                landed = true;
+                result[f] = dstIdx;
+                continue;
+            }
+            if (jumpT < 0.33) result[f] = srcIdx;
+            else if (jumpT >= 0.67) result[f] = dstIdx;
+            // else: mid-air immune (-1)
+        } else {
+            result[f] = dstIdx;
+            postLandFrames++;
+            if (postLandFrames >= 10) break;
+        }
+    }
+    return result;
+}
+
+// Compute P(survive) against a single enemy's danger table.
+// P(survive) = product over frames of (1 - P(enemy at player tile at frame f))
+function tableSurvivalProb(playerIdx, dangerTable, startFrame, maxFrames) {
+    var prob = 1.0;
+    for (var f = startFrame; f < maxFrames; f++) {
+        var pi = playerIdx[f];
+        if (pi >= 0) {
+            var hitProb = dangerTable[f * POS_COUNT + pi];
+            if (hitProb > 0) prob *= (1.0 - hitProb);
+            if (prob <= 0) return 0;
+        }
+    }
+    return prob;
+}
+
+// Full survival probability: build danger tables for all enemies,
+// compute P(survive) = product of per-enemy survival probabilities.
+function tableSurvival(gs, dir) {
+    var maxFrames = dir === 'STAY' ? 10 : DANGER_MAX_FRAMES;
+    var playerIdx = computePlayerTileIndices(gs.player.row, gs.player.col, dir, gs.sm, maxFrames);
+    if (!playerIdx) return 1.0;
+    var startFrame = Math.min(gs.freezeTimer || 0, maxFrames);
+
+    // Destination for spawnDrop check
     var d = DIRS[dir];
     var destR = dir === 'STAY' ? gs.player.row : gs.player.row + d.dr;
     var destC = dir === 'STAY' ? gs.player.col : gs.player.col + d.dc;
-    var maxFrames = playerTiles.length;
-    var startFrame = Math.min(gs.freezeTimer || 0, maxFrames);
 
+    var survProb = 1.0;
     for (var i = 0; i < gs.enemies.length; i++) {
         var e = gs.enemies[i];
 
@@ -253,31 +436,10 @@ function isExhaustiveSafe(gs, dir) {
                         if (gs.enemies[ci].type === 'coily' || gs.enemies[ci].type === 'egg') { hasCoilyOrEgg = true; break; }
                     ft = hasCoilyOrEgg ? 'redball' : 'egg';
                 }
-                if (ft === 'redball' || ft === 'egg') {
-                    for (var sc = 0; sc < 2; sc++) {
-                        for (var f = e.timer; f < maxFrames; f++) {
-                            var pt = playerTiles[f];
-                            if (pt && pt.row === 1 && pt.col === sc) return false;
-                        }
-                    }
-                }
-                if (ft === 'wrongway') {
-                    var we = { type: 'wrongway', row: ROWS-1, col: -1,
-                        jumping: true, jumpT: 0, jumpDur: ENEMY_JUMP_DUR * gs.sm,
-                        destRow: ROWS-1, destCol: 0,
-                        moveTimer: 0, moveInterval: enemyMoveInterval('wrongway', gs.sm),
-                        hops: 0, falling: false, spawnDrop: 0 };
-                    if (enemyPathCollides(we, playerTiles, e.timer, maxFrames, chaseR, chaseC, gs.sm))
-                        return false;
-                }
-                if (ft === 'ugg') {
-                    var ue = { type: 'ugg', row: ROWS-1, col: ROWS,
-                        jumping: true, jumpT: 0, jumpDur: ENEMY_JUMP_DUR * gs.sm,
-                        destRow: ROWS-1, destCol: ROWS-1,
-                        moveTimer: 0, moveInterval: enemyMoveInterval('ugg', gs.sm),
-                        hops: 0, falling: false, spawnDrop: 0 };
-                    if (enemyPathCollides(ue, playerTiles, e.timer, maxFrames, chaseR, chaseC, gs.sm))
-                        return false;
+                var tables = buildSpawnDangerTable(ft, e.timer, gs.sm, maxFrames);
+                for (var ti = 0; ti < tables.length; ti++) {
+                    survProb *= tableSurvivalProb(playerIdx, tables[ti], startFrame, maxFrames);
+                    if (survProb <= 0) return 0;
                 }
             }
             continue;
@@ -285,25 +447,20 @@ function isExhaustiveSafe(gs, dir) {
 
         if (e.type === 'slick' || e.type === 'sam' || e.type === 'greenball') continue;
 
-        // Don't land on a tile where an enemy is dropping or sitting after drop
-        if (e.spawnDrop > 0 && e.row === destR && e.col === destC) return false;
+        // Don't land on a tile where an enemy is dropping
+        if (e.spawnDrop > 0 && e.row === destR && e.col === destC) return 0;
 
-        var er = e.jumping && e.jumpT >= 0.67 ? (e.destRow != null ? e.destRow : e.row) : e.row;
-        var ec2 = e.jumping && e.jumpT >= 0.67 ? (e.destCol != null ? e.destCol : e.col) : e.col;
-        if (e.type !== 'coily') {
-            var distDest = Math.abs(er - destR) + Math.abs(ec2 - destC);
-            var distSrc = Math.abs(er - gs.player.row) + Math.abs(ec2 - gs.player.col);
-            if (distDest > EXHAUSTIVE_RADIUS && distSrc > EXHAUSTIVE_RADIUS) continue;
+        var eTable, eSurv;
+        if (e.type === 'coily') {
+            eTable = buildCoilyDangerTable(e, gs.player.row, gs.player.col, gs.sm, maxFrames);
+        } else {
+            eTable = buildEnemyDangerTable(e, gs.sm, maxFrames);
         }
-
-        var eClone = cloneEnemyLight(e);
-        // Coily chases gs.player.row/col which stays at ORIGIN during hop
-        var chaseR = gs.player.row, chaseC = gs.player.col;
-        if (enemyPathCollides(eClone, playerTiles, startFrame, maxFrames, chaseR, chaseC, gs.sm)) {
-            return false;
-        }
+        eSurv = tableSurvivalProb(playerIdx, eTable, startFrame, maxFrames);
+        survProb *= eSurv;
+        if (survProb <= 0) return 0;
     }
-    return true;
+    return survProb;
 }
 
 // ─── Dynamic peel routing (toggle levels) ───────────────────────────────────
@@ -453,100 +610,55 @@ function unifiedPick(gs) {
         return s;
     }).join(' ');
 
-    // ── Safety check for each direction (exhaustive + hop-2/3 chain) ──
-    var safe1 = {};
-    var safe2 = {};
+    // ── Survival probability for each direction (danger table + multi-hop) ──
     var hop1Surv = {};
 
     for (var k = 0; k < DIR_KEYS_WITH_STAY.length; k++) {
         var dir = DIR_KEYS_WITH_STAY[k];
         if (!simCanMove(gs, dir)) continue;
 
-        // Exhaustive safety check (covers all enemies including Coily)
+        // Hop-1 survival from danger tables (exact probabilistic check)
+        var surv1;
         if (!hasEnemies) {
-            safe1[dir] = true;
-        } else if (dir === 'STAY') {
-            var stayFrames = 10;
-            var stayTiles = [];
-            for (var sf = 0; sf < stayFrames; sf++) stayTiles.push({ row: gs.player.row, col: gs.player.col });
-            var stayUnsafe = false;
-            for (var sei = 0; sei < gs.enemies.length; sei++) {
-                var se = gs.enemies[sei];
-                if (se.type === 'spawn-timer' || se.type === 'slick' || se.type === 'sam' || se.type === 'greenball') continue;
-                var ser = se.jumping && se.jumpT >= 0.67 ? (se.destRow != null ? se.destRow : se.row) : se.row;
-                var sec = se.jumping && se.jumpT >= 0.67 ? (se.destCol != null ? se.destCol : se.col) : se.col;
-                if (se.type !== 'coily' && Math.abs(ser - gs.player.row) + Math.abs(sec - gs.player.col) > 2) continue;
-                var seClone = cloneEnemyLight(se);
-                if (enemyPathCollides(seClone, stayTiles, 0, stayFrames, gs.player.row, gs.player.col, gs.sm)) {
-                    stayUnsafe = true; break;
-                }
-            }
-            safe1[dir] = !stayUnsafe;
+            surv1 = 1.0;
         } else {
-            safe1[dir] = isExhaustiveSafe(gs, dir);
+            surv1 = tableSurvival(gs, dir);
         }
-        // MC sampling for future states and fallback survival ranking
-        var hop1States = [];
-        var survived = 0;
-        for (var s = 0; s < 8; s++) {
-            simSeed(k * 100 + s);
-            var child = simDeepClone(gs);
-            if (simStep(child, dir)) {
-                survived++;
-                if (hop1States.length < 4) hop1States.push(child);
+
+        // Multi-hop lookahead: if hop-1 is safe, check hop 2+3 via simStep + danger tables
+        var multiHopSurv = surv1;
+        if (surv1 > 0.5 && hasEnemies) {
+            // Sample hop-1 outcomes via simStep to get future states
+            var hop1States = [];
+            for (var s = 0; s < 4; s++) {
+                simSeed(k * 100 + s);
+                var child = simDeepClone(gs);
+                if (simStep(child, dir) && hop1States.length < 3) hop1States.push(child);
+            }
+            if (hop1States.length > 0) {
+                // For each hop-1 state, find best hop-2 survival
+                var best2Surv = 0;
+                for (var d2k = 0; d2k < DIR_KEYS_WITH_STAY.length; d2k++) {
+                    var d2dir = DIR_KEYS_WITH_STAY[d2k];
+                    var d2survMin = 1.0;
+                    for (var si = 0; si < hop1States.length; si++) {
+                        if (!simCanMove(hop1States[si], d2dir)) { d2survMin = 0; break; }
+                        var d2s = tableSurvival(hop1States[si], d2dir);
+                        if (d2s < d2survMin) d2survMin = d2s;
+                    }
+                    if (d2survMin > best2Surv) best2Surv = d2survMin;
+                }
+                multiHopSurv = surv1 * best2Surv;
             }
         }
-        hop1Surv[dir] = safe1[dir] ? 1 : (survived / 8) * 0.49;
 
+        hop1Surv[dir] = multiHopSurv;
         // Export for viz
-        aiMoveScores[dir] = safe1[dir] ? 10000 : (survived > 0 ? survived * 100 - 1000 : -10000);
-
-        // Hop 2+3 chain check (anti-cornering)
-        if (safe1[dir] && hasEnemies) {
-            var has2ndSafe = false;
-            for (var d2k = 0; d2k < DIR_KEYS_WITH_STAY.length; d2k++) {
-                var d2dir = DIR_KEYS_WITH_STAY[d2k];
-                var d2ok = true;
-                var hop2States = [];
-                for (var si = 0; si < hop1States.length; si++) {
-                    var stateOk = true;
-                    for (var s2 = 0; s2 < 3; s2++) {
-                        simSeed(k * 1000 + d2k * 100 + si * 10 + s2);
-                        var d2c = simDeepClone(hop1States[si]);
-                        if (!simStep(d2c, d2dir)) { stateOk = false; break; }
-                        else if (s2 === 0 && hop2States.length < 6) hop2States.push(d2c);
-                    }
-                    if (!stateOk) { d2ok = false; break; }
-                }
-                if (d2ok && d2dir !== 'STAY') {
-                    for (var si2 = 0; si2 < hop1States.length; si2++) {
-                        if (!isExhaustiveSafe(hop1States[si2], d2dir)) { d2ok = false; break; }
-                    }
-                }
-                if (d2ok && hop2States.length > 0) {
-                    var has3rdSafe = false;
-                    for (var d3k = 0; d3k < DIR_KEYS_WITH_STAY.length; d3k++) {
-                        var d3dir = DIR_KEYS_WITH_STAY[d3k];
-                        var d3ok = true;
-                        for (var si3 = 0; si3 < hop2States.length; si3++) {
-                            if (d3dir !== 'STAY' && !simCanMove(hop2States[si3], d3dir)) { d3ok = false; break; }
-                            if (!isExhaustiveSafe(hop2States[si3], d3dir)) { d3ok = false; break; }
-                        }
-                        if (d3ok) { has3rdSafe = true; break; }
-                    }
-                    if (!has3rdSafe) d2ok = false;
-                }
-                if (d2ok && hop1States.length > 0) { has2ndSafe = true; break; }
-            }
-            safe2[dir] = has2ndSafe;
-            if (!has2ndSafe) {
-                aiMoveScores[dir] = -5000;
-                hop1Surv[dir] = Math.min(hop1Surv[dir], 0.45);
-            }
-        } else {
-            safe2[dir] = true;
-        }
+        aiMoveScores[dir] = Math.round(multiHopSurv * 10000);
     }
+
+    // Safety threshold: directions with survival above this are considered safe
+    var SAFE_THRESH = 0.9;
 
     // ── Opportunistic disc usage to kill Coily ──
     // Disc + lure always kills Coily (lure is off-grid, Coily chases it off edge).
@@ -575,7 +687,7 @@ function unifiedPick(gs) {
                 var dd = DIRS[ddir];
                 var dr = gs.player.row + dd.dr, dc = gs.player.col + dd.dc;
                 if (dr !== trigRow || dc !== trigCol) continue;
-                if (!safe1[ddir]) continue;
+                if ((hop1Surv[ddir] || 0) < SAFE_THRESH) continue;
                 console.log('DISC-APPROACH @(' + gs.player.row + ',' + gs.player.col + ') → ' + ddir + ' → disc');
                 restoreRng(); return ddir;
             }
@@ -593,8 +705,8 @@ function unifiedPick(gs) {
         var lr = gs.player.row + fdd.dr, lc = gs.player.col + fdd.dc;
         if (!isValidPos(lr, lc)) continue;
         var lidx = posToIdx[lr * ROWS + lc];
-        var _s1 = safe1[fd], _s2 = safe2[fd];
-        if (!_s1 || !_s2) { _routeDbg.push(fd + '→(' + lr + ',' + lc + ') UNSAFE s1=' + _s1 + ' s2=' + _s2); continue; }
+        var surv = hop1Surv[fd] || 0;
+        if (surv < SAFE_THRESH) { _routeDbg.push(fd + '→(' + lr + ',' + lc + ') P=' + surv.toFixed(2)); continue; }
         if (lidx < 0) continue;
 
         var score = targetDist[lidx];
@@ -604,20 +716,18 @@ function unifiedPick(gs) {
                 _stompsHere = stompsNeeded(gs.cubes[_ci].state, gs.lv); break;
             }
         }
-        _routeDbg.push(fd + '→(' + lr + ',' + lc + ') dist=' + score.toFixed(1) + ' stomps=' + _stompsHere + ' L=' + STATIC_PEEL.layer[lidx]);
+        _routeDbg.push(fd + '→(' + lr + ',' + lc + ') dist=' + score.toFixed(1) + ' P=' + surv.toFixed(2) + ' L=' + STATIC_PEEL.layer[lidx]);
         if (score >= 999) continue;
         // Tiebreaker: prefer cubes with more neighbors (avoid dead-end corners)
         score -= posAdj[lidx].length * 0.01;
         if (score < bestScore) { bestScore = score; bestDir = fd; }
     }
     if (bestDir) {
-        console.log('PEEL-ROUTE @(' + gs.player.row + ',' + gs.player.col + ') → ' + bestDir + ' | ' + _routeDbg.join(' | '));
+        console.log('PEEL-ROUTE @(' + gs.player.row + ',' + gs.player.col + ') → ' + bestDir + ' P=' + (hop1Surv[bestDir]||0).toFixed(2) + ' | ' + _routeDbg.join(' | '));
         restoreRng(); return bestDir;
     }
 
-    // Peel BFS found no path (e.g. respawn at apex, separated from targets by
-    // removed cubes). Fall back to simple BFS on the full graph to reconnect.
-    // Prefer reverting high-layer (interior) cubes over low-layer (edge) cubes.
+    // Peel BFS found no path — fall back to simple BFS on the full graph.
     if (gs.lv >= 3) {
         targetDist = peelTargetDist(gs, true);
         var maxLayer = 0;
@@ -630,11 +740,10 @@ function unifiedPick(gs) {
             var lr2 = gs.player.row + fdd2.dr, lc2 = gs.player.col + fdd2.dc;
             if (!isValidPos(lr2, lc2)) continue;
             var lidx2 = posToIdx[lr2 * ROWS + lc2];
-            if (!safe1[fd2] || !safe2[fd2]) continue;
+            if ((hop1Surv[fd2] || 0) < SAFE_THRESH) continue;
             if (lidx2 < 0) continue;
             var score2 = targetDist[lidx2];
             if (score2 >= 999) continue;
-            // Penalize stepping on low-layer (edge) completed cubes — prefer reverting interior
             var _stomps2 = 0;
             for (var _ci2 = 0; _ci2 < gs.cubes.length; _ci2++) {
                 if (gs.cubes[_ci2].row === lr2 && gs.cubes[_ci2].col === lc2) {
@@ -644,33 +753,24 @@ function unifiedPick(gs) {
             if (_stomps2 <= 0) {
                 score2 += (maxLayer - STATIC_PEEL.layer[lidx2]) * 0.3;
             }
-            // Tiebreaker: prefer cubes with more neighbors (avoid dead-end corners)
             score2 -= posAdj[lidx2].length * 0.01;
             if (score2 < bestScore) { bestScore = score2; bestDir = fd2; }
         }
         if (bestDir) {
-            console.log('PEEL-FALLBACK @(' + gs.player.row + ',' + gs.player.col + ') → ' + bestDir + ' | ' + _routeDbg.join(' | '));
+            console.log('PEEL-FALLBACK @(' + gs.player.row + ',' + gs.player.col + ') → ' + bestDir + ' P=' + (hop1Surv[bestDir]||0).toFixed(2));
             restoreRng(); return bestDir;
         }
     }
 
     console.log('PEEL-NONE @(' + gs.player.row + ',' + gs.player.col + ') | ' + _routeDbg.join(' | '));
-    // No safe movement direction — STAY if it's safe
-    // Don't require safe2 here: delaying death is always better than
-    // choosing an exhaustive-unsafe direction that dies immediately.
-    if (safe1['STAY']) {
-        restoreRng(); return 'STAY';
-    }
-
-    // No fully-safe option — pick by survival, tie-break by routing.
+    // No safe movement direction — pick by survival probability, tie-break by routing
     var bestFallback = -Infinity, bestFallbackDir = null;
     for (var uk = 0; uk < shuffledDirsStay.length; uk++) {
         var ud = shuffledDirsStay[uk];
         if (hop1Surv[ud] === undefined) continue;
-        // Primary: survival rate (0-1). Secondary: routing score.
         var fallbackScore = hop1Surv[ud] * 1000;
         if (ud === 'STAY') {
-            fallbackScore -= 50; // penalize staying still
+            fallbackScore -= 50;
         } else {
             var udd = DIRS[ud];
             var fur = gs.player.row + udd.dr, fuc = gs.player.col + udd.dc;
