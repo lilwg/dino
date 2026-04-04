@@ -550,7 +550,7 @@ function simUpdateEnemies(gs) {
 
         // Execute move by type
         if (e.type === 'egg') {
-            var dir = simRng() < 0.5 ? 'DL' : 'DR';
+            var dir = simHopDecision() < 0.5 ? 'DL' : 'DR';
             var delta = DIRS[dir];
             var nr = e.row + delta.dr, nc = e.col + delta.dc;
             e.hops = (e.hops || 0) + 1;
@@ -602,14 +602,14 @@ function simUpdateEnemies(gs) {
                 e.dirBits >>= 1;
             } else {
                 // Fallback for legacy: random per hop
-                var dir = simRng() < 0.5 ? 'DL' : 'DR';
+                var dir = simHopDecision() < 0.5 ? 'DL' : 'DR';
                 var delta = DIRS[dir];
                 nr = e.row + delta.dr; nc = e.col + delta.dc;
             }
             simEnemyJumpTo(e, nr, nc, gs.sm);
             if (!isValidPos(nr, nc)) e.falling = true;
         } else if (e.type === 'ugg') {
-            var udir = simRng() < 0.5;
+            var udir = simHopDecision() < 0.5;
             var unr = udir ? e.row - 1 : e.row;
             var unc = e.col - 1;
             simEnemyJumpTo(e, unr, unc, gs.sm);
@@ -618,7 +618,7 @@ function simUpdateEnemies(gs) {
             // On-grid approximation of arcade off-grid left-face crawling.
             // Arcade: always col+1 (from col=-1 toward edge). On-grid: stay
             // at col=0 when going up to remain a left-edge threat (symmetric with Ugg).
-            var wdir = simRng() < 0.5;
+            var wdir = simHopDecision() < 0.5;
             var wnr = wdir ? e.row - 1 : e.row;
             var wnc = wdir ? e.col : e.col + 1;
             simEnemyJumpTo(e, wnr, wnc, gs.sm);
@@ -885,6 +885,55 @@ function simStep(gs, dir) {
         simCheckCollision(gs);
     }
     return gs.alive;
+}
+
+// Forced hop-decision queue: when non-null, binary enemy hop decisions
+// (DL/DR, up/stay) consume from this array instead of using simRng().
+// Spawn-time decisions (column, dirBits) still use simRng() normally.
+var simHopDecisionQ = null;
+var simHopDecisionIdx = 0;
+
+// Get a binary hop decision: 0 or 1 (maps to DL/DR or up/stay).
+// Uses forced queue if available, otherwise simRng().
+function simHopDecision() {
+    if (simHopDecisionQ && simHopDecisionIdx < simHopDecisionQ.length) {
+        return simHopDecisionQ[simHopDecisionIdx++] ? 0.75 : 0.25;
+    }
+    return simRng();
+}
+
+// simStep with forced enemy hop decisions. Used by expectimax to enumerate
+// all enemy decision combinations without RNG dependency.
+function simStepForced(gs, dir, choices) {
+    simHopDecisionQ = choices;
+    simHopDecisionIdx = 0;
+    var result = simStep(gs, dir);
+    simHopDecisionQ = null;
+    return result;
+}
+
+// Count enemies that will make a random decision during one player hop.
+// These are the ones that contribute 2^N branching in expectimax.
+function countRandomDeciders(gs) {
+    var pJumpFrames = Math.ceil(1 / (PLAYER_JUMP_DUR * gs.sm)) + 1;
+    var count = 0;
+    for (var i = 0; i < gs.enemies.length; i++) {
+        var e = gs.enemies[i];
+        if (e.type === 'spawn-timer') continue;
+        if (e.type === 'coily') continue; // deterministic chase
+        if ((e.type === 'redball' || e.type === 'greenball' || e.type === 'slick') && e.dirBits != null) continue; // deterministic path
+        var framesUntilDecision;
+        if (e.spawnAnimTimer > 0) {
+            framesUntilDecision = e.spawnAnimTimer + (e.moveInterval || 12);
+        } else if (e.jumping) {
+            var framesToLand = Math.ceil((1.0 - (e.jumpT || 0)) / (e.jumpDur || ENEMY_JUMP_DUR * gs.sm));
+            framesUntilDecision = framesToLand + (e.moveInterval || 12);
+        } else {
+            framesUntilDecision = (e.moveInterval || 12) - (e.moveTimer || 0);
+        }
+        if (framesUntilDecision <= pJumpFrames + 2) count++;
+    }
+    return count;
 }
 
 // Create a simulation state from current game globals
