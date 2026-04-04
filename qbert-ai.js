@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI: hybrid strategy + survival tree
-var AI_VERSION = 'v9.0-accurateTree';
+var AI_VERSION = 'v9.1-levelComplete';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -917,11 +917,29 @@ function unifiedPick(gs, coilyActive) {
             }
         }
 
+        // Level-completing move: if this direction lands on a cube whose stomp
+        // finishes the level, survival after landing is irrelevant.
+        var isLevelComplete = false;
+        if (dir !== 'STAY') {
+            var lcd = DIRS[dir];
+            var lcr = gs.player.row + lcd.dr, lcc = gs.player.col + lcd.dc;
+            if (isValidPos(lcr, lcc)) {
+                var lcStompsAfter = 0;
+                for (var lci = 0; lci < gs.cubes.length; lci++) {
+                    var lcc2 = gs.cubes[lci];
+                    var sn = stompsNeeded(lcc2.state, gs.lv);
+                    if (lcc2.row === lcr && lcc2.col === lcc) sn = Math.max(0, sn - 1); // this cube gets stomped
+                    lcStompsAfter += sn;
+                }
+                if (lcStompsAfter === 0) isLevelComplete = true;
+            }
+        }
+
         // Iterative deepening: start shallow, go deeper if time permits.
         // Each completed depth gives a valid answer; timeout keeps the last one.
         var survProb = 1.0;
         var maxDepth = (dir === 'STAY') ? Math.min(DEPTH, 3) : DEPTH;
-        if (hasEnemies && maxDepth > 0) {
+        if (hasEnemies && maxDepth > 0 && !isLevelComplete) {
             var ci0 = coilyInit || { row:-99, col:-99, jumping:false, jumpT:0,
                 moveTimer:0, destRow:null, destCol:null };
             for (var idDepth = 2; idDepth <= maxDepth; idDepth += 2) {
