@@ -155,6 +155,16 @@ function percentile(arr, p) {
     var over200 = allMs.filter(function(m) { return m > 200; }).length;
     console.log('budget violations: >80ms=' + over80 + ' (' +
                 (100 * over80 / allMs.length).toFixed(1) + '%), >200ms=' + over200);
+    var depthCounts = {};
+    for (var ti2 = 0; ti2 < final.timings.length; ti2++) {
+        var rd = final.timings[ti2].reachedDepth || 0;
+        depthCounts[rd] = (depthCounts[rd] || 0) + 1;
+    }
+    console.log('\n=== reached depth distribution ===');
+    Object.keys(depthCounts).sort(function(a,b){return a-b;}).forEach(function(k) {
+        console.log('depth ' + k + ': ' + depthCounts[k] + ' calls (' +
+                    (100*depthCounts[k]/final.timings.length).toFixed(1) + '%)');
+    });
 
     // Enemy-count distribution
     var byCount = {};

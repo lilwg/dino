@@ -1507,12 +1507,17 @@ function unifiedPick(gs, coilyActive) {
             // Realtime perfect teacher: simStep-based expectimax, no danger tables.
             var _tT0 = typeof performance !== 'undefined' ? performance.now() : 0;
             perfectTeacherReset();
-            _dangerSurv = perfectTeacherEval(gs, DEPTH, { mcSamples: window.AI_TEACHER_MC || 128 });
+            _dangerSurv = perfectTeacherEval(gs, DEPTH, {
+                mcSamples: window.AI_TEACHER_MC || 128,
+                deadlineMs: window.AI_TEACHER_DEADLINE_MS || 50
+            });
             var _tT1 = typeof performance !== 'undefined' ? performance.now() : 0;
             if (!window._teacherTimings) window._teacherTimings = [];
+            var _tStats = perfectTeacherStats();
             window._teacherTimings.push({
                 ms: _tT1 - _tT0,
                 depth: DEPTH,
+                reachedDepth: _tStats.maxDepthSeen,
                 nEnemies: enemyInits.length,
                 hasSpawnTimer: (function() {
                     for (var _si = 0; _si < gs.enemies.length; _si++)

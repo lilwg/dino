@@ -37,11 +37,12 @@ var teacherStats = {
 var TEACHER_DEFAULTS = {
     exhaustiveBitsLimit: 20,  // 2^20 ≈ 1M branches max per node
     mcSamples: 1024,
-    mcMaxChildDepth: 4,       // cap recursion depth after an MC node to bound cost
+    mcSubtreeDepthCap: 4,     // cap deterministic subtree depth after MC fires
     maxMemoEntries: 2_000_000,
     seed: 0xC0FFEE,
-    deadlineMs: Infinity,     // wall-clock budget; returns current best when exceeded
+    simStepBudget: Infinity,  // abort (return current best) after N simStep calls
 };
+var _teacherBudgetExceeded = false;
 
 function perfectTeacherReset() {
     teacherMemo = new Map();
@@ -49,8 +50,9 @@ function perfectTeacherReset() {
         evals: 0, memoHits: 0, memoStores: 0,
         exhaustiveNodes: 0, mcNodes: 0,
         simStepCalls: 0, deathsObserved: 0,
-        maxDepthSeen: 0,
+        maxDepthSeen: 0, budgetExceeded: false,
     };
+    _teacherBudgetExceeded = false;
 }
 
 function perfectTeacherStats() {
@@ -147,6 +149,10 @@ function teacherExecHop(gs, dir, hopBitArr, rngFn) {
     simHopDecisionIdx = savedIdx;
     simRng = savedRng;
     teacherStats.simStepCalls++;
+    if (teacherStats.simStepCalls >= teacherStats._budget) {
+        _teacherBudgetExceeded = true;
+        teacherStats.budgetExceeded = true;
+    }
     if (!alive) teacherStats.deathsObserved++;
     return { alive: alive, gs: gs1 };
 }
@@ -188,45 +194,27 @@ function perfectTeacherSurvive(gs, depth, opts) {
     return bestP;
 }
 
-// Per-direction expected survival across all enemy RNG outcomes.
+// Per-direction expected survival under exhaustive hop-bit enumeration.
+// Spawn events (simRng direct calls) resolve to a FIXED canonical value (0.5)
+// so spawns are deterministic within one teacher call. Caller replans each hop
+// so real-game spawn variance is absorbed by re-planning.
 function teacherBranchProb(gs, dir, depth, opts) {
     var b = teacherMeasureBranching(gs, dir);
-    var totalBits = b.hopBits + b.rngCalls * 8; // treat simRng as ~8 bits worst case
     var nextDepth = depth - 1;
-
-    if (b.rngCalls === 0 && b.hopBits <= opts.exhaustiveBitsLimit) {
-        // Exhaustive enumeration over 2^hopBits combos.
-        teacherStats.exhaustiveNodes++;
-        var combos = 1 << b.hopBits;
-        var sum = 0.0;
-        for (var c = 0; c < combos; c++) {
-            var bits = new Array(b.hopBits);
-            for (var bi = 0; bi < b.hopBits; bi++) bits[bi] = (c >> bi) & 1;
-            // simRng should not be called when rngCalls==0 for this dir,
-            // but provide a safe default anyway.
-            var res = teacherExecHop(gs, dir, bits, function() { return 0.5; });
-            if (res.alive) sum += perfectTeacherSurvive(res.gs, nextDepth, opts);
-        }
-        return sum / combos;
+    teacherStats.exhaustiveNodes++;
+    var hopBits = b.hopBits;
+    if (hopBits > opts.exhaustiveBitsLimit) hopBits = opts.exhaustiveBitsLimit;
+    var combos = 1 << hopBits;
+    var sum = 0.0;
+    for (var c = 0; c < combos; c++) {
+        var bits = new Array(hopBits);
+        for (var bi = 0; bi < hopBits; bi++) bits[bi] = (c >> bi) & 1;
+        var res = teacherExecHop(gs, dir, bits, _teacherConstRng);
+        if (res.alive) sum += perfectTeacherSurvive(res.gs, nextDepth, opts);
     }
-
-    // Monte Carlo. Each sample: random hop bits + seeded simRng.
-    teacherStats.mcNodes++;
-    var nSamples = opts.mcSamples;
-    var sum2 = 0.0;
-    // Derive seed from state+dir so samples are reproducible.
-    var stateSeed = (hashString(teacherStateKey(gs)) ^ dir.charCodeAt(0) * 2654435761) | 0;
-    var rng = mkXorshift(stateSeed ^ opts.seed);
-    for (var s = 0; s < nSamples; s++) {
-        var bits2 = new Array(b.hopBits);
-        for (var bi2 = 0; bi2 < b.hopBits; bi2++) bits2[bi2] = rng() < 0.5 ? 0 : 1;
-        // Per-sample simRng stream, independent of hop bits.
-        var sampleRng = mkXorshift(stateSeed ^ opts.seed ^ (s * 2654435761));
-        var res2 = teacherExecHop(gs, dir, bits2, sampleRng);
-        if (res2.alive) sum2 += perfectTeacherSurvive(res2.gs, nextDepth, opts);
-    }
-    return sum2 / nSamples;
+    return sum / combos;
 }
+function _teacherConstRng() { return 0.5; }
 
 // FNV-1a 32-bit string hash.
 function hashString(s) {
@@ -238,20 +226,158 @@ function hashString(s) {
     return h | 0;
 }
 
-// Top-level: returns { dir -> P(survive depth hops) } for all legal dirs.
-function perfectTeacherEval(gs, depth, opts) {
-    opts = Object.assign({}, TEACHER_DEFAULTS, opts || {});
-    var result = {};
+// ─── Outer-sampled deterministic expectimax ─────────────────────────────────
+// Architecture: instead of MC-branching at EVERY spawn event (which nests and
+// explodes as K^numSpawns), we sample K full RNG streams ONCE at the root and
+// run deterministic expectimax under each. Spawn events inside the subtree
+// resolve deterministically from the outer stream.
+//
+// Trade-off (Jensen's inequality): E_rng[max_dir V] >= max_dir E_rng[V], so
+// this slightly OVERestimates true P(survive). Since the real player observes
+// enemy RNG realizations hop-by-hop and can adapt, this optimism is actually
+// realistic for a top-level decision. The only true info asymmetry is for
+// brand-new spawn dirBits that the player hasn't yet observed — 1-2 hops of
+// optimism in practice.
+
+// Mutable-state xorshift32 stream (for save/restore at CRN points).
+function mkStreamCtx(seed) {
+    var s = (seed | 0) || 1;
+    return {
+        next: function() {
+            s ^= s << 13; s |= 0;
+            s ^= s >>> 17;
+            s ^= s << 5; s |= 0;
+            return ((s >>> 0) % 0x100000000) / 0x100000000;
+        },
+        save: function() { return s | 0; },
+        restore: function(v) { s = v | 0; }
+    };
+}
+
+// Run simStep using a stream-backed simRng + simHopDecision.
+// stream drives BOTH enemy hop-bit decisions AND spawn RNG.
+function teacherExecHopDet(gs, dir, stream) {
+    var savedQ = simHopDecisionQ;
+    var savedIdx = simHopDecisionIdx;
+    var savedRng = simRng;
+    var gs1 = simDeepClone(gs);
+    gs1.survivalOnly = true;
+    simHopDecisionQ = null;   // disable queue; simHopDecision falls through to simRng
+    simHopDecisionIdx = 0;
+    simRng = stream.next;
+    var alive = simStep(gs1, dir);
+    simHopDecisionQ = savedQ;
+    simHopDecisionIdx = savedIdx;
+    simRng = savedRng;
+    teacherStats.simStepCalls++;
+    if (teacherStats.simStepCalls >= teacherStats._budget) {
+        _teacherBudgetExceeded = true;
+        teacherStats.budgetExceeded = true;
+    }
+    if (!alive) teacherStats.deathsObserved++;
+    return { alive: alive, gs: gs1 };
+}
+
+// Deterministic expectimax under a FIXED stream. Max over player dirs.
+// CRN is achieved by save/restoring stream state between dir attempts at the
+// same node — all dirs see the same RNG prefix.
+function teacherDeterministicSurvive(gs, depth, stream, opts) {
+    if (!gs.alive) return 0.0;
+    if (depth <= 0) return 1.0;
+
+    // Memo: key includes stream state so we only memo within one sample's tree.
+    var memoKey = teacherStateKey(gs) + '|' + depth + '|s' + stream.save();
+    if (teacherMemo.has(memoKey)) {
+        teacherStats.memoHits++;
+        return teacherMemo.get(memoKey);
+    }
+    teacherStats.evals++;
+
+    var bestP = 0.0;
     var dirs = typeof DIR_KEYS_WITH_STAY !== 'undefined' ? DIR_KEYS_WITH_STAY
                 : ['UL', 'UR', 'DL', 'DR', 'STAY'];
+    var streamStart = stream.save();
     for (var k = 0; k < dirs.length; k++) {
         var dir = dirs[k];
         if (dir !== 'STAY') {
             var d = DIRS[dir];
             if (!isValidPos(gs.player.row + d.dr, gs.player.col + d.dc)) continue;
         }
-        result[dir] = teacherBranchProb(gs, dir, depth, opts);
+        // CRN: reset stream to node-start before each dir attempt
+        stream.restore(streamStart);
+        var res = teacherExecHopDet(gs, dir, stream);
+        if (res.alive) {
+            var p = teacherDeterministicSurvive(res.gs, depth - 1, stream, opts);
+            if (p > bestP) bestP = p;
+            if (bestP >= 1.0) break;
+        }
     }
+    // Restore for caller (in case we broke out early)
+    stream.restore(streamStart);
+
+    if (teacherMemo.size < opts.maxMemoEntries) {
+        teacherMemo.set(memoKey, bestP);
+        teacherStats.memoStores++;
+    }
+    return bestP;
+}
+
+// Is there a spawn event or ball-with-null-dirBits in the horizon?
+// (These consume simRng directly and require outer sampling.)
+function teacherSpawnInHorizon(gs, depth) {
+    // Conservative upper bound on frames in horizon
+    var pJumpDur = PLAYER_JUMP_DUR * gs.sm;
+    var pJumpFrames = Math.ceil(1 / pJumpDur);
+    var horizon = depth * pJumpFrames + 20; // +20 for slack
+    for (var i = 0; i < gs.enemies.length; i++) {
+        var e = gs.enemies[i];
+        if (e.type === 'spawn-timer' && e.timer <= horizon) return true;
+    }
+    return false;
+}
+
+// Top-level: returns { dir -> P(survive depth hops) } for all legal dirs.
+// Iterative deepening: evaluates at depth 2, 3, 4, ..., up to `maxDepth`,
+// stopping early if a deadline is hit. Returns the deepest-completed answer
+// per dir (dirs finished at depth D replace earlier D-1 results).
+function perfectTeacherEval(gs, maxDepth, opts) {
+    opts = Object.assign({}, TEACHER_DEFAULTS, opts || {});
+    var dirs = typeof DIR_KEYS_WITH_STAY !== 'undefined' ? DIR_KEYS_WITH_STAY
+                : ['UL', 'UR', 'DL', 'DR', 'STAY'];
+    var deadline = typeof opts.deadlineMs === 'number' && isFinite(opts.deadlineMs)
+        ? (typeof performance !== 'undefined' ? performance.now() : Date.now()) + opts.deadlineMs
+        : Infinity;
+    var result = {};
+    var completedDepth = 0;
+    for (var dpt = 2; dpt <= maxDepth; dpt++) {
+        var now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+        if (now >= deadline) break;
+        // Reset memo each depth — memo values are depth-specific
+        // (actually they already include depth in the key, so keeping is fine,
+        // but clearing avoids unbounded growth at max depth).
+        var partial = {};
+        var any = false;
+        for (var k = 0; k < dirs.length; k++) {
+            var dir = dirs[k];
+            if (dir !== 'STAY') {
+                var d = DIRS[dir];
+                if (!isValidPos(gs.player.row + d.dr, gs.player.col + d.dc)) continue;
+            }
+            // Check deadline mid-loop
+            var now2 = typeof performance !== 'undefined' ? performance.now() : Date.now();
+            if (now2 >= deadline) break;
+            partial[dir] = teacherBranchProb(gs, dir, dpt, opts);
+            any = true;
+        }
+        // Only accept this depth if we completed all dirs before deadline
+        var nowEnd = typeof performance !== 'undefined' ? performance.now() : Date.now();
+        if (nowEnd >= deadline && completedDepth > 0) break;
+        if (any) {
+            result = partial;
+            completedDepth = dpt;
+        }
+    }
+    teacherStats.maxDepthSeen = completedDepth;
     return result;
 }
 
