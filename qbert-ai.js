@@ -1503,13 +1503,32 @@ function unifiedPick(gs, coilyActive) {
     // handles path correlations across frames.
     var _dangerSurv = {};
     if (hasEnemies) {
-        var _dtMaxFrames = DANGER_MAX_FRAMES;
-        var _dtStartFrame = Math.min(gs.freezeTimer || 0, _dtMaxFrames);
-        var _pathLists = [];
-        for (var _di = 0; _di < enemyInits.length; _di++) {
-            _pathLists.push(buildEnemyPaths(enemyInits[_di], gs.sm, _dtMaxFrames));
+        if (typeof window !== 'undefined' && window.AI_TEACHER && typeof perfectTeacherEval === 'function') {
+            // Realtime perfect teacher: simStep-based expectimax, no danger tables.
+            var _tT0 = typeof performance !== 'undefined' ? performance.now() : 0;
+            perfectTeacherReset();
+            _dangerSurv = perfectTeacherEval(gs, DEPTH, { mcSamples: window.AI_TEACHER_MC || 128 });
+            var _tT1 = typeof performance !== 'undefined' ? performance.now() : 0;
+            if (!window._teacherTimings) window._teacherTimings = [];
+            window._teacherTimings.push({
+                ms: _tT1 - _tT0,
+                depth: DEPTH,
+                nEnemies: enemyInits.length,
+                hasSpawnTimer: (function() {
+                    for (var _si = 0; _si < gs.enemies.length; _si++)
+                        if (gs.enemies[_si].type === 'spawn-timer') return true;
+                    return false;
+                })()
+            });
+        } else {
+            var _dtMaxFrames = DANGER_MAX_FRAMES;
+            var _dtStartFrame = Math.min(gs.freezeTimer || 0, _dtMaxFrames);
+            var _pathLists = [];
+            for (var _di = 0; _di < enemyInits.length; _di++) {
+                _pathLists.push(buildEnemyPaths(enemyInits[_di], gs.sm, _dtMaxFrames));
+            }
+            _dangerSurv = findReactiveSurvival(gs, _pathLists, coilyInit, _dtStartFrame, _dtMaxFrames, DEPTH);
         }
-        _dangerSurv = findReactiveSurvival(gs, _pathLists, coilyInit, _dtStartFrame, _dtMaxFrames, DEPTH);
     }
 
     // ── Expectimax search using simStepForced ──────────────────────────────────

@@ -66,13 +66,26 @@ var scenarios = [
       })() },
 ];
 
-console.log('depth | scenario                             |    ms | simSteps | memo hits | memo size');
+// MC sample sweep (fixed depth=8) on spawn-in-horizon scenario
+console.log('── mcSamples sweep (depth=8, spawn-in-horizon) ──');
+var spawnScenario = scenarios[scenarios.length - 1];
+[8, 16, 32, 64, 128, 256, 512, 1024].forEach(function(mc) {
+    perfectTeacherReset();
+    var t0 = Date.now();
+    perfectTeacherEval(spawnScenario.gs, 8, { mcSamples: mc });
+    var ms = Date.now() - t0;
+    var s = perfectTeacherStats();
+    console.log('  mc=' + mc + ': ' + ms + 'ms  simSteps=' + s.simStepCalls +
+                ' mcNodes=' + s.mcNodes + ' memo=' + s.memoSize);
+});
+
+console.log('\ndepth | scenario                             |    ms | simSteps | memo hits | memo size');
 console.log('------|--------------------------------------|-------|----------|-----------|----------');
 for (var d = 4; d <= 12; d += 2) {
     for (var si = 0; si < scenarios.length; si++) {
         perfectTeacherReset();
         var t0 = Date.now();
-        perfectTeacherEval(scenarios[si].gs, d);
+        perfectTeacherEval(scenarios[si].gs, d, { mcSamples: 128 });
         var ms = Date.now() - t0;
         var s = perfectTeacherStats();
         var lbl = scenarios[si].label.padEnd(38);

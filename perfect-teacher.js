@@ -37,8 +37,10 @@ var teacherStats = {
 var TEACHER_DEFAULTS = {
     exhaustiveBitsLimit: 20,  // 2^20 ≈ 1M branches max per node
     mcSamples: 1024,
+    mcMaxChildDepth: 4,       // cap recursion depth after an MC node to bound cost
     maxMemoEntries: 2_000_000,
     seed: 0xC0FFEE,
+    deadlineMs: Infinity,     // wall-clock budget; returns current best when exceeded
 };
 
 function perfectTeacherReset() {
