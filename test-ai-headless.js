@@ -57,6 +57,7 @@ function startServer(dir) {
         window.setGameSpeed(8);
         window.setMode('rules');
         window._headlessTest = true;
+        window._predValidate = true;
         if (opts.noEnemies) window.toggleEnemies();
 
         // Hook: capture round results when level completes

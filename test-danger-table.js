@@ -203,9 +203,18 @@ function buildCoilyTable(e, targetTimeline, sm, maxFrames) {
         }
         moveTimer = 0;
 
-        // ROM grid-word chase algorithm
+        // ROM grid-word chase: target = prev, except if Coily AT prev → cur
         var tgt = targetTimeline[f] || targetTimeline[0];
-        var targetR = tgt.row, targetC = tgt.col;
+        var targetR, targetC;
+        if (tgt.prev) {
+            if (row === tgt.prev.row && col === tgt.prev.col) {
+                targetR = tgt.cur.row; targetC = tgt.cur.col;
+            } else {
+                targetR = tgt.prev.row; targetC = tgt.prev.col;
+            }
+        } else {
+            targetR = tgt.row; targetC = tgt.col;
+        }
         // Exception: if Coily IS at prev, chase current
         var c_gw1 = row - col + 1;
         var t_gw1 = targetR - targetC + 1;
