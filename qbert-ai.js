@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI: hybrid strategy + survival tree
-var AI_VERSION = 'v11.1-coilyTargetFix';
+var AI_VERSION = 'v11.2-overrideSafetyGuard';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -1959,6 +1959,7 @@ function aiPickBestDir() {
     for (var si = 0; si < gs.cubes.length; si++) aiPrevCubeStates[si] = gs.cubes[si].state;
 
     var result = unifiedPick(gs, coilyActive);
+    var _origResult = result;
 
     // Validate: if danger table predicts P=1.0, run simStep to verify
     if (window._predValidate && result && result !== 'STAY' && aiLastHop1Surv && aiLastHop1Surv[result] !== undefined) {
@@ -2104,6 +2105,15 @@ function aiPickBestDir() {
                         if (asc2 !== undefined && asc2 > altScore) { altScore = asc2; altDir = DIR_KEYS[ak2]; }
                     }
                 }
+                // Safety guard: don't override if the alternative is substantially
+                // less safe than the original. logPerHop difference > 0.02 means
+                // per-hop survival drops by >~2% — not worth it to break oscillation.
+                if (altDir) {
+                    var origScore = aiMoveScores[result];
+                    if (origScore !== undefined && origScore > altScore + 200) {
+                        altDir = null;
+                    }
+                }
                 if (altDir) { result = altDir; aiPosHistory.length = 0; }
             }
         }
@@ -2246,6 +2256,14 @@ function aiPickBestDir() {
                     }
                 }
             }
+            // Safety guard: don't override if progress move is much less safe
+            if (bestProgDir) {
+                var origScoreN = aiMoveScores[result];
+                var progScoreN = aiMoveScores[bestProgDir];
+                if (origScoreN !== undefined && progScoreN !== undefined && origScoreN > progScoreN + 200) {
+                    bestProgDir = null;
+                }
+            }
             if (bestProgDir) { result = bestProgDir; aiPosHistory.length = 0; }
             // Don't reset aiNoProgressCount here — only reset on actual progress (line ~961)
         }
@@ -2276,5 +2294,9 @@ function aiPickBestDir() {
 
     // Restore game RNG — must never leak seeded RNG into real game
     simRng = savedGameRng;
+    if (_origResult !== result && typeof console !== 'undefined') {
+        var _origS = aiMoveScores[_origResult], _newS = aiMoveScores[result];
+        console.log('AI OVERRIDE @(' + gs.player.row + ',' + gs.player.col + ') orig=' + _origResult + '(' + _origS + ') new=' + result + '(' + _newS + ') np=' + aiNoProgressCount + ' stay=' + aiStayCount);
+    }
     return result;
 }
