@@ -206,10 +206,11 @@ function perfectTeacherSurvive(gs, depth, opts) {
 // Per-direction MIN-over-hop-bit-enumeration adaptive survival.
 // Exhaustively enumerates enemy hop-bit decisions (egg/ugg/wrongway DL/DR,
 // up/stay choices consumed via simHopDecisionQ). For spawn events (simRng
-// direct calls), uses fixed 0.5 — this is an acceptable approximation because
-// spawn dirBits variance is absorbed by re-planning each hop.
+// direct calls), tests BOTH simRng=0.0 (spawnCol=0, dirBits=0) and
+// simRng=0.5 (spawnCol=1, dirBits=64) and takes MIN. This covers both
+// possible spawn columns — the main source of spawn variance that matters.
 //
-// Returns MIN across enumerated outcomes — worst-case adaptive survival.
+// Returns MIN across all (hop-bit combo × spawn-rng) outcomes.
 function teacherBranchProb(gs, dir, depth, opts) {
     var nextDepth = depth - 1;
     teacherStats.exhaustiveNodes++;
@@ -217,18 +218,23 @@ function teacherBranchProb(gs, dir, depth, opts) {
     var hopBits = b.hopBits;
     if (hopBits > opts.exhaustiveBitsLimit) hopBits = opts.exhaustiveBitsLimit;
     var combos = 1 << hopBits;
+    // Enumerate both spawn-col outcomes if spawn events present.
+    var rngVals = b.rngCalls > 0 ? [_teacherRng0, _teacherRng5] : [_teacherRng5];
     var minSurv = 1.0;
-    for (var c = 0; c < combos; c++) {
-        var bits = new Array(hopBits);
-        for (var bi = 0; bi < hopBits; bi++) bits[bi] = (c >> bi) & 1;
-        var res = teacherExecHop(gs, dir, bits, _teacherConstRng);
-        var p = res.alive ? perfectTeacherSurvive(res.gs, nextDepth, opts) : 0.0;
-        if (p < minSurv) minSurv = p;
-        if (minSurv === 0.0) break;
+    for (var ri = 0; ri < rngVals.length; ri++) {
+        for (var c = 0; c < combos; c++) {
+            var bits = new Array(hopBits);
+            for (var bi = 0; bi < hopBits; bi++) bits[bi] = (c >> bi) & 1;
+            var res = teacherExecHop(gs, dir, bits, rngVals[ri]);
+            var p = res.alive ? perfectTeacherSurvive(res.gs, nextDepth, opts) : 0.0;
+            if (p < minSurv) minSurv = p;
+            if (minSurv === 0.0) return 0.0; // early exit
+        }
     }
     return minSurv;
 }
-function _teacherConstRng() { return 0.5; }
+function _teacherRng0() { return 0.0; }
+function _teacherRng5() { return 0.5; }
 
 // FNV-1a 32-bit string hash.
 function hashString(s) {
@@ -375,6 +381,7 @@ function perfectTeacherEval(gs, maxDepth, opts) {
         // but clearing avoids unbounded growth at max depth).
         var partial = {};
         var any = false;
+        var allDirsCompleted = true;
         for (var k = 0; k < dirs.length; k++) {
             var dir = dirs[k];
             if (dir !== 'STAY') {
@@ -383,17 +390,17 @@ function perfectTeacherEval(gs, maxDepth, opts) {
             }
             // Check deadline mid-loop
             var now2 = typeof performance !== 'undefined' ? performance.now() : Date.now();
-            if (now2 >= deadline) break;
+            if (now2 >= deadline) { allDirsCompleted = false; break; }
             partial[dir] = teacherBranchProb(gs, dir, dpt, opts);
             any = true;
         }
-        // Only accept this depth if we completed all dirs before deadline
-        var nowEnd = typeof performance !== 'undefined' ? performance.now() : Date.now();
-        if (nowEnd >= deadline && completedDepth > 0) break;
-        if (any) {
+        // Only accept FULLY completed depths — partial evaluation can overestimate
+        // (shallow depth says STAY=1 but deep depth would see coily trapping)
+        if (allDirsCompleted && any) {
             result = partial;
             completedDepth = dpt;
         }
+        if (!allDirsCompleted) break;
     }
     teacherStats.maxDepthSeen = completedDepth;
     return result;
