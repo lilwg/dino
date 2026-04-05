@@ -219,7 +219,9 @@ function teacherBranchProb(gs, dir, depth, opts) {
     if (hopBits > opts.exhaustiveBitsLimit) hopBits = opts.exhaustiveBitsLimit;
     var combos = 1 << hopBits;
     // Enumerate both spawn-col outcomes if spawn events present.
-    var rngVals = b.rngCalls > 0 ? [_teacherRng0, _teacherRng5] : [_teacherRng5];
+    // Test 4 spawn-RNG probes: covers both spawn columns AND 4 of 128 dirBits
+    // patterns (0, 32, 64, 96). Cost: 4x per spawn node.
+    var rngVals = b.rngCalls > 0 ? [_teacherRng0, _teacherRng25, _teacherRng5, _teacherRng75] : [_teacherRng5];
     var minSurv = 1.0;
     for (var ri = 0; ri < rngVals.length; ri++) {
         for (var c = 0; c < combos; c++) {
@@ -234,7 +236,9 @@ function teacherBranchProb(gs, dir, depth, opts) {
     return minSurv;
 }
 function _teacherRng0() { return 0.0; }
+function _teacherRng25() { return 0.25; }
 function _teacherRng5() { return 0.5; }
+function _teacherRng75() { return 0.75; }
 
 // FNV-1a 32-bit string hash.
 function hashString(s) {

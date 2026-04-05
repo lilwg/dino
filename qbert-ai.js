@@ -2065,26 +2065,12 @@ function aiPickBestDir() {
             if (aiLastHop1Surv[_dkk] > 0) { _allZero = false; break; }
         }
         if (_allZero && _anyEval && window._preDoomSnap) {
-            console.log('DOOM-ENTRY prev=' + JSON.stringify(window._preDoomSnap));
-            var _curSnap = {
-                player: JSON.parse(JSON.stringify(gs.player)),
-                enemies: JSON.parse(JSON.stringify(gs.enemies)),
-                cubes: JSON.parse(JSON.stringify(gs.cubes)),
-                discs: JSON.parse(JSON.stringify(gs.discs)),
-                sm: gs.sm, tgt: gs.tgt, lv: gs.lv, round: gs.round,
-                freezeTimer: gs.freezeTimer,
-                survP: JSON.parse(JSON.stringify(aiLastHop1Surv))
-            };
-            console.log('DOOM-CUR now=' + JSON.stringify(_curSnap));
+            console.log('DOOM @(' + gs.player.row + ',' + gs.player.col +
+                ') prev-dir=' + window._preDoomSnap.dir +
+                ' prev-survP=' + JSON.stringify(window._preDoomSnap.survP));
         }
-        // Save current state+decision for next-call comparison
+        // Save lightweight pre-doom info
         window._preDoomSnap = {
-            player: JSON.parse(JSON.stringify(gs.player)),
-            enemies: JSON.parse(JSON.stringify(gs.enemies)),
-            cubes: JSON.parse(JSON.stringify(gs.cubes)),
-            discs: JSON.parse(JSON.stringify(gs.discs)),
-            sm: gs.sm, tgt: gs.tgt, lv: gs.lv, round: gs.round,
-            freezeTimer: gs.freezeTimer,
             dir: result, survP: JSON.parse(JSON.stringify(aiLastHop1Surv))
         };
     }
