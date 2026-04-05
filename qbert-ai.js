@@ -666,7 +666,7 @@ function appendHop(result, pRow, pCol, dir, sm, startFrame, maxFrames) {
     return { endFrame: maxFrames, endRow: destR, endCol: destC, landFrame: landFrame };
 }
 
-var LOOKAHEAD_DEPTH = 3;
+var LOOKAHEAD_DEPTH = 5;
 
 // Simulate Coily from fromFrame to toFrame, writing into shared table.
 // Returns updated Coily state. Reads chase target from waypoints.
@@ -1229,14 +1229,29 @@ var aiMoveScores = {};
 var aiMode = 0;
 var _aiDecisionHistory = [];
 
+var _stayUntilFrame = 0; // cooldown: don't recompute while STAYing
+
 function aiPickBestDir() {
+    // If we recently chose STAY, skip recomputation until cooldown expires
+    var curFrame = typeof frameCount !== 'undefined' ? frameCount : 0;
+    if (curFrame < _stayUntilFrame) return 'STAY';
+
     var savedGameRng = simRng;
 
     var gs = simCloneGameState();
     aiMoveScores = {};
     aiMode = 1;
 
+    var _t0 = typeof performance !== 'undefined' ? performance.now() : 0;
     var result = unifiedPick(gs);
+    var _t1 = typeof performance !== 'undefined' ? performance.now() : 0;
+    if (_t1 - _t0 > 10) console.log('AI SLOW: ' + ((_t1 - _t0)|0) + 'ms @(' + gs.player.row + ',' + gs.player.col + ') enemies=' + gs.enemies.length);
+
+    // If STAY, set cooldown — don't recompute for ~1 enemy hop cycle
+    if (result === 'STAY') {
+        var hopFrames = Math.ceil(1.0 / (ENEMY_JUMP_DUR * gs.sm)) + ENEMY_IDLE_FRAMES + 4;
+        _stayUntilFrame = curFrame + hopFrames;
+    }
 
     // Record rolling history of last 5 decisions for death debugging
     var scores = '';
