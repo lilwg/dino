@@ -1089,10 +1089,7 @@ function aiPickBestDir() {
     aiMoveScores = {};
     aiMode = 1;
 
-    var _t0 = typeof performance !== 'undefined' ? performance.now() : 0;
     var result = unifiedPick(gs);
-    var _t1 = typeof performance !== 'undefined' ? performance.now() : 0;
-    if (_t1 - _t0 > 10) console.log('AI SLOW: ' + ((_t1 - _t0)|0) + 'ms @(' + gs.player.row + ',' + gs.player.col + ') enemies=' + gs.enemies.length);
 
     // If STAY, set cooldown — don't recompute for ~1 enemy hop cycle
     if (result === 'STAY') {
