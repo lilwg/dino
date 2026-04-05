@@ -375,17 +375,18 @@ function expandEnemyPaths(table, type, row, col, jumping, jumpT, jumpDur,
             if (!isValidPos(landRow, landCol)) return;
             var newType = type, newInterval = moveInterval, newWillHatch = false;
             if (type === 'egg' && (hops >= 6 || landRow >= ROWS - 1 || willHatch)) {
-                // Egg hatches into Coily at this position. Coily will chase the
-                // player from here. Since we can't precompute the chase (player-
-                // dependent), conservatively mark the hatch tile + all reachable
-                // tiles within N hops for remaining frames.
-                dangerAdd(table, frame, landRow, landCol, prob, maxFrames);
-                // BFS flood: mark all tiles within hopDist of hatch pos
-                var hatchReach = new Uint8Array(POS_COUNT);
-                var hatchQ = [posToIdx[landRow * ROWS + landCol]];
-                if (hatchQ[0] >= 0) hatchReach[hatchQ[0]] = 1;
+                // Egg hatches into Coily. Mark hatch tile for the entire
+                // idle+moveTimer period, then BFS flood for each hop distance.
                 var hopDur = Math.ceil(1.0 / jumpDur) + ENEMY_IDLE_FRAMES + Math.round(moveInterval);
-                var maxReach = Math.floor((maxFrames - frame) / hopDur) + 1;
+                // Mark hatch tile from landing through first hop
+                for (var hf = frame; hf < frame + hopDur && hf < maxFrames; hf++)
+                    dangerAdd(table, hf, landRow, landCol, prob, maxFrames);
+                // BFS flood: mark reachable tiles at each hop distance
+                var hatchReach = new Uint8Array(POS_COUNT);
+                var hatchIdx = posToIdx[landRow * ROWS + landCol];
+                var hatchQ = [];
+                if (hatchIdx >= 0) { hatchReach[hatchIdx] = 1; hatchQ.push(hatchIdx); }
+                var maxReach = Math.floor((maxFrames - frame) / hopDur);
                 if (maxReach > 6) maxReach = 6;
                 for (var rd = 0; rd < maxReach; rd++) {
                     var nextQ = [];
@@ -396,7 +397,6 @@ function expandEnemyPaths(table, type, row, col, jumping, jumpT, jumpDur,
                         }
                     }
                     hatchQ = nextQ;
-                    // Mark all reachable tiles from this hop distance onward
                     var reachFrame = frame + (rd + 1) * hopDur;
                     for (var pi = 0; pi < POS_COUNT; pi++) {
                         if (hatchReach[pi]) {
