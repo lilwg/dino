@@ -941,8 +941,6 @@ function update() {
         if (gameMode === 'rules') {
             // Skip AI if we've already exceeded frame budget (prevents 1s freezes at 8x)
             if (typeof _frameDeadline !== 'undefined' && performance.now() > _frameDeadline) return;
-            // Honor AI's STAY commitment: skip AI calls until the committed duration elapses.
-            if (window._aiStaySkip > 0) { window._aiStaySkip--; return; }
             // Safety net: check if any enemy is currently on the player's tile
             simCheckCollision(gs);
             if (!gs.alive) {
@@ -955,14 +953,8 @@ function update() {
             var dir = computeAIMove();
             if (dir !== 'STAY') captureRewindSnapshot(gs, false);
             if (dir === 'STAY') {
-                // AI's reactive expectimax models STAY as a 35-frame wait
-                // (matching simStepSurvival STAY = ceil(1/pJumpDur)+8 frames).
-                // Commit to this duration so the planned escape actually executes.
-                // Without commit, per-frame re-decisions trap the AI in STAY loops.
                 gs.player.prevRow = gs.player.row;
                 gs.player.prevCol = gs.player.col;
-                var stayFrames = Math.ceil(1.0 / (PLAYER_JUMP_DUR * gs.sm)) + 8;
-                window._aiStaySkip = stayFrames - 1; // -1 because we already used this frame
             } else if (dir) {
                 tryMove(dir);
             }

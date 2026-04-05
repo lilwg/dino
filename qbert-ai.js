@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI: hybrid strategy + survival tree
-var AI_VERSION = 'v11.4-stayCommit';
+var AI_VERSION = 'v11.4-variableWait';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -1206,16 +1206,79 @@ function findReactiveSurvival(gs, enemyPathLists, coilyInit, startFrame, maxFram
                  jumpDur: jumpDur, interval: interval, dead: dead, killsPlayer: killsPlayer };
     }
 
-    // Recursive reactive expectimax.
-    // enemySubsets[i] = array of path indices for enemy i that are still possible.
+    // Quick check: does hop D starting at frame F survive (hop1 only, no recursion)?
+    // Checks enemy paths + coily during the hop window. Returns false if definitely dies.
+    function quickHopSafe(curRow, curCol, dir, startF, subsets, cState) {
+        var hop = appendHop(timeline, curRow, curCol, dir, sm, startF, maxFrames);
+        if (!hop) return false;
+        // Check enemy paths
+        for (var ei = 0; ei < enemyPathLists.length; ei++) {
+            var subs = subsets[ei];
+            for (var pi = 0; pi < subs.length; pi++) {
+                var tiles = enemyPathLists[ei][subs[pi]].tiles;
+                for (var f = startF; f < hop.endFrame && f < maxFrames; f++) {
+                    if (timeline[f] >= 0 && tiles[f] === timeline[f]) {
+                        // Clean up and return false
+                        for (var cf = startF; cf < hop.endFrame && cf < maxFrames; cf++) timeline[cf] = -1;
+                        return false;
+                    }
+                }
+            }
+        }
+        // Check Coily
+        if (cState && !cState.dead) {
+            var cRes = simulateCoily(cState, startF, hop.endFrame);
+            if (cRes.killsPlayer) {
+                for (var cf2 = startF; cf2 < hop.endFrame && cf2 < maxFrames; cf2++) timeline[cf2] = -1;
+                return false;
+            }
+        }
+        for (var cf3 = startF; cf3 < hop.endFrame && cf3 < maxFrames; cf3++) timeline[cf3] = -1;
+        return true;
+    }
+
+    // Recursive reactive expectimax with variable-wait.
+    // For each direction, finds min wait K such that (stay K frames, hop D) survives.
+    // Only evaluates deeply at the min-K frame to avoid cost explosion.
     function reactive(curRow, curCol, depth, curFrame, enemySubsets, coilyState) {
         if (depth >= LOOKAHEAD || curFrame >= maxFrames) return 1.0;
 
         var best = 0;
-        for (var dk = 0; dk < DIR_KEYS_WITH_STAY.length; dk++) {
-            var dir = DIR_KEYS_WITH_STAY[dk];
-            if (dir !== 'STAY' && !isValidPos(curRow + DIRS[dir].dr, curCol + DIRS[dir].dc)) continue;
-            var hop = appendHop(timeline, curRow, curCol, dir, sm, curFrame, maxFrames);
+        var MAX_WAIT = 40;
+        var playerTile = posToIdx[curRow * ROWS + curCol];
+
+        for (var dk = 0; dk < DIR_KEYS.length; dk++) {
+            var dir = DIR_KEYS[dk];
+            if (!isValidPos(curRow + DIRS[dir].dr, curCol + DIRS[dir].dc)) continue;
+
+            // Find min K: cheaply scan frames until hop D is safe.
+            var bestK = -1;
+            for (var K = 0; K < MAX_WAIT; K++) {
+                var startF = curFrame + K;
+                if (startF >= maxFrames) break;
+                // Check player stationary survives at frame curFrame+K
+                if (K > 0) {
+                    var chkF = curFrame + K - 1;
+                    var hit = false;
+                    for (var eiC = 0; eiC < enemyPathLists.length && !hit; eiC++) {
+                        var subsC = enemySubsets[eiC];
+                        for (var piC = 0; piC < subsC.length; piC++) {
+                            if (enemyPathLists[eiC][subsC[piC]].tiles[chkF] === playerTile) { hit = true; break; }
+                        }
+                    }
+                    if (hit) break; // can't wait this long
+                }
+                // Quick check: does hop D survive starting at startF?
+                if (quickHopSafe(curRow, curCol, dir, startF, enemySubsets, coilyState)) {
+                    bestK = K;
+                    break;
+                }
+            }
+            if (bestK < 0) continue; // no safe K found for this direction
+
+            // Full evaluation at curFrame + bestK.
+            var startF2 = curFrame + bestK;
+            var hop = appendHop(timeline, curRow, curCol, dir, sm, startF2, maxFrames);
             if (!hop) continue;
             if (hop.landFrame >= 0)
                 waypoints.push({ frame: hop.landFrame, row: hop.endRow, col: hop.endCol });
@@ -1231,60 +1294,51 @@ function findReactiveSurvival(gs, enemyPathLists, coilyInit, startFrame, maxFram
             }
 
             // Check Coily first (deterministic)
+            // Advance Coily for the wait period (K frames) + hop
             var newCoily = coilyState;
             var coilyOk = true;
             if (coilyState && !coilyState.dead) {
-                newCoily = simulateCoily(coilyState, curFrame, hop.endFrame);
-                if (newCoily.killsPlayer) coilyOk = false;
+                if (bestK > 0) newCoily = simulateCoily(coilyState, curFrame, startF2);
+                var afterCoily = simulateCoily(newCoily, startF2, hop.endFrame);
+                if (afterCoily.killsPlayer) coilyOk = false;
+                newCoily = afterCoily;
             }
 
             if (coilyOk) {
-                // Partition each enemy's subset by divergence during this hop.
                 var partitions = [];
                 for (var ei2 = 0; ei2 < enemyPathLists.length; ei2++) {
                     var subset = enemySubsets[ei2];
-                    if (subset.length <= 1) {
-                        partitions.push([subset]);
-                        continue;
-                    }
-                    var divFrame = findDivergenceFrame(enemyPathLists[ei2], subset, curFrame, hop.endFrame);
-                    if (divFrame < 0) {
-                        partitions.push([subset]);
-                    } else {
+                    if (subset.length <= 1) { partitions.push([subset]); continue; }
+                    var divFrame = findDivergenceFrame(enemyPathLists[ei2], subset, startF2, hop.endFrame);
+                    if (divFrame < 0) { partitions.push([subset]); }
+                    else {
                         var groups = partitionPathsAtFrame(enemyPathLists[ei2], subset, divFrame);
                         var subsetList = [];
-                        for (var k in groups) subsetList.push(groups[k]);
+                        for (var kk in groups) subsetList.push(groups[kk]);
                         partitions.push(subsetList);
                     }
                 }
-
-                // Cartesian product of partitions — compute per-combo survival × future
                 var comboCount = 1;
                 for (var ei3 = 0; ei3 < partitions.length; ei3++) comboCount *= partitions[ei3].length;
-
                 var combined = 0;
                 for (var c = 0; c < comboCount; c++) {
                     var newSubsets = [];
                     var comboProb = 1.0;
                     var cc = c;
                     for (var ei4 = 0; ei4 < partitions.length; ei4++) {
-                        var pi = cc % partitions[ei4].length;
+                        var pii = cc % partitions[ei4].length;
                         cc = (cc / partitions[ei4].length) | 0;
-                        var subsetSel = partitions[ei4][pi];
+                        var subsetSel = partitions[ei4][pii];
                         newSubsets.push(subsetSel);
                         var totalAll = subsetTotalProb(ei4, enemySubsets[ei4]);
                         var totalSel = subsetTotalProb(ei4, subsetSel);
                         comboProb *= (totalAll > 0 ? totalSel / totalAll : 1);
                     }
-                    // Per-combo survival: does ANY path in new_subsets hit player hop?
-                    // Within a subset, paths share the same choice during this hop,
-                    // so they all hit or all don't hit (if divergence was only in this hop).
-                    // But subsequent choices still diverge, so some sub-paths may/may not hit.
                     var perComboSurvive = 1.0;
                     for (var ei5 = 0; ei5 < newSubsets.length; ei5++) {
                         var totSel = subsetTotalProb(ei5, newSubsets[ei5]);
                         if (totSel <= 0) continue;
-                        var hitSel = enemyHitProb(ei5, newSubsets[ei5], curFrame, hop.endFrame);
+                        var hitSel = enemyHitProb(ei5, newSubsets[ei5], startF2, hop.endFrame);
                         perComboSurvive *= (1.0 - hitSel / totSel);
                         if (perComboSurvive <= 0) break;
                     }
@@ -1293,13 +1347,12 @@ function findReactiveSurvival(gs, enemyPathLists, coilyInit, startFrame, maxFram
                         combined += comboProb * perComboSurvive * future;
                     }
                 }
-
                 if (combined > best) best = combined;
             }
 
             if (pushedJ) playerJumps.pop();
             if (hop.landFrame >= 0) waypoints.pop();
-            for (var f = curFrame; f < hop.endFrame && f < maxFrames; f++) timeline[f] = -1;
+            for (var f = startF2; f < hop.endFrame && f < maxFrames; f++) timeline[f] = -1;
             if (best >= 0.99) break;
         }
         return best;
