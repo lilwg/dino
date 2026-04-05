@@ -494,6 +494,32 @@ function generatePaths(paths, currentTiles, currentJumps, type, row, col, jumpin
     currentTiles[frame] = -1;
 }
 
+// Partition paths by their tile at a specific frame.
+// Returns { tile -> [path indices] } map.
+function partitionPathsAtFrame(paths, pathIndices, frame) {
+    var groups = {};
+    for (var i = 0; i < pathIndices.length; i++) {
+        var pi = pathIndices[i];
+        var tile = paths[pi].tiles[frame];
+        if (!groups[tile]) groups[tile] = [];
+        groups[tile].push(pi);
+    }
+    return groups;
+}
+
+// Find the first frame in [fromFrame, toFrame) where paths diverge.
+// Returns frame index or -1 if no divergence.
+function findDivergenceFrame(paths, pathIndices, fromFrame, toFrame) {
+    if (pathIndices.length <= 1) return -1;
+    for (var f = fromFrame; f < toFrame; f++) {
+        var firstTile = paths[pathIndices[0]].tiles[f];
+        for (var i = 1; i < pathIndices.length; i++) {
+            if (paths[pathIndices[i]].tiles[f] !== firstTile) return f;
+        }
+    }
+    return -1;
+}
+
 function buildEnemyPaths(e, sm, maxFrames) {
     var paths = [];
     var scratch = new Int8Array(maxFrames);
@@ -920,6 +946,316 @@ function buildCoilyPath(e, targetTimeline, sm, maxFrames) {
     return tiles;
 }
 
+// Reactive expectimax using per-path data. At each depth:
+//   - For each player dir, compute P(survive hop) from enemy path subsets.
+//   - Partition each enemy's subset by its outcome during this hop.
+//   - Enumerate combos, recurse weighted, max over dirs.
+// Returns { dir -> best reactive survival } for hop-1 directions.
+function findReactiveSurvival(gs, enemyPathLists, coilyInit, startFrame, maxFrames, lookaheadDepth) {
+    var LOOKAHEAD = lookaheadDepth || LOOKAHEAD_DEPTH;
+    var sm = gs.sm;
+    var pRow = gs.player.row, pCol = gs.player.col;
+    var timeline = new Int8Array(maxFrames);
+    for (var i = 0; i < maxFrames; i++) timeline[i] = -1;
+    var waypoints = [{ frame: 0, row: pRow, col: pCol }];
+    var playerJumps = [];
+
+    // Compute totalProb of each enemy's path subset (for normalization).
+    function subsetTotalProb(enemyIdx, pathIndices) {
+        var s = 0, paths = enemyPathLists[enemyIdx];
+        for (var i = 0; i < pathIndices.length; i++) s += paths[pathIndices[i]].prob;
+        return s;
+    }
+
+    // P(enemy hits player hop | enemy is on one of pathIndices).
+    function enemyHitProb(enemyIdx, pathIndices, startF, endF) {
+        var paths = enemyPathLists[enemyIdx];
+        var hitSum = 0;
+        for (var i = 0; i < pathIndices.length; i++) {
+            var path = paths[pathIndices[i]];
+            var tiles = path.tiles;
+            var hit = false;
+            for (var f = startF; f < endF; f++) {
+                var pi = timeline[f];
+                if (pi >= 0 && tiles[f] === pi) { hit = true; break; }
+            }
+            if (!hit && playerJumps.length > 0 && path.jumps && path.jumps.length > 0) {
+                for (var ej = 0; ej < path.jumps.length && !hit; ej++) {
+                    var eJump = path.jumps[ej];
+                    var eEnd = eJump.start + 30;
+                    for (var pj = 0; pj < playerJumps.length && !hit; pj++) {
+                        var pJump = playerJumps[pj];
+                        if (pJump.destIdx !== eJump.srcIdx || pJump.srcIdx !== eJump.destIdx) continue;
+                        if (pJump.endFrame <= eJump.start || eEnd <= pJump.startFrame) continue;
+                        hit = true;
+                    }
+                }
+            }
+            if (hit) hitSum += path.prob;
+        }
+        return hitSum;
+    }
+
+    // Simulate Coily for a range of frames given current waypoints.
+    // Returns new state + whether Coily killed player.
+    var initialPrev = {
+        row: gs.player.prevRow != null ? gs.player.prevRow : pRow,
+        col: gs.player.prevCol != null ? gs.player.prevCol : pCol
+    };
+    function simulateCoily(cState, fromFrame, toFrame) {
+        var jumpDur = cState.jumpDur;
+        var interval = cState.interval;
+        var row = cState.row, col = cState.col;
+        var jumping = cState.jumping, jumpT = cState.jumpT;
+        var moveTimer = cState.moveTimer;
+        var destRow = cState.destRow, destCol = cState.destCol;
+        var dead = cState.dead, killsPlayer = false;
+
+        for (var f = fromFrame; f < toFrame && !dead; f++) {
+            var pi = timeline[f];
+            var cTile = -1;
+            if (jumping) {
+                if (jumpT < 0.33) cTile = posToIdx[row * ROWS + col];
+                else if (jumpT >= 0.67 && destRow != null) cTile = posToIdx[destRow * ROWS + destCol];
+            } else {
+                cTile = posToIdx[row * ROWS + col];
+            }
+            if (pi >= 0 && cTile === pi) { killsPlayer = true; break; }
+
+            if (jumping) {
+                jumpT += jumpDur;
+                if (jumpT >= 1) {
+                    jumping = false; row = destRow; col = destCol;
+                    if (!isValidPos(row, col)) { dead = true; break; }
+                }
+                continue;
+            }
+            moveTimer++;
+            if (moveTimer < interval) continue;
+            moveTimer = 0;
+            // Get target from waypoints inline
+            var prev = initialPrev, cur = waypoints[0];
+            for (var w = 1; w < waypoints.length; w++) {
+                if (waypoints[w].frame <= f) { prev = waypoints[w-1]; cur = waypoints[w]; }
+                else break;
+            }
+            var targetR, targetC;
+            if (row === prev.row && col === prev.col) { targetR = cur.row; targetC = cur.col; }
+            else { targetR = prev.row; targetC = prev.col; }
+            var c_gw1 = row - col + 1;
+            var t_gw1 = targetR - targetC + 1;
+            var enr, enc;
+            if (targetR > row) {
+                if (t_gw1 > c_gw1) { enr = row + 1; enc = col; }
+                else { enr = row + 1; enc = col + 1; }
+            } else {
+                if (t_gw1 < c_gw1) { enr = row - 1; enc = col; }
+                else { enr = row - 1; enc = col - 1; }
+            }
+            destRow = enr; destCol = enc; jumping = true; jumpT = 0;
+            if (!isValidPos(enr, enc)) { dead = true; break; }
+        }
+        return { row: row, col: col, jumping: jumping, jumpT: jumpT,
+                 moveTimer: moveTimer, destRow: destRow, destCol: destCol,
+                 jumpDur: jumpDur, interval: interval, dead: dead, killsPlayer: killsPlayer };
+    }
+
+    // Recursive reactive expectimax.
+    // enemySubsets[i] = array of path indices for enemy i that are still possible.
+    function reactive(curRow, curCol, depth, curFrame, enemySubsets, coilyState) {
+        if (depth >= LOOKAHEAD || curFrame >= maxFrames) return 1.0;
+
+        var best = 0;
+        for (var dk = 0; dk < DIR_KEYS_WITH_STAY.length; dk++) {
+            var dir = DIR_KEYS_WITH_STAY[dk];
+            if (dir !== 'STAY' && !isValidPos(curRow + DIRS[dir].dr, curCol + DIRS[dir].dc)) continue;
+            var hop = appendHop(timeline, curRow, curCol, dir, sm, curFrame, maxFrames);
+            if (!hop) continue;
+            if (hop.landFrame >= 0)
+                waypoints.push({ frame: hop.landFrame, row: hop.endRow, col: hop.endCol });
+            var pushedJ = false;
+            if (dir !== 'STAY') {
+                playerJumps.push({ startFrame: curFrame, endFrame: hop.endFrame,
+                    srcIdx: posToIdx[curRow * ROWS + curCol],
+                    destIdx: posToIdx[hop.endRow * ROWS + hop.endCol] });
+                pushedJ = true;
+            }
+
+            // Compute P(survive hop) = Π_enemies (1 - P_i(hit | subset))
+            var pHop = 1.0;
+            for (var ei = 0; ei < enemyPathLists.length; ei++) {
+                var total = subsetTotalProb(ei, enemySubsets[ei]);
+                if (total <= 0) continue;
+                var hit = enemyHitProb(ei, enemySubsets[ei], curFrame, hop.endFrame);
+                pHop *= (1.0 - hit / total);
+                if (pHop <= 0) break;
+            }
+
+            // Check Coily (deterministic)
+            var newCoily = coilyState;
+            if (pHop > 0 && coilyState && !coilyState.dead) {
+                newCoily = simulateCoily(coilyState, curFrame, hop.endFrame);
+                if (newCoily.killsPlayer) pHop = 0;
+            }
+
+            if (pHop > 0) {
+                // Partition each enemy's subset by divergence during this hop.
+                var partitions = [];
+                for (var ei2 = 0; ei2 < enemyPathLists.length; ei2++) {
+                    var subset = enemySubsets[ei2];
+                    if (subset.length <= 1) {
+                        partitions.push([subset]);
+                        continue;
+                    }
+                    var divFrame = findDivergenceFrame(enemyPathLists[ei2], subset, curFrame, hop.endFrame);
+                    if (divFrame < 0) {
+                        partitions.push([subset]);
+                    } else {
+                        var groups = partitionPathsAtFrame(enemyPathLists[ei2], subset, divFrame);
+                        var subsetList = [];
+                        for (var k in groups) subsetList.push(groups[k]);
+                        partitions.push(subsetList);
+                    }
+                }
+
+                // Cartesian product of partitions
+                var comboCount = 1;
+                for (var ei3 = 0; ei3 < partitions.length; ei3++) comboCount *= partitions[ei3].length;
+
+                var futureExp = 0;
+                for (var c = 0; c < comboCount; c++) {
+                    var newSubsets = [];
+                    var comboProb = 1.0;
+                    var cc = c;
+                    for (var ei4 = 0; ei4 < partitions.length; ei4++) {
+                        var pi = cc % partitions[ei4].length;
+                        cc = (cc / partitions[ei4].length) | 0;
+                        var subsetSel = partitions[ei4][pi];
+                        newSubsets.push(subsetSel);
+                        var totalAll = subsetTotalProb(ei4, enemySubsets[ei4]);
+                        var totalSel = subsetTotalProb(ei4, subsetSel);
+                        comboProb *= (totalAll > 0 ? totalSel / totalAll : 1);
+                    }
+                    var future = reactive(hop.endRow, hop.endCol, depth + 1, hop.endFrame, newSubsets, newCoily);
+                    futureExp += comboProb * future;
+                }
+
+                var combined = pHop * futureExp;
+                if (combined > best) best = combined;
+            }
+
+            if (pushedJ) playerJumps.pop();
+            if (hop.landFrame >= 0) waypoints.pop();
+            for (var f = curFrame; f < hop.endFrame && f < maxFrames; f++) timeline[f] = -1;
+            if (best >= 0.99) break;
+        }
+        return best;
+    }
+
+    // Initial subsets: all paths active.
+    var initialSubsets = [];
+    for (var i2 = 0; i2 < enemyPathLists.length; i2++) {
+        var allIdx = [];
+        for (var pi = 0; pi < enemyPathLists[i2].length; pi++) allIdx.push(pi);
+        initialSubsets.push(allIdx);
+    }
+
+    // Initial Coily state
+    var initialCoily = null;
+    if (coilyInit) {
+        initialCoily = {
+            row: coilyInit.row, col: coilyInit.col,
+            jumping: !!coilyInit.jumping, jumpT: coilyInit.jumpT || 0,
+            moveTimer: coilyInit.moveTimer || 0,
+            destRow: coilyInit.destRow != null ? coilyInit.destRow : null,
+            destCol: coilyInit.destCol != null ? coilyInit.destCol : null,
+            jumpDur: coilyInit.jumpDur || ENEMY_JUMP_DUR * sm,
+            interval: coilyInit.moveInterval || enemyMoveInterval('coily', sm),
+            dead: false
+        };
+    }
+
+    // Top-level: for each dir1, compute reactive value.
+    var bestPerDir = {};
+    for (var dk = 0; dk < DIR_KEYS_WITH_STAY.length; dk++) {
+        var dir1 = DIR_KEYS_WITH_STAY[dk];
+        if (dir1 !== 'STAY' && !isValidPos(pRow + DIRS[dir1].dr, pCol + DIRS[dir1].dc)) continue;
+        // Use the reactive function starting at depth 0
+        // We need to treat dir1 as already-chosen
+        // Wrap it: extend timeline with dir1, then recurse for depths 1..LOOKAHEAD
+        var hop1 = appendHop(timeline, pRow, pCol, dir1, gs.sm, 0, maxFrames);
+        if (!hop1) continue;
+        if (hop1.landFrame >= 0)
+            waypoints.push({ frame: hop1.landFrame, row: hop1.endRow, col: hop1.endCol });
+        if (dir1 !== 'STAY') {
+            playerJumps.push({ startFrame: 0, endFrame: hop1.endFrame,
+                srcIdx: posToIdx[pRow * ROWS + pCol],
+                destIdx: posToIdx[hop1.endRow * ROWS + hop1.endCol] });
+        }
+
+        // Compute hop1 survival
+        var pHop1 = 1.0;
+        for (var ei = 0; ei < enemyPathLists.length; ei++) {
+            var total = subsetTotalProb(ei, initialSubsets[ei]);
+            if (total <= 0) continue;
+            var hit = enemyHitProb(ei, initialSubsets[ei], startFrame, hop1.endFrame);
+            pHop1 *= (1.0 - hit / total);
+            if (pHop1 <= 0) break;
+        }
+        // Check Coily hop1
+        var newCoily1 = initialCoily;
+        if (pHop1 > 0 && initialCoily && !initialCoily.dead) {
+            newCoily1 = simulateCoily(initialCoily, startFrame, hop1.endFrame);
+            if (newCoily1.killsPlayer) pHop1 = 0;
+        }
+
+        if (pHop1 > 0) {
+            // Partition subsets by choices during hop 1
+            var partitions = [];
+            for (var ei2 = 0; ei2 < enemyPathLists.length; ei2++) {
+                var subset = initialSubsets[ei2];
+                if (subset.length <= 1) { partitions.push([subset]); continue; }
+                var divFrame = findDivergenceFrame(enemyPathLists[ei2], subset, startFrame, hop1.endFrame);
+                if (divFrame < 0) { partitions.push([subset]); }
+                else {
+                    var groups = partitionPathsAtFrame(enemyPathLists[ei2], subset, divFrame);
+                    var subsetList = [];
+                    for (var k in groups) subsetList.push(groups[k]);
+                    partitions.push(subsetList);
+                }
+            }
+            // Enumerate combos
+            var comboCount = 1;
+            for (var ei3 = 0; ei3 < partitions.length; ei3++) comboCount *= partitions[ei3].length;
+            var futureExp = 0;
+            for (var c = 0; c < comboCount; c++) {
+                var newSubsets = [];
+                var comboProb = 1.0;
+                var cc = c;
+                for (var ei4 = 0; ei4 < partitions.length; ei4++) {
+                    var pIdx = cc % partitions[ei4].length;
+                    cc = (cc / partitions[ei4].length) | 0;
+                    var subsetSel = partitions[ei4][pIdx];
+                    newSubsets.push(subsetSel);
+                    var totalAll = subsetTotalProb(ei4, initialSubsets[ei4]);
+                    var totalSel = subsetTotalProb(ei4, subsetSel);
+                    comboProb *= (totalAll > 0 ? totalSel / totalAll : 1);
+                }
+                var future = reactive(hop1.endRow, hop1.endCol, 1, hop1.endFrame, newSubsets, newCoily1);
+                futureExp += comboProb * future;
+            }
+            bestPerDir[dir1] = pHop1 * futureExp;
+        } else {
+            bestPerDir[dir1] = 0;
+        }
+
+        if (dir1 !== 'STAY') playerJumps.pop();
+        if (hop1.landFrame >= 0) waypoints.pop();
+        for (var f = 0; f < hop1.endFrame && f < maxFrames; f++) timeline[f] = -1;
+    }
+    return bestPerDir;
+}
+
 // Tree search: for each first direction, find the best N-hop survival probability.
 function findMultiHopSurvival(gs, enemyPathLists, coilyInit, startFrame, maxFrames, lookaheadDepth) {
     var LOOKAHEAD = lookaheadDepth || LOOKAHEAD_DEPTH;
@@ -1140,7 +1476,7 @@ function unifiedPick(gs, coilyActive) {
         for (var _di = 0; _di < enemyInits.length; _di++) {
             _pathLists.push(buildEnemyPaths(enemyInits[_di], gs.sm, _dtMaxFrames));
         }
-        _dangerSurv = findMultiHopSurvival(gs, _pathLists, coilyInit, _dtStartFrame, _dtMaxFrames, DEPTH);
+        _dangerSurv = findReactiveSurvival(gs, _pathLists, coilyInit, _dtStartFrame, _dtMaxFrames, DEPTH);
     }
 
     // ── Expectimax search using simStepForced ──────────────────────────────────
