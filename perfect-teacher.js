@@ -35,12 +35,12 @@ var teacherStats = {
     maxDepthSeen: 0,
 };
 var TEACHER_DEFAULTS = {
-    exhaustiveBitsLimit: 20,  // 2^20 ≈ 1M branches max per node
+    exhaustiveBitsLimit: 20,
     mcSamples: 1024,
-    mcSubtreeDepthCap: 4,     // cap deterministic subtree depth after MC fires
+    worstCaseK: 4,            // # RNG streams sampled per dir; min(P_stream) is used
     maxMemoEntries: 2_000_000,
     seed: 0xC0FFEE,
-    simStepBudget: Infinity,  // abort (return current best) after N simStep calls
+    deadlineMs: Infinity,
 };
 var _teacherBudgetExceeded = false;
 
@@ -194,27 +194,31 @@ function perfectTeacherSurvive(gs, depth, opts) {
     return bestP;
 }
 
-// Per-direction expected survival under exhaustive hop-bit enumeration.
-// Spawn events (simRng direct calls) resolve to a FIXED canonical value (0.5)
-// so spawns are deterministic within one teacher call. Caller replans each hop
-// so real-game spawn variance is absorbed by re-planning.
+// Per-direction MIN-over-streams adaptive survival.
+// For each of K streams (deterministic RNG tapes), compute adaptive P(survive)
+// under that stream. Return the MINIMUM across streams — the worst-case under
+// random enemy/spawn outcomes. This is pessimistic and avoids the fixed-0.5
+// bias that ignored spawn dirBits variance.
 function teacherBranchProb(gs, dir, depth, opts) {
-    var b = teacherMeasureBranching(gs, dir);
+    var K = opts.worstCaseK || 4;
     var nextDepth = depth - 1;
     teacherStats.exhaustiveNodes++;
-    var hopBits = b.hopBits;
-    if (hopBits > opts.exhaustiveBitsLimit) hopBits = opts.exhaustiveBitsLimit;
-    var combos = 1 << hopBits;
-    var sum = 0.0;
-    for (var c = 0; c < combos; c++) {
-        var bits = new Array(hopBits);
-        for (var bi = 0; bi < hopBits; bi++) bits[bi] = (c >> bi) & 1;
-        var res = teacherExecHop(gs, dir, bits, _teacherConstRng);
-        if (res.alive) sum += perfectTeacherSurvive(res.gs, nextDepth, opts);
+    var minSurv = 1.0;
+    var stateSeed = (hashString(teacherStateKey(gs)) ^ dir.charCodeAt(0) * 2654435761) | 0;
+    for (var k = 0; k < K; k++) {
+        var stream = mkStreamCtx(stateSeed ^ opts.seed ^ (k * 2654435761));
+        var res = teacherExecHopDet(gs, dir, stream);
+        var p;
+        if (res.alive) {
+            p = teacherDeterministicSurvive(res.gs, nextDepth, stream, opts);
+        } else {
+            p = 0.0;
+        }
+        if (p < minSurv) minSurv = p;
+        if (minSurv === 0.0) break; // dead in some scenario → dangerous
     }
-    return sum / combos;
+    return minSurv;
 }
-function _teacherConstRng() { return 0.5; }
 
 // FNV-1a 32-bit string hash.
 function hashString(s) {
@@ -281,6 +285,9 @@ function teacherExecHopDet(gs, dir, stream) {
 // Deterministic expectimax under a FIXED stream. Max over player dirs.
 // CRN is achieved by save/restoring stream state between dir attempts at the
 // same node — all dirs see the same RNG prefix.
+// Note: excludes STAY from the future max — otherwise the teacher's imagined
+// "stay now, escape later" plan never materializes in real play (AI keeps
+// getting STAY recommended and keeps staying, trapped).
 function teacherDeterministicSurvive(gs, depth, stream, opts) {
     if (!gs.alive) return 0.0;
     if (depth <= 0) return 1.0;
@@ -294,8 +301,9 @@ function teacherDeterministicSurvive(gs, depth, stream, opts) {
     teacherStats.evals++;
 
     var bestP = 0.0;
-    var dirs = typeof DIR_KEYS_WITH_STAY !== 'undefined' ? DIR_KEYS_WITH_STAY
-                : ['UL', 'UR', 'DL', 'DR', 'STAY'];
+    // Moves only — STAY is deferred to the top-level (current-hop) decision.
+    var dirs = typeof DIR_KEYS !== 'undefined' ? DIR_KEYS
+                : ['UL', 'UR', 'DL', 'DR'];
     var streamStart = stream.save();
     for (var k = 0; k < dirs.length; k++) {
         var dir = dirs[k];

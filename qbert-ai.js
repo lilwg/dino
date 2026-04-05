@@ -1729,8 +1729,14 @@ function unifiedPick(gs, coilyActive) {
 
         // Survival probability from precomputed danger tables (fast O(frames) lookup).
         var survProb = 1.0;
-        if (hasEnemies && !isLevelComplete) {
+        if (hasEnemies) {
             survProb = _dangerSurv[dir] != null ? _dangerSurv[dir] : 0;
+            // Level-complete: danger beyond this hop doesn't matter (level resets),
+            // but we still need to survive the CURRENT hop. If teacher says P>0,
+            // immediate landing is safe, override to 1.0.
+            if (isLevelComplete && survProb > 0) {
+                survProb = 1.0;
+            } else if (!isLevelComplete) { // fall-through to swap check below
 
             // Cross-path (swap) collision check: if an enemy is about to jump
             // FROM the player's destination TO the player's source, they swap
@@ -1761,6 +1767,7 @@ function unifiedPick(gs, coilyActive) {
                     }
                 }
             }
+            } // end else if (!isLevelComplete)
         }
         hop1Surv[dir] = survProb;
 
@@ -2007,7 +2014,23 @@ function aiPickBestDir() {
                         if (_pe.jumping) _preStr += '→(' + _pe.destRow + ',' + _pe.destCol + ')j' + (_pe.jumpT||0).toFixed(2);
                         _preStr += 'mt' + (_pe.moveTimer||0) + '/' + (_pe.moveInterval||0);
                     }
-                    console.log('PRE-STATE ' + _preStr);
+                    var _playStr = 'player@(' + gs.player.row + ',' + gs.player.col + ')';
+                    if (gs.player.jumping) _playStr += 'j' + (gs.player.jumpT||0).toFixed(2) + '→(' + gs.player.destRow + ',' + gs.player.destCol + ')';
+                    _playStr += ' prev=(' + gs.player.prevRow + ',' + gs.player.prevCol + ')';
+                    _playStr += ' ft=' + (gs.freezeTimer||0);
+                    // spawn-timers
+                    var _stStr = '';
+                    for (var _stI = 0; _stI < gs.enemies.length; _stI++) {
+                        if (gs.enemies[_stI].type === 'spawn-timer') _stStr += ' st:' + gs.enemies[_stI].timer + ':' + (gs.enemies[_stI].forcedType||'?');
+                    }
+                    console.log('PRE-STATE ' + _playStr + ' ' + _preStr + _stStr);
+                    // Dump full state snapshot for offline repro
+                    var _snap = { player: JSON.parse(JSON.stringify(gs.player)),
+                                  enemies: JSON.parse(JSON.stringify(gs.enemies)),
+                                  sm: gs.sm, tgt: gs.tgt, lv: gs.lv, round: gs.round,
+                                  freezeTimer: gs.freezeTimer, dir: result,
+                                  teacherP: aiLastHop1Surv[result] };
+                    console.log('SNAPSHOT ' + JSON.stringify(_snap));
                     // Died — report details
                     var _killer = _vgs.deathEnemy || '?';
                     // Find the enemy that killed — search for one at player pos

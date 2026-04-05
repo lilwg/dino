@@ -49,7 +49,9 @@ function percentile(arr, p) {
     page.on('pageerror', function(err) { console.log('PAGE ERROR:', err.message); });
     page.on('console', function(msg) {
         var t = msg.text();
-        if (t.indexOf('DEBUG:') === 0 || t.indexOf('TEACHER:') === 0) console.log('B:', t);
+        if (t.indexOf('DEBUG:') === 0 || t.indexOf('TEACHER:') === 0 ||
+            t.indexOf('PRED-FAIL') === 0 || t.indexOf('PRE-STATE') === 0 ||
+            t.indexOf('SNAPSHOT') === 0) console.log('B:', t);
     });
 
     await page.goto(baseUrl + '/dino-qbert.html');
@@ -59,6 +61,7 @@ function percentile(arr, p) {
         window.setGameSpeed(8);
         window.setMode('rules');
         window._headlessTest = true;
+        window._predValidate = true;
         window.AI_TEACHER = true;
         window.AI_DEPTH = opts.depth;
         window.AI_TEACHER_MC = opts.mcSamples;
@@ -118,7 +121,8 @@ function percentile(arr, p) {
         return {
             roundResults: window._roundResults || [],
             deathLog: window._deathLog || [],
-            timings: window._teacherTimings || []
+            timings: window._teacherTimings || [],
+            deathChains: window._deathChains || []
         };
     });
 
@@ -185,6 +189,19 @@ function percentile(arr, p) {
     if (final.deathLog.length > 0) {
         console.log('\n=== deaths ===');
         for (var di = 0; di < final.deathLog.length; di++) console.log('  ' + final.deathLog[di]);
+    }
+    if (final.deathChains.length > 0) {
+        console.log('\n=== death chains (last 8 decisions per death) ===');
+        for (var dci = 0; dci < final.deathChains.length; dci++) {
+            var dc = final.deathChains[dci];
+            console.log('\n--- DEATH ' + (dci+1) + ' ---');
+            console.log(dc.info);
+            for (var ci = 0; ci < dc.chain.length; ci++) {
+                var c = dc.chain[ci];
+                console.log('  hop=' + c.hop + ' @' + c.pos + ' →' + c.dir +
+                            ' P=[' + c.probs + ']  ' + c.enemies);
+            }
+        }
     }
 
     await browser.close();
