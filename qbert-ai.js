@@ -360,22 +360,20 @@ function dangerAdd(table, frame, row, col, prob, maxFrames) {
     if (idx >= 0) table[frame * POS_COUNT + idx] += prob;
 }
 
-// Per-path enemy representation: paths[i] = { prob, tiles: Int8Array[maxFrames] }
-// tiles[frame] = posIdx of enemy collision tile (or -1 for immune/absent).
-// This captures the joint distribution (correlation across frames) correctly.
+// Per-path enemy representation: paths[i] = { prob, tiles, jumps }
+// - tiles: Int8Array[maxFrames], posIdx of collision tile per frame (or -1).
+// - jumps: array of {start, end, src, dest} — enemy jump segments for
+//   cross-path swap detection.
 
-function pathMark(tiles, frame, row, col, maxFrames) {
-    if (frame >= maxFrames) return;
-    tiles[frame] = posToIdx[row * ROWS + col];
-}
-
-// Recursively build all enemy paths. Each path is a full timeline.
-function generatePaths(paths, currentTiles, type, row, col, jumping, jumpT, jumpDur,
+// Recursively build all enemy paths. Each path stores tiles[] and jumps[].
+// jumps[i] = {start, end, srcIdx, destIdx} — enemy's jump segments, used
+// for cross-path (swap) collision detection.
+function generatePaths(paths, currentTiles, currentJumps, type, row, col, jumping, jumpT, jumpDur,
                       moveTimer, moveInterval, hops, falling, willHatch,
                       spawnAnimTimer, destRow, destCol, dirBits,
                       frame, maxFrames, sm, prob) {
     if (frame >= maxFrames) {
-        paths.push({ prob: prob, tiles: currentTiles.slice() });
+        paths.push({ prob: prob, tiles: currentTiles.slice(), jumps: currentJumps.slice() });
         return;
     }
     if (falling) {
@@ -383,30 +381,30 @@ function generatePaths(paths, currentTiles, type, row, col, jumping, jumpT, jump
             var newJT = jumpT + jumpDur;
             if (newJT < 0.33) {
                 currentTiles[frame] = posToIdx[row * ROWS + col];
-                generatePaths(paths, currentTiles, type, row, col, true, newJT, jumpDur,
+                generatePaths(paths, currentTiles, currentJumps, type, row, col, true, newJT, jumpDur,
                     moveTimer, moveInterval, hops, true, willHatch,
                     0, destRow, destCol, dirBits, frame + 1, maxFrames, sm, prob);
                 currentTiles[frame] = -1;
             } else if (newJT < 0.67) {
                 currentTiles[frame] = -1;
-                generatePaths(paths, currentTiles, type, row, col, true, newJT, jumpDur,
+                generatePaths(paths, currentTiles, currentJumps, type, row, col, true, newJT, jumpDur,
                     moveTimer, moveInterval, hops, true, willHatch,
                     0, destRow, destCol, dirBits, frame + 1, maxFrames, sm, prob);
             } else {
                 // Off-board, path ends; remaining frames -1
                 for (var rf = frame; rf < maxFrames; rf++) currentTiles[rf] = -1;
-                paths.push({ prob: prob, tiles: currentTiles.slice() });
+                paths.push({ prob: prob, tiles: currentTiles.slice(), jumps: currentJumps.slice() });
             }
         } else {
             // Falling and not jumping: shouldn't happen, but finalize
             for (var rf2 = frame; rf2 < maxFrames; rf2++) currentTiles[rf2] = -1;
-            paths.push({ prob: prob, tiles: currentTiles.slice() });
+            paths.push({ prob: prob, tiles: currentTiles.slice(), jumps: currentJumps.slice() });
         }
         return;
     }
     if (spawnAnimTimer > 0) {
         currentTiles[frame] = -1;
-        generatePaths(paths, currentTiles, type, row, col, jumping, jumpT, jumpDur,
+        generatePaths(paths, currentTiles, currentJumps, type, row, col, jumping, jumpT, jumpDur,
             moveTimer, moveInterval, hops, falling, willHatch,
             spawnAnimTimer - 1, destRow, destCol, dirBits, frame + 1, maxFrames, sm, prob);
         return;
@@ -417,7 +415,7 @@ function generatePaths(paths, currentTiles, type, row, col, jumping, jumpT, jump
             var landRow = destRow, landCol = destCol;
             if (!isValidPos(landRow, landCol)) {
                 for (var rf3 = frame; rf3 < maxFrames; rf3++) currentTiles[rf3] = -1;
-                paths.push({ prob: prob, tiles: currentTiles.slice() });
+                paths.push({ prob: prob, tiles: currentTiles.slice(), jumps: currentJumps.slice() });
                 return;
             }
             if (type === 'egg' && (hops >= 6 || landRow >= ROWS - 1 || willHatch)) {
@@ -428,13 +426,13 @@ function generatePaths(paths, currentTiles, type, row, col, jumping, jumpT, jump
                 // Too complex for path-per-outcome; mark all reachable tiles
                 // as "could be here" via conservative approx. This path ends here.
                 for (var rf4 = frame + hopDur2; rf4 < maxFrames; rf4++) currentTiles[rf4] = -1;
-                paths.push({ prob: prob, tiles: currentTiles.slice() });
+                paths.push({ prob: prob, tiles: currentTiles.slice(), jumps: currentJumps.slice() });
                 // Clear what we set
                 for (var cf = frame; cf < frame + hopDur2 && cf < maxFrames; cf++) currentTiles[cf] = -1;
                 return;
             }
             currentTiles[frame] = posToIdx[landRow * ROWS + landCol];
-            generatePaths(paths, currentTiles, type, landRow, landCol, false, 0, jumpDur,
+            generatePaths(paths, currentTiles, currentJumps, type, landRow, landCol, false, 0, jumpDur,
                 0, moveInterval, hops, false, false,
                 0, null, null, dirBits, frame + 1, maxFrames, sm, prob);
             currentTiles[frame] = -1;
@@ -442,7 +440,7 @@ function generatePaths(paths, currentTiles, type, row, col, jumping, jumpT, jump
             if (newJumpT < 0.33) currentTiles[frame] = posToIdx[row * ROWS + col];
             else if (newJumpT >= 0.67 && destRow != null) currentTiles[frame] = posToIdx[destRow * ROWS + destCol];
             else currentTiles[frame] = -1;
-            generatePaths(paths, currentTiles, type, row, col, true, newJumpT, jumpDur,
+            generatePaths(paths, currentTiles, currentJumps, type, row, col, true, newJumpT, jumpDur,
                 moveTimer, moveInterval, hops, falling, willHatch,
                 0, destRow, destCol, dirBits, frame + 1, maxFrames, sm, prob);
             currentTiles[frame] = -1;
@@ -452,27 +450,30 @@ function generatePaths(paths, currentTiles, type, row, col, jumping, jumpT, jump
     var newMoveTimer = moveTimer + 1;
     if (newMoveTimer < moveInterval) {
         currentTiles[frame] = posToIdx[row * ROWS + col];
-        generatePaths(paths, currentTiles, type, row, col, false, 0, jumpDur,
+        generatePaths(paths, currentTiles, currentJumps, type, row, col, false, 0, jumpDur,
             newMoveTimer, moveInterval, hops, false, willHatch,
             0, null, null, dirBits, frame + 1, maxFrames, sm, prob);
         currentTiles[frame] = -1;
         return;
     }
     currentTiles[frame] = posToIdx[row * ROWS + col];
+    var _srcIdxF = posToIdx[row * ROWS + col];
     if (dirBits != null && (type === 'redball' || type === 'slick' || type === 'greenball')) {
         var nr, nc;
         if (dirBits & 1) { nr = row + 1; nc = col + 1; }
         else             { nr = row + 1; nc = col; }
         var newFall = !isValidPos(nr, nc);
-        generatePaths(paths, currentTiles, type, row, col, true, 0, jumpDur,
+        var _destIdxF = newFall ? -1 : posToIdx[nr * ROWS + nc];
+        currentJumps.push({ start: frame + 1, srcIdx: _srcIdxF, destIdx: _destIdxF });
+        generatePaths(paths, currentTiles, currentJumps, type, row, col, true, 0, jumpDur,
             0, moveInterval, hops + 1, newFall, false,
             0, nr, nc, dirBits >> 1, frame + 1, maxFrames, sm, prob);
+        currentJumps.pop();
     } else {
         var choices = getMoveChoicesForType(type, row, col);
         if (choices.length === 0) {
-            // Stuck — path ends
             for (var rf5 = frame + 1; rf5 < maxFrames; rf5++) currentTiles[rf5] = -1;
-            paths.push({ prob: prob, tiles: currentTiles.slice() });
+            paths.push({ prob: prob, tiles: currentTiles.slice(), jumps: currentJumps.slice() });
         } else {
             var branchProb = prob / choices.length;
             for (var ci = 0; ci < choices.length; ci++) {
@@ -481,9 +482,12 @@ function generatePaths(paths, currentTiles, type, row, col, jumping, jumpT, jump
                 var cHops = hops + 1;
                 var cWH = false;
                 if (type === 'egg' && (cHops >= 6 || cnr >= ROWS - 1)) cWH = true;
-                generatePaths(paths, currentTiles, type, row, col, true, 0, jumpDur,
+                var cDestIdx = cFall ? -1 : posToIdx[cnr * ROWS + cnc];
+                currentJumps.push({ start: frame + 1, srcIdx: _srcIdxF, destIdx: cDestIdx });
+                generatePaths(paths, currentTiles, currentJumps, type, row, col, true, 0, jumpDur,
                     0, moveInterval, cHops, cFall, cWH,
                     0, cnr, cnc, null, frame + 1, maxFrames, sm, branchProb);
+                currentJumps.pop();
             }
         }
     }
@@ -494,9 +498,16 @@ function buildEnemyPaths(e, sm, maxFrames) {
     var paths = [];
     var scratch = new Int8Array(maxFrames);
     for (var i = 0; i < maxFrames; i++) scratch[i] = -1;
+    var initialJumps = [];
+    // If enemy starts in a jump, record it as initial jump
+    if (e.jumping && e.destRow != null) {
+        var iSrcIdx = posToIdx[e.row * ROWS + e.col];
+        var iDestIdx = isValidPos(e.destRow, e.destCol) ? posToIdx[e.destRow * ROWS + e.destCol] : -1;
+        initialJumps.push({ start: 0, srcIdx: iSrcIdx, destIdx: iDestIdx });
+    }
     var jumpDur = e.jumpDur || ENEMY_JUMP_DUR * sm;
     var interval = e.moveInterval || enemyMoveInterval(e.type, sm);
-    generatePaths(paths, scratch, e.type, e.row, e.col,
+    generatePaths(paths, scratch, initialJumps, e.type, e.row, e.col,
         !!e.jumping, e.jumpT || 0, jumpDur,
         e.moveTimer || 0, interval, e.hops || 0,
         !!e.falling, !!e.willHatch,
@@ -515,16 +526,16 @@ function buildSpawnPaths(forcedType, spawnDelay, sm, maxFrames) {
     var scratch = new Int8Array(maxFrames);
     for (var i = 0; i < maxFrames; i++) scratch[i] = -1;
     if (forcedType === 'ugg') {
-        generatePaths(allPaths, scratch, 'ugg', ROWS-1, ROWS, true, 0, jumpDur,
+        generatePaths(allPaths, scratch, [], 'ugg', ROWS-1, ROWS, true, 0, jumpDur,
             0, interval, 0, false, false, 0, ROWS-1, ROWS-1, null,
             spawnDelay, maxFrames, sm, 1.0);
     } else if (forcedType === 'wrongway') {
-        generatePaths(allPaths, scratch, 'wrongway', ROWS-1, -1, true, 0, jumpDur,
+        generatePaths(allPaths, scratch, [], 'wrongway', ROWS-1, -1, true, 0, jumpDur,
             0, interval, 0, false, false, 0, ROWS-1, 0, null,
             spawnDelay, maxFrames, sm, 1.0);
     } else {
         for (var sc = 0; sc < 2; sc++) {
-            generatePaths(allPaths, scratch, forcedType, 1, sc, false, 0, jumpDur,
+            generatePaths(allPaths, scratch, [], forcedType, 1, sc, false, 0, jumpDur,
                 0, interval, 0, false, false, 60, null, null, null,
                 spawnDelay, maxFrames, sm, 0.5);
         }
@@ -533,17 +544,37 @@ function buildSpawnPaths(forcedType, spawnDelay, sm, maxFrames) {
 }
 
 // P(enemy hits player) = sum of probs of paths that cross player timeline.
-function pathsHitProb(paths, playerIdx, startFrame, endFrame) {
+// Checks same-tile collision AND cross-path swap collision.
+// playerJumps: array of {startFrame, endFrame, srcIdx, destIdx} — player hops.
+function pathsHitProb(paths, playerIdx, playerJumps, startFrame, endFrame) {
     var hitSum = 0;
     for (var p = 0; p < paths.length; p++) {
         var tiles = paths[p].tiles;
+        var hit = false;
+        // Same-tile check
         for (var f = startFrame; f < endFrame; f++) {
             var pi = playerIdx[f];
-            if (pi >= 0 && tiles[f] === pi) {
-                hitSum += paths[p].prob;
-                break;
+            if (pi >= 0 && tiles[f] === pi) { hit = true; break; }
+        }
+        // Cross-path swap check
+        if (!hit && playerJumps && playerJumps.length > 0) {
+            var jumps = paths[p].jumps;
+            if (jumps && jumps.length > 0) {
+                for (var ej = 0; ej < jumps.length && !hit; ej++) {
+                    var eJump = jumps[ej];
+                    // enemy jump source/dest known. Duration ~= 1/jumpDur frames.
+                    var eEnd = eJump.start + 30; // approx jump duration
+                    for (var pj = 0; pj < playerJumps.length && !hit; pj++) {
+                        var pJump = playerJumps[pj];
+                        if (pJump.destIdx !== eJump.srcIdx || pJump.srcIdx !== eJump.destIdx) continue;
+                        // Check temporal overlap
+                        if (pJump.endFrame <= eJump.start || eEnd <= pJump.startFrame) continue;
+                        hit = true;
+                    }
+                }
             }
         }
+        if (hit) hitSum += paths[p].prob;
     }
     return hitSum;
 }
@@ -897,12 +928,13 @@ function findMultiHopSurvival(gs, enemyPathLists, coilyInit, startFrame, maxFram
     var timeline = new Int8Array(maxFrames);
     for (var i = 0; i < maxFrames; i++) timeline[i] = -1;
     var waypoints = [{ frame: 0, row: pRow, col: pCol }];
+    var playerJumps = []; // stack of {startFrame, endFrame, srcIdx, destIdx} for current path
 
     // Per-enemy survival: P(survive enemy_i) = 1 - sum(path probs that cross player)
     function computeSurvival(startF, endF, includeCoily, needCoily) {
         var surv = 1.0;
         for (var t = 0; t < enemyPathLists.length; t++) {
-            var hit = pathsHitProb(enemyPathLists[t], timeline, startF, endF);
+            var hit = pathsHitProb(enemyPathLists[t], timeline, playerJumps, startF, endF);
             surv *= (1.0 - hit);
             if (surv <= 0) return 0;
         }
@@ -938,6 +970,14 @@ function findMultiHopSurvival(gs, enemyPathLists, coilyInit, startFrame, maxFram
             if (!hop) continue;
             if (hop.landFrame >= 0)
                 waypoints.push({ frame: hop.landFrame, row: hop.endRow, col: hop.endCol });
+            // Record player's jump segment (skip STAY)
+            var pushedJump = false;
+            if (dir !== 'STAY') {
+                var pSrcIdx = posToIdx[curRow * ROWS + curCol];
+                var pDestIdx = posToIdx[hop.endRow * ROWS + hop.endCol];
+                playerJumps.push({ startFrame: curFrame, endFrame: hop.endFrame, srcIdx: pSrcIdx, destIdx: pDestIdx });
+                pushedJump = true;
+            }
 
             // Check survival over full path [startFrame..hop.endFrame]
             var sofar = computeSurvival(startFrame, hop.endFrame, true);
@@ -946,6 +986,7 @@ function findMultiHopSurvival(gs, enemyPathLists, coilyInit, startFrame, maxFram
                 if (s > best) best = s;
             }
 
+            if (pushedJump) playerJumps.pop();
             if (hop.landFrame >= 0) waypoints.pop();
             for (var f = curFrame; f < hop.endFrame && f < maxFrames; f++) timeline[f] = -1;
             if (best >= 0.99) break;
@@ -961,6 +1002,14 @@ function findMultiHopSurvival(gs, enemyPathLists, coilyInit, startFrame, maxFram
         if (!hop1) continue;
         if (hop1.landFrame >= 0)
             waypoints.push({ frame: hop1.landFrame, row: hop1.endRow, col: hop1.endCol });
+        // Record player's first jump
+        var pushed1 = false;
+        if (dir1 !== 'STAY') {
+            var p1SrcIdx = posToIdx[pRow * ROWS + pCol];
+            var p1DestIdx = posToIdx[hop1.endRow * ROWS + hop1.endCol];
+            playerJumps.push({ startFrame: 0, endFrame: hop1.endFrame, srcIdx: p1SrcIdx, destIdx: p1DestIdx });
+            pushed1 = true;
+        }
 
         var hop1Surv = computeSurvival(startFrame, hop1.endFrame, true);
         if (hop1Surv > 0) {
@@ -969,6 +1018,7 @@ function findMultiHopSurvival(gs, enemyPathLists, coilyInit, startFrame, maxFram
             bestPerDir[dir1] = 0;
         }
 
+        if (pushed1) playerJumps.pop();
         if (hop1.landFrame >= 0) waypoints.pop();
         for (var f = 0; f < hop1.endFrame && f < maxFrames; f++) timeline[f] = -1;
     }
