@@ -682,9 +682,15 @@ function findMultiHopSurvival(gs, enemyTables, coilyInit, startFrame, maxFrames)
             var curIdx = posToIdx[curRow * ROWS + curCol];
             var extEnd = Math.min(curFrame + 40, maxFrames);
             for (var ef = curFrame; ef < extEnd; ef++) timeline[ef] = curIdx;
+            // Check non-Coily for extension
             for (var t = 0; t < enemyTables.length; t++) {
                 accumSurv *= tableSurvivalProb(timeline, enemyTables[t], curFrame, extEnd);
                 if (accumSurv <= 0) break;
+            }
+            // Check Coily for full path including extension
+            if (accumSurv > 0 && coilyInit) {
+                var ct = buildCoilyDangerTableFast(coilyInit, waypoints, sm, extEnd);
+                accumSurv *= tableSurvivalProb(timeline, ct, startFrame, extEnd);
             }
             for (var ef2 = curFrame; ef2 < extEnd; ef2++) timeline[ef2] = -1;
             return accumSurv;
@@ -701,10 +707,17 @@ function findMultiHopSurvival(gs, enemyTables, coilyInit, startFrame, maxFrames)
             if (hop.landFrame >= 0)
                 waypoints.push({ frame: hop.landFrame, row: hop.endRow, col: hop.endCol });
 
+            // Check non-Coily survival for new frames
             var newSurv = accumSurv;
             for (var t = 0; t < enemyTables.length; t++) {
                 newSurv *= tableSurvivalProb(timeline, enemyTables[t], curFrame, hop.endFrame);
                 if (newSurv <= 0) break;
+            }
+
+            // Check Coily for full path so far (rebuilt with current waypoints)
+            if (newSurv > 0 && coilyInit) {
+                var ct = buildCoilyDangerTableFast(coilyInit, waypoints, sm, hop.endFrame);
+                newSurv *= tableSurvivalProb(timeline, ct, startFrame, hop.endFrame);
             }
 
             if (newSurv > 0) {
@@ -719,8 +732,6 @@ function findMultiHopSurvival(gs, enemyTables, coilyInit, startFrame, maxFrames)
         return best;
     }
 
-    // Build Coily table once per dir1 — shared across subtree.
-    // Includes it in enemyTables so incremental checks at every depth see Coily.
     var bestPerDir = {};
     for (var dk = 0; dk < DIR_KEYS_WITH_STAY.length; dk++) {
         var dir1 = DIR_KEYS_WITH_STAY[dk];
@@ -731,17 +742,17 @@ function findMultiHopSurvival(gs, enemyTables, coilyInit, startFrame, maxFrames)
         if (hop1.landFrame >= 0)
             waypoints.push({ frame: hop1.landFrame, row: hop1.endRow, col: hop1.endCol });
 
-        // Build Coily table for this dir1 and add to enemyTables
-        var coilyTable = null;
-        if (coilyInit) {
-            coilyTable = buildCoilyDangerTableFast(coilyInit, waypoints, gs.sm, maxFrames);
-            enemyTables.push(coilyTable);
-        }
-
+        // Non-Coily survival for hop 1
         var hop1Surv = 1.0;
         for (var t = 0; t < enemyTables.length; t++) {
             hop1Surv *= tableSurvivalProb(timeline, enemyTables[t], startFrame, hop1.endFrame);
             if (hop1Surv <= 0) break;
+        }
+
+        // Coily survival for hop 1
+        if (hop1Surv > 0 && coilyInit) {
+            var ct = buildCoilyDangerTableFast(coilyInit, waypoints, gs.sm, hop1.endFrame);
+            hop1Surv *= tableSurvivalProb(timeline, ct, startFrame, hop1.endFrame);
         }
 
         if (hop1Surv > 0) {
@@ -750,8 +761,6 @@ function findMultiHopSurvival(gs, enemyTables, coilyInit, startFrame, maxFrames)
             bestPerDir[dir1] = 0;
         }
 
-        // Remove Coily table
-        if (coilyTable) enemyTables.pop();
         if (hop1.landFrame >= 0) waypoints.pop();
         for (var f = 0; f < hop1.endFrame && f < maxFrames; f++) timeline[f] = -1;
     }
