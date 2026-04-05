@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI: hybrid strategy + survival tree
-var AI_VERSION = 'v11.0-dangerTables';
+var AI_VERSION = 'v11.1-coilyTargetFix';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -351,7 +351,7 @@ var _persistMemoCount = 0;
 // ─── Precomputed danger tables (verified frame-accurate) ────────────────────
 // Replaces expensive simStepForced enumeration with fast O(frames) lookups.
 
-var DANGER_MAX_FRAMES = 200;
+var DANGER_MAX_FRAMES = 320;
 var LOOKAHEAD_DEPTH = 5;
 
 function dangerAdd(table, frame, row, col, prob, maxFrames) {
@@ -1033,10 +1033,23 @@ function findReactiveSurvival(gs, enemyPathLists, coilyInit, startFrame, maxFram
             moveTimer++;
             if (moveTimer < interval) continue;
             moveTimer = 0;
-            // Get target from waypoints inline
-            var prev = initialPrev, cur = waypoints[0];
+            // Coily target: prev = source of most recent non-STAY hop triggered
+            // at/before frame f (simTryMove sets prev=row on hop start), cur =
+            // player position at frame f (updated at waypoint landFrame).
+            var prev;
+            var mostRecent = -1;
+            for (var pjw = playerJumps.length - 1; pjw >= 0; pjw--) {
+                if (playerJumps[pjw].startFrame <= f) { mostRecent = pjw; break; }
+            }
+            if (mostRecent >= 0) {
+                var sPos = idxToPos[playerJumps[mostRecent].srcIdx];
+                prev = { row: sPos[0], col: sPos[1] };
+            } else {
+                prev = initialPrev;
+            }
+            var cur = waypoints[0];
             for (var w = 1; w < waypoints.length; w++) {
-                if (waypoints[w].frame <= f) { prev = waypoints[w-1]; cur = waypoints[w]; }
+                if (waypoints[w].frame <= f) cur = waypoints[w];
                 else break;
             }
             var targetR, targetC;
@@ -1053,6 +1066,20 @@ function findReactiveSurvival(gs, enemyPathLists, coilyInit, startFrame, maxFram
                 else { enr = row - 1; enc = col - 1; }
             }
             destRow = enr; destCol = enc; jumping = true; jumpT = 0;
+            // Check cross-path swap collision (ROM $BD1E): Coily and player
+            // swapping tiles mid-jump = death.
+            var cSrcIdx = posToIdx[row * ROWS + col];
+            var cDestIdx = isValidPos(enr, enc) ? posToIdx[enr * ROWS + enc] : -1;
+            if (cDestIdx >= 0) {
+                var cEnd = f + Math.ceil(1.0 / jumpDur) + 1;
+                for (var pjs = 0; pjs < playerJumps.length && !killsPlayer; pjs++) {
+                    var pJ = playerJumps[pjs];
+                    if (pJ.destIdx !== cSrcIdx || pJ.srcIdx !== cDestIdx) continue;
+                    if (pJ.endFrame <= f || cEnd <= pJ.startFrame) continue;
+                    killsPlayer = true;
+                }
+                if (killsPlayer) break;
+            }
             if (!isValidPos(enr, enc)) { dead = true; break; }
         }
         return { row: row, col: col, jumping: jumping, jumpT: jumpT,
@@ -1081,24 +1108,15 @@ function findReactiveSurvival(gs, enemyPathLists, coilyInit, startFrame, maxFram
                 pushedJ = true;
             }
 
-            // Compute P(survive hop) = Π_enemies (1 - P_i(hit | subset))
-            var pHop = 1.0;
-            for (var ei = 0; ei < enemyPathLists.length; ei++) {
-                var total = subsetTotalProb(ei, enemySubsets[ei]);
-                if (total <= 0) continue;
-                var hit = enemyHitProb(ei, enemySubsets[ei], curFrame, hop.endFrame);
-                pHop *= (1.0 - hit / total);
-                if (pHop <= 0) break;
-            }
-
-            // Check Coily (deterministic)
+            // Check Coily first (deterministic)
             var newCoily = coilyState;
-            if (pHop > 0 && coilyState && !coilyState.dead) {
+            var coilyOk = true;
+            if (coilyState && !coilyState.dead) {
                 newCoily = simulateCoily(coilyState, curFrame, hop.endFrame);
-                if (newCoily.killsPlayer) pHop = 0;
+                if (newCoily.killsPlayer) coilyOk = false;
             }
 
-            if (pHop > 0) {
+            if (coilyOk) {
                 // Partition each enemy's subset by divergence during this hop.
                 var partitions = [];
                 for (var ei2 = 0; ei2 < enemyPathLists.length; ei2++) {
@@ -1118,11 +1136,11 @@ function findReactiveSurvival(gs, enemyPathLists, coilyInit, startFrame, maxFram
                     }
                 }
 
-                // Cartesian product of partitions
+                // Cartesian product of partitions — compute per-combo survival × future
                 var comboCount = 1;
                 for (var ei3 = 0; ei3 < partitions.length; ei3++) comboCount *= partitions[ei3].length;
 
-                var futureExp = 0;
+                var combined = 0;
                 for (var c = 0; c < comboCount; c++) {
                     var newSubsets = [];
                     var comboProb = 1.0;
@@ -1136,11 +1154,24 @@ function findReactiveSurvival(gs, enemyPathLists, coilyInit, startFrame, maxFram
                         var totalSel = subsetTotalProb(ei4, subsetSel);
                         comboProb *= (totalAll > 0 ? totalSel / totalAll : 1);
                     }
-                    var future = reactive(hop.endRow, hop.endCol, depth + 1, hop.endFrame, newSubsets, newCoily);
-                    futureExp += comboProb * future;
+                    // Per-combo survival: does ANY path in new_subsets hit player hop?
+                    // Within a subset, paths share the same choice during this hop,
+                    // so they all hit or all don't hit (if divergence was only in this hop).
+                    // But subsequent choices still diverge, so some sub-paths may/may not hit.
+                    var perComboSurvive = 1.0;
+                    for (var ei5 = 0; ei5 < newSubsets.length; ei5++) {
+                        var totSel = subsetTotalProb(ei5, newSubsets[ei5]);
+                        if (totSel <= 0) continue;
+                        var hitSel = enemyHitProb(ei5, newSubsets[ei5], curFrame, hop.endFrame);
+                        perComboSurvive *= (1.0 - hitSel / totSel);
+                        if (perComboSurvive <= 0) break;
+                    }
+                    if (perComboSurvive > 0) {
+                        var future = reactive(hop.endRow, hop.endCol, depth + 1, hop.endFrame, newSubsets, newCoily);
+                        combined += comboProb * perComboSurvive * future;
+                    }
                 }
 
-                var combined = pHop * futureExp;
                 if (combined > best) best = combined;
             }
 
@@ -1193,23 +1224,15 @@ function findReactiveSurvival(gs, enemyPathLists, coilyInit, startFrame, maxFram
                 destIdx: posToIdx[hop1.endRow * ROWS + hop1.endCol] });
         }
 
-        // Compute hop1 survival
-        var pHop1 = 1.0;
-        for (var ei = 0; ei < enemyPathLists.length; ei++) {
-            var total = subsetTotalProb(ei, initialSubsets[ei]);
-            if (total <= 0) continue;
-            var hit = enemyHitProb(ei, initialSubsets[ei], startFrame, hop1.endFrame);
-            pHop1 *= (1.0 - hit / total);
-            if (pHop1 <= 0) break;
-        }
         // Check Coily hop1
         var newCoily1 = initialCoily;
-        if (pHop1 > 0 && initialCoily && !initialCoily.dead) {
+        var coilyOk = true;
+        if (initialCoily && !initialCoily.dead) {
             newCoily1 = simulateCoily(initialCoily, startFrame, hop1.endFrame);
-            if (newCoily1.killsPlayer) pHop1 = 0;
+            if (newCoily1.killsPlayer) coilyOk = false;
         }
 
-        if (pHop1 > 0) {
+        if (coilyOk) {
             // Partition subsets by choices during hop 1
             var partitions = [];
             for (var ei2 = 0; ei2 < enemyPathLists.length; ei2++) {
@@ -1224,10 +1247,9 @@ function findReactiveSurvival(gs, enemyPathLists, coilyInit, startFrame, maxFram
                     partitions.push(subsetList);
                 }
             }
-            // Enumerate combos
             var comboCount = 1;
             for (var ei3 = 0; ei3 < partitions.length; ei3++) comboCount *= partitions[ei3].length;
-            var futureExp = 0;
+            var combined = 0;
             for (var c = 0; c < comboCount; c++) {
                 var newSubsets = [];
                 var comboProb = 1.0;
@@ -1241,10 +1263,21 @@ function findReactiveSurvival(gs, enemyPathLists, coilyInit, startFrame, maxFram
                     var totalSel = subsetTotalProb(ei4, subsetSel);
                     comboProb *= (totalAll > 0 ? totalSel / totalAll : 1);
                 }
-                var future = reactive(hop1.endRow, hop1.endCol, 1, hop1.endFrame, newSubsets, newCoily1);
-                futureExp += comboProb * future;
+                // Per-combo survival
+                var perComboSurvive = 1.0;
+                for (var ei5 = 0; ei5 < newSubsets.length; ei5++) {
+                    var totSel = subsetTotalProb(ei5, newSubsets[ei5]);
+                    if (totSel <= 0) continue;
+                    var hitSel = enemyHitProb(ei5, newSubsets[ei5], startFrame, hop1.endFrame);
+                    perComboSurvive *= (1.0 - hitSel / totSel);
+                    if (perComboSurvive <= 0) break;
+                }
+                if (perComboSurvive > 0) {
+                    var future = reactive(hop1.endRow, hop1.endCol, 1, hop1.endFrame, newSubsets, newCoily1);
+                    combined += comboProb * perComboSurvive * future;
+                }
             }
-            bestPerDir[dir1] = pHop1 * futureExp;
+            bestPerDir[dir1] = combined;
         } else {
             bestPerDir[dir1] = 0;
         }
