@@ -463,7 +463,7 @@ function killPlayerVisual() {
     // Snapshot AI decision chain at death for diagnosis
     window._deathDecisionChain = (window._aiDecisionLog || []).slice();
     if (!window._deathChains) window._deathChains = [];
-    window._deathChains.push({ info: deathInfo, chain: window._deathDecisionChain.slice(-8) });
+    window._deathChains.push({ info: deathInfo, chain: window._deathDecisionChain.slice(-30) });
     // Capture death state and enter rewind mode (skip in headless/automated tests)
     captureRewindSnapshot(gs, true);
     if (!window._headlessTest) {

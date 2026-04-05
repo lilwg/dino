@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI: hybrid strategy + survival tree
-var AI_VERSION = 'v11.2-overrideSafetyGuard';
+var AI_VERSION = 'v11.3-hatchCoily-frameTiming';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -419,15 +419,16 @@ function generatePaths(paths, currentTiles, currentJumps, type, row, col, jumpin
                 return;
             }
             if (type === 'egg' && (hops >= 6 || landRow >= ROWS - 1 || willHatch)) {
-                // Hatches into Coily: mark hatch + BFS flood
+                // Hatches into Coily: mark hatch tile for the hatch animation duration
+                // then record hatchInfo so findReactiveSurvival can simulate the Coily.
                 var hopDur2 = Math.ceil(1.0 / jumpDur) + Math.round(moveInterval);
                 for (var hf2 = frame; hf2 < frame + hopDur2 && hf2 < maxFrames; hf2++)
                     currentTiles[hf2] = posToIdx[landRow * ROWS + landCol];
-                // Too complex for path-per-outcome; mark all reachable tiles
-                // as "could be here" via conservative approx. This path ends here.
                 for (var rf4 = frame + hopDur2; rf4 < maxFrames; rf4++) currentTiles[rf4] = -1;
-                paths.push({ prob: prob, tiles: currentTiles.slice(), jumps: currentJumps.slice() });
-                // Clear what we set
+                paths.push({
+                    prob: prob, tiles: currentTiles.slice(), jumps: currentJumps.slice(),
+                    hatchInfo: { frame: frame + hopDur2, row: landRow, col: landCol }
+                });
                 for (var cf = frame; cf < frame + hopDur2 && cf < maxFrames; cf++) currentTiles[cf] = -1;
                 return;
             }
@@ -848,7 +849,8 @@ function tableSurvivalProb(playerIdx, dangerTable, startFrame, endFrame) {
 function appendHop(result, pRow, pCol, dir, sm, startFrame, maxFrames) {
     if (dir === 'STAY') {
         var srcIdx = posToIdx[pRow * ROWS + pCol];
-        var stayLen = Math.ceil(1.0 / (PLAYER_JUMP_DUR * sm)) + 4;
+        // Match simStepSurvival STAY: ceil(1/pJumpDur) + 8 frames
+        var stayLen = Math.ceil(1.0 / (PLAYER_JUMP_DUR * sm)) + 8;
         var endF = Math.min(startFrame + stayLen, maxFrames);
         for (var f = startFrame; f < endF; f++) result[f] = srcIdx;
         return { endFrame: endF, endRow: pRow, endCol: pCol, landFrame: -1 };
@@ -869,7 +871,8 @@ function appendHop(result, pRow, pCol, dir, sm, startFrame, maxFrames) {
         } else {
             result[f] = dstIdx;
             postLand++;
-            if (postLand >= 2) return { endFrame: f + 1, endRow: destR, endCol: destC, landFrame: landFrame };
+            // Match simStepSurvival: 1 idle frame after landing
+            if (postLand >= 1) return { endFrame: f + 1, endRow: destR, endCol: destC, landFrame: landFrame };
         }
     }
     return { endFrame: maxFrames, endRow: destR, endCol: destC, landFrame: landFrame };
@@ -991,9 +994,108 @@ function findReactiveSurvival(gs, enemyPathLists, coilyInit, startFrame, maxFram
                     }
                 }
             }
+            // Hatched-Coily check: if this path hatches into Coily, simulate it.
+            if (!hit && path.hatchInfo && path.hatchInfo.frame < endF) {
+                hit = checkHatchedCoilyHit(path.hatchInfo, startF, endF);
+            }
             if (hit) hitSum += path.prob;
         }
         return hitSum;
+    }
+
+    // Simulate a hatched Coily from hatchInfo through endF, checking collision
+    // with player during [startF, endF]. Returns true if player hit.
+    function checkHatchedCoilyHit(hatchInfo, startF, endF) {
+        var hatchF = hatchInfo.frame;
+        if (hatchF >= endF) return false;
+        var initState = {
+            row: hatchInfo.row, col: hatchInfo.col,
+            jumping: false, jumpT: 0,
+            moveTimer: 0, destRow: null, destCol: null,
+            jumpDur: ENEMY_JUMP_DUR * sm,
+            interval: enemyMoveInterval('coily', sm),
+            dead: false
+        };
+        // Simulate from hatch through endF; only care about hits in [startF, endF].
+        // simulateCoily checks hits for entire range it's called on, so we simulate
+        // the full range but pre-advance past frames before startF without hit-checking.
+        // Simpler: call simulateCoily for whole range hatchF..endF and trust that
+        // hits before startF are irrelevant (we'd have detected them earlier anyway).
+        // Inline simulation matching simulateCoily but with hit-check only in [startF, endF].
+        var jumpDur = initState.jumpDur, interval = initState.interval;
+        var row = initState.row, col = initState.col;
+        var jumping = false, jumpT = 0, moveTimer = 0;
+        var destRow = null, destCol = null, dead = false;
+        for (var f = hatchF; f < endF && !dead; f++) {
+            var checkHit = (f >= startF);
+            var pi = checkHit ? timeline[f] : -1;
+            var cTile = -1;
+            if (jumping) {
+                if (jumpT < 0.33) cTile = posToIdx[row * ROWS + col];
+                else if (jumpT >= 0.67 && destRow != null) cTile = posToIdx[destRow * ROWS + destCol];
+            } else {
+                cTile = posToIdx[row * ROWS + col];
+            }
+            if (checkHit && pi >= 0 && cTile === pi) return true;
+            if (jumping) {
+                jumpT += jumpDur;
+                if (jumpT >= 1) {
+                    jumping = false; row = destRow; col = destCol;
+                    if (!isValidPos(row, col)) { dead = true; break; }
+                }
+                continue;
+            }
+            moveTimer++;
+            if (moveTimer < interval) continue;
+            moveTimer = 0;
+            // Target logic: same as simulateCoily
+            var prev;
+            var mostRecent = -1;
+            for (var pjw2 = playerJumps.length - 1; pjw2 >= 0; pjw2--) {
+                if (playerJumps[pjw2].startFrame <= f) { mostRecent = pjw2; break; }
+            }
+            if (mostRecent >= 0) {
+                var sPos2 = idxToPos[playerJumps[mostRecent].srcIdx];
+                prev = { row: sPos2[0], col: sPos2[1] };
+            } else {
+                prev = initialPrev;
+            }
+            var cur = waypoints[0];
+            for (var w2 = 1; w2 < waypoints.length; w2++) {
+                if (waypoints[w2].frame <= f) cur = waypoints[w2];
+                else break;
+            }
+            var targetR, targetC;
+            if (row === prev.row && col === prev.col) { targetR = cur.row; targetC = cur.col; }
+            else { targetR = prev.row; targetC = prev.col; }
+            var c_gw1h = row - col + 1;
+            var t_gw1h = targetR - targetC + 1;
+            var enr, enc;
+            if (targetR > row) {
+                if (t_gw1h > c_gw1h) { enr = row + 1; enc = col; }
+                else { enr = row + 1; enc = col + 1; }
+            } else {
+                if (t_gw1h < c_gw1h) { enr = row - 1; enc = col; }
+                else { enr = row - 1; enc = col - 1; }
+            }
+            destRow = enr; destCol = enc; jumping = true; jumpT = 0;
+            // Swap collision check
+            if (checkHit) {
+                var cSrcIdxH = posToIdx[row * ROWS + col];
+                var cDestIdxH = isValidPos(enr, enc) ? posToIdx[enr * ROWS + enc] : -1;
+                if (cDestIdxH >= 0) {
+                    var cEndH = f + Math.ceil(1.0 / jumpDur) + 1;
+                    for (var pjs2 = 0; pjs2 < playerJumps.length; pjs2++) {
+                        var pJ2 = playerJumps[pjs2];
+                        if (pJ2.destIdx !== cSrcIdxH || pJ2.srcIdx !== cDestIdxH) continue;
+                        if (pJ2.endFrame <= f || cEndH <= pJ2.startFrame) continue;
+                        return true;
+                    }
+                }
+            }
+            if (!isValidPos(enr, enc)) { dead = true; break; }
+        }
+        return false;
     }
 
     // Simulate Coily for a range of frames given current waypoints.
@@ -1012,6 +1114,18 @@ function findReactiveSurvival(gs, enemyPathLists, coilyInit, startFrame, maxFram
         var dead = cState.dead, killsPlayer = false;
 
         for (var f = fromFrame; f < toFrame && !dead; f++) {
+            // Match game's simUpdateEnemies order: advance state THEN check.
+            // Game: advance jumpT → possibly land → continue (no mt tick on jumping/landing frame)
+            //     OR tick mt → possibly start new jump.
+            var justLanded = false;
+            if (jumping) {
+                jumpT += jumpDur;
+                if (jumpT >= 1) {
+                    jumping = false; row = destRow; col = destCol;
+                    justLanded = true;
+                    if (!isValidPos(row, col)) { dead = true; break; }
+                }
+            }
             var pi = timeline[f];
             var cTile = -1;
             if (jumping) {
@@ -1022,14 +1136,8 @@ function findReactiveSurvival(gs, enemyPathLists, coilyInit, startFrame, maxFram
             }
             if (pi >= 0 && cTile === pi) { killsPlayer = true; break; }
 
-            if (jumping) {
-                jumpT += jumpDur;
-                if (jumpT >= 1) {
-                    jumping = false; row = destRow; col = destCol;
-                    if (!isValidPos(row, col)) { dead = true; break; }
-                }
-                continue;
-            }
+            // No mt tick while jumping or on the landing frame (game's `continue`).
+            if (jumping || justLanded) continue;
             moveTimer++;
             if (moveTimer < interval) continue;
             moveTimer = 0;
@@ -1067,16 +1175,27 @@ function findReactiveSurvival(gs, enemyPathLists, coilyInit, startFrame, maxFram
             }
             destRow = enr; destCol = enc; jumping = true; jumpT = 0;
             // Check cross-path swap collision (ROM $BD1E): Coily and player
-            // swapping tiles mid-jump = death.
+            // swapping tiles mid-jump. Game fires swap only when BOTH entities
+            // are past apex (jumpT>=0.67) AT THE SAME FRAME. Since player and
+            // coily have different jumpDur, their past-apex windows may not
+            // overlap even when they temporally swap.
             var cSrcIdx = posToIdx[row * ROWS + col];
             var cDestIdx = isValidPos(enr, enc) ? posToIdx[enr * ROWS + enc] : -1;
             if (cDestIdx >= 0) {
-                var cEnd = f + Math.ceil(1.0 / jumpDur) + 1;
+                // Coily past-apex window (game timing: advance then check):
+                // offset k where k*jumpDur >= 0.67, landing at k where k*jumpDur >= 1.
+                var cApexStart = f + Math.ceil(0.67 / jumpDur);
+                var cLand = f + Math.ceil(1.0 / jumpDur);
                 for (var pjs = 0; pjs < playerJumps.length && !killsPlayer; pjs++) {
                     var pJ = playerJumps[pjs];
                     if (pJ.destIdx !== cSrcIdx || pJ.srcIdx !== cDestIdx) continue;
-                    if (pJ.endFrame <= f || cEnd <= pJ.startFrame) continue;
-                    killsPlayer = true;
+                    // Player past-apex window. pJ.apexStart/landFrame precomputed.
+                    if (pJ.apexStart == null) continue;
+                    var pApex = pJ.apexStart, pLand = pJ.landFrame;
+                    // Overlap of [pApex, pLand) and [cApexStart, cLand)
+                    if (Math.max(pApex, cApexStart) < Math.min(pLand, cLand)) {
+                        killsPlayer = true;
+                    }
                 }
                 if (killsPlayer) break;
             }
@@ -1102,9 +1221,12 @@ function findReactiveSurvival(gs, enemyPathLists, coilyInit, startFrame, maxFram
                 waypoints.push({ frame: hop.landFrame, row: hop.endRow, col: hop.endCol });
             var pushedJ = false;
             if (dir !== 'STAY') {
+                var pJumpDurLocal = PLAYER_JUMP_DUR * sm;
                 playerJumps.push({ startFrame: curFrame, endFrame: hop.endFrame,
                     srcIdx: posToIdx[curRow * ROWS + curCol],
-                    destIdx: posToIdx[hop.endRow * ROWS + hop.endCol] });
+                    destIdx: posToIdx[hop.endRow * ROWS + hop.endCol],
+                    apexStart: curFrame + Math.ceil(0.67 / pJumpDurLocal) - 1,
+                    landFrame: curFrame + Math.ceil(1.0 / pJumpDurLocal) - 1 });
                 pushedJ = true;
             }
 
@@ -1219,9 +1341,12 @@ function findReactiveSurvival(gs, enemyPathLists, coilyInit, startFrame, maxFram
         if (hop1.landFrame >= 0)
             waypoints.push({ frame: hop1.landFrame, row: hop1.endRow, col: hop1.endCol });
         if (dir1 !== 'STAY') {
+            var pJumpDurTL = PLAYER_JUMP_DUR * sm;
             playerJumps.push({ startFrame: 0, endFrame: hop1.endFrame,
                 srcIdx: posToIdx[pRow * ROWS + pCol],
-                destIdx: posToIdx[hop1.endRow * ROWS + hop1.endCol] });
+                destIdx: posToIdx[hop1.endRow * ROWS + hop1.endCol],
+                apexStart: Math.ceil(0.67 / pJumpDurTL) - 1,
+                landFrame: Math.ceil(1.0 / pJumpDurTL) - 1 });
         }
 
         // Check Coily hop1

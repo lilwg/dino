@@ -85,16 +85,35 @@ function startServer(dir) {
     var startTime = Date.now();
     var lastResultCount = 0;
 
+    var lastDeathCount = 0;
     while (true) {
         var state = await page.evaluate(function() {
             return {
                 roundResults: window._roundResults || [],
                 gameOver: typeof gameOver !== 'undefined' ? gameOver : false,
                 deathLog: window._deathLog || [],
+                deathChains: window._deathChains || [],
                 score: typeof score !== 'undefined' ? score : 0,
                 round: typeof round !== 'undefined' ? round : 0
             };
         });
+
+        // Print death chains as they happen
+        if (debug && state.deathChains.length > lastDeathCount) {
+            for (var dci = lastDeathCount; dci < state.deathChains.length; dci++) {
+                var dc = state.deathChains[dci];
+                console.log('--- ' + dc.info.substring(0, 100));
+                for (var dcj = 0; dcj < dc.chain.length; dcj++) {
+                    var c = dc.chain[dcj];
+                    var scoreStr = '';
+                    if (c.scores) {
+                        for (var sk in c.scores) scoreStr += ' ' + sk + '=' + c.scores[sk];
+                    }
+                    console.log('  h' + c.hop + ' ' + c.pos + ' ' + c.dir + ' P=[' + c.probs + '] scores=[' + scoreStr.trim() + '] ' + c.enemies);
+                }
+            }
+            lastDeathCount = state.deathChains.length;
+        }
 
         // Print new round results
         for (var ri = lastResultCount; ri < state.roundResults.length; ri++) {
