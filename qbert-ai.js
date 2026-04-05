@@ -375,10 +375,36 @@ function expandEnemyPaths(table, type, row, col, jumping, jumpT, jumpDur,
             if (!isValidPos(landRow, landCol)) return;
             var newType = type, newInterval = moveInterval, newWillHatch = false;
             if (type === 'egg' && (hops >= 6 || landRow >= ROWS - 1 || willHatch)) {
-                newType = 'coily';
+                // Egg hatches into Coily at this position. Coily will chase the
+                // player from here. Since we can't precompute the chase (player-
+                // dependent), conservatively mark the hatch tile + all reachable
+                // tiles within N hops for remaining frames.
                 dangerAdd(table, frame, landRow, landCol, prob, maxFrames);
-                for (var ef = 1; ef <= 10; ef++)
-                    dangerAdd(table, frame + ef, landRow, landCol, prob, maxFrames);
+                // BFS flood: mark all tiles within hopDist of hatch pos
+                var hatchReach = new Uint8Array(POS_COUNT);
+                var hatchQ = [posToIdx[landRow * ROWS + landCol]];
+                if (hatchQ[0] >= 0) hatchReach[hatchQ[0]] = 1;
+                var hopDur = Math.ceil(1.0 / jumpDur) + ENEMY_IDLE_FRAMES + Math.round(moveInterval);
+                var maxReach = Math.floor((maxFrames - frame) / hopDur) + 1;
+                if (maxReach > 6) maxReach = 6;
+                for (var rd = 0; rd < maxReach; rd++) {
+                    var nextQ = [];
+                    for (var qi = 0; qi < hatchQ.length; qi++) {
+                        var adj = posAdj[hatchQ[qi]];
+                        for (var ai = 0; ai < adj.length; ai++) {
+                            if (!hatchReach[adj[ai]]) { hatchReach[adj[ai]] = 1; nextQ.push(adj[ai]); }
+                        }
+                    }
+                    hatchQ = nextQ;
+                    // Mark all reachable tiles from this hop distance onward
+                    var reachFrame = frame + (rd + 1) * hopDur;
+                    for (var pi = 0; pi < POS_COUNT; pi++) {
+                        if (hatchReach[pi]) {
+                            for (var ef = reachFrame; ef < maxFrames; ef++)
+                                dangerAdd(table, ef, idxToPos[pi][0], idxToPos[pi][1], prob, maxFrames);
+                        }
+                    }
+                }
                 return;
             }
             dangerAdd(table, frame, landRow, landCol, prob, maxFrames);
