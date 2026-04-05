@@ -737,87 +737,13 @@ function restoreCoilyState(cs, sn) {
     cs.destRow=sn[7]; cs.destCol=sn[8]; cs.dead=sn[9];
 }
 
+
 function findMultiHopSurvival(gs, enemyTables, coilyInit, startFrame, maxFrames) {
     var sm = gs.sm;
     var pRow = gs.player.row, pCol = gs.player.col;
     var timeline = new Int8Array(maxFrames);
     for (var i = 0; i < maxFrames; i++) timeline[i] = -1;
     var waypoints = [{ frame: 0, row: pRow, col: pCol }];
-
-    // Coily: simulate incrementally using a simple tile array + state stack.
-    // coilyPos[frame] = posIdx at that frame, -1 if immune/absent.
-    var coilyPos = coilyInit ? new Int8Array(maxFrames) : null;
-    if (coilyPos) for (var cp = 0; cp < maxFrames; cp++) coilyPos[cp] = -1;
-    // Coily state for incremental simulation
-    var cRow, cCol, cJumping, cJumpT, cJumpDur, cMoveTimer, cMoveInterval;
-    var cIdleTimer, cSpawnDrop, cDestRow, cDestCol, cDead;
-    if (coilyInit) {
-        cRow = coilyInit.row; cCol = coilyInit.col;
-        cJumping = !!coilyInit.jumping; cJumpT = coilyInit.jumpT || 0;
-        cJumpDur = coilyInit.jumpDur || ENEMY_JUMP_DUR * sm;
-        cMoveTimer = coilyInit.moveTimer || 0;
-        cMoveInterval = coilyInit.moveInterval || enemyMoveInterval('coily', sm);
-        cIdleTimer = coilyInit.idleTimer || 0; cSpawnDrop = coilyInit.spawnDrop || 0;
-        cDestRow = coilyInit.destRow != null ? coilyInit.destRow : null;
-        cDestCol = coilyInit.destCol != null ? coilyInit.destCol : null;
-        cDead = false;
-    }
-
-    function coilySave() {
-        return [cRow, cCol, cJumping, cJumpT, cMoveTimer, cIdleTimer,
-                cSpawnDrop, cDestRow, cDestCol, cDead];
-    }
-    function coilyRestore(s) {
-        cRow=s[0]; cCol=s[1]; cJumping=s[2]; cJumpT=s[3]; cMoveTimer=s[4];
-        cIdleTimer=s[5]; cSpawnDrop=s[6]; cDestRow=s[7]; cDestCol=s[8]; cDead=s[9];
-    }
-
-    // Simulate Coily from fromFrame to toFrame, filling coilyPos.
-    function coilyExtend(fromFrame, toFrame) {
-        for (var f = fromFrame; f < toFrame && f < maxFrames && !cDead; f++) {
-            var tR = waypoints[0].row, tC = waypoints[0].col;
-            for (var w = 1; w < waypoints.length; w++) {
-                if (waypoints[w].frame <= f) { tR = waypoints[w].row; tC = waypoints[w].col; }
-                else break;
-            }
-            if (cSpawnDrop > 0) { cSpawnDrop--; continue; }
-            if (cJumping) {
-                cJumpT += cJumpDur;
-                if (cJumpT >= 1) {
-                    cJumping = false; cRow = cDestRow; cCol = cDestCol;
-                    if (!isValidPos(cRow, cCol)) { cDead = true; return; }
-                    coilyPos[f] = posToIdx[cRow * ROWS + cCol];
-                    cIdleTimer = ENEMY_IDLE_FRAMES; continue;
-                }
-                if (cJumpT < 0.33) coilyPos[f] = posToIdx[cRow * ROWS + cCol];
-                else if (cJumpT >= 0.67 && cDestRow != null) coilyPos[f] = posToIdx[cDestRow * ROWS + cDestCol];
-                continue;
-            }
-            if (cIdleTimer > 0) { coilyPos[f] = posToIdx[cRow * ROWS + cCol]; cIdleTimer--; continue; }
-            cMoveTimer++;
-            if (cMoveTimer < cMoveInterval) { coilyPos[f] = posToIdx[cRow * ROWS + cCol]; continue; }
-            cMoveTimer = 0;
-            var bD = Infinity, bR = cRow, bC = cCol;
-            for (var k = 0; k < 4; k++) {
-                var dk = DIRS[DIR_KEYS[k]];
-                var nr = cRow + dk.dr, nc = cCol + dk.dc;
-                if (!isValidPos(nr, nc)) continue;
-                var d = Math.abs(tR - nr) + Math.abs(tC - nc);
-                if (d < bD) { bD = d; bR = nr; bC = nc; }
-            }
-            coilyPos[f] = posToIdx[cRow * ROWS + cCol];
-            cDestRow = bR; cDestCol = bC; cJumping = true; cJumpT = 0;
-            if (!isValidPos(bR, bC)) { cDead = true; return; }
-        }
-    }
-
-    // Check player vs Coily for a frame range.
-    function coilyCheck(fromFrame, toFrame) {
-        for (var f = fromFrame; f < toFrame; f++) {
-            if (timeline[f] >= 0 && coilyPos[f] === timeline[f]) return false;
-        }
-        return true;
-    }
 
     function search(curRow, curCol, depth, curFrame, accumSurv) {
         if (accumSurv <= 0) return 0;
@@ -830,12 +756,9 @@ function findMultiHopSurvival(gs, enemyTables, coilyInit, startFrame, maxFrames)
                 leafSurv *= tableSurvivalProb(timeline, enemyTables[t], curFrame, extEnd);
                 if (leafSurv <= 0) break;
             }
-            if (leafSurv > 0 && coilyPos && !cDead) {
-                var cSnap = coilySave();
-                coilyExtend(curFrame, extEnd);
-                if (!coilyCheck(startFrame, extEnd)) leafSurv = 0;
-                coilyRestore(cSnap);
-                for (var cf = curFrame; cf < extEnd; cf++) coilyPos[cf] = -1;
+            if (leafSurv > 0 && coilyInit) {
+                var ct = buildCoilyDangerTableFast(coilyInit, waypoints, sm, extEnd);
+                leafSurv *= tableSurvivalProb(timeline, ct, startFrame, extEnd);
             }
             for (var ef2 = curFrame; ef2 < extEnd; ef2++) timeline[ef2] = -1;
             return leafSurv;
@@ -857,21 +780,12 @@ function findMultiHopSurvival(gs, enemyTables, coilyInit, startFrame, maxFrames)
                 if (newSurv <= 0) break;
             }
 
-            // Coily: extend incrementally, check only new frames
-            var coilyOk = true;
-            if (newSurv > 0 && coilyPos && !cDead) {
-                var cSnap = coilySave();
-                coilyExtend(curFrame, hop.endFrame);
-                if (!coilyCheck(curFrame, hop.endFrame)) { coilyOk = false; newSurv = 0; }
+            if (newSurv > 0 && coilyInit) {
+                var ct = buildCoilyDangerTableFast(coilyInit, waypoints, sm, hop.endFrame);
+                newSurv *= tableSurvivalProb(timeline, ct, startFrame, hop.endFrame);
+            }
 
-                if (newSurv > 0) {
-                    var s = search(hop.endRow, hop.endCol, depth + 1, hop.endFrame, newSurv);
-                    if (s > best) best = s;
-                }
-
-                coilyRestore(cSnap);
-                for (var cf = curFrame; cf < hop.endFrame && cf < maxFrames; cf++) coilyPos[cf] = -1;
-            } else if (newSurv > 0) {
+            if (newSurv > 0) {
                 var s = search(hop.endRow, hop.endCol, depth + 1, hop.endFrame, newSurv);
                 if (s > best) best = s;
             }
@@ -893,25 +807,14 @@ function findMultiHopSurvival(gs, enemyTables, coilyInit, startFrame, maxFrames)
         if (hop1.landFrame >= 0)
             waypoints.push({ frame: hop1.landFrame, row: hop1.endRow, col: hop1.endCol });
 
-        // Reset Coily state for each dir1
-        if (coilyInit) {
-            cRow = coilyInit.row; cCol = coilyInit.col;
-            cJumping = !!coilyInit.jumping; cJumpT = coilyInit.jumpT || 0;
-            cMoveTimer = coilyInit.moveTimer || 0; cIdleTimer = coilyInit.idleTimer || 0;
-            cSpawnDrop = coilyInit.spawnDrop || 0;
-            cDestRow = coilyInit.destRow != null ? coilyInit.destRow : null;
-            cDestCol = coilyInit.destCol != null ? coilyInit.destCol : null;
-            cDead = false;
-        }
-
         var hop1Surv = 1.0;
         for (var t = 0; t < enemyTables.length; t++) {
             hop1Surv *= tableSurvivalProb(timeline, enemyTables[t], startFrame, hop1.endFrame);
             if (hop1Surv <= 0) break;
         }
-        if (hop1Surv > 0 && coilyPos) {
-            coilyExtend(startFrame, hop1.endFrame);
-            if (!coilyCheck(startFrame, hop1.endFrame)) hop1Surv = 0;
+        if (hop1Surv > 0 && coilyInit) {
+            var ct = buildCoilyDangerTableFast(coilyInit, waypoints, gs.sm, hop1.endFrame);
+            hop1Surv *= tableSurvivalProb(timeline, ct, startFrame, hop1.endFrame);
         }
 
         if (hop1Surv > 0) {
@@ -922,8 +825,6 @@ function findMultiHopSurvival(gs, enemyTables, coilyInit, startFrame, maxFrames)
 
         if (hop1.landFrame >= 0) waypoints.pop();
         for (var f = 0; f < hop1.endFrame && f < maxFrames; f++) timeline[f] = -1;
-        // Clear Coily positions for this dir1
-        if (coilyPos) for (var cf = startFrame; cf < hop1.endFrame && cf < maxFrames; cf++) coilyPos[cf] = -1;
     }
     return bestPerDir;
 }
