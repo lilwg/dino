@@ -51,7 +51,8 @@ function percentile(arr, p) {
         var t = msg.text();
         if (t.indexOf('DEBUG:') === 0 || t.indexOf('TEACHER:') === 0 ||
             t.indexOf('PRED-FAIL') === 0 || t.indexOf('PRE-STATE') === 0 ||
-            t.indexOf('SNAPSHOT') === 0) console.log('B:', t);
+            t.indexOf('SNAPSHOT') === 0 || t.indexOf('DOOM-ENTRY') === 0 ||
+            t.indexOf('DOOM-CUR') === 0) console.log('B:', t);
     });
 
     await page.goto(baseUrl + '/dino-qbert.html');

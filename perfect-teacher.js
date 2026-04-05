@@ -37,7 +37,7 @@ var teacherStats = {
 var TEACHER_DEFAULTS = {
     exhaustiveBitsLimit: 20,
     mcSamples: 1024,
-    worstCaseK: 4,            // # RNG streams sampled per dir; min(P_stream) is used
+    worstCaseK: 16,            // # RNG streams sampled per dir; min(P_stream) is used
     maxMemoEntries: 2_000_000,
     seed: 0xC0FFEE,
     deadlineMs: Infinity,
@@ -144,7 +144,16 @@ function teacherExecHop(gs, dir, hopBitArr, rngFn) {
     simHopDecisionQ = hopBitArr;
     simHopDecisionIdx = 0;
     simRng = rngFn;
-    var alive = simStep(gs1, dir);
+    var alive;
+    if (dir === 'STAY') {
+        // Game's STAY only advances 1 frame (AI re-polled each frame).
+        // Don't use simStep's STAY which waits for coily's full jump cycle.
+        simUpdateEnemies(gs1);
+        simCheckCollision(gs1);
+        alive = gs1.alive;
+    } else {
+        alive = simStep(gs1, dir);
+    }
     simHopDecisionQ = savedQ;
     simHopDecisionIdx = savedIdx;
     simRng = savedRng;
@@ -173,17 +182,17 @@ function perfectTeacherSurvive(gs, depth, opts) {
     teacherStats.evals++;
 
     var bestP = 0.0;
-    var dirs = typeof DIR_KEYS_WITH_STAY !== 'undefined' ? DIR_KEYS_WITH_STAY
-                : ['UL', 'UR', 'DL', 'DR', 'STAY'];
+    // Only allow STAY at the root (caller uses DIR_KEYS_WITH_STAY for top-level).
+    // In the recursive tree, exclude STAY because each STAY only advances 1 frame
+    // in reality — stacking 8 STAYs would give a meaninglessly short horizon.
+    var dirs = typeof DIR_KEYS !== 'undefined' ? DIR_KEYS
+                : ['UL', 'UR', 'DL', 'DR'];
     for (var k = 0; k < dirs.length; k++) {
         var dir = dirs[k];
-        if (dir !== 'STAY') {
-            var d = DIRS[dir];
-            if (!isValidPos(gs.player.row + d.dr, gs.player.col + d.dc)) continue;
-        }
+        var d = DIRS[dir];
+        if (!isValidPos(gs.player.row + d.dr, gs.player.col + d.dc)) continue;
         var p = teacherBranchProb(gs, dir, depth, opts);
         if (p > bestP) bestP = p;
-        // Early-out: if we found P=1.0, no need to check more dirs.
         if (bestP >= 1.0) break;
     }
 
@@ -194,31 +203,32 @@ function perfectTeacherSurvive(gs, depth, opts) {
     return bestP;
 }
 
-// Per-direction MIN-over-streams adaptive survival.
-// For each of K streams (deterministic RNG tapes), compute adaptive P(survive)
-// under that stream. Return the MINIMUM across streams — the worst-case under
-// random enemy/spawn outcomes. This is pessimistic and avoids the fixed-0.5
-// bias that ignored spawn dirBits variance.
+// Per-direction MIN-over-hop-bit-enumeration adaptive survival.
+// Exhaustively enumerates enemy hop-bit decisions (egg/ugg/wrongway DL/DR,
+// up/stay choices consumed via simHopDecisionQ). For spawn events (simRng
+// direct calls), uses fixed 0.5 — this is an acceptable approximation because
+// spawn dirBits variance is absorbed by re-planning each hop.
+//
+// Returns MIN across enumerated outcomes — worst-case adaptive survival.
 function teacherBranchProb(gs, dir, depth, opts) {
-    var K = opts.worstCaseK || 4;
     var nextDepth = depth - 1;
     teacherStats.exhaustiveNodes++;
+    var b = teacherMeasureBranching(gs, dir);
+    var hopBits = b.hopBits;
+    if (hopBits > opts.exhaustiveBitsLimit) hopBits = opts.exhaustiveBitsLimit;
+    var combos = 1 << hopBits;
     var minSurv = 1.0;
-    var stateSeed = (hashString(teacherStateKey(gs)) ^ dir.charCodeAt(0) * 2654435761) | 0;
-    for (var k = 0; k < K; k++) {
-        var stream = mkStreamCtx(stateSeed ^ opts.seed ^ (k * 2654435761));
-        var res = teacherExecHopDet(gs, dir, stream);
-        var p;
-        if (res.alive) {
-            p = teacherDeterministicSurvive(res.gs, nextDepth, stream, opts);
-        } else {
-            p = 0.0;
-        }
+    for (var c = 0; c < combos; c++) {
+        var bits = new Array(hopBits);
+        for (var bi = 0; bi < hopBits; bi++) bits[bi] = (c >> bi) & 1;
+        var res = teacherExecHop(gs, dir, bits, _teacherConstRng);
+        var p = res.alive ? perfectTeacherSurvive(res.gs, nextDepth, opts) : 0.0;
         if (p < minSurv) minSurv = p;
-        if (minSurv === 0.0) break; // dead in some scenario → dangerous
+        if (minSurv === 0.0) break;
     }
     return minSurv;
 }
+function _teacherConstRng() { return 0.5; }
 
 // FNV-1a 32-bit string hash.
 function hashString(s) {

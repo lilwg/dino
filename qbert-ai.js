@@ -2055,6 +2055,40 @@ function aiPickBestDir() {
         }
     }
 
+    // Doomed-state detection: if current state has all dirs P=0, the AI was
+    // led into an inescapable trap. Log the PREVIOUS state that committed to
+    // it (and the teacher's P at the time) for diagnosis.
+    if (typeof window !== 'undefined' && window._predValidate && aiLastHop1Surv) {
+        var _allZero = true, _anyEval = false;
+        for (var _dkk in aiLastHop1Surv) {
+            _anyEval = true;
+            if (aiLastHop1Surv[_dkk] > 0) { _allZero = false; break; }
+        }
+        if (_allZero && _anyEval && window._preDoomSnap) {
+            console.log('DOOM-ENTRY prev=' + JSON.stringify(window._preDoomSnap));
+            var _curSnap = {
+                player: JSON.parse(JSON.stringify(gs.player)),
+                enemies: JSON.parse(JSON.stringify(gs.enemies)),
+                cubes: JSON.parse(JSON.stringify(gs.cubes)),
+                discs: JSON.parse(JSON.stringify(gs.discs)),
+                sm: gs.sm, tgt: gs.tgt, lv: gs.lv, round: gs.round,
+                freezeTimer: gs.freezeTimer,
+                survP: JSON.parse(JSON.stringify(aiLastHop1Surv))
+            };
+            console.log('DOOM-CUR now=' + JSON.stringify(_curSnap));
+        }
+        // Save current state+decision for next-call comparison
+        window._preDoomSnap = {
+            player: JSON.parse(JSON.stringify(gs.player)),
+            enemies: JSON.parse(JSON.stringify(gs.enemies)),
+            cubes: JSON.parse(JSON.stringify(gs.cubes)),
+            discs: JSON.parse(JSON.stringify(gs.discs)),
+            sm: gs.sm, tgt: gs.tgt, lv: gs.lv, round: gs.round,
+            freezeTimer: gs.freezeTimer,
+            dir: result, survP: JSON.parse(JSON.stringify(aiLastHop1Surv))
+        };
+    }
+
     // Record decision history for death diagnosis
     if (!window._aiDecisionLog) window._aiDecisionLog = [];
     var enemySnap = '';
