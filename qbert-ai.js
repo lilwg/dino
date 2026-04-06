@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI: hybrid strategy + survival tree
-var AI_VERSION = 'v11.4-variableWait';
+var AI_VERSION = 'v12.0-simstep-expectimax';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -1676,18 +1676,72 @@ function unifiedPick(gs, coilyActive) {
     else if (enemyInits.length >= 5) DEPTH = Math.min(DEPTH, 5);
     else if (enemyInits.length >= 4) DEPTH = Math.min(DEPTH, 6);
 
-    // ── Per-path enemy paths: exact survival via tree search ───────────────────
-    // Each enemy produces a list of {prob, tiles} paths. Survival correctly
-    // handles path correlations across frames.
+    // ── Factored simStep expectimax: per-enemy survival via game engine ────────
+    // Uses simStepSurvival directly — zero reimplementation of game logic.
+    // Per-enemy independence: P(survive) = Π P(survive enemy_i).
+
+    function perEnemySurvival(gsBase, dir) {
+        // Compute P(survive hop 'dir') as product of per-enemy survival.
+        var surv = 1.0;
+        for (var pei = 0; pei < gsBase.enemies.length; pei++) {
+            var pe = gsBase.enemies[pei];
+            if (pe.type === 'spawn-timer' || pe.type === 'slick' || pe.type === 'greenball') continue;
+            if (pe.spawnAnimTimer > 0 && pe.spawnAnimTimer > 5) continue;
+            // Clone single-enemy state
+            var gsSingle = simSurvivalClone(gsBase);
+            gsSingle.enemies = [simSurvivalClone(gsBase).enemies[pei]];
+            gsSingle.survivalOnly = true;
+            // Deterministic enemies: coily (chases player), dirBits redball/slick/greenball
+            if (pe.type === 'coily' || pe.dirBits != null) {
+                simHopDecisionQ = []; simHopDecisionIdx = 0;
+                simRng = createSeededRng(42);
+                surv *= simStepSurvival(gsSingle, dir) ? 1.0 : 0.0;
+            } else {
+                // Random enemy (egg, redball without dirBits): average 2 outcomes
+                var safe = 0;
+                for (var pc = 0; pc < 2; pc++) {
+                    var gsc = simSurvivalClone(gsSingle);
+                    gsc.survivalOnly = true;
+                    simHopDecisionQ = [pc]; simHopDecisionIdx = 0;
+                    simRng = createSeededRng(42);
+                    if (simStepSurvival(gsc, dir)) safe++;
+                }
+                surv *= safe / 2;
+            }
+            if (surv <= 0) break;
+        }
+        return surv;
+    }
+
+    function simExpectimaxRec(gsBase, dir, depth) {
+        if (depth <= 0) return 1.0;
+        var hopSurv = perEnemySurvival(gsBase, dir);
+        if (hopSurv <= 0) return 0;
+        // Advance full state with seeded RNG for post-hop enemy positions
+        var gsNext = simSurvivalClone(gsBase);
+        gsNext.survivalOnly = true;
+        simHopDecisionQ = null;
+        simRng = createSeededRng(depth * 100 + 7);
+        if (!simStepSurvival(gsNext, dir)) return 0;
+        // Find best future direction
+        var bestFuture = 0;
+        for (var sdk = 0; sdk < DIR_KEYS_WITH_STAY.length; sdk++) {
+            var sd = DIR_KEYS_WITH_STAY[sdk];
+            if (!simCanMove(gsNext, sd)) continue;
+            var f = simExpectimaxRec(gsNext, sd, depth - 1);
+            if (f > bestFuture) bestFuture = f;
+            if (bestFuture >= 0.999) break;
+        }
+        return hopSurv * bestFuture;
+    }
+
     var _dangerSurv = {};
     if (hasEnemies) {
-        var _dtMaxFrames = DANGER_MAX_FRAMES;
-        var _dtStartFrame = Math.min(gs.freezeTimer || 0, _dtMaxFrames);
-        var _pathLists = [];
-        for (var _di = 0; _di < enemyInits.length; _di++) {
-            _pathLists.push(buildEnemyPaths(enemyInits[_di], gs.sm, _dtMaxFrames));
+        for (var _dsk = 0; _dsk < DIR_KEYS_WITH_STAY.length; _dsk++) {
+            var _dsDir = DIR_KEYS_WITH_STAY[_dsk];
+            if (!simCanMove(gs, _dsDir)) continue;
+            _dangerSurv[_dsDir] = simExpectimaxRec(gs, _dsDir, DEPTH);
         }
-        _dangerSurv = findReactiveSurvival(gs, _pathLists, coilyInit, _dtStartFrame, _dtMaxFrames, DEPTH);
     }
 
     // ── Expectimax search using simStepForced ──────────────────────────────────
