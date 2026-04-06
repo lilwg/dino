@@ -2306,10 +2306,13 @@ function aiPickBestDir() {
         if (parGap !== 0) {
             if (gs.player.row % 2 === 1) {
                 // On odd row — jump off edge to fix parity (suicide)
+                // Only if no enemy will kill us during the jump (check survival)
+                var parSuicide = null;
                 for (var fk = 0; fk < DIR_KEYS.length; fk++) {
                     var fd = DIRS[DIR_KEYS[fk]];
                     var fnr = gs.player.row + fd.dr, fnc = gs.player.col + fd.dc;
-                    // Don't jump onto a disc — that wastes a disc without fixing parity
+                    if (isValidPos(fnr, fnc)) continue; // on-grid, not a suicide
+                    // Don't jump onto a disc
                     var isDiscJump = false;
                     for (var fdi = 0; fdi < gs.discs.length; fdi++) {
                         var fdc = gs.discs[fdi];
@@ -2318,8 +2321,13 @@ function aiPickBestDir() {
                              (fdc.side === 1 && DIR_KEYS[fk] === 'UR' && gs.player.col === gs.player.row)))
                             isDiscJump = true;
                     }
-                    if (!isDiscJump && !isValidPos(fnr, fnc)) { result = DIR_KEYS[fk]; break; }
+                    if (isDiscJump) continue;
+                    // Check no enemy will cross-path kill us during the fall
+                    var fkP = aiLastHop1Surv && aiLastHop1Surv[DIR_KEYS[fk]];
+                    if (fkP != null && fkP <= 0) continue; // enemy blocks this exit
+                    parSuicide = DIR_KEYS[fk]; break;
                 }
+                if (parSuicide) result = parSuicide;
             } else {
                 // On even row — route to nearest odd-row edge to jump off
                 // Only if the route is safe (don't walk into coily to fix parity)
