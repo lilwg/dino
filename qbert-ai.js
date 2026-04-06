@@ -1693,16 +1693,20 @@ function unifiedPick(gs, coilyActive) {
                         dpDiscRow = dpc.row;
                 }
                 if (dpDiscRow >= 0 && dpDiscRow % 2 === 0) {
-                    // Parity rule: bad when (even_discs_used - odd_suicides) % 3 == 1.
-                    // Count even-row discs already used (inactive).
-                    var evenUsed = 0;
+                    // Parity rule: bad when (even_discs_used - odd_suicides) % 3 == 1
+                    // AND no more even discs remain to fix it.
+                    // In practice: block the 1st even disc if it's the only one,
+                    // or the 4th of 4 total. 2, 3, 5, 6 total are always fine.
+                    var evenUsed = 0, evenActive = 0;
                     for (var dci3 = 0; dci3 < gs.discs.length; dci3++) {
-                        if (!gs.discs[dci3].active && gs.discs[dci3].row % 2 === 0) evenUsed++;
+                        if (gs.discs[dci3].row % 2 === 0) {
+                            if (gs.discs[dci3].active) evenActive++; else evenUsed++;
+                        }
                     }
-                    // After taking this disc: evenUsed + 1
-                    // oddRowFalls tracked on gs (may be 0 if not tracked)
                     var oddFalls = gs.oddRowFalls || 0;
-                    if (((evenUsed + 1 - oddFalls) % 3 + 3) % 3 === 1) continue;
+                    var countAfter = evenUsed + 1;
+                    var remainAfter = evenActive - 1; // this disc consumed
+                    if (((countAfter - oddFalls) % 3 + 3) % 3 === 1 && remainAfter === 0) continue;
                 }
             }
         }
