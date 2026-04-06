@@ -1140,14 +1140,11 @@ function aiPickBestDir() {
                         if (asc2 !== undefined && asc2 > altScore) { altScore = asc2; altDir = DIR_KEYS[ak2]; }
                     }
                 }
-                // Safety guard: don't override if the alternative is substantially
-                // less safe than the original. logPerHop difference > 0.02 means
-                // per-hop survival drops by >~2% — not worth it to break oscillation.
+                // Safety guard: never sacrifice survival to break oscillation
                 if (altDir) {
-                    var origScore = aiMoveScores[result];
-                    if (origScore !== undefined && origScore > altScore + 200) {
-                        altDir = null;
-                    }
+                    var origP = aiLastHop1Surv[result] || 0;
+                    var altP = aiLastHop1Surv[altDir] || 0;
+                    if (altP < origP) altDir = null;
                 }
                 if (altDir) { result = altDir; aiPosHistory.length = 0; }
             }
@@ -1291,13 +1288,11 @@ function aiPickBestDir() {
                     }
                 }
             }
-            // Safety guard: don't override if progress move is much less safe
+            // Safety guard: never sacrifice survival for progress
             if (bestProgDir) {
-                var origScoreN = aiMoveScores[result];
-                var progScoreN = aiMoveScores[bestProgDir];
-                if (origScoreN !== undefined && progScoreN !== undefined && origScoreN > progScoreN + 200) {
-                    bestProgDir = null;
-                }
+                var origPN = aiLastHop1Surv[result] || 0;
+                var progPN = aiLastHop1Surv[bestProgDir] || 0;
+                if (progPN < origPN) bestProgDir = null;
             }
             if (bestProgDir) { result = bestProgDir; aiPosHistory.length = 0; }
             // Don't reset aiNoProgressCount here — only reset on actual progress (line ~961)
