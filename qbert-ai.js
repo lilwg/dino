@@ -1678,43 +1678,6 @@ function unifiedPick(gs, coilyActive) {
         if (gs.lv < 3 || lureDiscDist > 7 || coilyPlayerDist > 10) lureDisc = null;
     }
 
-    // ── L5+ BFS target distance: direct routing signal ────────────────────────
-    // On cycle levels, greedyTourCost's multi-hop plan breaks down because
-    // reverts cascade. Instead, compute BFS distance from each position to
-    // the nearest unfinished cube, penalizing paths through completed cubes.
-    var _l5Dist = null;
-    if (gs.lv >= 5) {
-        var _l5stomps = new Int8Array(POS_COUNT);
-        for (var _li = 0; _li < gs.cubes.length; _li++) {
-            var _lidx = posToIdx[gs.cubes[_li].row * ROWS + gs.cubes[_li].col];
-            _l5stomps[_lidx] = stompsNeeded(gs.cubes[_li].state, gs.lv);
-        }
-        _l5Dist = new Float64Array(POS_COUNT);
-        for (var _li2 = 0; _li2 < POS_COUNT; _li2++) _l5Dist[_li2] = 999;
-        var _l5q = [];
-        for (var _li3 = 0; _li3 < POS_COUNT; _li3++) {
-            if (_l5stomps[_li3] > 0) {
-                // Half-done cubes (1 stomp left) get priority
-                _l5Dist[_li3] = (_l5stomps[_li3] === 1) ? -2 : 0;
-                _l5q.push(_li3);
-            }
-        }
-        var _l5head = 0;
-        while (_l5head < _l5q.length) {
-            var _l5u = _l5q[_l5head++];
-            var _l5adj = posAdj[_l5u];
-            for (var _l5a = 0; _l5a < _l5adj.length; _l5a++) {
-                var _l5v = _l5adj[_l5a];
-                var _l5cost = _l5Dist[_l5u] + 1;
-                // Heavy penalty for routing through completed cubes
-                if (_l5stomps[_l5v] <= 0) _l5cost += 6;
-                if (_l5cost >= _l5Dist[_l5v]) continue;
-                _l5Dist[_l5v] = _l5cost;
-                _l5q.push(_l5v);
-            }
-        }
-    }
-
     // ── Core: survival tree safety check + strategy-aware tour cost per direction ──
 
     var safe1 = {};
@@ -1856,35 +1819,13 @@ function unifiedPick(gs, coilyActive) {
         // Compute tour cost
         var _tcT0 = typeof performance !== 'undefined' ? performance.now() : 0;
         var tc;
-        if (_l5Dist && dir !== 'STAY') {
-            // L5+ BFS routing: use direct distance to nearest unfinished cube.
-            var _l5d = DIRS[dir];
-            var _l5r = gs.player.row + _l5d.dr, _l5c = gs.player.col + _l5d.dc;
-            if (isValidPos(_l5r, _l5c)) {
-                var _l5idx = posToIdx[_l5r * ROWS + _l5c];
-                tc = _l5Dist[_l5idx] * 3;
-            } else {
-                // Off-board move (disc ride) — lands at apex (0,0)
-                // Use simStep+simTourCost for disc rides (handles ride correctly)
-                simSeed(k * 100);
-                var tcCloneDisc = simDeepClone(gs);
-                var tcAliveDisc = simStep(tcCloneDisc, dir);
-                if (tcAliveDisc) {
-                    tc = tcCloneDisc.levelWon ? 0 : simTourCost(tcCloneDisc);
-                } else {
-                    tc = simTourCost(gs) + 1;
-                }
-            }
+        simSeed(k * 100);
+        var tcClone = simDeepClone(gs);
+        var tcAlive = simStep(tcClone, dir);
+        if (tcAlive) {
+            tc = tcClone.levelWon ? 0 : simTourCost(tcClone);
         } else {
-            // Non-L5 or STAY: use simStep + greedyTourCost
-            simSeed(k * 100);
-            var tcClone = simDeepClone(gs);
-            var tcAlive = simStep(tcClone, dir);
-            if (tcAlive) {
-                tc = tcClone.levelWon ? 0 : simTourCost(tcClone);
-            } else {
-                tc = simTourCost(gs) + 1;
-            }
+            tc = simTourCost(gs) + 1;
         }
         // STAY penalty: escalates with consecutive STAYs, much higher during freeze
         // (freeze = enemies can't move, so STAY wastes the safe window)
