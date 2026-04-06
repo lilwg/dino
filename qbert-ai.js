@@ -1526,22 +1526,6 @@ function unifiedPick(gs, coilyActive) {
                     delete gs.discs[_pi4]._parityHidden;
                 }
             }
-            // Coily misprediction diagnostic: log if teacher gives P=1 for all dirs
-            // when a coily is nearby (within 2 tiles)
-            if (window._predValidate && coilyInit) {
-                var _cDist = Math.abs(coilyInit.row - gs.player.row) + Math.abs(coilyInit.col - gs.player.col);
-                // Only warn if no discs available (disc escape explains P=1)
-                var _hasDisc = false;
-                for (var _di2 = 0; _di2 < gs.discs.length; _di2++)
-                    if (gs.discs[_di2].active) { _hasDisc = true; break; }
-                if (_cDist <= 2 && !_hasDisc) {
-                    var _allOne = true;
-                    for (var _tk in _dangerSurv) if (_dangerSurv[_tk] < 0.99) _allOne = false;
-                    if (_allOne) {
-                        console.log('TEACHER-COILY-WARN: all P=1 with coily ' + _cDist + ' away, NO DISCS. teacher=' + JSON.stringify(_dangerSurv) + ' depth=' + DEPTH);
-                    }
-                }
-            }
             var _tT1 = typeof performance !== 'undefined' ? performance.now() : 0;
             if (!window._teacherTimings) window._teacherTimings = [];
             var _tStats = perfectTeacherStats();
@@ -2536,9 +2520,5 @@ function aiPickBestDir() {
 
     // Restore game RNG — must never leak seeded RNG into real game
     simRng = savedGameRng;
-    if (_origResult !== result && typeof console !== 'undefined' && window._predValidate) {
-        var _origS = aiMoveScores[_origResult], _newS = aiMoveScores[result];
-        console.log('AI OVERRIDE @(' + gs.player.row + ',' + gs.player.col + ') orig=' + _origResult + '(' + _origS + ') new=' + result + '(' + _newS + ') np=' + aiNoProgressCount + ' stay=' + aiStayCount);
-    }
     return result;
 }
