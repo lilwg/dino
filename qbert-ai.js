@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI: hybrid strategy + survival tree
-var AI_VERSION = 'v13.4-teacher';
+var AI_VERSION = 'v13.5-teacher';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -1730,20 +1730,17 @@ function unifiedPick(gs, coilyActive) {
                         dpDiscRow = dpc.row;
                 }
                 if (dpDiscRow >= 0 && dpDiscRow % 2 === 0) {
-                    // Parity rule: bad when (even_discs_used - odd_suicides) % 3 == 1
-                    // AND no more even discs remain to fix it.
-                    // In practice: block the 1st even disc if it's the only one,
-                    // or the 4th of 4 total. 2, 3, 5, 6 total are always fine.
-                    var evenUsed = 0, evenActive = 0;
-                    for (var dci3 = 0; dci3 < gs.discs.length; dci3++) {
-                        if (gs.discs[dci3].row % 2 === 0) {
-                            if (gs.discs[dci3].active) evenActive++; else evenUsed++;
-                        }
+                    // Parity check using actual cube state: each even-row disc ride
+                    // shifts parGap by -1 (mod 3). Block if result would be unsolvable.
+                    var dcW2 = 0, dcB2 = 0;
+                    for (var dci3 = 0; dci3 < gs.cubes.length; dci3++) {
+                        var dcDef2 = (gs.tgt - gs.cubes[dci3].state + 3) % 3;
+                        if (gs.cubes[dci3].row % 2 === 0) dcW2 += dcDef2; else dcB2 += dcDef2;
                     }
-                    var oddFalls = gs.oddRowFalls || 0;
-                    var countAfter = evenUsed + 1;
-                    var remainAfter = evenActive - 1; // this disc consumed
-                    if (((countAfter - oddFalls) % 3 + 3) % 3 === 1 && remainAfter === 0) continue;
+                    var curGap = ((dcW2 - dcB2) % 3 + 3) % 3;
+                    var afterGap = ((curGap - 1) % 3 + 3) % 3;
+                    // After ride, player on even row (apex). Bad iff afterGap === 1.
+                    if (afterGap === 1) continue;
                 }
             }
         }
@@ -2277,11 +2274,15 @@ function aiPickBestDir() {
                         if (asc2 !== undefined && asc2 > altScore) { altScore = asc2; altDir = DIR_KEYS[ak2]; }
                     }
                 }
-                // Safety guard: never sacrifice survival to break oscillation
+                // Safety guard: never sacrifice survival or massively worse routing
                 if (altDir && aiLastHop1Surv) {
                     var origP = aiLastHop1Surv[result] || 0;
                     var altP = aiLastHop1Surv[altDir] || 0;
                     if (altP < origP) altDir = null;
+                }
+                if (altDir) {
+                    var origScoreOsc = aiMoveScores[result];
+                    if (origScoreOsc !== undefined && origScoreOsc > altScore + 400) altDir = null;
                 }
                 if (altDir) { result = altDir; aiPosHistory.length = 0; }
             }
@@ -2309,61 +2310,93 @@ function aiPickBestDir() {
     }
 
     // L5+ parity fix: compute (W-B) mod 3 from actual cube states.
-    // Unsolvable when (W-B) mod 3 ≠ 0. Fix by jumping off an odd-row edge
-    // (costs 1 life but fixes parity). Detect earlier (np>20) to avoid
-    // wasting hundreds of hops in a deadlock.
-    if (gs.lv >= 5 && aiNoProgressCount > 100) {
+    // Unsolvable when parBad. Fix by: (1) riding an even-row disc (preferred),
+    // or (2) jumping off an odd-row edge (suicide, last resort).
+    if (gs.lv >= 5 && aiNoProgressCount > 30) {
         var parW = 0, parB = 0;
         for (var pi = 0; pi < gs.cubes.length; pi++) {
             var pdef = (gs.tgt - gs.cubes[pi].state + 3) % 3;
             if (gs.cubes[pi].row % 2 === 0) parW += pdef; else parB += pdef;
         }
         var parGap = ((parW - parB) % 3 + 3) % 3;
-        // Only truly bad parity triggers suicide — not every non-zero gap
         var playerEven = gs.player.row % 2 === 0;
         var parBad = (playerEven && parGap === 1) || (!playerEven && parGap === 2);
         if (parBad) {
-            if (gs.player.row % 2 === 1) {
-                // On odd row — jump off edge to fix parity (suicide)
-                // Only if no enemy will kill us during the jump (check survival)
-                var parSuicide = null;
-                for (var fk = 0; fk < DIR_KEYS.length; fk++) {
-                    var fd = DIRS[DIR_KEYS[fk]];
-                    var fnr = gs.player.row + fd.dr, fnc = gs.player.col + fd.dc;
-                    if (isValidPos(fnr, fnc)) continue; // on-grid, not a suicide
-                    // Don't jump onto a disc
-                    var isDiscJump = false;
-                    for (var fdi = 0; fdi < gs.discs.length; fdi++) {
-                        var fdc = gs.discs[fdi];
-                        if (fdc.active && fdc.row === gs.player.row &&
-                            ((fdc.side === 0 && DIR_KEYS[fk] === 'UL' && gs.player.col === 0) ||
-                             (fdc.side === 1 && DIR_KEYS[fk] === 'UR' && gs.player.col === gs.player.row)))
-                            isDiscJump = true;
+            // Option 1: ride an even-row disc to fix parity (no life cost)
+            var parDiscFixed = false;
+            for (var pdfi = 0; pdfi < gs.discs.length; pdfi++) {
+                var pdfd = gs.discs[pdfi];
+                if (!pdfd.active || pdfd.row % 2 !== 0) continue;
+                // Check if taking this disc would actually fix parity
+                var fixGap = ((parGap - 1) % 3 + 3) % 3;
+                // After ride, player on even row. Bad iff fixGap === 1.
+                // But we need to account for getting there (hops shift parGap):
+                // parGap only shifts from disc rides/suicides, not normal hops.
+                // So if fixGap !== 1, taking this disc fixes it.
+                if (fixGap === 1) continue; // this disc would make it worse
+                var trigCol = pdfd.side === 0 ? 0 : pdfd.row;
+                if (gs.player.row === pdfd.row && gs.player.col === trigCol) {
+                    // At the disc — take it!
+                    var discDir = pdfd.side === 0 ? 'UL' : 'UR';
+                    // Only if safe
+                    var discP = aiLastHop1Surv && aiLastHop1Surv[discDir];
+                    if (discP == null || discP > 0) {
+                        console.log('PARITY-DISC @(' + gs.player.row + ',' + gs.player.col + ') → ' + discDir + ' gap=' + parGap);
+                        result = discDir;
+                        parDiscFixed = true;
                     }
-                    if (isDiscJump) continue;
-                    // Check no enemy will cross-path kill us during the fall
-                    var fkP = aiLastHop1Surv && aiLastHop1Surv[DIR_KEYS[fk]];
-                    if (fkP != null && fkP <= 0) continue; // enemy blocks this exit
-                    parSuicide = DIR_KEYS[fk]; break;
-                }
-                if (parSuicide) result = parSuicide;
-            } else {
-                // On even row — route to nearest odd-row edge to jump off
-                // Only if the route is safe (don't walk into coily to fix parity)
-                var bestEdgeDir = null, bestEdgeDist = 999;
-                for (var ek = 0; ek < DIR_KEYS.length; ek++) {
-                    var ed = DIRS[DIR_KEYS[ek]];
-                    var enr = gs.player.row + ed.dr, enc = gs.player.col + ed.dc;
-                    if (!isValidPos(enr, enc)) continue;
-                    // Skip directions the AI marked as lethal
-                    var ekScore = aiMoveScores[DIR_KEYS[ek]];
-                    if (ekScore !== undefined && ekScore <= -10000) continue;
-                    if (enr % 2 === 1) {
-                        var edgeDist = Math.min(enc, enr - enc);
-                        if (edgeDist < bestEdgeDist) { bestEdgeDist = edgeDist; bestEdgeDir = DIR_KEYS[ek]; }
+                } else {
+                    // Route toward the disc
+                    var pBfs = bfsTo(gs.player.row, gs.player.col, pdfd.row, trigCol);
+                    if (pBfs && pBfs.path.length > 0) {
+                        var pDir = pBfs.path[0];
+                        var pDirScore = aiMoveScores[pDir];
+                        if (pDirScore !== undefined && pDirScore > -10000) {
+                            console.log('PARITY-ROUTE @(' + gs.player.row + ',' + gs.player.col + ') → ' + pDir + ' toward disc@(' + pdfd.row + ',' + trigCol + ') gap=' + parGap);
+                            result = pDir;
+                            parDiscFixed = true;
+                        }
                     }
                 }
-                if (bestEdgeDir) result = bestEdgeDir;
+                if (parDiscFixed) break;
+            }
+            // Option 2: no disc available — suicide off odd row (costs 1 life)
+            if (!parDiscFixed && aiNoProgressCount > 80) {
+                if (gs.player.row % 2 === 1) {
+                    var parSuicide = null;
+                    for (var fk = 0; fk < DIR_KEYS.length; fk++) {
+                        var fd = DIRS[DIR_KEYS[fk]];
+                        var fnr = gs.player.row + fd.dr, fnc = gs.player.col + fd.dc;
+                        if (isValidPos(fnr, fnc)) continue;
+                        var isDiscJump = false;
+                        for (var fdi = 0; fdi < gs.discs.length; fdi++) {
+                            var fdc = gs.discs[fdi];
+                            if (fdc.active && fdc.row === gs.player.row &&
+                                ((fdc.side === 0 && DIR_KEYS[fk] === 'UL' && gs.player.col === 0) ||
+                                 (fdc.side === 1 && DIR_KEYS[fk] === 'UR' && gs.player.col === gs.player.row)))
+                                isDiscJump = true;
+                        }
+                        if (isDiscJump) continue;
+                        var fkP = aiLastHop1Surv && aiLastHop1Surv[DIR_KEYS[fk]];
+                        if (fkP != null && fkP <= 0) continue;
+                        parSuicide = DIR_KEYS[fk]; break;
+                    }
+                    if (parSuicide) result = parSuicide;
+                } else {
+                    var bestEdgeDir = null, bestEdgeDist = 999;
+                    for (var ek = 0; ek < DIR_KEYS.length; ek++) {
+                        var ed = DIRS[DIR_KEYS[ek]];
+                        var enr = gs.player.row + ed.dr, enc = gs.player.col + ed.dc;
+                        if (!isValidPos(enr, enc)) continue;
+                        var ekScore = aiMoveScores[DIR_KEYS[ek]];
+                        if (ekScore !== undefined && ekScore <= -10000) continue;
+                        if (enr % 2 === 1) {
+                            var edgeDist = Math.min(enc, enr - enc);
+                            if (edgeDist < bestEdgeDist) { bestEdgeDist = edgeDist; bestEdgeDir = DIR_KEYS[ek]; }
+                        }
+                    }
+                    if (bestEdgeDir) result = bestEdgeDir;
+                }
             }
         }
     }
