@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI: hybrid strategy + survival tree
-var AI_VERSION = 'v12.4-teacher';
+var AI_VERSION = 'v12.5-teacher';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -98,7 +98,7 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts) {
     }
 
     var isToggle = lv >= 3;
-    // L3-4 (toggle): penalty 1.5 (lower = allow more backtracking, detours cost more)
+    // L1-2: no reverts possible. L3-4 (toggle): penalty 1.5.
     // L5+ (cycle): penalty 2.5 (higher = reverts cost 3 stomps to fix)
     var REVERT_PENALTY = lv >= 5 ? 2.5 : (isToggle ? 1.5 : 0);
     var curIdx = startIdx;
@@ -106,98 +106,61 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts) {
 
     var _tcIterLimit = (typeof window !== 'undefined' && window.AI_TEACHER) ? 30 : 200;
     for (var iter = 0; iter < _tcIterLimit; iter++) {
-        if (isToggle) {
-            var dijk = dijkstraFrom(curIdx, stomps, REVERT_PENALTY, discSources);
+        var dijk = dijkstraFrom(curIdx, stomps, REVERT_PENALTY, discSources);
 
-            var bestIdx = -1, bestDist = 999;
-            for (var i = 0; i < POS_COUNT; i++) {
-                if (stomps[i] > 0 && i !== curIdx) {
-                    var d = dijk.dist[i];
-                    // Deprioritize frequently-reverted cubes — go to fresh ones first
-                    if (revertCounts && revertCounts[i] > 1) d += (revertCounts[i] - 1) * 3;
-                    // Prefer cubes not visited recently — breaks oscillation loops
-                    // by steering toward "forgotten" cubes instead of re-visiting familiar ones
-                    var curHops = typeof hops !== 'undefined' ? hops : 0;
-                    var hopsSinceVisit = curHops - (aiCubeLastVisit[i] || 0);
-                    if (hopsSinceVisit < 20) d += (20 - hopsSinceVisit) * 0.5;
-                    // Bottom-up sweep: prefer bottom-row cubes to avoid backtracking
-                    // through completed upper cubes. Stronger on L3-4 where reverts hurt.
-                    var row_i = idxToPos[i][0], col_i = idxToPos[i][1];
-                    d -= row_i * (lv >= 5 ? 1.5 : 2);
-                    // Corner priority: bottom corners (few exits) should be done first
-                    if (row_i >= 4 && (col_i <= 1 || col_i >= row_i - 1)) d -= 2;
-                    // Cluster bonus: prefer cubes with unfinished neighbors (sweep clusters together)
-                    var adj = posAdj[i];
-                    for (var ai = 0; ai < adj.length; ai++) {
-                        if (stomps[adj[ai]] > 0) d -= 0.5;
-                    }
-                    if (d < bestDist || (d === bestDist && (bestIdx === -1 || i < bestIdx))) {
-                        bestDist = d; bestIdx = i;
-                    }
+        var bestIdx = -1, bestDist = 999;
+        for (var i = 0; i < POS_COUNT; i++) {
+            if (stomps[i] > 0 && i !== curIdx) {
+                var d = dijk.dist[i];
+                // Deprioritize frequently-reverted cubes — go to fresh ones first
+                if (revertCounts && revertCounts[i] > 1) d += (revertCounts[i] - 1) * 3;
+                // Prefer cubes not visited recently — breaks oscillation loops
+                // by steering toward "forgotten" cubes instead of re-visiting familiar ones
+                var curHops = typeof hops !== 'undefined' ? hops : 0;
+                var hopsSinceVisit = curHops - (aiCubeLastVisit[i] || 0);
+                if (hopsSinceVisit < 20) d += (20 - hopsSinceVisit) * 0.5;
+                // Bottom-up sweep: prefer bottom-row cubes to avoid backtracking
+                // through completed upper cubes. Stronger on L3-4 where reverts hurt.
+                var row_i = idxToPos[i][0], col_i = idxToPos[i][1];
+                d -= row_i * (lv >= 5 ? 1.5 : 2);
+                // Corner priority: bottom corners (few exits) should be done first
+                if (row_i >= 4 && (col_i <= 1 || col_i >= row_i - 1)) d -= 2;
+                // Cluster bonus: prefer cubes with unfinished neighbors (sweep clusters together)
+                var adj = posAdj[i];
+                for (var ai = 0; ai < adj.length; ai++) {
+                    if (stomps[adj[ai]] > 0) d -= 0.5;
+                }
+                if (d < bestDist || (d === bestDist && (bestIdx === -1 || i < bestIdx))) {
+                    bestDist = d; bestIdx = i;
                 }
             }
-            if (bestIdx === -1) {
-                if (stomps[curIdx] > 0) totalHops += stomps[curIdx] * 2;
-                break;
-            }
-
-            // Consume the disc if the path to bestIdx used one
-            var discIdx = dijk.usedDisc[bestIdx];
-            if (discIdx >= 0 && discIdx < discSources.length) {
-                discSources[discIdx] = -1; // mark consumed, don't splice (indices are stable)
-            }
-
-            // Walk the Dijkstra path, count real hops
-            var path = [], pc = bestIdx;
-            while (pc !== curIdx) { path.push(pc); pc = dijk.prev[pc]; }
-            totalHops += path.length;
-
-            // Apply stomps along path; fix reverts immediately (never leave debt)
-            for (var p = path.length - 1; p >= 0; p--) {
-                var pos = path[p];
-                if (stomps[pos] > 0) {
-                    stomps[pos]--;
-                } else {
-                    totalHops += 2;
-                }
-            }
-            curIdx = bestIdx;
-        } else {
-            // Non-toggle: use precomputed BFS distances, consider disc shortcuts
-            var bestIdx = -1, bestDist = 999;
-            var APEX = 0;
-            for (var i = 0; i < POS_COUNT; i++) {
-                if (stomps[i] > 0 && i !== curIdx) {
-                    var d = distMatrix[curIdx * POS_COUNT + i];
-                    for (var ds = 0; ds < discSources.length; ds++) {
-                        if (discSources[ds] < 0) continue; // consumed
-                        var dd = distMatrix[curIdx * POS_COUNT + discSources[ds]] + 1
-                               + distMatrix[APEX * POS_COUNT + i];
-                        if (dd < d) d = dd;
-                    }
-                    if (d < bestDist || (d === bestDist && (bestIdx === -1 || i < bestIdx))) {
-                        bestDist = d; bestIdx = i;
-                    }
-                }
-            }
-            if (bestIdx === -1) {
-                if (stomps[curIdx] > 0) totalHops += stomps[curIdx] * 2;
-                break;
-            }
-            // Check if a disc was used for this leg and consume it
-            var directDist = distMatrix[curIdx * POS_COUNT + bestIdx];
-            var usedDs = -1;
-            for (var ds = 0; ds < discSources.length; ds++) {
-                if (discSources[ds] < 0) continue; // consumed
-                var dd = distMatrix[curIdx * POS_COUNT + discSources[ds]] + 1
-                       + distMatrix[APEX * POS_COUNT + bestIdx];
-                if (dd < directDist) { directDist = dd; usedDs = ds; }
-            }
-            if (usedDs >= 0) discSources[usedDs] = -1; // mark consumed
-            totalHops += bestDist;
-            stomps[bestIdx]--;
-            curIdx = bestIdx;
         }
+        if (bestIdx === -1) {
+            if (stomps[curIdx] > 0) totalHops += stomps[curIdx] * 2;
+            break;
+        }
+
+        // Consume the disc if the path to bestIdx used one
+        var discIdx = dijk.usedDisc[bestIdx];
+        if (discIdx >= 0 && discIdx < discSources.length) {
+            discSources[discIdx] = -1; // mark consumed, don't splice (indices are stable)
+        }
+
+        // Walk the Dijkstra path, count real hops
+        var path = [], pc = bestIdx;
+        while (pc !== curIdx) { path.push(pc); pc = dijk.prev[pc]; }
+        totalHops += path.length;
+
+        // Apply stomps along path; on toggle levels fix reverts (never leave debt)
+        for (var p = path.length - 1; p >= 0; p--) {
+            var pos = path[p];
+            if (stomps[pos] > 0) {
+                stomps[pos]--;
+            } else if (isToggle) {
+                totalHops += 2; // revert + redo cost (only on toggle/cycling levels)
+            }
+        }
+        curIdx = bestIdx;
     }
 
     return totalHops;
@@ -2370,11 +2333,16 @@ function aiPickBestDir() {
                     }
                 }
             }
-            // Safety guard: don't override if progress move is much less safe
-            if (bestProgDir) {
+            // Safety guard: don't override if progress move is less safe
+            if (bestProgDir && aiLastHop1Surv) {
+                var origP = aiLastHop1Surv[result] || 0;
+                var progP = aiLastHop1Surv[bestProgDir] || 0;
+                // Never override P=1.0 with P<1.0
+                if (origP >= 1.0 && progP < 1.0) bestProgDir = null;
+                // Don't override if score difference is large
                 var origScoreN = aiMoveScores[result];
                 var progScoreN = aiMoveScores[bestProgDir];
-                if (origScoreN !== undefined && progScoreN !== undefined && origScoreN > progScoreN + 200) {
+                if (bestProgDir && origScoreN !== undefined && progScoreN !== undefined && origScoreN > progScoreN + 200) {
                     bestProgDir = null;
                 }
             }
