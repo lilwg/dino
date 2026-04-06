@@ -196,7 +196,10 @@ function perfectTeacherSurvive(gs, depth, opts) {
     for (var k = 0; k < dirs.length; k++) {
         var dir = dirs[k];
         var d = DIRS[dir];
-        if (!isValidPos(gs.player.row + d.dr, gs.player.col + d.dc)) continue;
+        if (!isValidPos(gs.player.row + d.dr, gs.player.col + d.dc)) {
+            // Off-grid: allow if a disc is there (disc ride to apex)
+            if (!teacherHasDisc(gs, gs.player.row, gs.player.col, dir)) continue;
+        }
         var p = teacherBranchProb(gs, dir, depth, opts);
         if (p > bestP) bestP = p;
         if (bestP >= 1.0) break;
@@ -209,7 +212,21 @@ function perfectTeacherSurvive(gs, depth, opts) {
     return bestP;
 }
 
-// Per-direction MIN-over-hop-bit-enumeration adaptive survival.
+// Check if an off-grid move from (row, col) in direction dir lands on a disc.
+function teacherHasDisc(gs, row, col, dir) {
+    if (!gs.discs) return false;
+    for (var i = 0; i < gs.discs.length; i++) {
+        var disc = gs.discs[i];
+        if (!disc.active) continue;
+        // UL off left edge: col=0, disc on left side at this row
+        if (dir === 'UL' && col === 0 && disc.side === 0 && disc.row === row) return true;
+        // UR off right edge: col=row, disc on right side at this row
+        if (dir === 'UR' && col === row && disc.side === 1 && disc.row === row) return true;
+    }
+    return false;
+}
+
+// Per-direction expected-value-over-hop-bit-enumeration adaptive survival.
 // Exhaustively enumerates enemy hop-bit decisions AND spawn dirBits.
 // For spawn events: enumerates 2 spawnCols × 2^K relevant dirBits,
 // pre-filtered by ball reachability. Takes MIN across all outcomes.
@@ -405,7 +422,9 @@ function perfectTeacherEval(gs, maxDepth, opts) {
             var dir = dirs[k];
             if (dir !== 'STAY') {
                 var d = DIRS[dir];
-                if (!isValidPos(gs.player.row + d.dr, gs.player.col + d.dc)) continue;
+                if (!isValidPos(gs.player.row + d.dr, gs.player.col + d.dc)) {
+                    if (!teacherHasDisc(gs, gs.player.row, gs.player.col, dir)) continue;
+                }
             }
             // Check deadline mid-loop
             var now2 = typeof performance !== 'undefined' ? performance.now() : Date.now();
