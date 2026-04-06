@@ -1693,13 +1693,16 @@ function unifiedPick(gs, coilyActive) {
                         dpDiscRow = dpc.row;
                 }
                 if (dpDiscRow >= 0 && dpDiscRow % 2 === 0) {
-                    var dcW = 0, dcB = 0;
-                    for (var dci3 = 0; dci3 < gs.cubes.length; dci3++) {
-                        var dcDef = (gs.tgt - gs.cubes[dci3].state + 3) % 3;
-                        if (gs.cubes[dci3].row % 2 === 0) dcW += dcDef; else dcB += dcDef;
+                    // Parity rule: bad when (even_discs_used - odd_suicides) % 3 == 1.
+                    // Count even-row discs already used (inactive).
+                    var evenUsed = 0;
+                    for (var dci3 = 0; dci3 < gs.discs.length; dci3++) {
+                        if (!gs.discs[dci3].active && gs.discs[dci3].row % 2 === 0) evenUsed++;
                     }
-                    dcW = ((dcW - 1) % 3 + 3) % 3;
-                    if (((dcW - dcB) % 3 + 3) % 3 === 1) continue;
+                    // After taking this disc: evenUsed + 1
+                    // oddRowFalls tracked on gs (may be 0 if not tracked)
+                    var oddFalls = gs.oddRowFalls || 0;
+                    if (((evenUsed + 1 - oddFalls) % 3 + 3) % 3 === 1) continue;
                 }
             }
         }

@@ -1169,6 +1169,7 @@ function simCloneGameState() {
         alive: true,
         freezeTimer: ft,
         round: round,
-        levelWon: false
+        levelWon: false,
+        oddRowFalls: (typeof gs !== 'undefined' ? gs.oddRowFalls : 0) || 0
     };
 }
