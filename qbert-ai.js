@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI: hybrid strategy + survival tree
-var AI_VERSION = 'v12.9-teacher';
+var AI_VERSION = 'v13.0-teacher';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -2366,11 +2366,14 @@ function aiPickBestDir() {
         aiStayCount++;
         if (aiStayCount >= 3) {
             var stayP = aiLastHop1Surv['STAY'] || 0;
+            var stayScore = aiMoveScores['STAY'] || -Infinity;
             var bestAlt = null, bestAltScore = -Infinity;
             for (var k = 0; k < DIR_KEYS.length; k++) {
                 if (simCanMove(gs, DIR_KEYS[k])) {
                     var sc = aiMoveScores[DIR_KEYS[k]];
                     if (sc === undefined || sc <= -10000) continue;
+                    // Don't override STAY with a much worse-scoring direction
+                    if (sc < stayScore - 200) continue;
                     var altP = aiLastHop1Surv[DIR_KEYS[k]] || 0;
                     if (altP < stayP) continue;
                     if (sc > bestAltScore) {
