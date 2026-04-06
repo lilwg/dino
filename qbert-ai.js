@@ -100,7 +100,9 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts) {
     var isToggle = lv >= 3;
     // L1-2: no reverts possible. L3-4 (toggle): penalty 1.5.
     // L5+ (cycle): penalty 2.5 (higher = reverts cost 3 stomps to fix)
-    var REVERT_PENALTY = lv >= 5 ? 2.5 : (isToggle ? 1.5 : 0);
+    // When deeply stuck (np>200), drop penalty to 0 — must accept reverts
+    var npCount = typeof aiNoProgressCount !== 'undefined' ? aiNoProgressCount : 0;
+    var REVERT_PENALTY = npCount > 200 ? 0 : (lv >= 5 ? 2.5 : (isToggle ? 1.5 : 0));
     var curIdx = startIdx;
     var totalHops = 0;
 
@@ -1855,15 +1857,17 @@ function unifiedPick(gs, coilyActive) {
             }
         }
 
-        // Anti-oscillation: on toggle levels with excessive hops, penalize
-        // directions that land on completed cubes (prevents undo/redo cycles)
-        if (gs.lv >= 3 && dir !== 'STAY' && typeof hops !== 'undefined' && hops > 200) {
+        // Anti-oscillation: on toggle levels with moderate hops, penalize
+        // directions that land on completed cubes (prevents undo/redo cycles).
+        // But when deeply stuck (np>200), REMOVE the penalty — the AI must
+        // accept reverts to reach the last cubes.
+        if (gs.lv >= 3 && dir !== 'STAY' && typeof hops !== 'undefined' && hops > 200 && aiNoProgressCount < 200) {
             var aod = DIRS[dir];
             var aor = gs.player.row + aod.dr, aoc = gs.player.col + aod.dc;
             if (isValidPos(aor, aoc)) {
                 for (var aoi = 0; aoi < gs.cubes.length; aoi++) {
                     if (gs.cubes[aoi].row === aor && gs.cubes[aoi].col === aoc && gs.cubes[aoi].state >= gs.tgt) {
-                        tc += 10 + Math.floor(hops / 100) * 5; // 15 at 200 hops, 20 at 300, etc.
+                        tc += Math.min(30, 10 + Math.floor(hops / 100) * 5); // cap at 30
                         break;
                     }
                 }
