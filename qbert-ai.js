@@ -457,6 +457,9 @@ function unifiedPick(gs, coilyActive) {
     // ── Factored per-enemy pre-filter: O(N) quick rejection ────────────────────
     // If any single enemy guarantees death, skip expensive full expectimax.
     function perEnemySurvival(gsBase, dir) {
+        var _savedRng = simRng;
+        var _savedQ = simHopDecisionQ;
+        var _savedIdx = simHopDecisionIdx;
         var surv = 1.0;
         for (var pei = 0; pei < gsBase.enemies.length; pei++) {
             var pe = gsBase.enemies[pei];
@@ -481,6 +484,12 @@ function unifiedPick(gs, coilyActive) {
             }
             if (surv <= 0) break;
         }
+        // Restore globals: perEnemySurvival changes simRng + simHopDecisionQ
+        // for each per-enemy test. Must restore to avoid polluting tour cost
+        // computation and game loop.
+        simRng = _savedRng;
+        simHopDecisionQ = _savedQ;
+        simHopDecisionIdx = _savedIdx;
         return surv;
     }
 
