@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI: hybrid strategy + survival tree
-var AI_VERSION = 'v13.3-teacher';
+var AI_VERSION = 'v13.4-teacher';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -99,10 +99,10 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts) {
 
     var isToggle = lv >= 3;
     // L1-2: no reverts possible. L3-4 (toggle): penalty 1.5.
-    // L5+ (cycle): penalty 2.5 (higher = reverts cost 3 stomps to fix)
+    // L5+ (cycle): penalty 5 (each revert costs 2 stomps + travel to fix — deter strongly)
     // When deeply stuck (np>200), drop penalty to 0 — must accept reverts
     var npCount = typeof aiNoProgressCount !== 'undefined' ? aiNoProgressCount : 0;
-    var REVERT_PENALTY = npCount > 200 ? 0 : (lv >= 5 ? 2.5 : (isToggle ? 1.5 : 0));
+    var REVERT_PENALTY = npCount > 200 ? 0 : (lv >= 5 ? 5 : (isToggle ? 1.5 : 0));
     var curIdx = startIdx;
     var totalHops = 0;
 
@@ -127,10 +127,14 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts) {
                 d -= row_i * (lv >= 5 ? 1.5 : 2);
                 // Corner priority: bottom corners (few exits) should be done first
                 if (row_i >= 4 && (col_i <= 1 || col_i >= row_i - 1)) d -= 2;
+                // Half-done priority: on L5+, cubes needing 1 more stomp are urgent —
+                // complete them now before travel or enemies revert them
+                if (lv >= 5 && stomps[i] === 1) d -= 4;
                 // Cluster bonus: prefer cubes with unfinished neighbors (sweep clusters together)
+                var clusterW = (lv >= 5) ? 1.5 : 0.5;
                 var adj = posAdj[i];
                 for (var ai = 0; ai < adj.length; ai++) {
-                    if (stomps[adj[ai]] > 0) d -= 0.5;
+                    if (stomps[adj[ai]] > 0) d -= clusterW;
                 }
                 if (d < bestDist || (d === bestDist && (bestIdx === -1 || i < bestIdx))) {
                     bestDist = d; bestIdx = i;
@@ -153,16 +157,27 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts) {
         while (pc !== curIdx) { path.push(pc); pc = dijk.prev[pc]; }
         totalHops += path.length;
 
-        // Apply stomps along path; on toggle levels fix reverts (never leave debt)
+        // Apply stomps along path; track revert damage on toggle/cycle levels
         for (var p = path.length - 1; p >= 0; p--) {
             var pos = path[p];
             if (stomps[pos] > 0) {
                 stomps[pos]--;
             } else if (isToggle) {
-                totalHops += 2; // revert + redo cost (only on toggle/cycling levels)
+                // Walking through completed cube reverts it — track the damage
+                // so future Dijkstra iterations route back to fix it.
+                // L5+ cycle: state 2→0 needs 2 stomps; L3-4 toggle: needs 1
+                stomps[pos] = (lv >= 5) ? 2 : 1;
             }
         }
         curIdx = bestIdx;
+        // L5+: finish current cube before leaving — prevents ping-pong where
+        // planner visits a cube once (0→1), leaves for a distant target, then
+        // must walk back through completed cubes to finish (1→2).
+        // Cost: 2 hops per remaining stomp (hop to adjacent + hop back).
+        if (lv >= 5 && stomps[curIdx] > 0) {
+            totalHops += stomps[curIdx] * 2;
+            stomps[curIdx] = 0;
+        }
     }
 
     return totalHops;
@@ -2262,14 +2277,11 @@ function aiPickBestDir() {
                         if (asc2 !== undefined && asc2 > altScore) { altScore = asc2; altDir = DIR_KEYS[ak2]; }
                     }
                 }
-                // Safety guard: don't override if the alternative is substantially
-                // less safe than the original. logPerHop difference > 0.02 means
-                // per-hop survival drops by >~2% — not worth it to break oscillation.
-                if (altDir) {
-                    var origScore = aiMoveScores[result];
-                    if (origScore !== undefined && origScore > altScore + 200) {
-                        altDir = null;
-                    }
+                // Safety guard: never sacrifice survival to break oscillation
+                if (altDir && aiLastHop1Surv) {
+                    var origP = aiLastHop1Surv[result] || 0;
+                    var altP = aiLastHop1Surv[altDir] || 0;
+                    if (altP < origP) altDir = null;
                 }
                 if (altDir) { result = altDir; aiPosHistory.length = 0; }
             }
