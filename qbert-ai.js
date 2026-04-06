@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI: hybrid strategy + survival tree
-var AI_VERSION = 'v13.2-teacher';
+var AI_VERSION = 'v13.3-teacher';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -1474,14 +1474,41 @@ function unifiedPick(gs, coilyActive) {
             // Realtime perfect teacher: simStep-based expectimax, no danger tables.
             var _tT0 = typeof performance !== 'undefined' ? performance.now() : 0;
             perfectTeacherReset();
-            // Adaptive deadline: higher levels need more time (enemies faster,
-            // deeper search needed). Headless mode gets generous budget.
+            // L5+ parity: mark even-row discs as inactive if taking them
+            // would create bad parity. The teacher doesn't know about parity
+            // and would use blocked disc rides as escape routes (STAY=1.0
+            // when no actual escape exists).
+            if (gs.lv >= 5) {
+                var _parEvenUsed = 0, _parEvenActive = 0;
+                for (var _pi2 = 0; _pi2 < gs.discs.length; _pi2++) {
+                    if (gs.discs[_pi2].row % 2 === 0) {
+                        if (gs.discs[_pi2].active) _parEvenActive++; else _parEvenUsed++;
+                    }
+                }
+                var _parOddFalls = gs.oddRowFalls || 0;
+                if (((_parEvenUsed + 1 - _parOddFalls) % 3 + 3) % 3 === 1 && _parEvenActive <= 1) {
+                    // Taking any remaining even disc would create bad parity — hide them
+                    for (var _pi3 = 0; _pi3 < gs.discs.length; _pi3++) {
+                        if (gs.discs[_pi3].active && gs.discs[_pi3].row % 2 === 0) {
+                            gs.discs[_pi3]._parityHidden = true;
+                            gs.discs[_pi3].active = false;
+                        }
+                    }
+                }
+            }
             var _teacherDeadline = window.AI_TEACHER_DEADLINE_MS ||
                 (window._headlessTest ? 500 : Math.min(80, Math.round(60 + Math.max(0, gs.sm - 1.4) * 50)));
             _dangerSurv = perfectTeacherEval(gs, DEPTH, {
                 mcSamples: window.AI_TEACHER_MC || 128,
                 deadlineMs: _teacherDeadline
             });
+            // Restore parity-hidden discs
+            for (var _pi4 = 0; _pi4 < gs.discs.length; _pi4++) {
+                if (gs.discs[_pi4]._parityHidden) {
+                    gs.discs[_pi4].active = true;
+                    delete gs.discs[_pi4]._parityHidden;
+                }
+            }
             // Coily misprediction diagnostic: log if teacher gives P=1 for all dirs
             // when a coily is nearby (within 2 tiles)
             if (window._predValidate && coilyInit) {
