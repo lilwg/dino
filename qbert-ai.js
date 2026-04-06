@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI: hybrid strategy + survival tree
-var AI_VERSION = 'v12.5-teacher';
+var AI_VERSION = 'v12.6-teacher';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -2333,17 +2333,19 @@ function aiPickBestDir() {
                     }
                 }
             }
-            // Safety guard: don't override if progress move is less safe
+            // Safety guard: don't override to a less safe direction
             if (bestProgDir && aiLastHop1Surv) {
                 var origP = aiLastHop1Surv[result] || 0;
                 var progP = aiLastHop1Surv[bestProgDir] || 0;
-                // Never override P=1.0 with P<1.0
-                if (origP >= 1.0 && progP < 1.0) bestProgDir = null;
+                // Never override to worse survival probability
+                if (origP > progP) bestProgDir = null;
                 // Don't override if score difference is large
-                var origScoreN = aiMoveScores[result];
-                var progScoreN = aiMoveScores[bestProgDir];
-                if (bestProgDir && origScoreN !== undefined && progScoreN !== undefined && origScoreN > progScoreN + 200) {
-                    bestProgDir = null;
+                if (bestProgDir) {
+                    var origScoreN = aiMoveScores[result];
+                    var progScoreN = aiMoveScores[bestProgDir];
+                    if (origScoreN !== undefined && progScoreN !== undefined && origScoreN > progScoreN + 100) {
+                        bestProgDir = null;
+                    }
                 }
             }
             if (bestProgDir) { result = bestProgDir; aiPosHistory.length = 0; }
@@ -2376,7 +2378,7 @@ function aiPickBestDir() {
 
     // Restore game RNG — must never leak seeded RNG into real game
     simRng = savedGameRng;
-    if (_origResult !== result && typeof console !== 'undefined') {
+    if (_origResult !== result && typeof console !== 'undefined' && window._predValidate) {
         var _origS = aiMoveScores[_origResult], _newS = aiMoveScores[result];
         console.log('AI OVERRIDE @(' + gs.player.row + ',' + gs.player.col + ') orig=' + _origResult + '(' + _origS + ') new=' + result + '(' + _newS + ') np=' + aiNoProgressCount + ' stay=' + aiStayCount);
     }
