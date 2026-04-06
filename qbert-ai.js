@@ -1477,7 +1477,7 @@ function unifiedPick(gs, coilyActive) {
             // Adaptive deadline: higher levels need more time (enemies faster,
             // deeper search needed). Headless mode gets generous budget.
             var _teacherDeadline = window.AI_TEACHER_DEADLINE_MS ||
-                (window._headlessTest ? 500 : Math.round(60 + Math.max(0, gs.sm - 1.4) * 150));
+                (window._headlessTest ? 500 : Math.min(80, Math.round(60 + Math.max(0, gs.sm - 1.4) * 50)));
             _dangerSurv = perfectTeacherEval(gs, DEPTH, {
                 mcSamples: window.AI_TEACHER_MC || 128,
                 deadlineMs: _teacherDeadline
