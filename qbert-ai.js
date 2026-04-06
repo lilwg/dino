@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI: hybrid strategy + survival tree
-var AI_VERSION = 'v11.2-overrideSafetyGuard';
+var AI_VERSION = 'v12.0-teacher';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -1405,7 +1405,10 @@ function unifiedPick(gs, coilyActive) {
     window.aiPredictedTimeline = null;
 
     var hasEnemies = gs.enemies.length > 0;
-    var baseDepth = window.AI_DEPTH || 8;
+    // Adaptive depth: at higher speed multipliers, each hop is fewer frames
+    // so the tree is cheaper per depth level. Scale max depth with sm to
+    // maintain similar wall-clock horizon coverage across levels.
+    var baseDepth = window.AI_DEPTH || Math.min(20, Math.round(8 * gs.sm));
     var DEPTH = hasEnemies ? baseDepth : 0;
 
     var pJumpDur = PLAYER_JUMP_DUR * gs.sm;
