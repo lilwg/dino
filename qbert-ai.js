@@ -1858,15 +1858,22 @@ function unifiedPick(gs, coilyActive) {
         var tc;
         if (_l5Dist && dir !== 'STAY') {
             // L5+ BFS routing: use direct distance to nearest unfinished cube.
-            // Much more effective than greedyTourCost on cycle levels where
-            // reverts cascade and multi-hop plans break down.
             var _l5d = DIRS[dir];
             var _l5r = gs.player.row + _l5d.dr, _l5c = gs.player.col + _l5d.dc;
             if (isValidPos(_l5r, _l5c)) {
                 var _l5idx = posToIdx[_l5r * ROWS + _l5c];
-                tc = _l5Dist[_l5idx] * 3; // scale to match tour cost range
+                tc = _l5Dist[_l5idx] * 3;
             } else {
-                tc = 999;
+                // Off-board move (disc ride) — lands at apex (0,0)
+                // Use simStep+simTourCost for disc rides (handles ride correctly)
+                simSeed(k * 100);
+                var tcCloneDisc = simDeepClone(gs);
+                var tcAliveDisc = simStep(tcCloneDisc, dir);
+                if (tcAliveDisc) {
+                    tc = tcCloneDisc.levelWon ? 0 : simTourCost(tcCloneDisc);
+                } else {
+                    tc = simTourCost(gs) + 1;
+                }
             }
         } else {
             // Non-L5 or STAY: use simStep + greedyTourCost
@@ -2345,7 +2352,7 @@ function aiPickBestDir() {
     // L5+ parity fix: compute (W-B) mod 3 from actual cube states.
     // Unsolvable when parBad. Fix by: (1) riding an even-row disc (preferred),
     // or (2) jumping off an odd-row edge (suicide, last resort).
-    if (gs.lv >= 5 && aiNoProgressCount > 30) {
+    if (gs.lv >= 5 && aiNoProgressCount > 80) {
         var parW = 0, parB = 0;
         for (var pi = 0; pi < gs.cubes.length; pi++) {
             var pdef = (gs.tgt - gs.cubes[pi].state + 3) % 3;
@@ -2374,18 +2381,16 @@ function aiPickBestDir() {
                     // Only if safe
                     var discP = aiLastHop1Surv && aiLastHop1Surv[discDir];
                     if (discP == null || discP > 0) {
-                        console.log('PARITY-DISC @(' + gs.player.row + ',' + gs.player.col + ') → ' + discDir + ' gap=' + parGap);
                         result = discDir;
                         parDiscFixed = true;
                     }
                 } else {
-                    // Route toward the disc
+                    // Route toward the disc — only if safe (P=1.0)
                     var pBfs = bfsTo(gs.player.row, gs.player.col, pdfd.row, trigCol);
                     if (pBfs && pBfs.path.length > 0) {
                         var pDir = pBfs.path[0];
-                        var pDirScore = aiMoveScores[pDir];
-                        if (pDirScore !== undefined && pDirScore > -10000) {
-                            console.log('PARITY-ROUTE @(' + gs.player.row + ',' + gs.player.col + ') → ' + pDir + ' toward disc@(' + pdfd.row + ',' + trigCol + ') gap=' + parGap);
+                        var pDirP = aiLastHop1Surv && aiLastHop1Surv[pDir];
+                        if (pDirP != null && pDirP >= 1.0) {
                             result = pDir;
                             parDiscFixed = true;
                         }
