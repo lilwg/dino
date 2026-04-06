@@ -1915,7 +1915,7 @@ function unifiedPick(gs, coilyActive) {
         // log(P_per_hop) = log(P_D) / D normalizes danger across depths.
         // λ controls how much tour progress matters vs survival.
         var LAMBDA = window.AI_LAMBDA || 0.002;
-        var logPerHop = survProb > 0 ? Math.log(survProb) / DEPTH : -100;
+        var logPerHop = survProb > 0 ? (DEPTH > 0 ? Math.log(survProb) / DEPTH : 0) : -100;
         var score = logPerHop - LAMBDA * tc;
         if (survProb <= 0) {
             aiMoveScores[dir] = -10000;
