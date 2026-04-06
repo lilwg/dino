@@ -147,6 +147,10 @@ function teacherExecHop(gs, dir, hopBitArr, rngFn) {
     simRng = rngFn;
     var alive;
     if (dir === 'STAY') {
+        // Game updates prevRow/prevCol on STAY — coily targets these.
+        // Without this, coily chases the OLD prev position, missing the player.
+        gs1.player.prevRow = gs1.player.row;
+        gs1.player.prevCol = gs1.player.col;
         // Advance enemies until the nearest non-jumping enemy could start
         // moving (moveInterval frames). This models "wait at current position
         // until enemies clear." 1 frame was too short — couldn't see redballs
