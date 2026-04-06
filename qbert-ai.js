@@ -2261,7 +2261,9 @@ function aiPickBestDir() {
     // Phase 1 (>10 moves): try to land on adjacent unfinished cube (safe only)
     // Phase 2 (>20 moves): use tour direction even if not immediately on unfinished cube
     // Phase 3 (>30 moves): accept highest-survival move toward progress (relax 100% safety)
-    if (aiNoProgressCount > 10 && result !== 'STAY') {
+    // No-progress override: only on toggle levels (L3+) where oscillation causes
+    // genuine stuck states. On L1-2, "no progress" during enemy evasion is normal.
+    if (gs.lv >= 3 && aiNoProgressCount > 10 && result !== 'STAY') {
         var dd3 = DIRS[result];
         var dr3 = gs.player.row + dd3.dr, dc3 = gs.player.col + dd3.dc;
         var destIsUnf3 = false;
