@@ -50,8 +50,8 @@ var aiTour, aiTourIdx, aiBoardSig;
 var gameSpeed = 1.0;  // global speed scale: 1.0 = normal arcade speed ("1x")
 var freezeTimer = 0;
 var enemiesEnabled = true;  // toggle via UI button
-var debugEnemies = false;   // ?debug URL param: spawn all enemies, hide player
-var debugReplay = false;    // ?debug URL param: show death replay rewind
+var debugEnemies = false;   // ?debugenemies URL param: spawn all enemies, hide player
+var debugReplay = false;    // ?debug URL param: show death replay + _predValidate
 </script>
 <script src="qbert.js"></script>
 <script src="qbert-ai.js"></script>
@@ -1771,8 +1771,9 @@ window.restartGame = function () {
     var params = new URLSearchParams(window.location.search.toLowerCase());
     var startLevel = parseInt(params.get('l'));
     round = (startLevel > 1 && startLevel <= 9) ? (startLevel - 1) * 4 + 1 : 1;
-    debugEnemies = params.has('debug');
+    debugEnemies = params.has('debugenemies');
     debugReplay = params.has('debug');
+    if (debugReplay) window._predValidate = true;
     nextExtraLife = 8000;
     gameOver  = false;
     paused    = false;
