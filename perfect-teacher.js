@@ -231,6 +231,9 @@ function teacherBranchProb(gs, dir, depth, opts) {
     var minSurv = 1.0;
     for (var ri = 0; ri < rngVals.length; ri++) {
         for (var c = 0; c < combos; c++) {
+            // Deadline check inside combo loop — prevents runaway at high depth
+            var _bnow = typeof performance !== 'undefined' ? performance.now() : Date.now();
+            if (_bnow >= _teacherDeadline) return minSurv;
             var bits = new Array(hopBits);
             for (var bi = 0; bi < hopBits; bi++) bits[bi] = (c >> bi) & 1;
             var res = teacherExecHop(gs, dir, bits, rngVals[ri]);
