@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI: hybrid strategy + survival tree
-var AI_VERSION = 'v12.1-hybrid-expectimax';
+var AI_VERSION = 'v12.2-hybrid-expectimax';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -151,13 +151,16 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts) {
             while (pc !== curIdx) { path.push(pc); pc = dijk.prev[pc]; }
             totalHops += path.length;
 
-            // Apply stomps along path; fix reverts immediately (never leave debt)
+            // Apply stomps along path; track revert damage on toggle/cycle levels
             for (var p = path.length - 1; p >= 0; p--) {
                 var pos = path[p];
                 if (stomps[pos] > 0) {
                     stomps[pos]--;
                 } else {
-                    totalHops += 2;
+                    // Walking through completed cube reverts it — track the damage
+                    // so future Dijkstra iterations route back to fix it.
+                    // L5+ cycle: state 2→0 needs 2 stomps; L3-4 toggle: needs 1
+                    stomps[pos] = (lv >= 5) ? 2 : 1;
                 }
             }
             curIdx = bestIdx;
