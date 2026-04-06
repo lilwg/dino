@@ -2241,34 +2241,49 @@ function aiPickBestDir() {
     }
 
     // L5+ parity fix: compute (W-B) mod 3 from actual cube states.
-    // Unsolvable when (W-B) ≡ 1 mod 3 from even row, or ≡ 2 from odd row.
-    // If stuck in bad parity, jump off an odd row to shift it.
-    if (gs.lv >= 5 && aiNoProgressCount > 50) {
+    // Unsolvable when (W-B) mod 3 ≠ 0. Fix by jumping off an odd-row edge
+    // (costs 1 life but fixes parity). Detect earlier (np>20) to avoid
+    // wasting hundreds of hops in a deadlock.
+    if (gs.lv >= 5 && aiNoProgressCount > 20) {
         var parW = 0, parB = 0;
         for (var pi = 0; pi < gs.cubes.length; pi++) {
             var pdef = (gs.tgt - gs.cubes[pi].state + 3) % 3;
             if (gs.cubes[pi].row % 2 === 0) parW += pdef; else parB += pdef;
         }
         var parGap = ((parW - parB) % 3 + 3) % 3;
-        var playerEven = gs.player.row % 2 === 0;
-        var parBad = (playerEven && parGap === 1) || (!playerEven && parGap === 2);
-        if (parBad && gs.player.row % 2 === 1) {
-            // On odd row with bad parity — jump off edge to fix
-            for (var fk = 0; fk < DIR_KEYS.length; fk++) {
-                var fd = DIRS[DIR_KEYS[fk]];
-                var fnr = gs.player.row + fd.dr, fnc = gs.player.col + fd.dc;
-                if (!isValidPos(fnr, fnc)) { result = DIR_KEYS[fk]; break; }
-                // Also check discs — don't jump onto a disc
-                var isDiscJump = false;
-                for (var fdi = 0; fdi < gs.discs.length; fdi++) {
-                    var fdc = gs.discs[fdi];
-                    if (fdc.active && fdc.row === gs.player.row) isDiscJump = true;
+        if (parGap !== 0) {
+            if (gs.player.row % 2 === 1) {
+                // On odd row — jump off edge to fix parity (suicide)
+                for (var fk = 0; fk < DIR_KEYS.length; fk++) {
+                    var fd = DIRS[DIR_KEYS[fk]];
+                    var fnr = gs.player.row + fd.dr, fnc = gs.player.col + fd.dc;
+                    // Don't jump onto a disc — that wastes a disc without fixing parity
+                    var isDiscJump = false;
+                    for (var fdi = 0; fdi < gs.discs.length; fdi++) {
+                        var fdc = gs.discs[fdi];
+                        if (fdc.active && fdc.row === gs.player.row &&
+                            ((fdc.side === 0 && DIR_KEYS[fk] === 'UL' && gs.player.col === 0) ||
+                             (fdc.side === 1 && DIR_KEYS[fk] === 'UR' && gs.player.col === gs.player.row)))
+                            isDiscJump = true;
+                    }
+                    if (!isDiscJump && !isValidPos(fnr, fnc)) { result = DIR_KEYS[fk]; break; }
                 }
-                if (!isDiscJump && !isValidPos(fnr, fnc)) { result = DIR_KEYS[fk]; break; }
+            } else {
+                // On even row — route to nearest odd-row edge to jump off
+                // Go DL or DR to reach an odd row, then jump off next eval
+                var bestEdgeDir = null, bestEdgeDist = 999;
+                for (var ek = 0; ek < DIR_KEYS.length; ek++) {
+                    var ed = DIRS[DIR_KEYS[ek]];
+                    var enr = gs.player.row + ed.dr, enc = gs.player.col + ed.dc;
+                    if (!isValidPos(enr, enc)) continue;
+                    if (enr % 2 === 1) {
+                        // Odd row — prefer positions at edges (col=0 or col=row)
+                        var edgeDist = Math.min(enc, enr - enc);
+                        if (edgeDist < bestEdgeDist) { bestEdgeDist = edgeDist; bestEdgeDir = DIR_KEYS[ek]; }
+                    }
+                }
+                if (bestEdgeDir) result = bestEdgeDir;
             }
-        } else if (parBad && playerEven) {
-            // On even row — need to get to odd row first, then fall
-            // Just let the normal AI move to an odd row; the fall will trigger next time
         }
     }
 
