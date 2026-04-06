@@ -1489,7 +1489,20 @@ function unifiedPick(gs, coilyActive) {
                 if (_cDist <= 3) {
                     var _allOne = true;
                     for (var _tk in _dangerSurv) if (_dangerSurv[_tk] < 0.99) _allOne = false;
-                    if (_allOne) console.log('TEACHER-COILY-WARN: all P=1 with coily ' + _cDist + ' away. teacher=' + JSON.stringify(_dangerSurv) + ' depth=' + DEPTH);
+                    if (_allOne) {
+                        console.log('TEACHER-COILY-WARN: all P=1 with coily ' + _cDist + ' away. teacher=' + JSON.stringify(_dangerSurv) + ' depth=' + DEPTH);
+                        if (!window._coilyWarnLogged) {
+                            window._coilyWarnLogged = true;
+                            console.log('COILY-WARN-SNAPSHOT ' + JSON.stringify({
+                                player: JSON.parse(JSON.stringify(gs.player)),
+                                enemies: JSON.parse(JSON.stringify(gs.enemies)),
+                                sm: gs.sm, tgt: gs.tgt, lv: gs.lv, round: gs.round,
+                                freezeTimer: gs.freezeTimer,
+                                cubes: gs.cubes.map(function(c){return {row:c.row,col:c.col,state:c.state};}),
+                                discs: gs.discs.map(function(d){return {side:d.side,row:d.row,active:d.active};})
+                            }));
+                        }
+                    }
                 }
             }
             var _tT1 = typeof performance !== 'undefined' ? performance.now() : 0;
@@ -2280,14 +2293,16 @@ function aiPickBestDir() {
                 }
             } else {
                 // On even row — route to nearest odd-row edge to jump off
-                // Go DL or DR to reach an odd row, then jump off next eval
+                // Only if the route is safe (don't walk into coily to fix parity)
                 var bestEdgeDir = null, bestEdgeDist = 999;
                 for (var ek = 0; ek < DIR_KEYS.length; ek++) {
                     var ed = DIRS[DIR_KEYS[ek]];
                     var enr = gs.player.row + ed.dr, enc = gs.player.col + ed.dc;
                     if (!isValidPos(enr, enc)) continue;
+                    // Skip directions the AI marked as lethal
+                    var ekScore = aiMoveScores[DIR_KEYS[ek]];
+                    if (ekScore !== undefined && ekScore <= -10000) continue;
                     if (enr % 2 === 1) {
-                        // Odd row — prefer positions at edges (col=0 or col=row)
                         var edgeDist = Math.min(enc, enr - enc);
                         if (edgeDist < bestEdgeDist) { bestEdgeDist = edgeDist; bestEdgeDir = DIR_KEYS[ek]; }
                     }
