@@ -1685,14 +1685,14 @@ function unifiedPick(gs, coilyActive) {
         var surv = 1.0;
         for (var pei = 0; pei < gsBase.enemies.length; pei++) {
             var pe = gsBase.enemies[pei];
-            if (pe.type === 'spawn-timer' || pe.type === 'slick' || pe.type === 'greenball') continue;
-            if (pe.spawnAnimTimer > 0 && pe.spawnAnimTimer > 5) continue;
+            if (pe.type === 'slick' || pe.type === 'greenball') continue;
+            // Don't skip spawnAnim enemies — they become active during the hop
             // Clone single-enemy state
             var gsSingle = simSurvivalClone(gsBase);
             gsSingle.enemies = [simSurvivalClone(gsBase).enemies[pei]];
             gsSingle.survivalOnly = true;
-            // Deterministic enemies: coily (chases player), dirBits redball/slick/greenball
-            if (pe.type === 'coily' || pe.dirBits != null) {
+            // Deterministic: coily, dirBits redball, spawn-timers (produce deterministic-path enemy)
+            if (pe.type === 'coily' || pe.dirBits != null || pe.type === 'spawn-timer') {
                 simHopDecisionQ = []; simHopDecisionIdx = 0;
                 simRng = createSeededRng(42);
                 surv *= simStepSurvival(gsSingle, dir) ? 1.0 : 0.0;
