@@ -263,7 +263,10 @@ function teacherBranchProb(gs, dir, depth, opts) {
     // happen only in certain hop-bit combos or state-dependent paths).
     var hasImminentSpawn = false;
     if (b.rngCalls === 0) {
-        var pFrames = Math.ceil(1 / (gs.player.jumpDur || 0.04)) + 2;
+        // Check 3 hops ahead — spawns fire in recursive tree and the
+        // measurement only sees hop 1. DL/DR asymmetry when timer fires
+        // on hop 2 was the most common misprediction.
+        var pFrames = (Math.ceil(1 / (gs.player.jumpDur || 0.04)) + 2) * 3;
         for (var si = 0; si < gs.enemies.length; si++) {
             if (gs.enemies[si].type === 'spawn-timer' && gs.enemies[si].timer <= pFrames) {
                 hasImminentSpawn = true; break;
