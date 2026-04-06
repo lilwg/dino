@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI: hybrid strategy + survival tree
-var AI_VERSION = 'v12.0-teacher';
+var AI_VERSION = 'v12.2-teacher';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -1728,9 +1728,13 @@ function unifiedPick(gs, coilyActive) {
                 var lcStompsAfter = 0;
                 for (var lci = 0; lci < gs.cubes.length; lci++) {
                     var lcc2 = gs.cubes[lci];
-                    var sn = stompsNeeded(lcc2.state, gs.lv);
-                    if (lcc2.row === lcr && lcc2.col === lcc) sn = Math.max(0, sn - 1); // this cube gets stomped
-                    lcStompsAfter += sn;
+                    if (lcc2.row === lcr && lcc2.col === lcc) {
+                        // Use actual nextCubeState — on cycling levels (Lv3+),
+                        // stomping a completed cube REVERTS it (needs more stomps)
+                        lcStompsAfter += stompsNeeded(nextCubeState(lcc2.state, gs.round), gs.lv);
+                    } else {
+                        lcStompsAfter += stompsNeeded(lcc2.state, gs.lv);
+                    }
                 }
                 if (lcStompsAfter === 0) isLevelComplete = true;
             }
@@ -1741,11 +1745,12 @@ function unifiedPick(gs, coilyActive) {
         if (hasEnemies) {
             survProb = _dangerSurv[dir] != null ? _dangerSurv[dir] : 0;
             // Level-complete: danger beyond this hop doesn't matter (level resets),
-            // but we still need to survive the CURRENT hop. If teacher says P>0,
-            // immediate landing is safe, override to 1.0.
-            if (isLevelComplete && survProb > 0) {
-                survProb = 1.0;
-            } else if (!isLevelComplete) { // fall-through to swap check below
+            // but we still need to survive the CURRENT hop. Compute 1-hop
+            // survival instead of using multi-hop teacher P (which is too pessimistic)
+            // or blindly setting 1.0 (which ignores mid-hop danger).
+            if (isLevelComplete) {
+                survProb = expectimaxDir(gs, dir, 1);
+            } else { // fall-through to swap check below
 
             // Cross-path (swap) collision check: if an enemy is about to jump
             // FROM the player's destination TO the player's source, they swap
@@ -1789,9 +1794,9 @@ function unifiedPick(gs, coilyActive) {
         var tc;
         if (tcAlive) {
             tc = tcClone.levelWon ? 0 : simTourCost(tcClone);
-            // Level-completing move: override survival to 1.0 — no need to survive
-            // 8 more hops when the level ends on landing
-            if (tcClone.levelWon) { survProb = 1.0; hop1Surv[dir] = 1.0; }
+            // Level-complete survival already handled above via isLevelComplete +
+            // expectimaxDir — no second override needed here (single-seed override
+            // was wrong: other enemy combos might kill the player during the hop)
         } else {
             tc = simTourCost(gs) + 1; // simStep failed with this seed; approximate
         }

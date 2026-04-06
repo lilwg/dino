@@ -1019,7 +1019,8 @@ function simStep(gs, dir) {
         gs.player.row = 0;
         gs.player.col = 0;
         simStompCube(gs, 0, 0);
-        if (simAllColored(gs)) {
+        // survivalOnly: cubes don't change, so simAllColored is stale — skip
+        if (!gs.survivalOnly && simAllColored(gs)) {
             gs.score += roundCompletionBonus(gs.round);
             gs.score += unusedDiscBonus(gs.discs);
             gs.levelWon = true;
@@ -1037,7 +1038,8 @@ function simStep(gs, dir) {
         simCheckCollision(gs);
         if (result === 'landed') {
             simStompCube(gs, gs.player.row, gs.player.col);
-            if (simAllColored(gs)) {
+            // survivalOnly: cubes don't change, so simAllColored is stale — skip
+            if (!gs.survivalOnly && simAllColored(gs)) {
                 gs.score += roundCompletionBonus(gs.round);
                 gs.score += unusedDiscBonus(gs.discs);
                 gs.levelWon = true;
