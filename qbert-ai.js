@@ -2131,7 +2131,9 @@ function aiPickBestDir() {
             }
         }
     }
-    if (result !== 'STAY' && !destIsUnfinished && aiPosHistory.length >= 3) {
+    // Only override on toggle levels (L3+) where real oscillation (A-B-A undo/redo)
+    // is a problem. On L1-2, zig-zagging is legitimate enemy evasion, not oscillation.
+    if (gs.lv >= 3 && result !== 'STAY' && !destIsUnfinished && aiPosHistory.length >= 3) {
         var h = aiPosHistory;
         var len = h.length;
         var oscillating = false;
