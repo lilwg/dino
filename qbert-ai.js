@@ -1678,6 +1678,7 @@ function unifiedPick(gs, coilyActive) {
     var tourCosts = {};
     var hop1Surv = {};
 
+    var _loopT0 = typeof performance !== 'undefined' ? performance.now() : 0;
     for (var k = 0; k < DIR_KEYS_WITH_STAY.length; k++) {
         var dir = DIR_KEYS_WITH_STAY[k];
         if (!simCanMove(gs, dir)) continue;
@@ -1922,7 +1923,9 @@ function unifiedPick(gs, coilyActive) {
     var _perfMs = typeof performance !== 'undefined' ? performance.now() - _perfStart : 0;
     if (_perfMs > 100) {
         var _teacherMs = window._teacherTimings && window._teacherTimings.length > 0 ? window._teacherTimings[window._teacherTimings.length-1].ms : 0;
-        console.log('AI SLOW: ' + _perfMs.toFixed(0) + 'ms (teacher=' + _teacherMs.toFixed(0) + 'ms), enemies=' + enemyInits.length + ' pos=(' + gs.player.row + ',' + gs.player.col + ') dir=' + (bestDir||'?'));
+        var _loopMs = typeof performance !== 'undefined' ? performance.now() - _loopT0 : 0;
+        var _preLoopMs = _loopT0 - _perfStart;
+        console.log('AI SLOW: ' + _perfMs.toFixed(0) + 'ms (teacher=' + _teacherMs.toFixed(0) + 'ms pre=' + _preLoopMs.toFixed(0) + 'ms loop=' + _loopMs.toFixed(0) + 'ms), enemies=' + enemyInits.length + ' pos=(' + gs.player.row + ',' + gs.player.col + ') dir=' + (bestDir||'?'));
     }
 
     return bestDir || 'STAY';
