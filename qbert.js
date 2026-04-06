@@ -642,22 +642,26 @@ function collisionTile(entity) {
 function simCheckCollision(gs) {
     if (gs.player.dead) return;
     var pt = collisionTile(gs.player);
-    if (!pt) return; // player at apex, immune
     for (var i = 0; i < gs.enemies.length; i++) {
         var e = gs.enemies[i];
         if (e.type === 'spawn-timer') continue;
         if (e.spawnAnimTimer > 0) continue; // dropping in, not active yet
-        var et = collisionTile(e);
-        if (!et) continue; // enemy at apex, immune
-        // Same-tile collision
-        var hit = (et.row === pt.row && et.col === pt.col);
-        // Cross-path collision (ROM $BD1E): entities swapping positions mid-jump
-        if (!hit && gs.player.jumping && e.jumping &&
+        // Cross-path collision (ROM $BD1E): entities swapping positions mid-jump.
+        // Checked BEFORE tile immunity — swap kills even during immune zone.
+        var hit = false;
+        if (gs.player.jumping && e.jumping &&
             gs.player.destRow != null && e.destRow != null &&
             gs.player.jumpSrcRow != null && e.jumpSrcRow != null &&
             gs.player.destRow === e.jumpSrcRow && gs.player.destCol === e.jumpSrcCol &&
             gs.player.jumpSrcRow === e.destRow && gs.player.jumpSrcCol === e.destCol) {
             hit = true;
+        }
+        // Same-tile collision (skip if player or enemy immune)
+        if (!hit) {
+            if (!pt) continue; // player immune at apex
+            var et = collisionTile(e);
+            if (!et) continue; // enemy immune at apex
+            if (et.row === pt.row && et.col === pt.col) hit = true;
         }
         if (hit) {
             if (e.type === 'slick') {
@@ -884,32 +888,35 @@ function simStepSurvival(gs, dir) {
 function _simCheckFast(gs) {
     var p = gs.player;
     // Player collision tile (inlined)
-    var ptR, ptC;
+    var ptR, ptC, pImmune = false;
     if (p.jumping) {
         if (p.jumpT < 0.33) { ptR = p.row; ptC = p.col; }
         else if (p.jumpT >= 0.67) { ptR = p.destRow; ptC = p.destCol; }
-        else return false; // immune at apex
+        else { pImmune = true; } // immune at apex (but cross-path still checked)
     } else {
         ptR = p.row; ptC = p.col;
     }
     for (var i = 0; i < gs.enemies.length; i++) {
         var e = gs.enemies[i];
         if (e.type === 'spawn-timer' || e.spawnAnimTimer > 0) continue;
-        // Enemy collision tile (inlined)
-        var etR, etC;
-        if (e.jumping) {
-            if (e.jumpT < 0.33) { etR = e.row; etC = e.col; }
-            else if (e.jumpT >= 0.67) { etR = e.destRow; etC = e.destCol; }
-            else continue; // immune
-        } else {
-            etR = e.row; etC = e.col;
-        }
-        var hit = (etR === ptR && etC === ptC);
-        // Cross-path
-        if (!hit && p.jumping && e.jumping &&
+        // Cross-path collision: checked even during immune zone
+        var hit = false;
+        if (p.jumping && e.jumping &&
             p.destRow === e.jumpSrcRow && p.destCol === e.jumpSrcCol &&
             p.jumpSrcRow === e.destRow && p.jumpSrcCol === e.destCol) {
             hit = true;
+        }
+        // Same-tile collision (skip if player or enemy immune)
+        if (!hit && !pImmune) {
+            var etR, etC;
+            if (e.jumping) {
+                if (e.jumpT < 0.33) { etR = e.row; etC = e.col; }
+                else if (e.jumpT >= 0.67) { etR = e.destRow; etC = e.destCol; }
+                else continue; // enemy immune
+            } else {
+                etR = e.row; etC = e.col;
+            }
+            if (etR === ptR && etC === ptC) hit = true;
         }
         if (hit) {
             if (e.type === 'slick') continue; // harmless
