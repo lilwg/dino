@@ -1714,6 +1714,10 @@ function unifiedPick(gs, coilyActive) {
                 gs.survivalOnly = true;
                 survProb = expectimaxDir(gs, dir, 1);
                 gs.survivalOnly = false;
+                if (window._predValidate && survProb >= 0.99) {
+                    console.log('TEACHER-FALLBACK dir=' + dir + ' P=' + survProb.toFixed(3) +
+                        ' (teacher returned null, used expectimaxDir)');
+                }
             }
             // Level-complete: danger beyond this hop doesn't matter (level resets),
             // but we still need to survive the CURRENT hop. The teacher's P
