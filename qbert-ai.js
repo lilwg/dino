@@ -1780,6 +1780,7 @@ function unifiedPick(gs, coilyActive) {
 
 
         // Compute tour cost — if simStep dies on this RNG seed, use current state estimate
+        var _tcT0 = typeof performance !== 'undefined' ? performance.now() : 0;
         simSeed(k * 100);
         var tcClone = simDeepClone(gs);
         var tcAlive = simStep(tcClone, dir);
@@ -1843,6 +1844,8 @@ function unifiedPick(gs, coilyActive) {
 
 
         tourCosts[dir] = tc;
+        var _tcMs = typeof performance !== 'undefined' ? performance.now() - _tcT0 : 0;
+        if (_tcMs > 30) console.log('TC SLOW: ' + _tcMs.toFixed(0) + 'ms dir=' + dir);
 
         // Combined score: P(survive)^SAFETY_EXP × discount^tour_cost
         // SAFETY_EXP < 1 compresses probabilities toward 1 (less risk-averse)
