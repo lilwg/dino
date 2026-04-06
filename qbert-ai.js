@@ -2296,14 +2296,17 @@ function aiPickBestDir() {
     // Unsolvable when (W-B) mod 3 ≠ 0. Fix by jumping off an odd-row edge
     // (costs 1 life but fixes parity). Detect earlier (np>20) to avoid
     // wasting hundreds of hops in a deadlock.
-    if (gs.lv >= 5 && aiNoProgressCount > 20) {
+    if (gs.lv >= 5 && aiNoProgressCount > 100) {
         var parW = 0, parB = 0;
         for (var pi = 0; pi < gs.cubes.length; pi++) {
             var pdef = (gs.tgt - gs.cubes[pi].state + 3) % 3;
             if (gs.cubes[pi].row % 2 === 0) parW += pdef; else parB += pdef;
         }
         var parGap = ((parW - parB) % 3 + 3) % 3;
-        if (parGap !== 0) {
+        // Only truly bad parity triggers suicide — not every non-zero gap
+        var playerEven = gs.player.row % 2 === 0;
+        var parBad = (playerEven && parGap === 1) || (!playerEven && parGap === 2);
+        if (parBad) {
             if (gs.player.row % 2 === 1) {
                 // On odd row — jump off edge to fix parity (suicide)
                 // Only if no enemy will kill us during the jump (check survival)
