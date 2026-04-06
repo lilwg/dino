@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI: hybrid strategy + survival tree
-var AI_VERSION = 'v12.2-teacher';
+var AI_VERSION = 'v12.3-teacher';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -1749,7 +1749,11 @@ function unifiedPick(gs, coilyActive) {
             // survival instead of using multi-hop teacher P (which is too pessimistic)
             // or blindly setting 1.0 (which ignores mid-hop danger).
             if (isLevelComplete) {
+                // Must set survivalOnly so simStepForced uses simStepSurvival
+                // (doesn't modify cubes). saveGS/restoreGS don't save cube states.
+                gs.survivalOnly = true;
                 survProb = expectimaxDir(gs, dir, 1);
+                gs.survivalOnly = false;
             } else { // fall-through to swap check below
 
             // Cross-path (swap) collision check: if an enemy is about to jump
