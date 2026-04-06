@@ -2082,10 +2082,15 @@ function aiPickBestDir() {
             console.log('DOOM @(' + gs.player.row + ',' + gs.player.col +
                 ') prev-dir=' + window._preDoomSnap.dir +
                 ' prev-survP=' + JSON.stringify(window._preDoomSnap.survP));
+            console.log('DOOM-SNAPSHOT ' + JSON.stringify(window._preDoomSnap.state));
         }
-        // Save lightweight pre-doom info
+        // Save full state for DOOM diagnosis
         window._preDoomSnap = {
-            dir: result, survP: JSON.parse(JSON.stringify(aiLastHop1Surv))
+            dir: result, survP: JSON.parse(JSON.stringify(aiLastHop1Surv)),
+            state: { player: JSON.parse(JSON.stringify(gs.player)),
+                     enemies: JSON.parse(JSON.stringify(gs.enemies)),
+                     sm: gs.sm, tgt: gs.tgt, lv: gs.lv, round: gs.round,
+                     freezeTimer: gs.freezeTimer }
         };
     }
 
