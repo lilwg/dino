@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI: hybrid strategy + survival tree
-var AI_VERSION = 'v12.3-teacher';
+var AI_VERSION = 'v12.4-teacher';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -1809,6 +1809,23 @@ function unifiedPick(gs, coilyActive) {
         var stayPenalty = 5 + aiStayCount * 3;
         if (gs.freezeTimer > 0) stayPenalty += 20;
         if (dir === 'STAY') tc += stayPenalty;
+
+        // Spawn-zone penalty: avoid row 0-1 when spawn timers are imminent.
+        // Enemies spawn at (1,0) or (1,1) — being there when a timer fires
+        // gives 50% chance of death with no escape.
+        if (dir !== 'STAY') {
+            var szd = DIRS[dir];
+            var szr = gs.player.row + szd.dr;
+            if (szr <= 1) {
+                for (var szi = 0; szi < gs.enemies.length; szi++) {
+                    if (gs.enemies[szi].type === 'spawn-timer') {
+                        var szt = gs.enemies[szi].timer;
+                        // Penalize if a spawn will fire within ~2 hops of arriving
+                        if (szt < pJumpFrames * 3) { tc += 15; break; }
+                    }
+                }
+            }
+        }
 
         // Anti-oscillation: on toggle levels with excessive hops, penalize
         // directions that land on completed cubes (prevents undo/redo cycles)
