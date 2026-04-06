@@ -242,7 +242,19 @@ function teacherBranchProb(gs, dir, depth, opts) {
     // 4 of 128 dirBits patterns. Full enumeration is too expensive (causes
     // depth regression). The player replans each hop, absorbing dirBits
     // variance by reacting to actual ball positions.
-    var rngVals = b.rngCalls > 0
+    // Use 4 probes if this hop consumed rng OR if any spawn timer could
+    // fire during this hop (teacherMeasureBranching may miss spawns that
+    // happen only in certain hop-bit combos or state-dependent paths).
+    var hasImminentSpawn = false;
+    if (b.rngCalls === 0) {
+        var pFrames = Math.ceil(1 / (gs.player.jumpDur || 0.04)) + 2;
+        for (var si = 0; si < gs.enemies.length; si++) {
+            if (gs.enemies[si].type === 'spawn-timer' && gs.enemies[si].timer <= pFrames) {
+                hasImminentSpawn = true; break;
+            }
+        }
+    }
+    var rngVals = (b.rngCalls > 0 || hasImminentSpawn)
         ? [_teacherRng0, _teacherRng25, _teacherRng5, _teacherRng75]
         : [_teacherRng5]; // no spawn: fixed 0.5
     // Average over hop-bit combos × spawn probes (expected value).
