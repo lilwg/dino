@@ -1657,25 +1657,28 @@ function drawHUD() {
     ctx.lineWidth = 1;
     ctx.stroke();
 
-    // Top-right: lives (up to 10 icons, then ×N overflow), score, hops
+    // Top-right: lives — 10 individual dinos, then 🦕×N for overflow
     ctx.fillStyle = '#535353';
     var maxIcons = 10;
     var showIcons = Math.min(lives, maxIcons);
-    for (var i = 0; i < showIcons; i++) {
-        if (spriteClean) {
-            var sp = SPRITES.TREX_IDLE;
-            var sc = 0.38;
+    if (spriteClean) {
+        var sp = SPRITES.TREX_IDLE;
+        var sc = 0.38;
+        for (var i = 0; i < showIcons; i++) {
             ctx.drawImage(spriteClean, sp.x, sp.y, sp.w, sp.h,
-                CW - 8 - (i + 1) * 20, 4,
-                sp.w * sc, sp.h * sc);
+                CW - 8 - (i + 1) * 20, 4, sp.w * sc, sp.h * sc);
         }
-    }
-    if (lives > maxIcons) {
-        ctx.textAlign = 'right';
-        var overflowX = CW - 8 - (showIcons + 1) * 20 + 10;
-        ctx.font = '600 11px "Courier New",monospace';
-        ctx.fillText('\u00d7' + (lives - maxIcons), overflowX, 17);
-        ctx.font = '600 13px "Courier New",monospace';
+        if (lives > maxIcons) {
+            // 11th dino icon
+            var elevenX = CW - 8 - (maxIcons + 1) * 20;
+            ctx.drawImage(spriteClean, sp.x, sp.y, sp.w, sp.h,
+                elevenX, 4, sp.w * sc, sp.h * sc);
+            // ×N text right after the 11th dino
+            ctx.font = '600 11px "Courier New",monospace';
+            ctx.textAlign = 'left';
+            ctx.fillText('\u00d7' + (lives - maxIcons), elevenX + sp.w * sc + 1, 17);
+            ctx.font = '600 13px "Courier New",monospace';
+        }
     }
     ctx.textAlign = 'right';
     ctx.fillText(padScore(score), CW - 10, 34);

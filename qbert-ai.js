@@ -1678,6 +1678,43 @@ function unifiedPick(gs, coilyActive) {
         if (gs.lv < 3 || lureDiscDist > 7 || coilyPlayerDist > 10) lureDisc = null;
     }
 
+    // ── L5+ BFS target distance: direct routing signal ────────────────────────
+    // On cycle levels, greedyTourCost's multi-hop plan breaks down because
+    // reverts cascade. Instead, compute BFS distance from each position to
+    // the nearest unfinished cube, penalizing paths through completed cubes.
+    var _l5Dist = null;
+    if (gs.lv >= 5) {
+        var _l5stomps = new Int8Array(POS_COUNT);
+        for (var _li = 0; _li < gs.cubes.length; _li++) {
+            var _lidx = posToIdx[gs.cubes[_li].row * ROWS + gs.cubes[_li].col];
+            _l5stomps[_lidx] = stompsNeeded(gs.cubes[_li].state, gs.lv);
+        }
+        _l5Dist = new Float64Array(POS_COUNT);
+        for (var _li2 = 0; _li2 < POS_COUNT; _li2++) _l5Dist[_li2] = 999;
+        var _l5q = [];
+        for (var _li3 = 0; _li3 < POS_COUNT; _li3++) {
+            if (_l5stomps[_li3] > 0) {
+                // Half-done cubes (1 stomp left) get priority
+                _l5Dist[_li3] = (_l5stomps[_li3] === 1) ? -2 : 0;
+                _l5q.push(_li3);
+            }
+        }
+        var _l5head = 0;
+        while (_l5head < _l5q.length) {
+            var _l5u = _l5q[_l5head++];
+            var _l5adj = posAdj[_l5u];
+            for (var _l5a = 0; _l5a < _l5adj.length; _l5a++) {
+                var _l5v = _l5adj[_l5a];
+                var _l5cost = _l5Dist[_l5u] + 1;
+                // Heavy penalty for routing through completed cubes
+                if (_l5stomps[_l5v] <= 0) _l5cost += 6;
+                if (_l5cost >= _l5Dist[_l5v]) continue;
+                _l5Dist[_l5v] = _l5cost;
+                _l5q.push(_l5v);
+            }
+        }
+    }
+
     // ── Core: survival tree safety check + strategy-aware tour cost per direction ──
 
     var safe1 = {};
@@ -1816,19 +1853,31 @@ function unifiedPick(gs, coilyActive) {
         hop1Surv[dir] = survProb;
 
 
-        // Compute tour cost — if simStep dies on this RNG seed, use current state estimate
+        // Compute tour cost
         var _tcT0 = typeof performance !== 'undefined' ? performance.now() : 0;
-        simSeed(k * 100);
-        var tcClone = simDeepClone(gs);
-        var tcAlive = simStep(tcClone, dir);
         var tc;
-        if (tcAlive) {
-            tc = tcClone.levelWon ? 0 : simTourCost(tcClone);
-            // Level-complete survival already handled above via isLevelComplete +
-            // expectimaxDir — no second override needed here (single-seed override
-            // was wrong: other enemy combos might kill the player during the hop)
+        if (_l5Dist && dir !== 'STAY') {
+            // L5+ BFS routing: use direct distance to nearest unfinished cube.
+            // Much more effective than greedyTourCost on cycle levels where
+            // reverts cascade and multi-hop plans break down.
+            var _l5d = DIRS[dir];
+            var _l5r = gs.player.row + _l5d.dr, _l5c = gs.player.col + _l5d.dc;
+            if (isValidPos(_l5r, _l5c)) {
+                var _l5idx = posToIdx[_l5r * ROWS + _l5c];
+                tc = _l5Dist[_l5idx] * 3; // scale to match tour cost range
+            } else {
+                tc = 999;
+            }
         } else {
-            tc = simTourCost(gs) + 1; // simStep failed with this seed; approximate
+            // Non-L5 or STAY: use simStep + greedyTourCost
+            simSeed(k * 100);
+            var tcClone = simDeepClone(gs);
+            var tcAlive = simStep(tcClone, dir);
+            if (tcAlive) {
+                tc = tcClone.levelWon ? 0 : simTourCost(tcClone);
+            } else {
+                tc = simTourCost(gs) + 1;
+            }
         }
         // STAY penalty: escalates with consecutive STAYs, much higher during freeze
         // (freeze = enemies can't move, so STAY wastes the safe window)
