@@ -1634,8 +1634,33 @@ function drawHUD() {
         ctx.font = '600 13px "Courier New",monospace';
     }
 
-    // Top-right: lives, then score + hops below
-    for (var i = 0; i < lives; i++) {
+    // Target color diamond below BEST line
+    var tgt = targetState();
+    var rc = getRoundColors();
+    var tgtCol = rc.top[tgt]; // always use true color (not inverted)
+    var tgtLabel = 'TARGET ';
+    ctx.fillStyle = '#535353';
+    ctx.fillText(tgtLabel, 10, 50);
+    var tgtLabelW = ctx.measureText(tgtLabel).width;
+    var tgtX = 10 + tgtLabelW + 7;
+    var tgtS = 7;
+    ctx.fillStyle = tgtCol;
+    ctx.beginPath();
+    ctx.moveTo(tgtX, 43 - tgtS);
+    ctx.lineTo(tgtX + tgtS, 43);
+    ctx.lineTo(tgtX, 43 + tgtS);
+    ctx.lineTo(tgtX - tgtS, 43);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // Top-right: lives (up to 10 icons, then ×N overflow), score, hops
+    ctx.fillStyle = '#535353';
+    var maxIcons = 10;
+    var showIcons = Math.min(lives, maxIcons);
+    for (var i = 0; i < showIcons; i++) {
         if (spriteClean) {
             var sp = SPRITES.TREX_IDLE;
             var sc = 0.38;
@@ -1644,32 +1669,21 @@ function drawHUD() {
                 sp.w * sc, sp.h * sc);
         }
     }
+    if (lives > maxIcons) {
+        ctx.textAlign = 'right';
+        var overflowX = CW - 8 - (showIcons + 1) * 20 + 10;
+        ctx.font = '600 11px "Courier New",monospace';
+        ctx.fillText('\u00d7' + (lives - maxIcons), overflowX, 17);
+        ctx.font = '600 13px "Courier New",monospace';
+    }
     ctx.textAlign = 'right';
     ctx.fillText(padScore(score), CW - 10, 34);
     ctx.fillText('HOPS ' + hops, CW - 10, 50);
 
-    // Round indicator center-top with target color cube
+    // Round indicator center-top
     ctx.textAlign = 'center';
     var lvText = 'LV ' + arcadeLevel() + '-' + ((round - 1) % 4 + 1);
     ctx.fillText(lvText, CW / 2, 18);
-    // Draw small target cube showing the goal color
-    var tgt = targetState();
-    var rc = getRoundColors();
-    var tgtCol = inverted ? invertColor(rc.top[tgt]) : rc.top[tgt];
-    var tgtX = CW / 2 + ctx.measureText(lvText).width / 2 + 10;
-    var tgtS = 10; // half-size of the mini cube
-    ctx.fillStyle = tgtCol;
-    // Diamond shape (top face of cube)
-    ctx.beginPath();
-    ctx.moveTo(tgtX, 8 - tgtS);
-    ctx.lineTo(tgtX + tgtS, 8);
-    ctx.lineTo(tgtX, 8 + tgtS);
-    ctx.lineTo(tgtX - tgtS, 8);
-    ctx.closePath();
-    ctx.fill();
-    ctx.strokeStyle = '#000';
-    ctx.lineWidth = 1;
-    ctx.stroke();
     ctx.fillStyle = inverted ? '#000' : '#fff';
     ctx.font = '600 13px "Courier New",monospace';
     ctx.textAlign = 'left';
