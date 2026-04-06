@@ -2084,12 +2084,18 @@ function aiPickBestDir() {
         if (_allZero && _anyEval && window._preDoomSnap) {
             console.log('DOOM @(' + gs.player.row + ',' + gs.player.col +
                 ') prev-dir=' + window._preDoomSnap.dir +
-                ' prev-survP=' + JSON.stringify(window._preDoomSnap.survP));
+                ' prev-survP=' + JSON.stringify(window._preDoomSnap.survP) +
+                ' teacherDepth=' + (window._preDoomSnap.teacherDepth || '?') +
+                ' teacherMs=' + (window._preDoomSnap.teacherMs || '?'));
             console.log('DOOM-SNAPSHOT ' + JSON.stringify(window._preDoomSnap.state));
         }
         // Save full state for DOOM diagnosis
+        var _lastTeacher = window._teacherTimings && window._teacherTimings.length > 0
+            ? window._teacherTimings[window._teacherTimings.length - 1] : null;
         window._preDoomSnap = {
             dir: result, survP: JSON.parse(JSON.stringify(aiLastHop1Surv)),
+            teacherDepth: _lastTeacher ? _lastTeacher.reachedDepth : '?',
+            teacherMs: _lastTeacher ? Math.round(_lastTeacher.ms) : '?',
             state: { player: JSON.parse(JSON.stringify(gs.player)),
                      enemies: JSON.parse(JSON.stringify(gs.enemies)),
                      sm: gs.sm, tgt: gs.tgt, lv: gs.lv, round: gs.round,
