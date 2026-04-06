@@ -228,21 +228,26 @@ function teacherBranchProb(gs, dir, depth, opts) {
     var rngVals = b.rngCalls > 0
         ? [_teacherRng0, _teacherRng25, _teacherRng5, _teacherRng75]
         : [_teacherRng5]; // no spawn: fixed 0.5
-    var minSurv = 1.0;
+    // Average over hop-bit combos × spawn probes (expected value).
+    // MIN was too pessimistic — marking dirs as P=0 when only 1/8
+    // enemy decision combos kills. Average gives correct P(survive).
+    var totalP = 0.0;
+    var totalN = 0;
     for (var ri = 0; ri < rngVals.length; ri++) {
         for (var c = 0; c < combos; c++) {
-            // Deadline check inside combo loop — prevents runaway at high depth
             var _bnow = typeof performance !== 'undefined' ? performance.now() : Date.now();
-            if (_bnow >= _teacherDeadline) return minSurv;
+            if (_bnow >= _teacherDeadline) {
+                return totalN > 0 ? totalP / totalN : 1.0;
+            }
             var bits = new Array(hopBits);
             for (var bi = 0; bi < hopBits; bi++) bits[bi] = (c >> bi) & 1;
             var res = teacherExecHop(gs, dir, bits, rngVals[ri]);
             var p = res.alive ? perfectTeacherSurvive(res.gs, nextDepth, opts) : 0.0;
-            if (p < minSurv) minSurv = p;
-            if (minSurv === 0.0) return 0.0;
+            totalP += p;
+            totalN++;
         }
     }
-    return minSurv;
+    return totalN > 0 ? totalP / totalN : 1.0;
 }
 function _teacherRng0() { return 0.0; }
 function _teacherRng25() { return 0.25; }
