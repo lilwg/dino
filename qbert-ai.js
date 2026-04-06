@@ -1482,6 +1482,16 @@ function unifiedPick(gs, coilyActive) {
                 mcSamples: window.AI_TEACHER_MC || 128,
                 deadlineMs: _teacherDeadline
             });
+            // Coily misprediction diagnostic: log if teacher gives P=1 for all dirs
+            // when a coily is nearby (within 2 tiles)
+            if (window._predValidate && coilyInit) {
+                var _cDist = Math.abs(coilyInit.row - gs.player.row) + Math.abs(coilyInit.col - gs.player.col);
+                if (_cDist <= 3) {
+                    var _allOne = true;
+                    for (var _tk in _dangerSurv) if (_dangerSurv[_tk] < 0.99) _allOne = false;
+                    if (_allOne) console.log('TEACHER-COILY-WARN: all P=1 with coily ' + _cDist + ' away. teacher=' + JSON.stringify(_dangerSurv) + ' depth=' + DEPTH);
+                }
+            }
             var _tT1 = typeof performance !== 'undefined' ? performance.now() : 0;
             if (!window._teacherTimings) window._teacherTimings = [];
             var _tStats = perfectTeacherStats();
