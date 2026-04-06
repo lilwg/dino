@@ -1486,22 +1486,15 @@ function unifiedPick(gs, coilyActive) {
             // when a coily is nearby (within 2 tiles)
             if (window._predValidate && coilyInit) {
                 var _cDist = Math.abs(coilyInit.row - gs.player.row) + Math.abs(coilyInit.col - gs.player.col);
-                if (_cDist <= 3) {
+                // Only warn if no discs available (disc escape explains P=1)
+                var _hasDisc = false;
+                for (var _di2 = 0; _di2 < gs.discs.length; _di2++)
+                    if (gs.discs[_di2].active) { _hasDisc = true; break; }
+                if (_cDist <= 2 && !_hasDisc) {
                     var _allOne = true;
                     for (var _tk in _dangerSurv) if (_dangerSurv[_tk] < 0.99) _allOne = false;
                     if (_allOne) {
-                        console.log('TEACHER-COILY-WARN: all P=1 with coily ' + _cDist + ' away. teacher=' + JSON.stringify(_dangerSurv) + ' depth=' + DEPTH);
-                        if (!window._coilyWarnLogged) {
-                            window._coilyWarnLogged = true;
-                            console.log('COILY-WARN-SNAPSHOT ' + JSON.stringify({
-                                player: JSON.parse(JSON.stringify(gs.player)),
-                                enemies: JSON.parse(JSON.stringify(gs.enemies)),
-                                sm: gs.sm, tgt: gs.tgt, lv: gs.lv, round: gs.round,
-                                freezeTimer: gs.freezeTimer,
-                                cubes: gs.cubes.map(function(c){return {row:c.row,col:c.col,state:c.state};}),
-                                discs: gs.discs.map(function(d){return {side:d.side,row:d.row,active:d.active};})
-                            }));
-                        }
+                        console.log('TEACHER-COILY-WARN: all P=1 with coily ' + _cDist + ' away, NO DISCS. teacher=' + JSON.stringify(_dangerSurv) + ' depth=' + DEPTH);
                     }
                 }
             }
@@ -2133,7 +2126,9 @@ function aiPickBestDir() {
             state: { player: JSON.parse(JSON.stringify(gs.player)),
                      enemies: JSON.parse(JSON.stringify(gs.enemies)),
                      sm: gs.sm, tgt: gs.tgt, lv: gs.lv, round: gs.round,
-                     freezeTimer: gs.freezeTimer }
+                     freezeTimer: gs.freezeTimer,
+                     cubes: gs.cubes.map(function(c){return {row:c.row,col:c.col,state:c.state};}),
+                     discs: gs.discs.map(function(d){return {side:d.side,row:d.row,active:d.active};}) }
         };
     }
 
