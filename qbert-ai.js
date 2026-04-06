@@ -2372,8 +2372,8 @@ function aiPickBestDir() {
                 if (simCanMove(gs, DIR_KEYS[k])) {
                     var sc = aiMoveScores[DIR_KEYS[k]];
                     if (sc === undefined || sc <= -10000) continue;
-                    // Don't override STAY with a much worse-scoring direction
-                    if (sc < stayScore - 200) continue;
+                    // Don't override STAY with a worse-scoring direction
+                    if (sc < stayScore - 50) continue;
                     var altP = aiLastHop1Surv[DIR_KEYS[k]] || 0;
                     if (altP < stayP) continue;
                     if (sc > bestAltScore) {
