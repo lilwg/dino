@@ -43,6 +43,7 @@ var TEACHER_DEFAULTS = {
     deadlineMs: Infinity,
 };
 var _teacherBudgetExceeded = false;
+var _teacherDeadline = Infinity; // wall-clock deadline, checked inside recursion
 
 function perfectTeacherReset() {
     teacherMemo = new Map();
@@ -172,6 +173,11 @@ function perfectTeacherSurvive(gs, depth, opts) {
     opts = opts || TEACHER_DEFAULTS;
     if (!gs.alive) return 0.0;
     if (depth <= 0) return 1.0;
+    // Deadline check inside recursion — prevents single teacherBranchProb
+    // call from running hundreds of ms. Return 1.0 (optimistic) so the
+    // completed shallower depth's answer is used instead.
+    var _now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    if (_now >= _teacherDeadline) return 1.0;
     if (depth > teacherStats.maxDepthSeen) teacherStats.maxDepthSeen = depth;
 
     var memoKey = teacherStateKey(gs) + '|' + depth;
@@ -221,7 +227,7 @@ function teacherBranchProb(gs, dir, depth, opts) {
     // variance by reacting to actual ball positions.
     var rngVals = b.rngCalls > 0
         ? [_teacherRng0, _teacherRng25, _teacherRng5, _teacherRng75]
-        : [_teacherConstRng];
+        : [_teacherRng5]; // no spawn: fixed 0.5
     var minSurv = 1.0;
     for (var ri = 0; ri < rngVals.length; ri++) {
         for (var c = 0; c < combos; c++) {
@@ -375,6 +381,7 @@ function perfectTeacherEval(gs, maxDepth, opts) {
     var deadline = typeof opts.deadlineMs === 'number' && isFinite(opts.deadlineMs)
         ? (typeof performance !== 'undefined' ? performance.now() : Date.now()) + opts.deadlineMs
         : Infinity;
+    _teacherDeadline = deadline; // expose to recursive functions
     var result = {};
     var completedDepth = 0;
     for (var dpt = 2; dpt <= maxDepth; dpt++) {
