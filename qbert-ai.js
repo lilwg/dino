@@ -104,7 +104,8 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts) {
     var curIdx = startIdx;
     var totalHops = 0;
 
-    for (var iter = 0; iter < 200; iter++) {
+    var _tcIterLimit = (typeof window !== 'undefined' && window.AI_TEACHER) ? 30 : 200;
+    for (var iter = 0; iter < _tcIterLimit; iter++) {
         if (isToggle) {
             var dijk = dijkstraFrom(curIdx, stomps, REVERT_PENALTY, discSources);
 
