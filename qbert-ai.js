@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI: hybrid strategy + survival tree
-var AI_VERSION = 'v12.0-simstep-expectimax';
+var AI_VERSION = 'v12.1-hybrid-expectimax';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -1676,28 +1676,21 @@ function unifiedPick(gs, coilyActive) {
     else if (enemyInits.length >= 5) DEPTH = Math.min(DEPTH, 5);
     else if (enemyInits.length >= 4) DEPTH = Math.min(DEPTH, 6);
 
-    // ── Factored simStep expectimax: per-enemy survival via game engine ────────
-    // Uses simStepSurvival directly — zero reimplementation of game logic.
-    // Per-enemy independence: P(survive) = Π P(survive enemy_i).
-
+    // ── Factored per-enemy pre-filter: O(N) quick rejection ────────────────────
+    // If any single enemy guarantees death, skip expensive full expectimax.
     function perEnemySurvival(gsBase, dir) {
-        // Compute P(survive hop 'dir') as product of per-enemy survival.
         var surv = 1.0;
         for (var pei = 0; pei < gsBase.enemies.length; pei++) {
             var pe = gsBase.enemies[pei];
             if (pe.type === 'slick' || pe.type === 'greenball') continue;
-            // Don't skip spawnAnim enemies — they become active during the hop
-            // Clone single-enemy state
             var gsSingle = simSurvivalClone(gsBase);
             gsSingle.enemies = [simSurvivalClone(gsBase).enemies[pei]];
             gsSingle.survivalOnly = true;
-            // Deterministic: coily, dirBits redball, spawn-timers (produce deterministic-path enemy)
             if (pe.type === 'coily' || pe.dirBits != null || pe.type === 'spawn-timer') {
                 simHopDecisionQ = []; simHopDecisionIdx = 0;
                 simRng = createSeededRng(42);
                 surv *= simStepSurvival(gsSingle, dir) ? 1.0 : 0.0;
             } else {
-                // Random enemy (egg, redball without dirBits): average 2 outcomes
                 var safe = 0;
                 for (var pc = 0; pc < 2; pc++) {
                     var gsc = simSurvivalClone(gsSingle);
@@ -1713,49 +1706,16 @@ function unifiedPick(gs, coilyActive) {
         return surv;
     }
 
-    function simExpectimaxRec(gsBase, dir, depth) {
-        if (depth <= 0) return 1.0;
-        var hopSurv = perEnemySurvival(gsBase, dir);
-        if (hopSurv <= 0) return 0;
-        // Advance full state with seeded RNG for post-hop enemy positions
-        var gsNext = simSurvivalClone(gsBase);
-        gsNext.survivalOnly = true;
-        simHopDecisionQ = null;
-        simRng = createSeededRng(depth * 100 + 7);
-        if (!simStepSurvival(gsNext, dir)) return 0;
-        // Find best future direction
-        var bestFuture = 0;
-        for (var sdk = 0; sdk < DIR_KEYS_WITH_STAY.length; sdk++) {
-            var sd = DIR_KEYS_WITH_STAY[sdk];
-            if (!simCanMove(gsNext, sd)) continue;
-            var f = simExpectimaxRec(gsNext, sd, depth - 1);
-            if (f > bestFuture) bestFuture = f;
-            if (bestFuture >= 0.999) break;
-        }
-        return hopSurv * bestFuture;
-    }
-
-    var _dangerSurv = {};
-    if (hasEnemies) {
-        for (var _dsk = 0; _dsk < DIR_KEYS_WITH_STAY.length; _dsk++) {
-            var _dsDir = DIR_KEYS_WITH_STAY[_dsk];
-            if (!simCanMove(gs, _dsDir)) continue;
-            _dangerSurv[_dsDir] = simExpectimaxRec(gs, _dsDir, DEPTH);
-        }
-    }
-
     // ── Expectimax search using simStepForced ──────────────────────────────────
-    // Replaces the hand-written survival tree with actual game engine simulation.
-    // P(survive) = average over enemy choice combos of max over player directions.
+    // Full combo enumeration via game engine. Pre-filtered by perEnemySurvival.
+    // Save/restore for zero-allocation undo.
 
     var _allZeros = [0,0,0,0,0,0,0,0];
     var _allOnes = [1,1,1,1,1,1,1,1];
 
-    // Save/restore game state for undo-based expectimax.
-    // Zero-allocation save: enemy fields saved into snapshot arrays.
     function saveGS(gs) {
         var p = gs.player, ne = gs.enemies.length;
-        var es = gs.enemies.slice(); // shallow copy (array may be spliced)
+        var es = gs.enemies.slice();
         var eSnap = new Array(ne);
         for (var i = 0; i < ne; i++) {
             var e = es[i];
@@ -1767,7 +1727,7 @@ function unifiedPick(gs, coilyActive) {
                    e.hops, e.spawnAnimTimer, e.dirBits, e.lureRow, e.lureCol];
         }
         var dSnap = new Array(gs.discs.length);
-        for (var i = 0; i < gs.discs.length; i++) dSnap[i] = gs.discs[i].active;
+        for (var i2 = 0; i2 < gs.discs.length; i2++) dSnap[i2] = gs.discs[i2].active;
         return [p.row, p.col, p.prevRow, p.prevCol, p.jumping, p.jumpT,
                 p.destRow, p.destCol, p.jumpSrcRow, p.jumpSrcCol, p.dead, p.deathTimer,
                 gs.alive, gs.freezeTimer, gs.score, gs.levelWon, gs.cubesColored,
@@ -1784,8 +1744,8 @@ function unifiedPick(gs, coilyActive) {
         gs.enemies = sn[17];
         var eSnap = sn[18], dSnap = sn[19];
         for (var i = 0; i < dSnap.length; i++) gs.discs[i].active = dSnap[i];
-        for (var i = 0; i < eSnap.length; i++) {
-            var e = gs.enemies[i], s = eSnap[i];
+        for (var i2 = 0; i2 < eSnap.length; i2++) {
+            var e = gs.enemies[i2], s = eSnap[i2];
             if (s[0] === 'spawn-timer') { e.timer=s[1]; e.forcedType=s[2]; continue; }
             e.type=s[0]; e.row=s[1]; e.col=s[2]; e.jumping=s[3]; e.jumpT=s[4];
             e.jumpDur=s[5]; e.destRow=s[6]; e.destCol=s[7];
@@ -1794,6 +1754,58 @@ function unifiedPick(gs, coilyActive) {
             e.spawnAnimTimer=s[15]; e.dirBits=s[16]; e.lureRow=s[17]; e.lureCol=s[18];
         }
     }
+
+    function expectimax(gs, depth) {
+        if (depth <= 0 || gs.levelWon) return 1.0;
+        if (!gs.alive) return 0.0;
+        if (typeof performance !== 'undefined' && performance.now() > _dirDeadline) return 1.0;
+        var fullEnum = (depth >= DEPTH - 2);
+        var N = fullEnum ? Math.min(countRandomDeciders(gs), 4) : 0;
+        var combos = fullEnum ? (1 << N) : 2;
+        var bestProb = 0;
+        for (var dk = 0; dk < DIR_KEYS_WITH_STAY.length; dk++) {
+            var dir = DIR_KEYS_WITH_STAY[dk];
+            if (!simCanMove(gs, dir)) continue;
+            var prob = 0;
+            for (var combo = 0; combo < combos; combo++) {
+                var choices;
+                if (fullEnum) {
+                    choices = [];
+                    for (var b = 0; b < N; b++) choices.push((combo >> b) & 1);
+                } else {
+                    choices = combo === 0 ? _allZeros : _allOnes;
+                }
+                var snap = saveGS(gs);
+                simStepForced(gs, dir, choices);
+                if (gs.alive) {
+                    prob += expectimax(gs, depth - 1) / combos;
+                }
+                restoreGS(gs, snap);
+            }
+            if (prob > bestProb) bestProb = prob;
+        }
+        return bestProb;
+    }
+
+    function expectimaxDir(gs, dir, depth) {
+        if (!simCanMove(gs, dir)) return 0;
+        var N = countRandomDeciders(gs);
+        var combos = 1 << Math.min(N, 4);
+        var prob = 0;
+        for (var combo = 0; combo < combos; combo++) {
+            var choices = [];
+            for (var b = 0; b < N; b++) choices.push((combo >> b) & 1);
+            var snap = saveGS(gs);
+            simStepForced(gs, dir, choices);
+            if (gs.alive) {
+                prob += expectimax(gs, depth - 1) / combos;
+            }
+            restoreGS(gs, snap);
+        }
+        return prob;
+    }
+
+    // (saveGS, restoreGS, expectimax, expectimaxDir defined above)
 
     function expectimax(gs, depth) {
         if (depth <= 0 || gs.levelWon) return 1.0;
@@ -1935,39 +1947,28 @@ function unifiedPick(gs, coilyActive) {
             }
         }
 
-        // Survival probability from precomputed danger tables (fast O(frames) lookup).
+        // Hybrid survival: O(N) per-enemy pre-filter + full expectimax.
+        // Pre-filter quickly rejects obviously fatal moves (any single enemy kills).
+        // Full expectimax via simStepForced enumerates all enemy combos accurately.
         var survProb = 1.0;
-        if (hasEnemies && !isLevelComplete) {
-            survProb = _dangerSurv[dir] != null ? _dangerSurv[dir] : 0;
-
-            // Cross-path (swap) collision check: if an enemy is about to jump
-            // FROM the player's destination TO the player's source, they swap
-            // mid-jump and both die (ROM $BD1E). Not captured by danger tables.
-            if (survProb > 0 && dir !== 'STAY') {
-                var _sd = DIRS[dir];
-                var _pDestR = gs.player.row + _sd.dr, _pDestC = gs.player.col + _sd.dc;
-                for (var _si = 0; _si < gs.enemies.length; _si++) {
-                    var _se = gs.enemies[_si];
-                    if (_se.type === 'spawn-timer' || _se.spawnAnimTimer > 0) continue;
-                    // Enemy already jumping in swap direction
-                    if (_se.jumping && _se.destRow === gs.player.row && _se.destCol === gs.player.col &&
-                        _se.row === _pDestR && _se.col === _pDestC) {
-                        survProb = 0; break;
-                    }
-                    // Enemy at player's dest, about to move (moveTimer near full)
-                    if (!_se.jumping && _se.row === _pDestR && _se.col === _pDestC &&
-                        _se.moveTimer + 1 >= _se.moveInterval) {
-                        // Might move to player's source — check if possible move includes it
-                        var _choices = getMoveChoicesForType(_se.type, _se.row, _se.col);
-                        for (var _ci = 0; _ci < _choices.length; _ci++) {
-                            if (_choices[_ci][0] === gs.player.row && _choices[_ci][1] === gs.player.col) {
-                                // Possible swap — conservatively mark unsafe
-                                survProb = 0; break;
-                            }
-                        }
-                        if (survProb === 0) break;
-                    }
+        var maxDepth = (dir === 'STAY') ? Math.min(DEPTH, 3) : DEPTH;
+        if (hasEnemies && maxDepth > 0 && !isLevelComplete) {
+            // Quick per-enemy pre-filter: if any single enemy kills, skip expectimax
+            var quickSurv = perEnemySurvival(gs, dir);
+            if (quickSurv <= 0) {
+                survProb = 0;
+            } else {
+                // Full expectimax with iterative deepening
+                gs.survivalOnly = true;
+                var _expRng = simRng;
+                simRng = function() { return 0.5; };
+                for (var idDepth = 2; idDepth <= maxDepth; idDepth += 2) {
+                    if (idDepth > 2 && typeof performance !== 'undefined' && performance.now() > _dirDeadline) break;
+                    survProb = expectimaxDir(gs, dir, idDepth);
+                    if (survProb <= 0) break;
                 }
+                simRng = _expRng;
+                gs.survivalOnly = false;
             }
         }
         hop1Surv[dir] = survProb;
