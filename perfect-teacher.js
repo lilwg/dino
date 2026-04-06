@@ -147,10 +147,26 @@ function teacherExecHop(gs, dir, hopBitArr, rngFn) {
     simRng = rngFn;
     var alive;
     if (dir === 'STAY') {
-        // Game's STAY only advances 1 frame (AI re-polled each frame).
-        // Don't use simStep's STAY which waits for coily's full jump cycle.
-        simUpdateEnemies(gs1);
-        simCheckCollision(gs1);
+        // Advance enemies until the nearest non-jumping enemy could start
+        // moving (moveInterval frames). This models "wait at current position
+        // until enemies clear." 1 frame was too short — couldn't see redballs
+        // moving away. simStep's full STAY (coily cycle) was too long.
+        var stayFrames = 1;
+        for (var si = 0; si < gs1.enemies.length; si++) {
+            var se = gs1.enemies[si];
+            if (se.type === 'spawn-timer' || se.type === 'slick' || se.type === 'greenball') continue;
+            if (!se.jumping && se.moveInterval) {
+                var framesUntilMove = se.moveInterval - (se.moveTimer || 0);
+                if (framesUntilMove > stayFrames) stayFrames = framesUntilMove;
+            }
+        }
+        // Cap at 1 player hop worth of frames to keep horizon comparable
+        var maxStay = Math.ceil(1.0 / (gs1.player.jumpDur || 0.04)) + 2;
+        if (stayFrames > maxStay) stayFrames = maxStay;
+        for (var sf = 0; sf < stayFrames && gs1.alive; sf++) {
+            simUpdateEnemies(gs1);
+            simCheckCollision(gs1);
+        }
         alive = gs1.alive;
     } else {
         alive = simStep(gs1, dir);

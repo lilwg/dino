@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI: hybrid strategy + survival tree
-var AI_VERSION = 'v12.7-teacher';
+var AI_VERSION = 'v12.9-teacher';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -1477,7 +1477,7 @@ function unifiedPick(gs, coilyActive) {
             // Adaptive deadline: higher levels need more time (enemies faster,
             // deeper search needed). Headless mode gets generous budget.
             var _teacherDeadline = window.AI_TEACHER_DEADLINE_MS ||
-                (window._headlessTest ? 500 : Math.round(50 + Math.max(0, gs.sm - 1.4) * 200));
+                (window._headlessTest ? 500 : Math.round(80 + Math.max(0, gs.sm - 1.2) * 200));
             _dangerSurv = perfectTeacherEval(gs, DEPTH, {
                 mcSamples: window.AI_TEACHER_MC || 128,
                 deadlineMs: _teacherDeadline
@@ -1706,7 +1706,15 @@ function unifiedPick(gs, coilyActive) {
         // Survival probability from precomputed danger tables (fast O(frames) lookup).
         var survProb = 1.0;
         if (hasEnemies) {
-            survProb = _dangerSurv[dir] != null ? _dangerSurv[dir] : 0;
+            // If teacher timed out (empty result), fall back to 1-hop expectimax
+            // rather than P=0 which kills all directions as -10000.
+            if (_dangerSurv[dir] != null) {
+                survProb = _dangerSurv[dir];
+            } else {
+                gs.survivalOnly = true;
+                survProb = expectimaxDir(gs, dir, 1);
+                gs.survivalOnly = false;
+            }
             // Level-complete: danger beyond this hop doesn't matter (level resets),
             // but we still need to survive the CURRENT hop. Compute 1-hop
             // survival instead of using multi-hop teacher P (which is too pessimistic)
