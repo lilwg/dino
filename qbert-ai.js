@@ -121,17 +121,18 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts) {
                 var curHops = typeof hops !== 'undefined' ? hops : 0;
                 var hopsSinceVisit = curHops - (aiCubeLastVisit[i] || 0);
                 if (hopsSinceVisit < 20) d += (20 - hopsSinceVisit) * 0.5;
-                // Bottom-up sweep: prefer bottom-row cubes to avoid backtracking
-                // through completed upper cubes. Stronger on L3-4 where reverts hurt.
+                // Bottom-up sweep: complete lower rows first to avoid backtracking
+                // through completed upper rows. L5 needs very strong bias to enforce
+                // systematic sweep — weak bias lets planner pick distant targets.
                 var row_i = idxToPos[i][0], col_i = idxToPos[i][1];
-                d -= row_i * (lv >= 5 ? 1.5 : 2);
+                d -= row_i * (lv >= 5 ? 4 : 2);
                 // Corner priority: bottom corners (few exits) should be done first
                 if (row_i >= 4 && (col_i <= 1 || col_i >= row_i - 1)) d -= 2;
                 // Half-done priority: on L5+, cubes needing 1 more stomp are urgent —
                 // complete them now before travel or enemies revert them
-                if (lv >= 5 && stomps[i] === 1) d -= 4;
+                if (lv >= 5 && stomps[i] === 1) d -= 6;
                 // Cluster bonus: prefer cubes with unfinished neighbors (sweep clusters together)
-                var clusterW = (lv >= 5) ? 1.5 : 0.5;
+                var clusterW = (lv >= 5) ? 3 : 0.5;
                 var adj = posAdj[i];
                 for (var ai = 0; ai < adj.length; ai++) {
                     if (stomps[adj[ai]] > 0) d -= clusterW;
