@@ -1941,6 +1941,26 @@ function unifiedPick(gs, coilyActive) {
         }
     }
 
+    // Disc escape: if all on-board directions are fatal, try disc rides
+    var allFatal = true;
+    for (var afk in aiMoveScores) {
+        if (aiMoveScores[afk] > -10000) { allFatal = false; break; }
+    }
+    if (allFatal) {
+        for (var dek = 0; dek < DIR_KEYS.length; dek++) {
+            var deDir = DIR_KEYS[dek];
+            if (hop1Surv[deDir] !== undefined) continue; // already evaluated
+            if (!simCanMove(gs, deDir)) continue;
+            // This is a disc ride direction that wasn't evaluated (filtered earlier)
+            var deClone = simDeepClone(gs);
+            var deAlive = simStep(deClone, deDir);
+            if (deAlive) {
+                hop1Surv[deDir] = 1.0;
+                aiMoveScores[deDir] = 5000; // high score — escape!
+            }
+        }
+    }
+
     aiLastHop1Surv = hop1Surv;
     aiLastTourCosts = tourCosts;
     aiLureTarget = lureDiscAdj; // export for viz
