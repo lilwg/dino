@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI: hybrid strategy + survival tree
-var AI_VERSION = 'v13.0-teacher';
+var AI_VERSION = 'v13.1-teacher';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -1716,12 +1716,15 @@ function unifiedPick(gs, coilyActive) {
                 gs.survivalOnly = false;
             }
             // Level-complete: danger beyond this hop doesn't matter (level resets),
-            // but we still need to survive the CURRENT hop. Compute 1-hop
-            // survival instead of using multi-hop teacher P (which is too pessimistic)
-            // or blindly setting 1.0 (which ignores mid-hop danger).
-            if (isLevelComplete) {
-                // Must set survivalOnly so simStepForced uses simStepSurvival
-                // (doesn't modify cubes). saveGS/restoreGS don't save cube states.
+            // but we still need to survive the CURRENT hop. The teacher's P
+            // (multi-hop, with spawn RNG probes) is slightly pessimistic but
+            // correctly handles spawn timing. Don't override with expectimaxDir
+            // which uses a single RNG seed and can miss 50% spawn danger.
+            if (isLevelComplete && _dangerSurv[dir] != null) {
+                // Teacher's multi-hop P ≤ P(survive 1 hop). Conservative but
+                // correct for spawn RNG. Only the teacher probes both columns.
+            } else if (isLevelComplete) {
+                // Teacher timed out — fall back to 1-hop expectimax
                 gs.survivalOnly = true;
                 survProb = expectimaxDir(gs, dir, 1);
                 gs.survivalOnly = false;
