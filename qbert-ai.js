@@ -99,8 +99,8 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts) {
 
     var isToggle = lv >= 3;
     // L3-4 (toggle): penalty 1.5 (lower = allow more backtracking, detours cost more)
-    // L5+ (cycle): penalty 2.5 (higher = reverts cost 3 stomps to fix)
-    var REVERT_PENALTY = lv >= 5 ? 2.5 : (isToggle ? 1.5 : 0);
+    // L5+ (cycle): penalty 5 (each revert costs 2 stomps + travel to fix — deter strongly)
+    var REVERT_PENALTY = lv >= 5 ? 5 : (isToggle ? 1.5 : 0);
     var curIdx = startIdx;
     var totalHops = 0;
 
@@ -125,10 +125,14 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts) {
                     d -= row_i * (lv >= 5 ? 1.5 : 2);
                     // Corner priority: bottom corners (few exits) should be done first
                     if (row_i >= 4 && (col_i <= 1 || col_i >= row_i - 1)) d -= 2;
+                    // Half-done priority: on L5+, cubes needing 1 more stomp are urgent —
+                    // complete them now before travel or enemies revert them
+                    if (lv >= 5 && stomps[i] === 1) d -= 4;
                     // Cluster bonus: prefer cubes with unfinished neighbors (sweep clusters together)
+                    var clusterW = (lv >= 5) ? 1.5 : 0.5;
                     var adj = posAdj[i];
                     for (var ai = 0; ai < adj.length; ai++) {
-                        if (stomps[adj[ai]] > 0) d -= 0.5;
+                        if (stomps[adj[ai]] > 0) d -= clusterW;
                     }
                     if (d < bestDist || (d === bestDist && (bestIdx === -1 || i < bestIdx))) {
                         bestDist = d; bestIdx = i;
@@ -164,6 +168,14 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts) {
                 }
             }
             curIdx = bestIdx;
+            // L5+: finish current cube before leaving — prevents ping-pong where
+            // planner visits a cube once (0→1), leaves for a distant target, then
+            // must walk back through completed cubes to finish (1→2).
+            // Cost: 2 hops per remaining stomp (hop to adjacent + hop back).
+            if (lv >= 5 && stomps[curIdx] > 0) {
+                totalHops += stomps[curIdx] * 2;
+                stomps[curIdx] = 0;
+            }
         } else {
             // Non-toggle: use precomputed BFS distances, consider disc shortcuts
             var bestIdx = -1, bestDist = 999;
