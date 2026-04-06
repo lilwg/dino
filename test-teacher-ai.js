@@ -9,7 +9,7 @@ var fs = require('fs');
 var path = require('path');
 
 var numRounds = 16;
-var depth = 8;
+var depth = 0; // 0 = use adaptive formula in qbert-ai.js
 var mcSamples = 128;
 for (var i = 2; i < process.argv.length; i++) {
     if (process.argv[i] === '--depth') depth = parseInt(process.argv[++i]);
@@ -64,7 +64,7 @@ function percentile(arr, p) {
         window._headlessTest = true;
         window._predValidate = true;
         window.AI_TEACHER = true;
-        window.AI_DEPTH = opts.depth;
+        if (opts.depth > 0) window.AI_DEPTH = opts.depth; // 0 = use adaptive formula
         window.AI_TEACHER_MC = opts.mcSamples;
         window._teacherTimings = [];
         window._roundResults = [];

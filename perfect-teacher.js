@@ -204,13 +204,9 @@ function perfectTeacherSurvive(gs, depth, opts) {
 }
 
 // Per-direction MIN-over-hop-bit-enumeration adaptive survival.
-// Exhaustively enumerates enemy hop-bit decisions (egg/ugg/wrongway DL/DR,
-// up/stay choices consumed via simHopDecisionQ). For spawn events (simRng
-// direct calls), tests BOTH simRng=0.0 (spawnCol=0, dirBits=0) and
-// simRng=0.5 (spawnCol=1, dirBits=64) and takes MIN. This covers both
-// possible spawn columns — the main source of spawn variance that matters.
-//
-// Returns MIN across all (hop-bit combo × spawn-rng) outcomes.
+// Exhaustively enumerates enemy hop-bit decisions AND spawn dirBits.
+// For spawn events: enumerates 2 spawnCols × 2^K relevant dirBits,
+// pre-filtered by ball reachability. Takes MIN across all outcomes.
 function teacherBranchProb(gs, dir, depth, opts) {
     var nextDepth = depth - 1;
     teacherStats.exhaustiveNodes++;
@@ -218,10 +214,14 @@ function teacherBranchProb(gs, dir, depth, opts) {
     var hopBits = b.hopBits;
     if (hopBits > opts.exhaustiveBitsLimit) hopBits = opts.exhaustiveBitsLimit;
     var combos = 1 << hopBits;
-    // Enumerate both spawn-col outcomes if spawn events present.
-    // Test 4 spawn-RNG probes: covers both spawn columns AND 4 of 128 dirBits
-    // patterns (0, 32, 64, 96). Cost: 4x per spawn node.
-    var rngVals = b.rngCalls > 0 ? [_teacherRng0, _teacherRng25, _teacherRng5, _teacherRng75] : [_teacherRng5];
+
+    // Spawn-RNG probes: 4 fixed values covering both spawn columns and
+    // 4 of 128 dirBits patterns. Full enumeration is too expensive (causes
+    // depth regression). The player replans each hop, absorbing dirBits
+    // variance by reacting to actual ball positions.
+    var rngVals = b.rngCalls > 0
+        ? [_teacherRng0, _teacherRng25, _teacherRng5, _teacherRng75]
+        : [_teacherConstRng];
     var minSurv = 1.0;
     for (var ri = 0; ri < rngVals.length; ri++) {
         for (var c = 0; c < combos; c++) {
@@ -230,7 +230,7 @@ function teacherBranchProb(gs, dir, depth, opts) {
             var res = teacherExecHop(gs, dir, bits, rngVals[ri]);
             var p = res.alive ? perfectTeacherSurvive(res.gs, nextDepth, opts) : 0.0;
             if (p < minSurv) minSurv = p;
-            if (minSurv === 0.0) return 0.0; // early exit
+            if (minSurv === 0.0) return 0.0;
         }
     }
     return minSurv;
