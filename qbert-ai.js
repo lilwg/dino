@@ -80,7 +80,7 @@ function dijkstraFrom(srcIdx, stomps, penalty, discSources) {
 // Greedy nearest-neighbor tour cost with deterministic tie-breaking.
 // On toggle levels, uses Dijkstra to route around completed cubes.
 // Ties broken by lowest position index for stability.
-function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts) {
+function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts, pathOut) {
     var stomps = new Int8Array(POS_COUNT);
     for (var i = 0; i < cubes.length; i++) {
         var idx = posToIdx[cubes[i].row * ROWS + cubes[i].col];
@@ -159,6 +159,14 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts) {
         while (pc !== curIdx) { path.push(pc); pc = dijk.prev[pc]; }
         totalHops += path.length;
 
+        // Record path for viz
+        if (pathOut) {
+            for (var pw = path.length - 1; pw >= 0; pw--) {
+                var wp = idxToPos[path[pw]];
+                pathOut.push(wp[0], wp[1]);
+            }
+        }
+
         // Apply stomps along path; track revert damage on toggle/cycle levels
         for (var p = path.length - 1; p >= 0; p--) {
             var pos = path[p];
@@ -186,8 +194,8 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts) {
 }
 
 // Tour cost from a simulation state
-function simTourCost(gs) {
-    return greedyTourCost(posToIdx[gs.player.row * ROWS + gs.player.col], gs.cubes, gs.tgt, gs.lv, gs.discs, aiRevertCounts);
+function simTourCost(gs, pathOut) {
+    return greedyTourCost(posToIdx[gs.player.row * ROWS + gs.player.col], gs.cubes, gs.tgt, gs.lv, gs.discs, aiRevertCounts, pathOut);
 }
 
 // ─── Danger zone assessment ──────────────────────────────────────────────────
@@ -1687,6 +1695,7 @@ function unifiedPick(gs, coilyActive) {
     var tourCosts = {};
     var hop1Surv = {};
 
+    var _dirTourPaths = {};
     var _loopT0 = typeof performance !== 'undefined' ? performance.now() : 0;
     for (var k = 0; k < DIR_KEYS_WITH_STAY.length; k++) {
         var dir = DIR_KEYS_WITH_STAY[k];
@@ -1821,14 +1830,16 @@ function unifiedPick(gs, coilyActive) {
         // Compute tour cost
         var _tcT0 = typeof performance !== 'undefined' ? performance.now() : 0;
         var tc;
+        var _vizPath = [];
         simSeed(k * 100);
         var tcClone = simDeepClone(gs);
         var tcAlive = simStep(tcClone, dir);
         if (tcAlive) {
-            tc = tcClone.levelWon ? 0 : simTourCost(tcClone);
+            tc = tcClone.levelWon ? 0 : simTourCost(tcClone, _vizPath);
         } else {
-            tc = simTourCost(gs) + 1;
+            tc = simTourCost(gs, _vizPath) + 1;
         }
+        _dirTourPaths[dir] = _vizPath;
         // STAY penalty: escalates with consecutive STAYs, much higher during freeze
         // (freeze = enemies can't move, so STAY wastes the safe window)
         var stayPenalty = 5 + aiStayCount * 3;
@@ -2012,6 +2023,18 @@ function unifiedPick(gs, coilyActive) {
         if (aiMoveScores[fd] === undefined) continue;
         if (aiMoveScores[fd] > bestScore) { bestScore = aiMoveScores[fd]; bestDir = fd; }
     }
+    // Export the actual tour path for the chosen direction (for viz)
+    var _bestPath = _dirTourPaths[bestDir || 'STAY'] || [];
+    window._aiVizTourPath = [];
+    window._aiVizTourPath.push(gs.player.row, gs.player.col);
+    if (bestDir && bestDir !== 'STAY') {
+        var _bd = DIRS[bestDir];
+        var _bnr = gs.player.row + _bd.dr, _bnc = gs.player.col + _bd.dc;
+        if (isValidPos(_bnr, _bnc)) window._aiVizTourPath.push(_bnr, _bnc);
+    }
+    for (var _bpi = 0; _bpi < _bestPath.length; _bpi++)
+        window._aiVizTourPath.push(_bestPath[_bpi]);
+
     restoreRng();
     var _perfMs = typeof performance !== 'undefined' ? performance.now() - _perfStart : 0;
     if (_perfMs > 100) {
