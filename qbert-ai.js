@@ -2314,7 +2314,7 @@ function aiPickBestDir() {
     // L5+ parity fix: compute (W-B) mod 3 from actual cube states.
     // Unsolvable when parBad. Fix by: (1) riding an even-row disc (preferred),
     // or (2) jumping off an odd-row edge (suicide, last resort).
-    if (gs.lv >= 5 && aiNoProgressCount > 80) {
+    if (gs.lv >= 5 && aiNoProgressCount > 50) {
         var parW = 0, parB = 0;
         for (var pi = 0; pi < gs.cubes.length; pi++) {
             var pdef = (gs.tgt - gs.cubes[pi].state + 3) % 3;
@@ -2323,6 +2323,15 @@ function aiPickBestDir() {
         var parGap = ((parW - parB) % 3 + 3) % 3;
         var playerEven = gs.player.row % 2 === 0;
         var parBad = (playerEven && parGap === 1) || (!playerEven && parGap === 2);
+        // At very high np, treat ANY non-zero parGap as bad — the standard check
+        // only catches half the cases (parGap=1 on even, =2 on odd) but the
+        // oscillation between rows means it misses the other half.
+        if (!parBad && parGap !== 0 && aiNoProgressCount > 200) parBad = true;
+        if (window._predValidate && aiNoProgressCount % 50 === 0) {
+            console.log('PARITY-CHECK np=' + aiNoProgressCount + ' gap=' + parGap +
+                ' W=' + parW + ' B=' + parB + ' row=' + gs.player.row +
+                ' bad=' + parBad + ' discs=' + gs.discs.filter(function(d){return d.active;}).length);
+        }
         if (parBad) {
             // Option 1: ride an even-row disc to fix parity (no life cost)
             var parDiscFixed = false;
