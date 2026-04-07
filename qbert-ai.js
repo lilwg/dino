@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI: hybrid strategy + survival tree
-var AI_VERSION = 'v14.1-teacher';
+var AI_VERSION = 'v14.2-teacher';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -22,6 +22,23 @@ var AI_VERSION = 'v14.1-teacher';
 //   - Factored per-enemy survival tree as fallback when teacher times out
 
 // ─── Tour planning ───────────────────────────────────────────────────────────
+
+// Pre-computed sweep order for L5+ cycle levels: bottom-up zigzag.
+// Complete lower rows first so you never backtrack through completed cubes.
+// Within each row, alternate direction to minimize travel.
+var SWEEP_ORDER = (function() {
+    var order = [];
+    for (var r = ROWS - 1; r >= 0; r--) {
+        if ((ROWS - 1 - r) % 2 === 0) {
+            // Even distance from bottom: left to right
+            for (var c = 0; c <= r; c++) order.push(posToIdx[r * ROWS + c]);
+        } else {
+            // Odd distance: right to left
+            for (var c = r; c >= 0; c--) order.push(posToIdx[r * ROWS + c]);
+        }
+    }
+    return order;
+})();
 
 // How many stomps does a cube need to reach target state?
 function stompsNeeded(cubeState, lv) {
@@ -112,45 +129,47 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts, pathOut, 
         var dijk = dijkstraFrom(curIdx, stomps, REVERT_PENALTY, discSources);
 
         var bestIdx = -1, bestDist = 999;
+        if (lv >= 5) {
+            // L5+ sweep strategy: follow pre-computed bottom-up zigzag order.
+            // Pick the first unfinished cube in the sweep, but strongly prefer
+            // half-done cubes (1 stomp left) to complete them before moving on.
+            var sweepHalfDone = -1, sweepFresh = -1;
+            for (var si = 0; si < SWEEP_ORDER.length; si++) {
+                var si2 = SWEEP_ORDER[si];
+                if (stomps[si2] > 0 && si2 !== curIdx) {
+                    if (stomps[si2] === 1 && sweepHalfDone === -1) sweepHalfDone = si2;
+                    if (sweepFresh === -1) sweepFresh = si2;
+                    if (sweepHalfDone !== -1) break; // found half-done, use it
+                }
+            }
+            // Prefer half-done (finish what we started), fall back to next in sweep
+            bestIdx = sweepHalfDone !== -1 ? sweepHalfDone : sweepFresh;
+            if (bestIdx !== -1) bestDist = dijk.dist[bestIdx];
+        } else {
         for (var i = 0; i < POS_COUNT; i++) {
             if (stomps[i] > 0 && i !== curIdx) {
                 var d = dijk.dist[i];
                 // Deprioritize frequently-reverted cubes — go to fresh ones first
                 if (revertCounts && revertCounts[i] > 1) d += (revertCounts[i] - 1) * 3;
                 // Prefer cubes not visited recently — breaks oscillation loops
-                // by steering toward "forgotten" cubes instead of re-visiting familiar ones
                 var curHops = typeof hops !== 'undefined' ? hops : 0;
                 var hopsSinceVisit = curHops - (aiCubeLastVisit[i] || 0);
                 if (hopsSinceVisit < 20) d += (20 - hopsSinceVisit) * 0.5;
-                // Bottom-up sweep: complete lower rows first to avoid backtracking
-                // through completed upper rows. L5 needs very strong bias to enforce
-                // systematic sweep — weak bias lets planner pick distant targets.
+                // Bottom-up sweep: complete lower rows first
                 var row_i = idxToPos[i][0], col_i = idxToPos[i][1];
-                d -= row_i * (lv >= 5 ? 2.5 : 2);
-                // Corner priority: bottom corners (few exits) should be done first
+                d -= row_i * 2;
+                // Corner priority
                 if (row_i >= 4 && (col_i <= 1 || col_i >= row_i - 1)) d -= 2;
-                // Half-done priority: on L5+, cubes needing 1 more stomp are urgent —
-                // complete them now before travel or enemies revert them.
-                // Strong bonus: a half-done cube is 2x more efficient than fresh.
-                if (lv >= 5 && stomps[i] === 1) d -= 8;
-                // Cluster bonus: prefer cubes with unfinished neighbors (sweep clusters together)
-                var clusterW = (lv >= 5) ? 1.5 : 0.5;
+                // Cluster bonus
                 var adj = posAdj[i];
                 for (var ai = 0; ai < adj.length; ai++) {
-                    if (stomps[adj[ai]] > 0) d -= clusterW;
-                }
-                // Coily avoidance: penalize cubes near Coily to route the tour
-                // through the far side of the board, avoiding flee-induced reverts.
-                // Drop when stuck (np>100) — must work on whatever's left.
-                var npCount = typeof aiNoProgressCount !== 'undefined' ? aiNoProgressCount : 0;
-                if (coilyIdx >= 0 && lv >= 5 && npCount < 100) {
-                    var coilyDist = distMatrix[coilyIdx * POS_COUNT + i];
-                    if (coilyDist < 5) d += (5 - coilyDist) * 2.0;
+                    if (stomps[adj[ai]] > 0) d -= 0.5;
                 }
                 if (d < bestDist || (d === bestDist && (bestIdx === -1 || i < bestIdx))) {
                     bestDist = d; bestIdx = i;
                 }
             }
+        }
         }
         if (bestIdx === -1) {
             if (stomps[curIdx] > 0) totalHops += stomps[curIdx] * 2;
