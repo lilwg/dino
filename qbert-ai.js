@@ -99,10 +99,10 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts) {
 
     var isToggle = lv >= 3;
     // L1-2: no reverts possible. L3-4 (toggle): penalty 1.5.
-    // L5+ (cycle): penalty 5 (each revert costs 2 stomps + travel to fix — deter strongly)
+    // L5+ (cycle): penalty 4 (each revert costs 2 stomps + travel to fix)
     // When deeply stuck (np>200), drop penalty to 0 — must accept reverts
     var npCount = typeof aiNoProgressCount !== 'undefined' ? aiNoProgressCount : 0;
-    var REVERT_PENALTY = npCount > 200 ? 0 : (lv >= 5 ? 5 : (isToggle ? 1.5 : 0));
+    var REVERT_PENALTY = npCount > 200 ? 0 : (lv >= 5 ? 4 : (isToggle ? 1.5 : 0));
     var curIdx = startIdx;
     var totalHops = 0;
 
@@ -125,14 +125,14 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts) {
                 // through completed upper rows. L5 needs very strong bias to enforce
                 // systematic sweep — weak bias lets planner pick distant targets.
                 var row_i = idxToPos[i][0], col_i = idxToPos[i][1];
-                d -= row_i * (lv >= 5 ? 4 : 2);
+                d -= row_i * (lv >= 5 ? 2.5 : 2);
                 // Corner priority: bottom corners (few exits) should be done first
                 if (row_i >= 4 && (col_i <= 1 || col_i >= row_i - 1)) d -= 2;
                 // Half-done priority: on L5+, cubes needing 1 more stomp are urgent —
                 // complete them now before travel or enemies revert them
-                if (lv >= 5 && stomps[i] === 1) d -= 6;
+                if (lv >= 5 && stomps[i] === 1) d -= 4;
                 // Cluster bonus: prefer cubes with unfinished neighbors (sweep clusters together)
-                var clusterW = (lv >= 5) ? 3 : 0.5;
+                var clusterW = (lv >= 5) ? 1.5 : 0.5;
                 var adj = posAdj[i];
                 for (var ai = 0; ai < adj.length; ai++) {
                     if (stomps[adj[ai]] > 0) d -= clusterW;
@@ -1926,13 +1926,6 @@ function unifiedPick(gs, coilyActive) {
         // log(P_per_hop) = log(P_D) / D normalizes danger across depths.
         // λ controls how much tour progress matters vs survival.
         var LAMBDA = window.AI_LAMBDA || 0.002;
-        // L5+ escalating urgency: when stuck for many hops, gradually increase
-        // LAMBDA to prioritize routing progress over pure safety. The AI wastes
-        // hundreds of hops avoiding completed cubes when it should accept some
-        // reverts to make progress toward remaining cubes.
-        if (gs.lv >= 5 && aiNoProgressCount > 100) {
-            LAMBDA = Math.min(0.02, 0.002 + aiNoProgressCount * 0.00002);
-        }
         var logPerHop = survProb > 0 ? (DEPTH > 0 ? Math.log(survProb) / DEPTH : 0) : -100;
         var score = logPerHop - LAMBDA * tc;
         if (survProb <= 0) {
@@ -1962,12 +1955,8 @@ function unifiedPick(gs, coilyActive) {
         if (hop1Surv[sk] >= 1.0 && aiMoveScores[sk] !== undefined) { hasPerfect = true; break; }
     }
     if (hasPerfect) {
-        // When deeply stuck on L5+, relax safety-first to allow P≥0.8 moves.
-        // The AI wastes hundreds of hops choosing STAY or the single P=1.0
-        // direction when a P=0.9 move would make routing progress.
-        var safetyFloor = (gs.lv >= 5 && aiNoProgressCount > 200) ? 0.8 : 1.0;
         for (var sk2 in hop1Surv) {
-            if (hop1Surv[sk2] < safetyFloor && aiMoveScores[sk2] !== undefined && aiMoveScores[sk2] > -10000) {
+            if (hop1Surv[sk2] < 1.0 && aiMoveScores[sk2] !== undefined && aiMoveScores[sk2] > -10000) {
                 aiMoveScores[sk2] = -10000;
             }
         }
