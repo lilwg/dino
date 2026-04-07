@@ -2378,20 +2378,19 @@ function aiPickBestDir() {
             for (var lk in aiLastHop1Surv) {
                 if (lk !== 'STAY' && aiLastHop1Surv[lk] >= 1.0) { anyPerfect = true; break; }
             }
-            // Escalating risk: as no-progress count climbs, accept riskier moves
-            // to avoid looping endlessly. But scale with lives — with few lives
-            // left, play it safe (better to loop than lose your quarter).
-            var np = aiNoProgressCount;
+            // Escalating risk: accept riskier moves when truly stuck.
+            // Use stall count (hops on same target with no arrival) not
+            // aiNoProgressCount (which climbs too fast on cycle levels).
+            // Scale with lives — never gamble your last quarter.
             var curLives = typeof lives !== 'undefined' ? lives : 3;
+            var stall = l5smStallCount;
             var minSurv = 1.0;
             if (curLives >= 5) {
-                // Plenty of lives: escalate normally
-                minSurv = np > 200 ? 0.5 : (np > 100 ? 0.8 : (np > 50 ? 0.9 : 1.0));
+                minSurv = stall > 8 ? 0.8 : (stall > 5 ? 0.9 : 1.0);
             } else if (curLives >= 3) {
-                // Getting low: escalate slower
-                minSurv = np > 300 ? 0.8 : (np > 150 ? 0.9 : 1.0);
+                minSurv = stall > 8 ? 0.9 : 1.0;
             }
-            // curLives <= 2: never take risks, always require P=1.0
+            // curLives <= 2: never take risks
             var canOverride = l5surv > 0 && (!anyPerfect || l5surv >= minSurv);
             if (canOverride) {
                 result = l5dir;
