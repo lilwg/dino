@@ -2038,16 +2038,13 @@ function unifiedPick(gs, coilyActive) {
                     var destLayer = PEEL_LAYER[destIdx];
                     var inTargetLayer = (destLayer === targetLayer);
 
-                    // Check if destination's peel layer is fully completed (sealed).
-                    // Sealed layers are walls — never step on them.
-                    var destLayerSealed = false;
-                    if (destLayer < targetLayer) {
-                        // Any layer below the target must be fully done
-                        destLayerSealed = true;
-                    }
+                    // Never revert cubes in the target layer or below — protect
+                    // your current work. Completed cubes in target layer or any
+                    // already-finished layer are walls. Inner layers are fair game.
+                    var isProtected = (destNeed === 0 && destLayer <= targetLayer);
 
-                    if (destLayerSealed) {
-                        tc = 100; // sealed: treat as wall
+                    if (isProtected) {
+                        tc = 100; // wall: don't undo progress
                     } else {
                         // BFS distance from dest to nearest unfinished target-layer cube
                         var distToTarget = 99;
