@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI: hybrid strategy + survival tree
-var AI_VERSION = 'v13.8-teacher';
+var AI_VERSION = 'v15.0-teacher';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -299,11 +299,206 @@ var aiRevertCounts = new Int8Array(POS_COUNT); // per-cube revert counter for to
 var aiPrevCubeStates = null; // previous cube states to detect reverts
 var aiCubeLastVisit = new Int32Array(POS_COUNT); // hop number when each cube was last stomped
 
+// ─── L5+ Double-Stomp State Machine ─────────────────────────────────────────
+// States: 0=IDLE, 1=NAVIGATE, 2=BOUNCE, 3=RETURN
+var L5_IDLE = 0, L5_NAV = 1, L5_BOUNCE = 2, L5_RETURN = 3;
+var l5smState = 0, l5smTargetRow = -1, l5smTargetCol = -1;
+var l5smBounceRow = -1, l5smBounceCol = -1, l5smStallCount = 0;
+var l5smPrevRow = -1, l5smPrevCol = -1;
+
+function l5smReset() {
+    l5smState = L5_IDLE; l5smTargetRow = -1; l5smTargetCol = -1;
+    l5smBounceRow = -1; l5smBounceCol = -1; l5smStallCount = 0;
+    l5smPrevRow = -1; l5smPrevCol = -1;
+}
+
+function l5smDirFromTo(r1, c1, r2, c2) {
+    var dr = r2 - r1, dc = c2 - c1;
+    if (dr === -1 && dc === -1) return 'UL';
+    if (dr === -1 && dc === 0) return 'UR';
+    if (dr === 1 && dc === 0) return 'DL';
+    if (dr === 1 && dc === 1) return 'DR';
+    return null;
+}
+
+function l5smCubeState(gs, r, c) {
+    for (var i = 0; i < gs.cubes.length; i++)
+        if (gs.cubes[i].row === r && gs.cubes[i].col === c) return gs.cubes[i].state;
+    return -1;
+}
+
+function l5smNavigateToward(gs, destR, destC) {
+    var srcIdx = posToIdx[gs.player.row * ROWS + gs.player.col];
+    var dstIdx = posToIdx[destR * ROWS + destC];
+    if (srcIdx === dstIdx) return null;
+
+    // BFS avoiding completed cubes
+    var dist = new Int8Array(POS_COUNT); for (var i = 0; i < POS_COUNT; i++) dist[i] = -1;
+    var prev = new Int8Array(POS_COUNT); for (var i = 0; i < POS_COUNT; i++) prev[i] = -1;
+    dist[srcIdx] = 0;
+    var queue = [srcIdx], head = 0;
+    while (head < queue.length) {
+        var u = queue[head++];
+        if (u === dstIdx) break;
+        var adj = posAdj[u];
+        for (var a = 0; a < adj.length; a++) {
+            var v = adj[a];
+            if (dist[v] >= 0) continue;
+            // Avoid completed cubes (except the destination itself)
+            if (v !== dstIdx && stompsNeeded(l5smCubeState(gs, idxToPos[v][0], idxToPos[v][1]), gs.lv) === 0) continue;
+            dist[v] = dist[u] + 1; prev[v] = u; queue.push(v);
+        }
+    }
+    // If no safe path, retry without avoidance
+    if (dist[dstIdx] < 0) {
+        for (var i = 0; i < POS_COUNT; i++) { dist[i] = -1; prev[i] = -1; }
+        dist[srcIdx] = 0; queue = [srcIdx]; head = 0;
+        while (head < queue.length) {
+            var u = queue[head++];
+            if (u === dstIdx) break;
+            var adj = posAdj[u];
+            for (var a = 0; a < adj.length; a++) {
+                var v = adj[a];
+                if (dist[v] >= 0) continue;
+                dist[v] = dist[u] + 1; prev[v] = u; queue.push(v);
+            }
+        }
+    }
+    if (dist[dstIdx] < 0) return null;
+    // Walk back to find first step
+    var step = dstIdx;
+    while (prev[step] !== srcIdx && prev[step] >= 0) step = prev[step];
+    if (prev[step] !== srcIdx) return null;
+    var sr = idxToPos[step][0], sc = idxToPos[step][1];
+    return l5smDirFromTo(gs.player.row, gs.player.col, sr, sc);
+}
+
+function l5smPickTarget(gs) {
+    var bestScore = -999, bestR = -1, bestC = -1;
+    var pIdx = posToIdx[gs.player.row * ROWS + gs.player.col];
+    for (var i = 0; i < gs.cubes.length; i++) {
+        var cb = gs.cubes[i];
+        var need = stompsNeeded(cb.state, gs.lv);
+        if (need <= 0) continue;
+        var idx = posToIdx[cb.row * ROWS + cb.col];
+        var score = 0;
+        // Half-done: urgent, finish it
+        if (need === 1) score += 20;
+        // Bottom-up: strong preference for lower rows
+        score += cb.row * 8;
+        // Proximity via BFS distance
+        var d = distMatrix[pIdx * POS_COUNT + idx];
+        score -= d * 3;
+        // Cluster: prefer cubes near other unfinished cubes
+        var adj = posAdj[idx];
+        for (var a = 0; a < adj.length; a++) {
+            var ar = idxToPos[adj[a]][0], ac = idxToPos[adj[a]][1];
+            if (stompsNeeded(l5smCubeState(gs, ar, ac), gs.lv) > 0) score += 3;
+        }
+        // Corner bonus
+        if (cb.row >= 5 && (cb.col <= 1 || cb.col >= cb.row - 1)) score += 5;
+        if (score > bestScore) { bestScore = score; bestR = cb.row; bestC = cb.col; }
+    }
+    l5smTargetRow = bestR; l5smTargetCol = bestC;
+    return bestR >= 0;
+}
+
+function l5smPickBounce(gs) {
+    var tIdx = posToIdx[l5smTargetRow * ROWS + l5smTargetCol];
+    var adj = posAdj[tIdx];
+    var bestScore = -999, bestDir = null, bestR = -1, bestC = -1;
+    for (var a = 0; a < adj.length; a++) {
+        var nr = idxToPos[adj[a]][0], nc = idxToPos[adj[a]][1];
+        var dir = l5smDirFromTo(l5smTargetRow, l5smTargetCol, nr, nc);
+        if (!dir) continue;
+        var score = 0;
+        var need = stompsNeeded(l5smCubeState(gs, nr, nc), gs.lv);
+        if (need > 0) score += 10;  // unfinished: useful stomp
+        else score -= 15;            // completed: will revert
+        // Prefer neighbors with more unfinished cubes nearby
+        var nadj = posAdj[adj[a]];
+        for (var na = 0; na < nadj.length; na++) {
+            var nar = idxToPos[nadj[na]][0], nac = idxToPos[nadj[na]][1];
+            if (stompsNeeded(l5smCubeState(gs, nar, nac), gs.lv) > 0) score += 3;
+        }
+        if (score > bestScore) { bestScore = score; bestDir = dir; bestR = nr; bestC = nc; }
+    }
+    l5smBounceRow = bestR; l5smBounceCol = bestC;
+    return bestDir;
+}
+
+function l5smUpdate(gs) {
+    var pr = gs.player.row, pc = gs.player.col;
+
+    // Respawn detection: jumped to apex from far away
+    if (pr === 0 && pc === 0 && l5smPrevRow > 1 && l5smState !== L5_IDLE) {
+        l5smReset(); l5smPrevRow = pr; l5smPrevCol = pc; return;
+    }
+
+    // Stall detection
+    if (pr === l5smPrevRow && pc === l5smPrevCol) {
+        l5smStallCount++;
+        if (l5smStallCount >= 10) { l5smState = L5_IDLE; l5smStallCount = 0; }
+    } else {
+        l5smStallCount = 0;
+    }
+    l5smPrevRow = pr; l5smPrevCol = pc;
+
+    // Target validation
+    if (l5smState !== L5_IDLE && l5smTargetRow >= 0) {
+        var tState = l5smCubeState(gs, l5smTargetRow, l5smTargetCol);
+        if (tState >= gs.tgt) l5smState = L5_IDLE; // target completed
+        if (l5smState === L5_RETURN && tState === 0) l5smState = L5_IDLE; // reverted by Slick
+    }
+
+    // IDLE: pick new target
+    if (l5smState === L5_IDLE) {
+        if (!l5smPickTarget(gs)) return; // all done
+        l5smState = L5_NAV;
+    }
+}
+
+function l5smGetDir(gs) {
+    var pr = gs.player.row, pc = gs.player.col;
+
+    if (l5smState === L5_NAV) {
+        if (pr === l5smTargetRow && pc === l5smTargetCol) {
+            // Arrived at target — it was just stomped
+            var tNeed = stompsNeeded(l5smCubeState(gs, l5smTargetRow, l5smTargetCol), gs.lv);
+            if (tNeed === 0) { l5smState = L5_IDLE; return null; } // already done (was half-done)
+            // Needs more stomps — bounce
+            l5smState = L5_BOUNCE;
+            return l5smPickBounce(gs);
+        }
+        return l5smNavigateToward(gs, l5smTargetRow, l5smTargetCol);
+    }
+
+    if (l5smState === L5_BOUNCE) {
+        // Should have been set in previous hop's getDir call, just return bounce dir
+        var dir = l5smPickBounce(gs);
+        l5smState = L5_RETURN;
+        return dir;
+    }
+
+    if (l5smState === L5_RETURN) {
+        if (pr === l5smTargetRow && pc === l5smTargetCol) {
+            // Back at target — should be completed now
+            l5smState = L5_IDLE; return null;
+        }
+        // Navigate back to target
+        return l5smDirFromTo(pr, pc, l5smTargetRow, l5smTargetCol) ||
+               l5smNavigateToward(gs, l5smTargetRow, l5smTargetCol);
+    }
+
+    return null;
+}
+
 function aiTourInit() {
     aiLastRemaining = 99; aiBestRemaining = 99; aiNoProgressCount = 0; aiStayCount = 0; aiSamePosCount = 0; aiPosHistory = [];
     aiRevertCounts = new Int8Array(POS_COUNT);
     aiPrevCubeStates = null;
     aiCubeLastVisit = new Int32Array(POS_COUNT);
+    l5smReset();
 }
 
 // Dijkstra tour planner — nearest unfinished cube via weighted BFS
@@ -2158,6 +2353,28 @@ function aiPickBestDir() {
 
     var result = unifiedPick(gs, coilyActive);
     var _origResult = result;
+
+    // ── L5+ Double-Stomp State Machine Override ──
+    if (gs.lv >= 5) {
+        l5smUpdate(gs);
+        var l5dir = l5smGetDir(gs);
+        if (l5dir && l5dir !== result) {
+            var l5surv = aiLastHop1Surv[l5dir];
+            var origSurv = aiLastHop1Surv[result] || 0;
+            // Safety: only override if the SM direction is safe
+            var anyPerfect = false;
+            for (var lk in aiLastHop1Surv) {
+                if (lk !== 'STAY' && aiLastHop1Surv[lk] >= 1.0) { anyPerfect = true; break; }
+            }
+            var canOverride = l5surv > 0 && (!anyPerfect || l5surv >= 1.0);
+            if (canOverride) {
+                result = l5dir;
+                aiDecisionReason = 'L5SM:' + ['IDLE','NAV','BNC','RET'][l5smState];
+            }
+        } else if (l5dir) {
+            aiDecisionReason = 'L5SM:' + ['IDLE','NAV','BNC','RET'][l5smState];
+        }
+    }
 
     // Validate: if danger table predicts P=1.0, run simStep to verify
     if (window._predValidate && result && result !== 'STAY' && aiLastHop1Surv && aiLastHop1Surv[result] !== undefined) {
