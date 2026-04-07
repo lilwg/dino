@@ -2345,7 +2345,7 @@ function aiPickBestDir() {
     // L5+ parity fix: compute (W-B) mod 3 from actual cube states.
     // Unsolvable when parBad. Fix by: (1) riding an even-row disc (preferred),
     // or (2) jumping off an odd-row edge (suicide, last resort).
-    if (gs.lv >= 5 && aiNoProgressCount > 50) {
+    if (gs.lv >= 5 && aiNoProgressCount > 15) {
         var parW = 0, parB = 0;
         for (var pi = 0; pi < gs.cubes.length; pi++) {
             var pdef = (gs.tgt - gs.cubes[pi].state + 3) % 3;
@@ -2392,7 +2392,7 @@ function aiPickBestDir() {
                 if (parDiscFixed) break;
             }
             // Option 2: no disc available — suicide off odd row (costs 1 life)
-            if (!parDiscFixed && aiNoProgressCount > 80) {
+            if (!parDiscFixed && aiNoProgressCount > 30) {
                 if (gs.player.row % 2 === 1) {
                     var parSuicide = null;
                     for (var fk = 0; fk < DIR_KEYS.length; fk++) {
