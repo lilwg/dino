@@ -1969,6 +1969,29 @@ function unifiedPick(gs, coilyActive) {
         var _tcT0 = typeof performance !== 'undefined' ? performance.now() : 0;
         var tc;
         var _vizPath = [];
+
+        if (gs.lv >= 5 && dir !== 'STAY') {
+            // L5+ sweep: replace heavy tour cost with sweep-driven scoring.
+            // The sweep direction gets tc=0, others get distance-based penalty.
+            var sweepDir = sweepNextDir(gs);
+            var dd = DIRS[dir];
+            var dnr = gs.player.row + dd.dr, dnc = gs.player.col + dd.dc;
+            if (dir === sweepDir) {
+                tc = 0; // sweep direction: best possible
+            } else if (isValidPos(dnr, dnc)) {
+                // Non-sweep direction: penalize by distance from where sweep wants us
+                tc = 10;
+                // Extra penalty if landing on a completed cube (revert!)
+                for (var rci = 0; rci < gs.cubes.length; rci++) {
+                    if (gs.cubes[rci].row === dnr && gs.cubes[rci].col === dnc && gs.cubes[rci].state >= gs.tgt) {
+                        tc += 30;
+                        break;
+                    }
+                }
+            } else {
+                tc = 50; // off-board (unless disc)
+            }
+        } else {
         simSeed(k * 100);
         var tcClone = simDeepClone(gs);
         var tcAlive = simStep(tcClone, dir);
@@ -1976,6 +1999,7 @@ function unifiedPick(gs, coilyActive) {
             tc = tcClone.levelWon ? 0 : simTourCost(tcClone, _vizPath, coilyIdx);
         } else {
             tc = simTourCost(gs, _vizPath, coilyIdx) + 1;
+        }
         }
         _dirTourPaths[dir] = _vizPath;
         // STAY penalty: escalates with consecutive STAYs, much higher during freeze
@@ -2065,13 +2089,7 @@ function unifiedPick(gs, coilyActive) {
         }
 
 
-        // L5+ sweep bonus: strongly prefer the direction from the bounce-walk pattern
-        if (gs.lv >= 5 && dir !== 'STAY') {
-            var sweepDir = sweepNextDir(gs);
-            if (sweepDir && dir === sweepDir) {
-                tc -= 20; // strong preference for sweep direction
-            }
-        }
+        // (L5+ sweep is handled above in tour cost section)
 
         tourCosts[dir] = tc;
         var _tcMs = typeof performance !== 'undefined' ? performance.now() - _tcT0 : 0;
