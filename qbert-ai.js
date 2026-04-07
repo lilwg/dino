@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI: hybrid strategy + survival tree
-var AI_VERSION = 'v14.0-teacher';
+var AI_VERSION = 'v14.1-teacher';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -130,8 +130,9 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts, pathOut, 
                 // Corner priority: bottom corners (few exits) should be done first
                 if (row_i >= 4 && (col_i <= 1 || col_i >= row_i - 1)) d -= 2;
                 // Half-done priority: on L5+, cubes needing 1 more stomp are urgent —
-                // complete them now before travel or enemies revert them
-                if (lv >= 5 && stomps[i] === 1) d -= 4;
+                // complete them now before travel or enemies revert them.
+                // Strong bonus: a half-done cube is 2x more efficient than fresh.
+                if (lv >= 5 && stomps[i] === 1) d -= 8;
                 // Cluster bonus: prefer cubes with unfinished neighbors (sweep clusters together)
                 var clusterW = (lv >= 5) ? 1.5 : 0.5;
                 var adj = posAdj[i];
@@ -139,8 +140,10 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts, pathOut, 
                     if (stomps[adj[ai]] > 0) d -= clusterW;
                 }
                 // Coily avoidance: penalize cubes near Coily to route the tour
-                // through the far side of the board, avoiding flee-induced reverts
-                if (coilyIdx >= 0 && lv >= 5) {
+                // through the far side of the board, avoiding flee-induced reverts.
+                // Drop when stuck (np>100) — must work on whatever's left.
+                var npCount = typeof aiNoProgressCount !== 'undefined' ? aiNoProgressCount : 0;
+                if (coilyIdx >= 0 && lv >= 5 && npCount < 100) {
                     var coilyDist = distMatrix[coilyIdx * POS_COUNT + i];
                     if (coilyDist < 5) d += (5 - coilyDist) * 2.0;
                 }
