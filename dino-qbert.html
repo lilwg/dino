@@ -1680,7 +1680,7 @@ function drawHUD() {
     // Top-right: lives — 10 individual dinos, then 🦕×N for overflow
     ctx.fillStyle = '#535353';
     var maxIcons = 10;
-    var showIcons = Math.min(lives, maxIcons);
+    var showIcons = Math.min(lives, maxIcons + 1);
     if (spriteClean) {
         var sp = SPRITES.TREX_IDLE;
         var sc = 0.38;
@@ -1688,7 +1688,7 @@ function drawHUD() {
             ctx.drawImage(spriteClean, sp.x, sp.y, sp.w, sp.h,
                 CW - 8 - (i + 1) * 20, 4, sp.w * sc, sp.h * sc);
         }
-        if (lives > maxIcons) {
+        if (lives > maxIcons + 1) {
             // Overflow: dino icon + ×N to the left of the regular icons
             var overflowLabel = '\u00d7' + (lives - showIcons);
             ctx.font = '600 11px "Courier New",monospace';
