@@ -232,19 +232,24 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts, pathOut, 
 
         var bestIdx = -1, bestDist = 999;
         if (lv >= 5) {
-            // L5+ sweep strategy: follow pre-computed bottom-up zigzag order.
-            // Pick the first unfinished cube in the sweep, but strongly prefer
-            // half-done cubes (1 stomp left) to complete them before moving on.
-            var sweepHalfDone = -1, sweepFresh = -1;
-            for (var si = 0; si < SWEEP_ORDER.length; si++) {
-                var si2 = SWEEP_ORDER[si];
-                if (stomps[si2] > 0 && si2 !== curIdx) {
-                    if (stomps[si2] === 1 && sweepHalfDone === -1) sweepHalfDone = si2;
-                    if (sweepFresh === -1) sweepFresh = si2;
-                    if (sweepHalfDone !== -1) break; // found half-done, use it
+            // L5+ sweep: prefer half-done cubes, then lowest-row unfinished cube.
+            // Matches the bounce-walk pattern driven by sweepNextDir().
+            var sweepHalfDone = -1, sweepHalfDist = 999;
+            var sweepFresh = -1, sweepFreshDist = 999;
+            for (var i = 0; i < POS_COUNT; i++) {
+                if (stomps[i] > 0 && i !== curIdx) {
+                    var d = dijk.dist[i];
+                    var row_i = idxToPos[i][0];
+                    // Bottom-up bias: prefer lower rows
+                    d -= row_i * 3;
+                    if (stomps[i] === 1 && d < sweepHalfDist) {
+                        sweepHalfDone = i; sweepHalfDist = d;
+                    }
+                    if (d < sweepFreshDist) {
+                        sweepFresh = i; sweepFreshDist = d;
+                    }
                 }
             }
-            // Prefer half-done (finish what we started), fall back to next in sweep
             bestIdx = sweepHalfDone !== -1 ? sweepHalfDone : sweepFresh;
             if (bestIdx !== -1) bestDist = dijk.dist[bestIdx];
         } else {
