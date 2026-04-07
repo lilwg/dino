@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI: hybrid strategy + survival tree
-var AI_VERSION = 'v13.9-teacher';
+var AI_VERSION = 'v14.0-teacher';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -80,7 +80,7 @@ function dijkstraFrom(srcIdx, stomps, penalty, discSources) {
 // Greedy nearest-neighbor tour cost with deterministic tie-breaking.
 // On toggle levels, uses Dijkstra to route around completed cubes.
 // Ties broken by lowest position index for stability.
-function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts, pathOut) {
+function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts, pathOut, coilyIdx) {
     var stomps = new Int8Array(POS_COUNT);
     for (var i = 0; i < cubes.length; i++) {
         var idx = posToIdx[cubes[i].row * ROWS + cubes[i].col];
@@ -138,6 +138,12 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts, pathOut) 
                 for (var ai = 0; ai < adj.length; ai++) {
                     if (stomps[adj[ai]] > 0) d -= clusterW;
                 }
+                // Coily avoidance: penalize cubes near Coily to route the tour
+                // through the far side of the board, avoiding flee-induced reverts
+                if (coilyIdx >= 0 && lv >= 5) {
+                    var coilyDist = distMatrix[coilyIdx * POS_COUNT + i];
+                    if (coilyDist < 5) d += (5 - coilyDist) * 2.0;
+                }
                 if (d < bestDist || (d === bestDist && (bestIdx === -1 || i < bestIdx))) {
                     bestDist = d; bestIdx = i;
                 }
@@ -194,8 +200,8 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts, pathOut) 
 }
 
 // Tour cost from a simulation state
-function simTourCost(gs, pathOut) {
-    return greedyTourCost(posToIdx[gs.player.row * ROWS + gs.player.col], gs.cubes, gs.tgt, gs.lv, gs.discs, aiRevertCounts, pathOut);
+function simTourCost(gs, pathOut, coilyIdx) {
+    return greedyTourCost(posToIdx[gs.player.row * ROWS + gs.player.col], gs.cubes, gs.tgt, gs.lv, gs.discs, aiRevertCounts, pathOut, coilyIdx != null ? coilyIdx : -1);
 }
 
 // ─── Danger zone assessment ──────────────────────────────────────────────────
@@ -1690,6 +1696,9 @@ function unifiedPick(gs, coilyActive) {
 
     // ── Core: survival tree safety check + strategy-aware tour cost per direction ──
 
+    // Coily position index for tour planner (avoids routing through Coily's zone)
+    var coilyIdx = (coilyInit && coilyInit.row >= 0) ? posToIdx[coilyInit.row * ROWS + coilyInit.col] : -1;
+
     var safe1 = {};
     var safe2 = {};
     var tourCosts = {};
@@ -1835,9 +1844,9 @@ function unifiedPick(gs, coilyActive) {
         var tcClone = simDeepClone(gs);
         var tcAlive = simStep(tcClone, dir);
         if (tcAlive) {
-            tc = tcClone.levelWon ? 0 : simTourCost(tcClone, _vizPath);
+            tc = tcClone.levelWon ? 0 : simTourCost(tcClone, _vizPath, coilyIdx);
         } else {
-            tc = simTourCost(gs, _vizPath) + 1;
+            tc = simTourCost(gs, _vizPath, coilyIdx) + 1;
         }
         _dirTourPaths[dir] = _vizPath;
         // STAY penalty: escalates with consecutive STAYs, much higher during freeze
@@ -1863,17 +1872,18 @@ function unifiedPick(gs, coilyActive) {
             }
         }
 
-        // Anti-oscillation: on toggle levels with moderate hops, penalize
-        // directions that land on completed cubes (prevents undo/redo cycles).
-        // But when deeply stuck (np>200), REMOVE the penalty — the AI must
-        // accept reverts to reach the last cubes.
-        if (gs.lv >= 3 && dir !== 'STAY' && typeof hops !== 'undefined' && hops > 200 && aiNoProgressCount < 200) {
+        // Anti-revert: on toggle/cycle levels, penalize directions that land
+        // on completed cubes. Each revert costs 2+ extra hops to fix.
+        // Drop the penalty when deeply stuck (np>200) — must accept reverts.
+        if (gs.lv >= 3 && dir !== 'STAY' && aiNoProgressCount < 200) {
             var aod = DIRS[dir];
             var aor = gs.player.row + aod.dr, aoc = gs.player.col + aod.dc;
             if (isValidPos(aor, aoc)) {
                 for (var aoi = 0; aoi < gs.cubes.length; aoi++) {
                     if (gs.cubes[aoi].row === aor && gs.cubes[aoi].col === aoc && gs.cubes[aoi].state >= gs.tgt) {
-                        tc += Math.min(30, 10 + Math.floor(hops / 100) * 5); // cap at 30
+                        // L5+ cycle: revert costs 2 stomps + travel = ~4 hops
+                        // L3-4 toggle: revert costs 1 stomp + travel = ~2 hops
+                        tc += (gs.lv >= 5) ? 8 : 4;
                         break;
                     }
                 }
@@ -1890,9 +1900,9 @@ function unifiedPick(gs, coilyActive) {
             if (isValidPos(_knr, _knc)) {
                 var _cDistBefore = Math.abs(coilyInit.row - gs.player.row) + Math.abs(coilyInit.col - gs.player.col);
                 var _cDistAfter = Math.abs(coilyInit.row - _knr) + Math.abs(coilyInit.col - _knc);
-                if (_cDistBefore <= 4) {
+                if (_cDistBefore <= 5) {
                     // Coily is close — reward moving away, penalize moving toward
-                    tc += (_cDistBefore - _cDistAfter) * 3;
+                    tc += (_cDistBefore - _cDistAfter) * 4;
                 }
             }
         }
@@ -1907,7 +1917,7 @@ function unifiedPick(gs, coilyActive) {
                 var distAfter = exBfsDist(lnr, lnc, lureDiscAdj.row, lureDiscAdj.col);
                 if (distAfter < distBefore) {
                     var coilyDist = exBfsDist(coilyInit.row, coilyInit.col, gs.player.row, gs.player.col);
-                    var lureBonus = coilyDist <= 3 ? 15 : (coilyDist <= 5 ? 10 : 5);
+                    var lureBonus = coilyDist <= 3 ? 25 : (coilyDist <= 5 ? 18 : 10);
                     tc -= lureBonus;
                 }
             } else if (!isValidPos(lnr, lnc)) {
@@ -1918,7 +1928,7 @@ function unifiedPick(gs, coilyActive) {
                     if (!djd.active) continue;
                     if ((djd.side === 0 && dir === 'UL' && gs.player.col === 0 && gs.player.row === djd.row) ||
                         (djd.side === 1 && dir === 'UR' && gs.player.col === gs.player.row && gs.player.row === djd.row)) {
-                        tc -= 15;
+                        tc -= 30;
                         break;
                     }
                 }
@@ -1935,13 +1945,9 @@ function unifiedPick(gs, coilyActive) {
         // DISCOUNT < 1 penalizes longer tours (each extra hop = more danger)
         // Score = log(P_per_hop) - λ × tour_cost
         // log(P_per_hop) = log(P_D) / D normalizes danger across depths.
-        // λ = per-hop death rate: each extra hop of tour cost carries real
-        // survival cost (more time exposed to enemies). When safe (P≈1),
-        // λ stays at floor (0.002) and tour cost is just routing preference.
-        // When dangerous, λ scales up so reverts are penalized as survival risk.
+        // λ controls how much tour progress matters vs survival.
+        var LAMBDA = window.AI_LAMBDA || 0.002;
         var logPerHop = survProb > 0 ? (DEPTH > 0 ? Math.log(survProb) / DEPTH : 0) : -100;
-        var perHopDeathRate = (DEPTH > 0 && survProb > 0 && survProb < 1) ? -logPerHop : 0;
-        var LAMBDA = Math.max(perHopDeathRate, window.AI_LAMBDA || 0.002);
         var score = logPerHop - LAMBDA * tc;
         if (survProb <= 0) {
             aiMoveScores[dir] = -10000;
