@@ -1909,6 +1909,13 @@ function unifiedPick(gs, coilyActive) {
         // log(P_per_hop) = log(P_D) / D normalizes danger across depths.
         // λ controls how much tour progress matters vs survival.
         var LAMBDA = window.AI_LAMBDA || 0.002;
+        // L5+ escalating urgency: when stuck for many hops, gradually increase
+        // LAMBDA to prioritize routing progress over pure safety. The AI wastes
+        // hundreds of hops avoiding completed cubes when it should accept some
+        // reverts to make progress toward remaining cubes.
+        if (gs.lv >= 5 && aiNoProgressCount > 100) {
+            LAMBDA = Math.min(0.02, 0.002 + aiNoProgressCount * 0.00002);
+        }
         var logPerHop = survProb > 0 ? (DEPTH > 0 ? Math.log(survProb) / DEPTH : 0) : -100;
         var score = logPerHop - LAMBDA * tc;
         if (survProb <= 0) {
@@ -2323,15 +2330,6 @@ function aiPickBestDir() {
         var parGap = ((parW - parB) % 3 + 3) % 3;
         var playerEven = gs.player.row % 2 === 0;
         var parBad = (playerEven && parGap === 1) || (!playerEven && parGap === 2);
-        // At very high np, treat ANY non-zero parGap as bad — the standard check
-        // only catches half the cases (parGap=1 on even, =2 on odd) but the
-        // oscillation between rows means it misses the other half.
-        if (!parBad && parGap !== 0 && aiNoProgressCount > 200) parBad = true;
-        if (window._predValidate && aiNoProgressCount % 50 === 0) {
-            console.log('PARITY-CHECK np=' + aiNoProgressCount + ' gap=' + parGap +
-                ' W=' + parW + ' B=' + parB + ' row=' + gs.player.row +
-                ' bad=' + parBad + ' discs=' + gs.discs.filter(function(d){return d.active;}).length);
-        }
         if (parBad) {
             // Option 1: ride an even-row disc to fix parity (no life cost)
             var parDiscFixed = false;
