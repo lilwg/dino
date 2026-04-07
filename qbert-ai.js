@@ -1868,6 +1868,23 @@ function unifiedPick(gs, coilyActive) {
             }
         }
 
+        // Coily kiting: when Coily is close, prefer directions that increase
+        // distance. Creates "big triangle" pattern — run to the far side of the
+        // board, dragging Coily along, then work on cubes in the space created.
+        // Only on L5+ where Coily interference is the main bottleneck.
+        if (gs.lv >= 5 && coilyInit && coilyInit.row >= 0 && dir !== 'STAY') {
+            var _kd = DIRS[dir];
+            var _knr = gs.player.row + _kd.dr, _knc = gs.player.col + _kd.dc;
+            if (isValidPos(_knr, _knc)) {
+                var _cDistBefore = Math.abs(coilyInit.row - gs.player.row) + Math.abs(coilyInit.col - gs.player.col);
+                var _cDistAfter = Math.abs(coilyInit.row - _knr) + Math.abs(coilyInit.col - _knc);
+                if (_cDistBefore <= 4) {
+                    // Coily is close — reward moving away, penalize moving toward
+                    tc += (_cDistBefore - _cDistAfter) * 3;
+                }
+            }
+        }
+
         // Disc lure bonus: reduce tour cost for directions moving toward disc
         // Luring Coily = long peaceful window (~6 hops of safe progress)
         if (lureDisc && dir !== 'STAY') {
