@@ -2005,18 +2005,27 @@ function unifiedPick(gs, coilyActive) {
         var _vizPath = [];
 
         if (gs.lv >= 5) {
-            // L5+ peel routing: prefer cubes in the lowest uncompleted peel layer
-            // (outside-in), and within that, prefer half-done over fresh.
-            // Completing outside-in means you never cross completed cubes.
+            // L5+ bottom-up row sweep. Complete bottom row first, seal it,
+            // move up. Once a row is done it's a wall — can never be reverted.
             if (dir === 'STAY') {
                 tc = 20;
             } else {
                 var dd = DIRS[dir];
                 var dnr = gs.player.row + dd.dr, dnc = gs.player.col + dd.dc;
                 if (!isValidPos(dnr, dnc)) {
-                    tc = 50; // off-board (disc handling below may override)
+                    tc = 50; // off-board
                 } else {
-                    var destIdx = posToIdx[dnr * ROWS + dnc];
+                    // Find the lowest row with unfinished cubes = work row
+                    var workRow = -1;
+                    for (var wr = ROWS - 1; wr >= 0; wr--) {
+                        for (var wci = 0; wci < gs.cubes.length; wci++) {
+                            if (gs.cubes[wci].row === wr && gs.cubes[wci].state < gs.tgt) {
+                                workRow = wr; break;
+                            }
+                        }
+                        if (workRow >= 0) break;
+                    }
+
                     var destState = -1;
                     for (var dsi = 0; dsi < gs.cubes.length; dsi++) {
                         if (gs.cubes[dsi].row === dnr && gs.cubes[dsi].col === dnc) {
@@ -2024,47 +2033,20 @@ function unifiedPick(gs, coilyActive) {
                         }
                     }
                     var destNeed = stompsNeeded(destState, gs.lv);
-                    // Find the lowest peel layer that still has unfinished cubes
-                    var targetLayer = 99;
-                    for (var pli = 0; pli < POS_COUNT; pli++) {
-                        var plrc = idxToPos[pli];
-                        for (var plci = 0; plci < gs.cubes.length; plci++) {
-                            if (gs.cubes[plci].row === plrc[0] && gs.cubes[plci].col === plrc[1] && gs.cubes[plci].state < gs.tgt) {
-                                if (PEEL_LAYER[pli] < targetLayer) targetLayer = PEEL_LAYER[pli];
-                                break;
-                            }
-                        }
-                    }
-                    var destLayer = PEEL_LAYER[destIdx];
-                    var inTargetLayer = (destLayer === targetLayer);
 
-                    // Protect completed cubes in the target layer and below.
-                    // Inner layers (above target) are traversable — the AI may
-                    // need to cross them to reach the target, and they'll be
-                    // re-done when their layer becomes the target.
-                    if (destNeed === 0 && destLayer < targetLayer) {
-                        tc = 100; // wall: completed layer below target
+                    if (dnr > workRow) {
+                        // Below work row = completed row = WALL
+                        tc = 100;
+                    } else if (dnr === workRow) {
+                        // On the work row — this is where we want to be
+                        if (destNeed === 1) tc = 0;       // half-done: finish it!
+                        else if (destNeed >= 2) tc = 2;   // fresh: progress
+                        else tc = 40;                      // completed in work row: avoid
                     } else {
-                        // BFS distance from dest to nearest unfinished target-layer cube
-                        var distToTarget = 99;
-                        for (var ndi = 0; ndi < POS_COUNT; ndi++) {
-                            if (PEEL_LAYER[ndi] === targetLayer) {
-                                var ndrc = idxToPos[ndi];
-                                for (var nci = 0; nci < gs.cubes.length; nci++) {
-                                    if (gs.cubes[nci].row === ndrc[0] && gs.cubes[nci].col === ndrc[1] && gs.cubes[nci].state < gs.tgt) {
-                                        var nd = distMatrix[destIdx * POS_COUNT + ndi];
-                                        if (nd < distToTarget) distToTarget = nd;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-
-                        if (destNeed === 1 && inTargetLayer) tc = 0;        // half-done in target layer: best!
-                        else if (destNeed >= 2 && inTargetLayer) tc = 2;    // fresh in target layer
-                        else if (destNeed === 1) tc = 3 + distToTarget;     // half-done elsewhere
-                        else if (destNeed >= 2) tc = 5 + distToTarget;      // fresh elsewhere
-                        else tc = 30 + distToTarget;                        // completed in active layer
+                        // Above work row — transit zone, prefer moving DOWN
+                        if (destNeed === 1) tc = 3 + (workRow - dnr);
+                        else if (destNeed >= 2) tc = 5 + (workRow - dnr);
+                        else tc = 10 + (workRow - dnr);   // completed above: mild penalty + distance
                     }
                 }
             }
