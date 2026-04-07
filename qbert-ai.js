@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI: hybrid strategy + survival tree
-var AI_VERSION = 'v13.3-teacher';
+var AI_VERSION = 'v13.5-teacher';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -99,10 +99,10 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts) {
 
     var isToggle = lv >= 3;
     // L1-2: no reverts possible. L3-4 (toggle): penalty 1.5.
-    // L5+ (cycle): penalty 2.5 (higher = reverts cost 3 stomps to fix)
+    // L5+ (cycle): penalty 4 (each revert costs 2 stomps + travel to fix)
     // When deeply stuck (np>200), drop penalty to 0 — must accept reverts
     var npCount = typeof aiNoProgressCount !== 'undefined' ? aiNoProgressCount : 0;
-    var REVERT_PENALTY = npCount > 200 ? 0 : (lv >= 5 ? 2.5 : (isToggle ? 1.5 : 0));
+    var REVERT_PENALTY = npCount > 200 ? 0 : (lv >= 5 ? 4 : (isToggle ? 1.5 : 0));
     var curIdx = startIdx;
     var totalHops = 0;
 
@@ -121,16 +121,21 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts) {
                 var curHops = typeof hops !== 'undefined' ? hops : 0;
                 var hopsSinceVisit = curHops - (aiCubeLastVisit[i] || 0);
                 if (hopsSinceVisit < 20) d += (20 - hopsSinceVisit) * 0.5;
-                // Bottom-up sweep: prefer bottom-row cubes to avoid backtracking
-                // through completed upper cubes. Stronger on L3-4 where reverts hurt.
+                // Bottom-up sweep: complete lower rows first to avoid backtracking
+                // through completed upper rows. L5 needs very strong bias to enforce
+                // systematic sweep — weak bias lets planner pick distant targets.
                 var row_i = idxToPos[i][0], col_i = idxToPos[i][1];
-                d -= row_i * (lv >= 5 ? 1.5 : 2);
+                d -= row_i * (lv >= 5 ? 2.5 : 2);
                 // Corner priority: bottom corners (few exits) should be done first
                 if (row_i >= 4 && (col_i <= 1 || col_i >= row_i - 1)) d -= 2;
+                // Half-done priority: on L5+, cubes needing 1 more stomp are urgent —
+                // complete them now before travel or enemies revert them
+                if (lv >= 5 && stomps[i] === 1) d -= 4;
                 // Cluster bonus: prefer cubes with unfinished neighbors (sweep clusters together)
+                var clusterW = (lv >= 5) ? 1.5 : 0.5;
                 var adj = posAdj[i];
                 for (var ai = 0; ai < adj.length; ai++) {
-                    if (stomps[adj[ai]] > 0) d -= 0.5;
+                    if (stomps[adj[ai]] > 0) d -= clusterW;
                 }
                 if (d < bestDist || (d === bestDist && (bestIdx === -1 || i < bestIdx))) {
                     bestDist = d; bestIdx = i;
@@ -153,16 +158,27 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts) {
         while (pc !== curIdx) { path.push(pc); pc = dijk.prev[pc]; }
         totalHops += path.length;
 
-        // Apply stomps along path; on toggle levels fix reverts (never leave debt)
+        // Apply stomps along path; track revert damage on toggle/cycle levels
         for (var p = path.length - 1; p >= 0; p--) {
             var pos = path[p];
             if (stomps[pos] > 0) {
                 stomps[pos]--;
             } else if (isToggle) {
-                totalHops += 2; // revert + redo cost (only on toggle/cycling levels)
+                // Walking through completed cube reverts it — track the damage
+                // so future Dijkstra iterations route back to fix it.
+                // L5+ cycle: state 2→0 needs 2 stomps; L3-4 toggle: needs 1
+                stomps[pos] = (lv >= 5) ? 2 : 1;
             }
         }
         curIdx = bestIdx;
+        // L5+: finish current cube before leaving — prevents ping-pong where
+        // planner visits a cube once (0→1), leaves for a distant target, then
+        // must walk back through completed cubes to finish (1→2).
+        // Cost: 2 hops per remaining stomp (hop to adjacent + hop back).
+        if (lv >= 5 && stomps[curIdx] > 0) {
+            totalHops += stomps[curIdx] * 2;
+            stomps[curIdx] = 0;
+        }
     }
 
     return totalHops;
@@ -1511,22 +1527,6 @@ function unifiedPick(gs, coilyActive) {
                     delete gs.discs[_pi4]._parityHidden;
                 }
             }
-            // Coily misprediction diagnostic: log if teacher gives P=1 for all dirs
-            // when a coily is nearby (within 2 tiles)
-            if (window._predValidate && coilyInit) {
-                var _cDist = Math.abs(coilyInit.row - gs.player.row) + Math.abs(coilyInit.col - gs.player.col);
-                // Only warn if no discs available (disc escape explains P=1)
-                var _hasDisc = false;
-                for (var _di2 = 0; _di2 < gs.discs.length; _di2++)
-                    if (gs.discs[_di2].active) { _hasDisc = true; break; }
-                if (_cDist <= 2 && !_hasDisc) {
-                    var _allOne = true;
-                    for (var _tk in _dangerSurv) if (_dangerSurv[_tk] < 0.99) _allOne = false;
-                    if (_allOne) {
-                        console.log('TEACHER-COILY-WARN: all P=1 with coily ' + _cDist + ' away, NO DISCS. teacher=' + JSON.stringify(_dangerSurv) + ' depth=' + DEPTH);
-                    }
-                }
-            }
             var _tT1 = typeof performance !== 'undefined' ? performance.now() : 0;
             if (!window._teacherTimings) window._teacherTimings = [];
             var _tStats = perfectTeacherStats();
@@ -1715,20 +1715,17 @@ function unifiedPick(gs, coilyActive) {
                         dpDiscRow = dpc.row;
                 }
                 if (dpDiscRow >= 0 && dpDiscRow % 2 === 0) {
-                    // Parity rule: bad when (even_discs_used - odd_suicides) % 3 == 1
-                    // AND no more even discs remain to fix it.
-                    // In practice: block the 1st even disc if it's the only one,
-                    // or the 4th of 4 total. 2, 3, 5, 6 total are always fine.
-                    var evenUsed = 0, evenActive = 0;
-                    for (var dci3 = 0; dci3 < gs.discs.length; dci3++) {
-                        if (gs.discs[dci3].row % 2 === 0) {
-                            if (gs.discs[dci3].active) evenActive++; else evenUsed++;
-                        }
+                    // Parity check using actual cube state: each even-row disc ride
+                    // shifts parGap by -1 (mod 3). Block if result would be unsolvable.
+                    var dcW2 = 0, dcB2 = 0;
+                    for (var dci3 = 0; dci3 < gs.cubes.length; dci3++) {
+                        var dcDef2 = (gs.tgt - gs.cubes[dci3].state + 3) % 3;
+                        if (gs.cubes[dci3].row % 2 === 0) dcW2 += dcDef2; else dcB2 += dcDef2;
                     }
-                    var oddFalls = gs.oddRowFalls || 0;
-                    var countAfter = evenUsed + 1;
-                    var remainAfter = evenActive - 1; // this disc consumed
-                    if (((countAfter - oddFalls) % 3 + 3) % 3 === 1 && remainAfter === 0) continue;
+                    var curGap = ((dcW2 - dcB2) % 3 + 3) % 3;
+                    var afterGap = ((curGap - 1) % 3 + 3) % 3;
+                    // After ride, player on even row (apex). Bad iff afterGap === 1.
+                    if (afterGap === 1) continue;
                 }
             }
         }
@@ -1820,19 +1817,16 @@ function unifiedPick(gs, coilyActive) {
         hop1Surv[dir] = survProb;
 
 
-        // Compute tour cost — if simStep dies on this RNG seed, use current state estimate
+        // Compute tour cost
         var _tcT0 = typeof performance !== 'undefined' ? performance.now() : 0;
+        var tc;
         simSeed(k * 100);
         var tcClone = simDeepClone(gs);
         var tcAlive = simStep(tcClone, dir);
-        var tc;
         if (tcAlive) {
             tc = tcClone.levelWon ? 0 : simTourCost(tcClone);
-            // Level-complete survival already handled above via isLevelComplete +
-            // expectimaxDir — no second override needed here (single-seed override
-            // was wrong: other enemy combos might kill the player during the hop)
         } else {
-            tc = simTourCost(gs) + 1; // simStep failed with this seed; approximate
+            tc = simTourCost(gs) + 1;
         }
         // STAY penalty: escalates with consecutive STAYs, much higher during freeze
         // (freeze = enemies can't move, so STAY wastes the safe window)
@@ -1870,6 +1864,23 @@ function unifiedPick(gs, coilyActive) {
                         tc += Math.min(30, 10 + Math.floor(hops / 100) * 5); // cap at 30
                         break;
                     }
+                }
+            }
+        }
+
+        // Coily kiting: when Coily is close, prefer directions that increase
+        // distance. Creates "big triangle" pattern — run to the far side of the
+        // board, dragging Coily along, then work on cubes in the space created.
+        // Only on L5+ where Coily interference is the main bottleneck.
+        if (gs.lv >= 5 && coilyInit && coilyInit.row >= 0 && dir !== 'STAY') {
+            var _kd = DIRS[dir];
+            var _knr = gs.player.row + _kd.dr, _knc = gs.player.col + _kd.dc;
+            if (isValidPos(_knr, _knc)) {
+                var _cDistBefore = Math.abs(coilyInit.row - gs.player.row) + Math.abs(coilyInit.col - gs.player.col);
+                var _cDistAfter = Math.abs(coilyInit.row - _knr) + Math.abs(coilyInit.col - _knc);
+                if (_cDistBefore <= 4) {
+                    // Coily is close — reward moving away, penalize moving toward
+                    tc += (_cDistBefore - _cDistAfter) * 3;
                 }
             }
         }
@@ -1923,7 +1934,10 @@ function unifiedPick(gs, coilyActive) {
         }
         safe1[dir] = true;
         safe2[dir] = true;
-        aiMoveScores[dir] = Math.round(score * 10000);
+        // Cap at -9999 so non-eliminated directions always beat eliminated (-10000).
+        // Escalating LAMBDA can push scores below -10000, causing the AI to pick
+        // eliminated (P<0.8) directions over safe ones with bad tour cost.
+        aiMoveScores[dir] = Math.max(-9999, Math.round(score * 10000));
     }
 
     // Safety-first: if any direction has P=1.0, never gamble on P<1.0.
@@ -1944,6 +1958,26 @@ function unifiedPick(gs, coilyActive) {
         for (var sk2 in hop1Surv) {
             if (hop1Surv[sk2] < 1.0 && aiMoveScores[sk2] !== undefined && aiMoveScores[sk2] > -10000) {
                 aiMoveScores[sk2] = -10000;
+            }
+        }
+    }
+
+    // Disc escape: if all on-board directions are fatal, try disc rides
+    var allFatal = true;
+    for (var afk in aiMoveScores) {
+        if (aiMoveScores[afk] > -10000) { allFatal = false; break; }
+    }
+    if (allFatal) {
+        for (var dek = 0; dek < DIR_KEYS.length; dek++) {
+            var deDir = DIR_KEYS[dek];
+            if (hop1Surv[deDir] !== undefined) continue; // already evaluated
+            if (!simCanMove(gs, deDir)) continue;
+            // This is a disc ride direction that wasn't evaluated (filtered earlier)
+            var deClone = simDeepClone(gs);
+            var deAlive = simStep(deClone, deDir);
+            if (deAlive) {
+                hop1Surv[deDir] = 1.0;
+                aiMoveScores[deDir] = 5000; // high score — escape!
             }
         }
     }
@@ -2262,14 +2296,15 @@ function aiPickBestDir() {
                         if (asc2 !== undefined && asc2 > altScore) { altScore = asc2; altDir = DIR_KEYS[ak2]; }
                     }
                 }
-                // Safety guard: don't override if the alternative is substantially
-                // less safe than the original. logPerHop difference > 0.02 means
-                // per-hop survival drops by >~2% — not worth it to break oscillation.
+                // Safety guard: never sacrifice survival or massively worse routing
+                if (altDir && aiLastHop1Surv) {
+                    var origP = aiLastHop1Surv[result] || 0;
+                    var altP = aiLastHop1Surv[altDir] || 0;
+                    if (altP < origP) altDir = null;
+                }
                 if (altDir) {
-                    var origScore = aiMoveScores[result];
-                    if (origScore !== undefined && origScore > altScore + 200) {
-                        altDir = null;
-                    }
+                    var origScoreOsc = aiMoveScores[result];
+                    if (origScoreOsc !== undefined && origScoreOsc > altScore + 400) altDir = null;
                 }
                 if (altDir) { result = altDir; aiPosHistory.length = 0; }
             }
@@ -2297,61 +2332,91 @@ function aiPickBestDir() {
     }
 
     // L5+ parity fix: compute (W-B) mod 3 from actual cube states.
-    // Unsolvable when (W-B) mod 3 ≠ 0. Fix by jumping off an odd-row edge
-    // (costs 1 life but fixes parity). Detect earlier (np>20) to avoid
-    // wasting hundreds of hops in a deadlock.
-    if (gs.lv >= 5 && aiNoProgressCount > 100) {
+    // Unsolvable when parBad. Fix by: (1) riding an even-row disc (preferred),
+    // or (2) jumping off an odd-row edge (suicide, last resort).
+    if (gs.lv >= 5 && aiNoProgressCount > 15) {
         var parW = 0, parB = 0;
         for (var pi = 0; pi < gs.cubes.length; pi++) {
             var pdef = (gs.tgt - gs.cubes[pi].state + 3) % 3;
             if (gs.cubes[pi].row % 2 === 0) parW += pdef; else parB += pdef;
         }
         var parGap = ((parW - parB) % 3 + 3) % 3;
-        // Only truly bad parity triggers suicide — not every non-zero gap
         var playerEven = gs.player.row % 2 === 0;
         var parBad = (playerEven && parGap === 1) || (!playerEven && parGap === 2);
         if (parBad) {
-            if (gs.player.row % 2 === 1) {
-                // On odd row — jump off edge to fix parity (suicide)
-                // Only if no enemy will kill us during the jump (check survival)
-                var parSuicide = null;
-                for (var fk = 0; fk < DIR_KEYS.length; fk++) {
-                    var fd = DIRS[DIR_KEYS[fk]];
-                    var fnr = gs.player.row + fd.dr, fnc = gs.player.col + fd.dc;
-                    if (isValidPos(fnr, fnc)) continue; // on-grid, not a suicide
-                    // Don't jump onto a disc
-                    var isDiscJump = false;
-                    for (var fdi = 0; fdi < gs.discs.length; fdi++) {
-                        var fdc = gs.discs[fdi];
-                        if (fdc.active && fdc.row === gs.player.row &&
-                            ((fdc.side === 0 && DIR_KEYS[fk] === 'UL' && gs.player.col === 0) ||
-                             (fdc.side === 1 && DIR_KEYS[fk] === 'UR' && gs.player.col === gs.player.row)))
-                            isDiscJump = true;
+            // Option 1: ride an even-row disc to fix parity (no life cost)
+            var parDiscFixed = false;
+            for (var pdfi = 0; pdfi < gs.discs.length; pdfi++) {
+                var pdfd = gs.discs[pdfi];
+                if (!pdfd.active || pdfd.row % 2 !== 0) continue;
+                // Check if taking this disc would actually fix parity
+                var fixGap = ((parGap - 1) % 3 + 3) % 3;
+                // After ride, player on even row. Bad iff fixGap === 1.
+                // But we need to account for getting there (hops shift parGap):
+                // parGap only shifts from disc rides/suicides, not normal hops.
+                // So if fixGap !== 1, taking this disc fixes it.
+                if (fixGap === 1) continue; // this disc would make it worse
+                var trigCol = pdfd.side === 0 ? 0 : pdfd.row;
+                if (gs.player.row === pdfd.row && gs.player.col === trigCol) {
+                    // At the disc — take it!
+                    var discDir = pdfd.side === 0 ? 'UL' : 'UR';
+                    // Only if safe
+                    var discP = aiLastHop1Surv && aiLastHop1Surv[discDir];
+                    if (discP == null || discP > 0) {
+                        result = discDir;
+                        parDiscFixed = true;
                     }
-                    if (isDiscJump) continue;
-                    // Check no enemy will cross-path kill us during the fall
-                    var fkP = aiLastHop1Surv && aiLastHop1Surv[DIR_KEYS[fk]];
-                    if (fkP != null && fkP <= 0) continue; // enemy blocks this exit
-                    parSuicide = DIR_KEYS[fk]; break;
-                }
-                if (parSuicide) result = parSuicide;
-            } else {
-                // On even row — route to nearest odd-row edge to jump off
-                // Only if the route is safe (don't walk into coily to fix parity)
-                var bestEdgeDir = null, bestEdgeDist = 999;
-                for (var ek = 0; ek < DIR_KEYS.length; ek++) {
-                    var ed = DIRS[DIR_KEYS[ek]];
-                    var enr = gs.player.row + ed.dr, enc = gs.player.col + ed.dc;
-                    if (!isValidPos(enr, enc)) continue;
-                    // Skip directions the AI marked as lethal
-                    var ekScore = aiMoveScores[DIR_KEYS[ek]];
-                    if (ekScore !== undefined && ekScore <= -10000) continue;
-                    if (enr % 2 === 1) {
-                        var edgeDist = Math.min(enc, enr - enc);
-                        if (edgeDist < bestEdgeDist) { bestEdgeDist = edgeDist; bestEdgeDir = DIR_KEYS[ek]; }
+                } else {
+                    // Route toward the disc — only if safe (P=1.0)
+                    var pBfs = bfsTo(gs.player.row, gs.player.col, pdfd.row, trigCol);
+                    if (pBfs && pBfs.path.length > 0) {
+                        var pDir = pBfs.path[0];
+                        var pDirP = aiLastHop1Surv && aiLastHop1Surv[pDir];
+                        if (pDirP != null && pDirP >= 1.0) {
+                            result = pDir;
+                            parDiscFixed = true;
+                        }
                     }
                 }
-                if (bestEdgeDir) result = bestEdgeDir;
+                if (parDiscFixed) break;
+            }
+            // Option 2: no disc available — suicide off odd row (costs 1 life)
+            if (!parDiscFixed && aiNoProgressCount > 30) {
+                if (gs.player.row % 2 === 1) {
+                    var parSuicide = null;
+                    for (var fk = 0; fk < DIR_KEYS.length; fk++) {
+                        var fd = DIRS[DIR_KEYS[fk]];
+                        var fnr = gs.player.row + fd.dr, fnc = gs.player.col + fd.dc;
+                        if (isValidPos(fnr, fnc)) continue;
+                        var isDiscJump = false;
+                        for (var fdi = 0; fdi < gs.discs.length; fdi++) {
+                            var fdc = gs.discs[fdi];
+                            if (fdc.active && fdc.row === gs.player.row &&
+                                ((fdc.side === 0 && DIR_KEYS[fk] === 'UL' && gs.player.col === 0) ||
+                                 (fdc.side === 1 && DIR_KEYS[fk] === 'UR' && gs.player.col === gs.player.row)))
+                                isDiscJump = true;
+                        }
+                        if (isDiscJump) continue;
+                        var fkP = aiLastHop1Surv && aiLastHop1Surv[DIR_KEYS[fk]];
+                        if (fkP != null && fkP <= 0) continue;
+                        parSuicide = DIR_KEYS[fk]; break;
+                    }
+                    if (parSuicide) result = parSuicide;
+                } else {
+                    var bestEdgeDir = null, bestEdgeDist = 999;
+                    for (var ek = 0; ek < DIR_KEYS.length; ek++) {
+                        var ed = DIRS[DIR_KEYS[ek]];
+                        var enr = gs.player.row + ed.dr, enc = gs.player.col + ed.dc;
+                        if (!isValidPos(enr, enc)) continue;
+                        var ekScore = aiMoveScores[DIR_KEYS[ek]];
+                        if (ekScore !== undefined && ekScore <= -10000) continue;
+                        if (enr % 2 === 1) {
+                            var edgeDist = Math.min(enc, enr - enc);
+                            if (edgeDist < bestEdgeDist) { bestEdgeDist = edgeDist; bestEdgeDir = DIR_KEYS[ek]; }
+                        }
+                    }
+                    if (bestEdgeDir) result = bestEdgeDir;
+                }
             }
         }
     }
@@ -2491,9 +2556,5 @@ function aiPickBestDir() {
 
     // Restore game RNG — must never leak seeded RNG into real game
     simRng = savedGameRng;
-    if (_origResult !== result && typeof console !== 'undefined' && window._predValidate) {
-        var _origS = aiMoveScores[_origResult], _newS = aiMoveScores[result];
-        console.log('AI OVERRIDE @(' + gs.player.row + ',' + gs.player.col + ') orig=' + _origResult + '(' + _origS + ') new=' + result + '(' + _newS + ') np=' + aiNoProgressCount + ' stay=' + aiStayCount);
-    }
     return result;
 }

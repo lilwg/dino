@@ -50,7 +50,8 @@ var aiTour, aiTourIdx, aiBoardSig;
 var gameSpeed = 1.0;  // global speed scale: 1.0 = normal arcade speed ("1x")
 var freezeTimer = 0;
 var enemiesEnabled = true;  // toggle via UI button
-var debugEnemies = false;   // ?debug URL param: spawn all enemies, hide player
+var debugEnemies = false;   // ?debugenemies URL param: spawn all enemies, hide player
+var debugReplay = false;    // ?debug URL param: show death replay + _predValidate
 </script>
 <script src="qbert.js"></script>
 <script src="qbert-ai.js"></script>
@@ -470,7 +471,7 @@ function killPlayerVisual() {
     window._deathChains.push({ info: deathInfo, chain: window._deathDecisionChain.slice(-8) });
     // Capture death state and enter rewind mode (skip in headless/automated tests)
     captureRewindSnapshot(gs, true);
-    if (!window._headlessTest) {
+    if (!window._headlessTest && debugReplay) {
         rewindMode = true;
         rewindIdx = rewindBuffer.length - 1;
     }
@@ -1634,42 +1635,59 @@ function drawHUD() {
         ctx.font = '600 13px "Courier New",monospace';
     }
 
-    // Top-right: lives, then score + hops below
-    for (var i = 0; i < lives; i++) {
-        if (spriteClean) {
-            var sp = SPRITES.TREX_IDLE;
-            var sc = 0.38;
+    // Target color diamond below BEST line
+    var tgt = targetState();
+    var rc = getRoundColors();
+    var tgtCol = rc.top[tgt]; // always use true color (not inverted)
+    var tgtLabel = 'TARGET ';
+    ctx.fillStyle = '#535353';
+    ctx.fillText(tgtLabel, 10, 50);
+    var tgtLabelW = ctx.measureText(tgtLabel).width;
+    var tgtX = 10 + tgtLabelW + 7;
+    var tgtS = 7;
+    ctx.fillStyle = tgtCol;
+    ctx.beginPath();
+    ctx.moveTo(tgtX, 46 - tgtS);
+    ctx.lineTo(tgtX + tgtS, 46);
+    ctx.lineTo(tgtX, 46 + tgtS);
+    ctx.lineTo(tgtX - tgtS, 46);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // Top-right: lives — 10 individual dinos, then 🦕×N for overflow
+    ctx.fillStyle = '#535353';
+    var maxIcons = 10;
+    var showIcons = Math.min(lives, maxIcons);
+    if (spriteClean) {
+        var sp = SPRITES.TREX_IDLE;
+        var sc = 0.38;
+        for (var i = 0; i < showIcons; i++) {
             ctx.drawImage(spriteClean, sp.x, sp.y, sp.w, sp.h,
-                CW - 8 - (i + 1) * 20, 4,
-                sp.w * sc, sp.h * sc);
+                CW - 8 - (i + 1) * 20, 4, sp.w * sc, sp.h * sc);
+        }
+        if (lives > maxIcons) {
+            // 11th dino icon
+            var elevenX = CW - 8 - (maxIcons + 1) * 20;
+            ctx.drawImage(spriteClean, sp.x, sp.y, sp.w, sp.h,
+                elevenX, 4, sp.w * sc, sp.h * sc);
+            // ×N text right after the 11th dino
+            ctx.font = '600 11px "Courier New",monospace';
+            ctx.textAlign = 'left';
+            ctx.fillText('\u00d7' + (lives - maxIcons), elevenX + sp.w * sc + 1, 17);
+            ctx.font = '600 13px "Courier New",monospace';
         }
     }
     ctx.textAlign = 'right';
     ctx.fillText(padScore(score), CW - 10, 34);
     ctx.fillText('HOPS ' + hops, CW - 10, 50);
 
-    // Round indicator center-top with target color cube
+    // Round indicator center-top
     ctx.textAlign = 'center';
     var lvText = 'LV ' + arcadeLevel() + '-' + ((round - 1) % 4 + 1);
     ctx.fillText(lvText, CW / 2, 18);
-    // Draw small target cube showing the goal color
-    var tgt = targetState();
-    var rc = getRoundColors();
-    var tgtCol = inverted ? invertColor(rc.top[tgt]) : rc.top[tgt];
-    var tgtX = CW / 2 + ctx.measureText(lvText).width / 2 + 10;
-    var tgtS = 10; // half-size of the mini cube
-    ctx.fillStyle = tgtCol;
-    // Diamond shape (top face of cube)
-    ctx.beginPath();
-    ctx.moveTo(tgtX, 8 - tgtS);
-    ctx.lineTo(tgtX + tgtS, 8);
-    ctx.lineTo(tgtX, 8 + tgtS);
-    ctx.lineTo(tgtX - tgtS, 8);
-    ctx.closePath();
-    ctx.fill();
-    ctx.strokeStyle = '#000';
-    ctx.lineWidth = 1;
-    ctx.stroke();
     ctx.fillStyle = inverted ? '#000' : '#fff';
     ctx.font = '600 13px "Courier New",monospace';
     ctx.textAlign = 'left';
@@ -1753,7 +1771,9 @@ window.restartGame = function () {
     var params = new URLSearchParams(window.location.search.toLowerCase());
     var startLevel = parseInt(params.get('l'));
     round = (startLevel > 1 && startLevel <= 9) ? (startLevel - 1) * 4 + 1 : 1;
-    debugEnemies = params.has('debug');
+    debugEnemies = params.has('debugenemies');
+    debugReplay = params.has('debug');
+    if (debugReplay) window._predValidate = true;
     nextExtraLife = 8000;
     gameOver  = false;
     paused    = false;
@@ -1795,13 +1815,16 @@ window.toggleEnemies = function () {
     var btn = document.getElementById('enemies-btn');
     btn.textContent = 'Enemies: ' + (enemiesEnabled ? 'On' : 'Off');
     btn.classList.toggle('active', enemiesEnabled);
-    // When toggling off, clear all active enemies (keeps spawn timers)
     if (!enemiesEnabled) {
+        // When toggling off, clear all active enemies (keeps spawn timers)
         var kept = [];
         for (var i = 0; i < gs.enemies.length; i++)
             if (gs.enemies[i].type === 'spawn-timer') kept.push(gs.enemies[i]);
         gs.enemies = kept;
         enemies = gs.enemies;
+    } else {
+        // When toggling on, schedule fresh enemy spawns
+        simScheduleInitialEnemies(gs);
     }
 };
 
