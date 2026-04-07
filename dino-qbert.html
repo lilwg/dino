@@ -36,7 +36,8 @@
 
         <h2 style="margin-top:16px;">How it works</h2>
         <p class="si-prose">DinoQbert recreates the 1982 Gottlieb arcade original: hop-based movement, one jump per keypress with arcade-matched hop timing (~0.67s per hop), and the classic @!#?@! swear bubble on death. Coily spawns as an egg, bounces randomly down the pyramid, then hatches and chases the player. Dark balls bounce down and kill on contact; light balls are safe to catch for 100 pts. Slick (round 4+) hops down uncoloring cubes. Ugg and Wrongway (round 3+) crawl upward from the bottom corners. Two transport discs at variable positions let Q*bert escape and lure Coily to his death.</p>
-        <p class="si-prose">Tap <strong>Viz</strong> to see the AI&rsquo;s decision-making: colored dots show scored directions (green=best, red=worst), a dashed arrow points to the chosen move, and faint dots mark uncolored cubes. The AI has two modes. <strong>Mode 1</strong> (no Coily): Dijkstra tour planning picks the nearest unfinished cube while avoiding a danger set built from enemy positions and predicted paths. <strong>Mode 2</strong> (Coily active): Monte Carlo search runs 24 forward simulations per direction, 6 hops deep, using a greedy rollout policy that exploits Coily&rsquo;s deterministic chase. It picks the move with the highest survival rate, breaking ties by tour cost (MST heuristic). Coily always chases the player&rsquo;s source tile during a jump, so jumping <em>toward</em> a standing Coily is safe&mdash;they swap tiles at apex. The AI also evaluates disc lures to kill Coily when he&rsquo;ll chase off the edge.</p>
+        <p class="si-prose">Tap <strong>Viz</strong> to see the AI&rsquo;s decision-making. Each direction diamond shows two numbers: <strong>P%</strong> (survival probability, above) and <strong>+N</strong> (tour hops remaining, below), colored green/yellow/red by safety. The chosen move gets a white border. An orange dashed line traces the planned tour&mdash;filled dots are target cubes, hollow dots are transit. Colored overlays show where each enemy could be in 1&ndash;2 hops (purple=Coily, red=balls, green=Slick, orange=Ugg/Wrongway), fading with distance and probability. A pulsing cyan ring marks disc lure targets. A reason badge in the bottom-left explains the decision: TOUR, SAFE+SHORT, LURE, ESCAPE, PARITY, UNSTUCK, etc.</p>
+        <p class="si-prose">Every hop, the AI scores each direction as log(P<sub>survive</sub>)/depth &minus; &lambda;&times;tour_cost. The <strong>safety layer</strong> uses a perfect teacher&mdash;an expectimax search over the real game engine that enumerates enemy RNG branches&mdash;to compute multi-hop survival probability (up to 20 hops deep), with a factored per-enemy survival tree as fallback. The <strong>strategy layer</strong> runs Dijkstra + greedy nearest-neighbor tour planning with bottom-up sweep priority and completed-cube avoidance on toggle levels. On L5+, disc parity checks prevent unsolvable board states, and Coily kiting drags the snake to the far side before working on cubes. When Coily is close enough to follow, the AI routes toward transport discs for a lure kill&mdash;riding the disc while Coily chases off the edge buys a long peaceful window.</p>
 
         <p style="margin-top:20px;"><a href="/" style="color:#0071e3;font-size:14px;text-decoration:none;">&larr; Back</a></p>
     </div>
@@ -317,7 +318,8 @@ aiBoardSig   = '';
 var aiBestDir    = null;
 var aiDangerTiles = {};    // tiles in danger set — drawn as red overlays
 var aiCoilyPred  = [];     // predicted Coily positions [{row,col}, ...] for 1-3 steps
-var aiTourPath   = [];     // ordered tour path [{row,col}, ...] — connected line
+var aiEnemyPreds = [];     // predicted enemy positions [{type,row,col,step,prob}, ...]
+var aiTourPath   = [];     // ordered tour path [{row,col,target}, ...] — connected line
 var inputQueue  = [];
 var heldDir     = null;  // direction currently held by player
 var discRide    = null;  // { side, t, sx, sy, tx, ty } — player riding disc to top
@@ -568,7 +570,7 @@ function initRound() {
     roundMsg   = { text: 'LV ' + arcadeLevel() + ' ROUND ' + ((round - 1) % 4 + 1), timer: 90 };
     swearBubble = null;
     discRide    = null;
-    aiDetailPath = []; aiDangerTiles = {}; aiCoilyPred = []; aiTourPath = [];
+    aiDetailPath = []; aiDangerTiles = {}; aiCoilyPred = []; aiEnemyPreds = []; aiTourPath = [];
     aiTourDots   = [];
     aiTour       = [];
     aiTourInit();
@@ -661,58 +663,54 @@ function computeAIMove() {
     window.aiPredictionFrame = 1; // timeline f=0 is the computation state; validation starts 1 frame later
     window.aiPredictionDivergences = 0;
 
-    // Populate danger tiles and Coily predictions for viz
-    aiDangerTiles = buildDangerSet();
-    aiCoilyPred = [];
+    // Build enemy prediction timeline for viz: where will each enemy be in 1-3 hops?
+    aiEnemyPreds = [];
     for (var ei = 0; ei < enemies.length; ei++) {
         var e = enemies[ei];
+        if (e.type === 'spawn-timer' || e.type === 'greenball' || e.spawnAnimTimer > 0) continue;
+        var pos = enemyEffectivePos(e);
         if (e.type === 'coily') {
-            var pos = enemyEffectivePos(e);
             for (var step = 1; step <= 3; step++) {
                 var fp = predictCoilyPos({ row: pos.row, col: pos.col }, player.row, player.col, step);
-                aiCoilyPred.push({ row: fp.row, col: fp.col, step: step });
+                aiEnemyPreds.push({ type: e.type, row: fp.row, col: fp.col, step: step, prob: 1.0 });
+            }
+        } else {
+            // Random movers (redball, egg, slick) and edge crawlers (ugg, wrongway)
+            var positions = [{ row: pos.row, col: pos.col, prob: 1.0 }];
+            for (var step = 1; step <= 2; step++) {
+                var next = [];
+                for (var pi = 0; pi < positions.length; pi++) {
+                    var pp = positions[pi];
+                    var choices = getMoveChoicesForType(e.type, pp.row, pp.col);
+                    for (var ci = 0; ci < choices.length; ci++) {
+                        var cr = choices[ci][0], cc = choices[ci][1];
+                        if (!isValidPos(cr, cc)) continue;
+                        next.push({ row: cr, col: cc, prob: pp.prob / choices.length });
+                    }
+                }
+                // Merge duplicates
+                var merged = {};
+                for (var ni = 0; ni < next.length; ni++) {
+                    var mk = next[ni].row + ',' + next[ni].col;
+                    merged[mk] = merged[mk] ? merged[mk] + next[ni].prob : next[ni].prob;
+                }
+                positions = [];
+                for (var mk in merged)  {
+                    var mp = mk.split(',');
+                    positions.push({ row: parseInt(mp[0]), col: parseInt(mp[1]), prob: merged[mk] });
+                }
+                for (var mi = 0; mi < positions.length; mi++)
+                    aiEnemyPreds.push({ type: e.type, row: positions[mi].row, col: positions[mi].col, step: step, prob: positions[mi].prob });
             }
         }
     }
 
-    // Build viz: dots on all unfinished cubes, path from player to tour target
-    aiTourDots = [];
+    // Build viz from the actual tour path computed by the AI's greedyTourCost
     aiDetailPath = [];
     aiTourPath = [];
-    for (var vi = 0; vi < cubeStates.length; vi++)
-        if (cubeStates[vi].state < tgt) aiTourDots.push({ row: cubeStates[vi].row, col: cubeStates[vi].col });
-
-    // Build greedy nearest-neighbor tour with full BFS paths between waypoints
-    aiTourPath.push({ row: player.row, col: player.col });
-    if (aiTourDots.length > 0) {
-        var visited = {};
-        var cr = player.row, cc = player.col;
-        for (var ti = 0; ti < aiTourDots.length && ti < 10; ti++) {
-            var bestTi = -1, bestDist = Infinity;
-            for (var ui = 0; ui < aiTourDots.length; ui++) {
-                var uk = aiTourDots[ui].row + ',' + aiTourDots[ui].col;
-                if (visited[uk]) continue;
-                var d = exBfsDist(cr, cc, aiTourDots[ui].row, aiTourDots[ui].col);
-                if (d < bestDist) { bestDist = d; bestTi = ui; }
-            }
-            if (bestTi < 0) break;
-            var tr = aiTourDots[bestTi].row, tc = aiTourDots[bestTi].col;
-            visited[tr + ',' + tc] = true;
-            // Expand BFS path step by step
-            var bfs = bfsTo(cr, cc, tr, tc);
-            if (bfs) {
-                var wr = cr, wc = cc;
-                for (var wi = 0; wi < bfs.path.length; wi++) {
-                    var wd = DIRS[bfs.path[wi]];
-                    wr += wd.dr; wc += wd.dc;
-                    aiTourPath.push({ row: wr, col: wc });
-                }
-            } else {
-                aiTourPath.push({ row: tr, col: tc });
-            }
-            cr = tr; cc = tc;
-        }
-    }
+    var vizPath = window._aiVizTourPath || [];
+    for (var vi = 0; vi < vizPath.length; vi += 3)
+        aiTourPath.push({ row: vizPath[vi], col: vizPath[vi + 1], target: vizPath[vi + 2] });
 
     return bestDir || 'STAY';
 }
@@ -1197,23 +1195,30 @@ function drawVizPath() {
     var hw = TILE_W / 2, hh = TILE_H / 2;
     var ds = 5; // diamond half-size for direction indicators
 
-    // ── 1. Danger tiles: show exactly what the AI sees ──
-    for (var key in aiDangerTiles) {
-        var parts = key.split(',');
-        var dr = parseInt(parts[0]), dc = parseInt(parts[1]);
-        if (!isValidPos(dr, dc)) continue;
-        var dp = cubeXY(dr, dc);
+    // ── 1. Enemy threat timeline: predicted positions at +1/+2 hops ──
+    var enemyColors = {
+        coily: [160,50,220], redball: [200,50,50], egg: [200,50,50],
+        slick: [50,180,100], ugg: [200,130,30], wrongway: [200,130,30]
+    };
+    for (var ei = 0; ei < aiEnemyPreds.length; ei++) {
+        var ep = aiEnemyPreds[ei];
+        if (!isValidPos(ep.row, ep.col)) continue;
+        var exy = cubeXY(ep.row, ep.col);
+        var ec = enemyColors[ep.type] || [200,50,50];
+        var alpha = ep.prob * (ep.step === 1 ? 0.35 : 0.18);
+        // Threat diamond overlay
+        var tds = hh * 0.65;
         ctx.beginPath();
-        ctx.moveTo(dp.cx, dp.cy - hh); ctx.lineTo(dp.cx + hw, dp.cy);
-        ctx.lineTo(dp.cx, dp.cy + hh); ctx.lineTo(dp.cx - hw, dp.cy);
+        ctx.moveTo(exy.cx, exy.cy - tds); ctx.lineTo(exy.cx + tds * 1.6, exy.cy);
+        ctx.lineTo(exy.cx, exy.cy + tds); ctx.lineTo(exy.cx - tds * 1.6, exy.cy);
         ctx.closePath();
-        ctx.fillStyle = inverted ? 'rgba(255,60,60,0.6)' : 'rgba(200,40,40,0.6)';
+        ctx.fillStyle = 'rgba(' + ec[0] + ',' + ec[1] + ',' + ec[2] + ',' + alpha.toFixed(2) + ')';
         ctx.fill();
     }
 
-    // ── 2. Tour path: greedy route through unfinished cubes ──
+    // ── 2. Tour path: targets (filled) vs transit (hollow) ──
     if (aiTourPath.length >= 2) {
-        // Draw lines connecting waypoints
+        // Draw connecting line
         ctx.beginPath();
         var tp0 = cubeXY(aiTourPath[0].row, aiTourPath[0].col);
         ctx.moveTo(tp0.cx, tp0.cy);
@@ -1221,54 +1226,38 @@ function drawVizPath() {
             var tp = cubeXY(aiTourPath[j].row, aiTourPath[j].col);
             ctx.lineTo(tp.cx, tp.cy);
         }
-        ctx.strokeStyle = 'rgba(255,180,0,0.4)';
-        ctx.lineWidth = 2;
-        ctx.setLineDash([5, 4]);
+        ctx.strokeStyle = 'rgba(255,180,0,0.35)';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([4, 3]);
         ctx.stroke();
         ctx.setLineDash([]);
 
-        // Small numbered dots at each tour stop (skip first = player position)
-        for (var j = 1; j < Math.min(aiTourPath.length, 8); j++) {
+        // Draw stops (skip first = player position)
+        var stopNum = 0;
+        for (var j = 1; j < Math.min(aiTourPath.length, 12); j++) {
             var tp = cubeXY(aiTourPath[j].row, aiTourPath[j].col);
-            ctx.beginPath();
-            ctx.arc(tp.cx, tp.cy, 4, 0, Math.PI * 2);
-            ctx.fillStyle = 'rgba(255,180,0,0.45)'; ctx.fill();
-            ctx.font = '7px monospace'; ctx.textAlign = 'center';
-            ctx.fillStyle = 'rgba(0,0,0,0.6)';
-            ctx.fillText(j.toString(), tp.cx, tp.cy + 2.5);
-        }
-    }
-
-    // ── 3. Coily prediction ──
-    if (aiCoilyPred.length > 0) {
-        var coilyStart = null;
-        for (var ei = 0; ei < enemies.length; ei++) {
-            if (enemies[ei].type === 'coily') {
-                var epos = enemyEffectivePos(enemies[ei]);
-                coilyStart = cubeXY(epos.row, epos.col);
-                break;
-            }
-        }
-        if (coilyStart) {
-            ctx.beginPath();
-            ctx.moveTo(coilyStart.cx, coilyStart.cy);
-            for (var j = 0; j < aiCoilyPred.length; j++) {
-                var cpv = cubeXY(aiCoilyPred[j].row, aiCoilyPred[j].col);
-                ctx.lineTo(cpv.cx, cpv.cy);
-            }
-            ctx.strokeStyle = 'rgba(160,50,220,0.45)';
-            ctx.lineWidth = 1.5; ctx.setLineDash([3, 2]);
-            ctx.stroke(); ctx.setLineDash([]);
-            for (var j = 0; j < aiCoilyPred.length; j++) {
-                var cpv = cubeXY(aiCoilyPred[j].row, aiCoilyPred[j].col);
+            var isTarget = aiTourPath[j].target;
+            if (isTarget) {
+                stopNum++;
+                // Filled circle for target cubes
                 ctx.beginPath();
-                ctx.arc(cpv.cx, cpv.cy, 3, 0, Math.PI * 2);
-                ctx.fillStyle = 'rgba(160,50,220,' + (0.5 - j * 0.12) + ')'; ctx.fill();
+                ctx.arc(tp.cx, tp.cy, 5, 0, Math.PI * 2);
+                ctx.fillStyle = 'rgba(255,180,0,0.55)'; ctx.fill();
+                ctx.font = '7px monospace'; ctx.textAlign = 'center';
+                ctx.fillStyle = 'rgba(0,0,0,0.7)';
+                ctx.fillText(stopNum.toString(), tp.cx, tp.cy + 2.5);
+            } else {
+                // Small hollow circle for transit cubes
+                ctx.beginPath();
+                ctx.arc(tp.cx, tp.cy, 2.5, 0, Math.PI * 2);
+                ctx.strokeStyle = 'rgba(255,180,0,0.35)';
+                ctx.lineWidth = 1;
+                ctx.stroke();
             }
         }
     }
 
-    // ── 3b. Disc lure target: pulsing ring on disc-adjacent cube ──
+    // ── 3. Disc lure target: pulsing ring ──
     if (typeof aiLureTarget !== 'undefined' && aiLureTarget) {
         var lt = cubeXY(aiLureTarget.row, aiLureTarget.col);
         var pulse = 0.4 + 0.3 * Math.sin(Date.now() / 200);
@@ -1277,12 +1266,9 @@ function drawVizPath() {
         ctx.strokeStyle = 'rgba(0,200,255,' + pulse.toFixed(2) + ')';
         ctx.lineWidth = 2; ctx.setLineDash([3, 3]);
         ctx.stroke(); ctx.setLineDash([]);
-        ctx.font = '7px monospace'; ctx.textAlign = 'center';
-        ctx.fillStyle = 'rgba(0,200,255,0.6)';
-        ctx.fillText('LURE', lt.cx, lt.cy - 13);
     }
 
-    // ── 4. Direction indicators: small diamonds on adjacent tiles ──
+    // ── 4. Direction indicators: P% and tour cost per direction ──
     var hasScores = false;
     for (var i = 0; i < DIR_KEYS_WITH_STAY.length; i++)
         if (aiMoveScores[DIR_KEYS_WITH_STAY[i]] !== undefined) { hasScores = true; break; }
@@ -1293,6 +1279,8 @@ function drawVizPath() {
             var v = aiMoveScores[dk];
             if (v === undefined) continue;
             var isBest = (dk === aiBestDir);
+            var survP = (aiLastHop1Surv && aiLastHop1Surv[dk] !== undefined) ? aiLastHop1Surv[dk] : null;
+            var tc = (aiLastTourCosts && aiLastTourCosts[dk] !== undefined) ? aiLastTourCosts[dk] : null;
 
             var pt;
             if (dk === 'STAY') {
@@ -1306,11 +1294,12 @@ function drawVizPath() {
                         cy: cubeXY(player.row, player.col).cy + dd.dr * -25 };
             }
 
-            // Color by safety tier
+            // Color by survival probability only
             var col;
-            if (v <= -10000) col = 'rgba(200,30,30,0.7)';
-            else if (v < 0)  col = 'rgba(200,120,30,0.55)';
-            else              col = 'rgba(30,180,30,0.55)';
+            if (survP === null || v <= -10000) col = 'rgba(200,30,30,0.7)';
+            else if (survP >= 1.0) col = 'rgba(30,180,30,0.6)';
+            else if (survP >= 0.5) col = 'rgba(220,200,30,0.6)';
+            else col = 'rgba(200,80,30,0.65)';
 
             // Diamond shape
             var sz = isBest ? ds + 2 : ds;
@@ -1323,33 +1312,36 @@ function drawVizPath() {
                 ctx.strokeStyle = 'rgba(255,255,255,0.9)'; ctx.lineWidth = 1.5; ctx.stroke();
             }
 
-            // Tour cost label for safe moves only
-            if (v >= 0 && v < 9000) {
-                var cost = Math.round(10000 - v);
+            // P% label above diamond
+            if (survP !== null && v > -10000) {
+                var pText = survP >= 1.0 ? '100' : Math.round(survP * 100).toString();
+                ctx.font = 'bold 7px monospace'; ctx.textAlign = 'center';
+                ctx.fillStyle = 'rgba(255,255,255,0.8)';
+                ctx.fillText(pText + '%', pt.cx, pt.cy - sz - 2);
+            }
+            // Tour cost label below diamond
+            if (tc !== null && v > -10000) {
                 ctx.font = '7px monospace'; ctx.textAlign = 'center';
-                ctx.fillStyle = 'rgba(255,255,255,0.7)';
-                ctx.fillText(cost, pt.cx, pt.cy - sz - 2);
+                ctx.fillStyle = 'rgba(255,255,255,0.55)';
+                ctx.fillText('+' + Math.round(tc), pt.cx, pt.cy + sz + 8);
             }
         }
     }
 
-    // ── 5. AI state badge ──
-    var stateLabel = '';
-    if (aiNoProgressCount > 30) stateLabel = 'UNSTUCK-3';
-    else if (aiNoProgressCount > 20) stateLabel = 'UNSTUCK-2';
-    else if (aiNoProgressCount > 10) stateLabel = 'UNSTUCK-1';
-    else if (typeof aiLureTarget !== 'undefined' && aiLureTarget) stateLabel = 'LURE';
-    else if (aiStayCount > 2) stateLabel = 'FORCED';
-    else if (aiPosHistory.length >= 8) {
-        var uniq = {};
-        for (var hi = Math.max(0, aiPosHistory.length - 8); hi < aiPosHistory.length; hi++)
-            uniq[aiPosHistory[hi]] = true;
-        if (Object.keys(uniq).length <= 3) stateLabel = 'LOOP';
-    }
-    if (stateLabel) {
+    // ── 5. Decision reason badge ──
+    var reason = (typeof aiDecisionReason !== 'undefined') ? aiDecisionReason : '';
+    if (reason) {
         ctx.font = 'bold 9px monospace'; ctx.textAlign = 'left';
-        ctx.fillStyle = stateLabel === 'LURE' ? 'rgba(0,200,255,0.75)' : 'rgba(255,120,40,0.75)';
-        ctx.fillText(stateLabel, 8, CH - 8);
+        var reasonColors = {
+            'TOUR': 'rgba(255,180,0,0.75)', 'SAFE+SHORT': 'rgba(30,180,30,0.75)',
+            'BEST ODDS': 'rgba(220,200,30,0.75)', 'LURE': 'rgba(0,200,255,0.75)',
+            'ESCAPE': 'rgba(255,80,40,0.75)', 'SLICK': 'rgba(50,180,100,0.75)',
+            'PARITY': 'rgba(180,120,220,0.75)', 'UNSTUCK': 'rgba(255,120,40,0.75)',
+            'ANTI-LOOP': 'rgba(255,120,40,0.75)', 'HARD STUCK': 'rgba(255,60,30,0.75)',
+            'BREAK STAY': 'rgba(255,120,40,0.75)'
+        };
+        ctx.fillStyle = reasonColors[reason] || 'rgba(255,180,0,0.75)';
+        ctx.fillText(reason, 8, CH - 8);
     }
 
     ctx.restore();
@@ -1669,14 +1661,17 @@ function drawHUD() {
                 CW - 8 - (i + 1) * 20, 4, sp.w * sc, sp.h * sc);
         }
         if (lives > maxIcons) {
-            // 11th dino icon
-            var elevenX = CW - 8 - (maxIcons + 1) * 20;
-            ctx.drawImage(spriteClean, sp.x, sp.y, sp.w, sp.h,
-                elevenX, 4, sp.w * sc, sp.h * sc);
-            // ×N text right after the 11th dino
+            // Overflow: dino icon + ×N to the left of the regular icons
+            var overflowLabel = '\u00d7' + (lives - showIcons);
             ctx.font = '600 11px "Courier New",monospace';
+            var labelW = ctx.measureText(overflowLabel).width;
+            var iconW = sp.w * sc;
+            var leftmostRegular = CW - 8 - showIcons * 20;
+            var elevenX = leftmostRegular - labelW - iconW - 6;
+            ctx.drawImage(spriteClean, sp.x, sp.y, sp.w, sp.h,
+                elevenX, 4, iconW, sp.h * sc);
             ctx.textAlign = 'left';
-            ctx.fillText('\u00d7' + (lives - maxIcons), elevenX + sp.w * sc + 1, 17);
+            ctx.fillText(overflowLabel, elevenX + iconW + 1, 17);
             ctx.font = '600 13px "Courier New",monospace';
         }
     }

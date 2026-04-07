@@ -1,24 +1,25 @@
 // qbert-ai.js — Q*bert AI: hybrid strategy + survival tree
-var AI_VERSION = 'v13.5-teacher';
+var AI_VERSION = 'v13.6-teacher';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
 //
-// Architecture: human-style strategy decides WHERE to go, survival tree
-// validates IF it's safe. Best of both worlds.
+// Architecture: strategy layer decides WHERE to go, safety layer validates
+// IF it's safe. Score = log(P_survive)/depth - λ × tour_cost.
 //
-// Strategy layer (greedyTourCost):
+// Strategy layer (greedyTourCost + Dijkstra):
 //   - Bottom-up sweep: complete lower rows first, never backtrack
 //   - Corner priority: finish low-exit corner cubes early
 //   - Cluster awareness: prefer cubes near other unfinished cubes
 //   - Active disc luring: route toward discs when Coily is active
-//   - Corner escape: avoid low-exit tiles when Coily is nearby
+//   - Coily kiting: drag snake away before working on cubes (L5+)
+//   - Disc parity checks: prevent unsolvable board states (L5+)
 //
-// Safety layer (survive/surviveOne):
-//   - Factored survival tree: P(survive) = product of per-enemy trees
-//   - Coily simulated deterministically (ROM chase algorithm)
-//   - Frame-accurate collision detection during mid-hop flight
-//   - 8-hop lookahead with memoized AND-OR tree
+// Safety layer (perfectTeacherEval / findReactiveSurvival fallback):
+//   - Expectimax search over real game engine (simStep)
+//   - Enumerates enemy RNG branches for exact survival probability
+//   - Adaptive depth: up to 20 hops, scales with speed multiplier
+//   - Factored per-enemy survival tree as fallback when teacher times out
 
 // ─── Tour planning ───────────────────────────────────────────────────────────
 
@@ -79,7 +80,7 @@ function dijkstraFrom(srcIdx, stomps, penalty, discSources) {
 // Greedy nearest-neighbor tour cost with deterministic tie-breaking.
 // On toggle levels, uses Dijkstra to route around completed cubes.
 // Ties broken by lowest position index for stability.
-function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts) {
+function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts, pathOut) {
     var stomps = new Int8Array(POS_COUNT);
     for (var i = 0; i < cubes.length; i++) {
         var idx = posToIdx[cubes[i].row * ROWS + cubes[i].col];
@@ -158,6 +159,14 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts) {
         while (pc !== curIdx) { path.push(pc); pc = dijk.prev[pc]; }
         totalHops += path.length;
 
+        // Record path for viz: [row, col, isTarget, row, col, isTarget, ...]
+        if (pathOut) {
+            for (var pw = path.length - 1; pw >= 0; pw--) {
+                var wp = idxToPos[path[pw]];
+                pathOut.push(wp[0], wp[1], pw === 0 ? 1 : 0);
+            }
+        }
+
         // Apply stomps along path; track revert damage on toggle/cycle levels
         for (var p = path.length - 1; p >= 0; p--) {
             var pos = path[p];
@@ -185,8 +194,8 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts) {
 }
 
 // Tour cost from a simulation state
-function simTourCost(gs) {
-    return greedyTourCost(posToIdx[gs.player.row * ROWS + gs.player.col], gs.cubes, gs.tgt, gs.lv, gs.discs, aiRevertCounts);
+function simTourCost(gs, pathOut) {
+    return greedyTourCost(posToIdx[gs.player.row * ROWS + gs.player.col], gs.cubes, gs.tgt, gs.lv, gs.discs, aiRevertCounts, pathOut);
 }
 
 // ─── Danger zone assessment ──────────────────────────────────────────────────
@@ -1686,6 +1695,7 @@ function unifiedPick(gs, coilyActive) {
     var tourCosts = {};
     var hop1Surv = {};
 
+    var _dirTourPaths = {};
     var _loopT0 = typeof performance !== 'undefined' ? performance.now() : 0;
     for (var k = 0; k < DIR_KEYS_WITH_STAY.length; k++) {
         var dir = DIR_KEYS_WITH_STAY[k];
@@ -1820,14 +1830,16 @@ function unifiedPick(gs, coilyActive) {
         // Compute tour cost
         var _tcT0 = typeof performance !== 'undefined' ? performance.now() : 0;
         var tc;
+        var _vizPath = [];
         simSeed(k * 100);
         var tcClone = simDeepClone(gs);
         var tcAlive = simStep(tcClone, dir);
         if (tcAlive) {
-            tc = tcClone.levelWon ? 0 : simTourCost(tcClone);
+            tc = tcClone.levelWon ? 0 : simTourCost(tcClone, _vizPath);
         } else {
-            tc = simTourCost(gs) + 1;
+            tc = simTourCost(gs, _vizPath) + 1;
         }
+        _dirTourPaths[dir] = _vizPath;
         // STAY penalty: escalates with consecutive STAYs, much higher during freeze
         // (freeze = enemies can't move, so STAY wastes the safe window)
         var stayPenalty = 5 + aiStayCount * 3;
@@ -1997,6 +2009,7 @@ function unifiedPick(gs, coilyActive) {
                 var snr = gs.player.row + sdk.dr, snc = gs.player.col + sdk.dc;
                 if (snr === spos.row && snc === spos.col) {
                     if (safe1[DIR_KEYS[sk]] && safe2[DIR_KEYS[sk]] && aiMoveScores[DIR_KEYS[sk]] > -10000) {
+                        aiDecisionReason = 'SLICK';
                         restoreRng(); return DIR_KEYS[sk];
                     }
                 }
@@ -2011,6 +2024,49 @@ function unifiedPick(gs, coilyActive) {
         if (aiMoveScores[fd] === undefined) continue;
         if (aiMoveScores[fd] > bestScore) { bestScore = aiMoveScores[fd]; bestDir = fd; }
     }
+    // Determine decision reason for viz
+    if (allFatal && bestDir && aiMoveScores[bestDir] === 5000) {
+        aiDecisionReason = 'ESCAPE';
+    } else if (!hasEnemies) {
+        aiDecisionReason = 'TOUR';
+    } else if (hasPerfect) {
+        // Safety-first filtered out risky dirs — check if lure dominated
+        if (lureDisc && bestDir && bestDir !== 'STAY') {
+            var _lbd = DIRS[bestDir];
+            var _lbnr = gs.player.row + _lbd.dr, _lbnc = gs.player.col + _lbd.dc;
+            if (lureDiscAdj && isValidPos(_lbnr, _lbnc)) {
+                var _lDistB = exBfsDist(gs.player.row, gs.player.col, lureDiscAdj.row, lureDiscAdj.col);
+                var _lDistA = exBfsDist(_lbnr, _lbnc, lureDiscAdj.row, lureDiscAdj.col);
+                if (_lDistA < _lDistB) aiDecisionReason = 'LURE';
+            }
+        }
+        if (!aiDecisionReason) aiDecisionReason = 'SAFE+SHORT';
+    } else {
+        // All dirs have P<1 — picking best odds
+        aiDecisionReason = 'BEST ODDS';
+    }
+    // Export the actual tour path for the chosen direction (for viz)
+    // Format: [row, col, isTarget, row, col, isTarget, ...]
+    var _bestPath = _dirTourPaths[bestDir || 'STAY'] || [];
+    window._aiVizTourPath = [];
+    window._aiVizTourPath.push(gs.player.row, gs.player.col, 0);
+    if (bestDir && bestDir !== 'STAY') {
+        var _bd = DIRS[bestDir];
+        var _bnr = gs.player.row + _bd.dr, _bnc = gs.player.col + _bd.dc;
+        if (isValidPos(_bnr, _bnc)) {
+            // Check if destination is an unfinished cube (target)
+            var _destIsTarget = 0;
+            for (var _dti = 0; _dti < gs.cubes.length; _dti++) {
+                if (gs.cubes[_dti].row === _bnr && gs.cubes[_dti].col === _bnc && gs.cubes[_dti].state < gs.tgt) {
+                    _destIsTarget = 1; break;
+                }
+            }
+            window._aiVizTourPath.push(_bnr, _bnc, _destIsTarget);
+        }
+    }
+    for (var _bpi = 0; _bpi < _bestPath.length; _bpi++)
+        window._aiVizTourPath.push(_bestPath[_bpi]);
+
     restoreRng();
     var _perfMs = typeof performance !== 'undefined' ? performance.now() - _perfStart : 0;
     if (_perfMs > 100) {
@@ -2028,6 +2084,7 @@ var aiMoveScores = {};  // exported per-direction scores for viz
 var aiLastTourCosts = {};  // last per-direction tour costs from unifiedPick
 var aiLastHop1Surv = {};   // last hop-1 survival rates from unifiedPick
 var aiLureTarget = null;   // disc-adjacent position being targeted for lure {row,col}
+var aiDecisionReason = ''; // why the AI picked this direction (for viz)
 var aiMode = 0;         // 0 = no AI, 1 = unified (always set to 1 now)
 var aiStayCount = 0;    // consecutive STAY decisions — used to break stuck loops
 var aiLastPos = '';     // last position key — used to detect oscillation
@@ -2055,6 +2112,7 @@ function aiPickBestDir() {
         coilyActive = false;
     }
     aiMoveScores = {};
+    aiDecisionReason = '';
     aiMode = 1;
 
     // Track how long we've been on the same tile
@@ -2306,7 +2364,7 @@ function aiPickBestDir() {
                     var origScoreOsc = aiMoveScores[result];
                     if (origScoreOsc !== undefined && origScoreOsc > altScore + 400) altDir = null;
                 }
-                if (altDir) { result = altDir; aiPosHistory.length = 0; }
+                if (altDir) { result = altDir; aiPosHistory.length = 0; aiDecisionReason = 'ANTI-LOOP'; }
             }
         }
     }
@@ -2326,7 +2384,7 @@ function aiPickBestDir() {
             if (bfs && bfs.path.length > 0 && simCanMove(gs, bfs.path[0])) {
                 // Only override if the direction isn't fatal
                 var bfsScore = aiMoveScores[bfs.path[0]];
-                if (bfsScore !== undefined && bfsScore > -10000) result = bfs.path[0];
+                if (bfsScore !== undefined && bfsScore > -10000) { result = bfs.path[0]; aiDecisionReason = 'HARD STUCK'; }
             }
         }
     }
@@ -2364,7 +2422,7 @@ function aiPickBestDir() {
                     var discP = aiLastHop1Surv && aiLastHop1Surv[discDir];
                     if (discP == null || discP > 0) {
                         result = discDir;
-                        parDiscFixed = true;
+                        parDiscFixed = true; aiDecisionReason = 'PARITY';
                     }
                 } else {
                     // Route toward the disc — only if safe (P=1.0)
@@ -2374,7 +2432,7 @@ function aiPickBestDir() {
                         var pDirP = aiLastHop1Surv && aiLastHop1Surv[pDir];
                         if (pDirP != null && pDirP >= 1.0) {
                             result = pDir;
-                            parDiscFixed = true;
+                            parDiscFixed = true; aiDecisionReason = 'PARITY';
                         }
                     }
                 }
@@ -2401,7 +2459,7 @@ function aiPickBestDir() {
                         if (fkP != null && fkP <= 0) continue;
                         parSuicide = DIR_KEYS[fk]; break;
                     }
-                    if (parSuicide) result = parSuicide;
+                    if (parSuicide) { result = parSuicide; aiDecisionReason = 'PARITY'; }
                 } else {
                     var bestEdgeDir = null, bestEdgeDist = 999;
                     for (var ek = 0; ek < DIR_KEYS.length; ek++) {
@@ -2415,7 +2473,7 @@ function aiPickBestDir() {
                             if (edgeDist < bestEdgeDist) { bestEdgeDist = edgeDist; bestEdgeDir = DIR_KEYS[ek]; }
                         }
                     }
-                    if (bestEdgeDir) result = bestEdgeDir;
+                    if (bestEdgeDir) { result = bestEdgeDir; aiDecisionReason = 'PARITY'; }
                 }
             }
         }
@@ -2523,7 +2581,7 @@ function aiPickBestDir() {
                     }
                 }
             }
-            if (bestProgDir) { result = bestProgDir; aiPosHistory.length = 0; }
+            if (bestProgDir) { result = bestProgDir; aiPosHistory.length = 0; aiDecisionReason = 'UNSTUCK'; }
             // Don't reset aiNoProgressCount here — only reset on actual progress (line ~961)
         }
     }
@@ -2548,7 +2606,7 @@ function aiPickBestDir() {
                     }
                 }
             }
-            if (bestAlt) { result = bestAlt; aiStayCount = 0; }
+            if (bestAlt) { result = bestAlt; aiStayCount = 0; aiDecisionReason = 'BREAK STAY'; }
         }
     } else {
         aiStayCount = 0;
