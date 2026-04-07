@@ -1941,7 +1941,10 @@ function unifiedPick(gs, coilyActive) {
         }
         safe1[dir] = true;
         safe2[dir] = true;
-        aiMoveScores[dir] = Math.round(score * 10000);
+        // Cap at -9999 so non-eliminated directions always beat eliminated (-10000).
+        // Escalating LAMBDA can push scores below -10000, causing the AI to pick
+        // eliminated (P<0.8) directions over safe ones with bad tour cost.
+        aiMoveScores[dir] = Math.max(-9999, Math.round(score * 10000));
     }
 
     // Safety-first: if any direction has P=1.0, never gamble on P<1.0.
