@@ -1992,7 +1992,26 @@ function unifiedPick(gs, coilyActive) {
                     var destNeed = stompsNeeded(destState, gs.lv);
                     if (destNeed === 1) tc = 0;       // half-done: finish it!
                     else if (destNeed >= 2) tc = 5;   // fresh: progress
-                    else tc = 40;                      // completed: revert!
+                    else {
+                        // Completed cube: penalize, but add BFS distance to
+                        // nearest unfinished as tiebreaker so AI moves TOWARD
+                        // unfinished cubes instead of oscillating.
+                        var destIdx = posToIdx[dnr * ROWS + dnc];
+                        var nearDist = 99;
+                        for (var ndi = 0; ndi < POS_COUNT; ndi++) {
+                            if (ndi !== destIdx) {
+                                var ndrc = idxToPos[ndi];
+                                for (var nci = 0; nci < gs.cubes.length; nci++) {
+                                    if (gs.cubes[nci].row === ndrc[0] && gs.cubes[nci].col === ndrc[1] && gs.cubes[nci].state < gs.tgt) {
+                                        var nd = distMatrix[destIdx * POS_COUNT + ndi];
+                                        if (nd < nearDist) nearDist = nd;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        tc = 30 + nearDist; // revert penalty + distance tiebreaker
+                    }
                 }
             }
         } else {
