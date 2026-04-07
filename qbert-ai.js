@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI: hybrid strategy + survival tree
-var AI_VERSION = 'v14.2-teacher';
+var AI_VERSION = 'v14.3-teacher';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -23,22 +23,124 @@ var AI_VERSION = 'v14.2-teacher';
 
 // ─── Tour planning ───────────────────────────────────────────────────────────
 
-// Pre-computed sweep order for L5+ cycle levels: bottom-up zigzag.
-// Complete lower rows first so you never backtrack through completed cubes.
-// Within each row, alternate direction to minimize travel.
-var SWEEP_ORDER = (function() {
-    var order = [];
+// L5+ bounce-walk sweep: compute ideal next direction.
+// Humans complete rows bottom-up using UR/DL bounces that naturally
+// double-stomp both the working row and the row above.
+// Pattern for walking LEFT along row r: UL→(r-1,c-1), DL→(r,c-1)
+// Pattern for walking RIGHT along row r: UR→(r-1,c), DR→(r,c+1)
+// Each cube in row r gets stomped on arrival + on return bounce = 2 stomps.
+// Row r-1 cubes get stomped as bounce points = free progress.
+function sweepNextDir(gs) {
+    var pr = gs.player.row, pc = gs.player.col;
+    var tgt = gs.tgt;
+
+    // Find the lowest row with unfinished cubes
+    var workRow = -1;
     for (var r = ROWS - 1; r >= 0; r--) {
-        if ((ROWS - 1 - r) % 2 === 0) {
-            // Even distance from bottom: left to right
-            for (var c = 0; c <= r; c++) order.push(posToIdx[r * ROWS + c]);
-        } else {
-            // Odd distance: right to left
-            for (var c = r; c >= 0; c--) order.push(posToIdx[r * ROWS + c]);
+        for (var c = 0; c <= r; c++) {
+            for (var ci = 0; ci < gs.cubes.length; ci++) {
+                if (gs.cubes[ci].row === r && gs.cubes[ci].col === c && gs.cubes[ci].state < tgt) {
+                    workRow = r; break;
+                }
+            }
+            if (workRow >= 0) break;
+        }
+        if (workRow >= 0) break;
+    }
+    if (workRow < 0) return null; // all done
+
+    // Find the leftmost and rightmost unfinished cube in workRow
+    var leftCol = 99, rightCol = -1;
+    for (var ci = 0; ci < gs.cubes.length; ci++) {
+        var cb = gs.cubes[ci];
+        if (cb.row === workRow && cb.state < tgt) {
+            if (cb.col < leftCol) leftCol = cb.col;
+            if (cb.col > rightCol) rightCol = cb.col;
         }
     }
-    return order;
-})();
+
+    // If player is above the work row, go down toward it
+    if (pr < workRow) {
+        // Go toward the work row — prefer DL/DR that leads toward unfinished cubes
+        if (pc <= leftCol) return 'DR'; // we're left of target, go down-right
+        if (pc > rightCol) return 'DL'; // we're right of target, go down-left
+        // In between — go down toward the nearest unfinished cube
+        var midTarget = Math.round((leftCol + rightCol) / 2);
+        return pc <= midTarget ? 'DR' : 'DL';
+    }
+
+    // If player is on the work row, bounce-walk pattern
+    if (pr === workRow) {
+        // Find nearest unfinished cube in this row
+        var nearestCol = -1, nearestDist = 99;
+        for (var ci = 0; ci < gs.cubes.length; ci++) {
+            var cb = gs.cubes[ci];
+            if (cb.row === workRow && cb.state < tgt) {
+                var d = Math.abs(cb.col - pc);
+                if (d < nearestDist) { nearestDist = d; nearestCol = cb.col; }
+            }
+        }
+
+        // Current cube needs stomping? We're on it, so look for bounce direction.
+        // Bounce UP to row-1, then come back down to finish this cube.
+        var curState = -1;
+        for (var ci = 0; ci < gs.cubes.length; ci++) {
+            if (gs.cubes[ci].row === pr && gs.cubes[ci].col === pc) { curState = gs.cubes[ci].state; break; }
+        }
+
+        if (nearestCol === pc) {
+            // We're on the target cube — bounce up
+            // Prefer bouncing through a non-completed cube in row above
+            if (pr > 0 && isValidPos(pr - 1, pc) && !_cubeCompleted(gs, pr - 1, pc)) return 'UR';
+            if (pr > 0 && isValidPos(pr - 1, pc - 1) && !_cubeCompleted(gs, pr - 1, pc - 1)) return 'UL';
+            // All bounces go through completed cubes — bounce anyway (necessary cost)
+            if (isValidPos(pr - 1, pc)) return 'UR';
+            if (isValidPos(pr - 1, pc - 1)) return 'UL';
+        }
+
+        // Need to move to a different cube in this row — bounce-walk toward it
+        if (nearestCol > pc) {
+            // Target is to the right: UR then DR pattern
+            return 'UR'; // go up first, then DR next hop brings us right
+        } else {
+            // Target is to the left: UL then DL pattern
+            return 'UL'; // go up first, then DL next hop brings us left
+        }
+    }
+
+    // Player is on the bounce row (workRow - 1): come back down
+    if (pr === workRow - 1) {
+        // Find where we should land in workRow
+        // Check which DL/DR target is unfinished
+        var dlTarget = isValidPos(pr + 1, pc) ? pc : -1;     // DL → (pr+1, pc)
+        var drTarget = isValidPos(pr + 1, pc + 1) ? pc + 1 : -1; // DR → (pr+1, pc+1)
+
+        var dlNeed = dlTarget >= 0 && !_cubeCompleted(gs, pr + 1, dlTarget);
+        var drNeed = drTarget >= 0 && !_cubeCompleted(gs, pr + 1, drTarget);
+
+        if (dlNeed && drNeed) {
+            // Both need work — prefer the one closer to the nearest unfinished
+            return dlTarget <= rightCol ? 'DL' : 'DR';
+        }
+        if (dlNeed) return 'DL';
+        if (drNeed) return 'DR';
+        // Both completed — go toward remaining unfinished cubes
+        return pc <= leftCol ? 'DR' : 'DL';
+    }
+
+    // Player is below work row (on completed rows) — go up
+    if (isValidPos(pr - 1, pc)) return 'UR';
+    if (isValidPos(pr - 1, pc - 1)) return 'UL';
+    return null;
+}
+
+function _cubeCompleted(gs, r, c) {
+    for (var i = 0; i < gs.cubes.length; i++) {
+        if (gs.cubes[i].row === r && gs.cubes[i].col === c)
+            return gs.cubes[i].state >= gs.tgt;
+    }
+    return false;
+}
 
 // How many stomps does a cube need to reach target state?
 function stompsNeeded(cubeState, lv) {
@@ -1957,6 +2059,14 @@ function unifiedPick(gs, coilyActive) {
             }
         }
 
+
+        // L5+ sweep bonus: strongly prefer the direction from the bounce-walk pattern
+        if (gs.lv >= 5 && dir !== 'STAY') {
+            var sweepDir = sweepNextDir(gs);
+            if (sweepDir && dir === sweepDir) {
+                tc -= 20; // strong preference for sweep direction
+            }
+        }
 
         tourCosts[dir] = tc;
         var _tcMs = typeof performance !== 'undefined' ? performance.now() - _tcT0 : 0;
