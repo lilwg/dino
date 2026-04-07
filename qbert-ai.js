@@ -14,6 +14,11 @@ var AI_VERSION = 'v15.0-teacher';
 //   - Active disc luring: route toward discs when Coily is active
 //   - Coily kiting: drag snake away before working on cubes (L5+)
 //   - Disc parity checks: prevent unsolvable board states (L5+)
+//   - Double-stomp state machine (L5+): 4-state machine persists across
+//     hops to coordinate the 3-hop sequence: NAVIGATE to target cube,
+//     BOUNCE to adjacent uncompleted cube, RETURN to finish target (1→2).
+//     Picks targets bottom-up with half-done priority. Overrides unifiedPick
+//     when safe, defers to survival when threatened.
 //
 // Safety layer (perfectTeacherEval / findReactiveSurvival fallback):
 //   - Expectimax search over real game engine (simStep)
