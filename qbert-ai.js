@@ -23,6 +23,40 @@ var AI_VERSION = 'v14.3-teacher';
 
 // ─── Tour planning ───────────────────────────────────────────────────────────
 
+// ─── Peel layers: outside-in completion order ───────────────────────────────
+// Graph peeling assigns each cube a layer: corners/edges = 0, next ring = 1, etc.
+// Completing outside-in ensures you never cross completed cubes to reach inner ones.
+var PEEL_LAYER = null;
+(function() {
+    PEEL_LAYER = new Int8Array(POS_COUNT);
+    var degree = new Int8Array(POS_COUNT);
+    var removed = new Uint8Array(POS_COUNT);
+    for (var i = 0; i < POS_COUNT; i++) {
+        var deg = 0;
+        var adj = posAdj[i];
+        for (var a = 0; a < adj.length; a++) deg++;
+        degree[i] = deg;
+    }
+    var count = POS_COUNT, lay = 0;
+    while (count > 0) {
+        var minDeg = 99;
+        for (var i = 0; i < POS_COUNT; i++)
+            if (!removed[i] && degree[i] < minDeg) minDeg = degree[i];
+        var batch = [];
+        for (var i = 0; i < POS_COUNT; i++) {
+            if (!removed[i] && degree[i] === minDeg) {
+                batch.push(i); PEEL_LAYER[i] = lay; removed[i] = 1; count--;
+            }
+        }
+        for (var b = 0; b < batch.length; b++) {
+            var adj = posAdj[batch[b]];
+            for (var a = 0; a < adj.length; a++)
+                if (!removed[adj[a]]) degree[adj[a]]--;
+        }
+        lay++;
+    }
+})();
+
 // L5+ bounce-walk sweep: compute ideal next direction.
 // Humans complete rows bottom-up using UR/DL bounces that naturally
 // double-stomp both the working row and the row above.
@@ -1971,10 +2005,9 @@ function unifiedPick(gs, coilyActive) {
         var _vizPath = [];
 
         if (gs.lv >= 5) {
-            // L5+ simple rule: look at destination cube state.
-            // Prefer half-done (finish it!), then fresh, avoid completed (revert).
-            // This naturally creates double-stomp: after stomping 0→1, the AI
-            // bounces to a neighbor, then the half-done cube wins next hop.
+            // L5+ peel routing: prefer cubes in the lowest uncompleted peel layer
+            // (outside-in), and within that, prefer half-done over fresh.
+            // Completing outside-in means you never cross completed cubes.
             if (dir === 'STAY') {
                 tc = 20;
             } else {
@@ -1983,6 +2016,7 @@ function unifiedPick(gs, coilyActive) {
                 if (!isValidPos(dnr, dnc)) {
                     tc = 50; // off-board (disc handling below may override)
                 } else {
+                    var destIdx = posToIdx[dnr * ROWS + dnc];
                     var destState = -1;
                     for (var dsi = 0; dsi < gs.cubes.length; dsi++) {
                         if (gs.cubes[dsi].row === dnr && gs.cubes[dsi].col === dnc) {
@@ -1990,27 +2024,38 @@ function unifiedPick(gs, coilyActive) {
                         }
                     }
                     var destNeed = stompsNeeded(destState, gs.lv);
-                    if (destNeed === 1) tc = 0;       // half-done: finish it!
-                    else if (destNeed >= 2) tc = 5;   // fresh: progress
+                    // Find the lowest peel layer that still has unfinished cubes
+                    var targetLayer = 99;
+                    for (var pli = 0; pli < POS_COUNT; pli++) {
+                        var plrc = idxToPos[pli];
+                        for (var plci = 0; plci < gs.cubes.length; plci++) {
+                            if (gs.cubes[plci].row === plrc[0] && gs.cubes[plci].col === plrc[1] && gs.cubes[plci].state < gs.tgt) {
+                                if (PEEL_LAYER[pli] < targetLayer) targetLayer = PEEL_LAYER[pli];
+                                break;
+                            }
+                        }
+                    }
+                    var destLayer = PEEL_LAYER[destIdx];
+                    var inTargetLayer = (destLayer === targetLayer);
+
+                    if (destNeed === 1 && inTargetLayer) tc = 0;   // half-done in target layer: best!
+                    else if (destNeed >= 2 && inTargetLayer) tc = 3; // fresh in target layer
+                    else if (destNeed === 1) tc = 5;                // half-done in higher layer
+                    else if (destNeed >= 2) tc = 8;                 // fresh in higher layer
                     else {
-                        // Completed cube: penalize, but add BFS distance to
-                        // nearest unfinished as tiebreaker so AI moves TOWARD
-                        // unfinished cubes instead of oscillating.
-                        var destIdx = posToIdx[dnr * ROWS + dnc];
+                        // Completed: penalize + BFS tiebreaker toward unfinished
                         var nearDist = 99;
                         for (var ndi = 0; ndi < POS_COUNT; ndi++) {
-                            if (ndi !== destIdx) {
-                                var ndrc = idxToPos[ndi];
-                                for (var nci = 0; nci < gs.cubes.length; nci++) {
-                                    if (gs.cubes[nci].row === ndrc[0] && gs.cubes[nci].col === ndrc[1] && gs.cubes[nci].state < gs.tgt) {
-                                        var nd = distMatrix[destIdx * POS_COUNT + ndi];
-                                        if (nd < nearDist) nearDist = nd;
-                                        break;
-                                    }
+                            var ndrc = idxToPos[ndi];
+                            for (var nci = 0; nci < gs.cubes.length; nci++) {
+                                if (gs.cubes[nci].row === ndrc[0] && gs.cubes[nci].col === ndrc[1] && gs.cubes[nci].state < gs.tgt) {
+                                    var nd = distMatrix[destIdx * POS_COUNT + ndi];
+                                    if (nd < nearDist) nearDist = nd;
+                                    break;
                                 }
                             }
                         }
-                        tc = 30 + nearDist; // revert penalty + distance tiebreaker
+                        tc = 30 + nearDist;
                     }
                 }
             }
