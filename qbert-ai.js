@@ -2038,10 +2038,12 @@ function unifiedPick(gs, coilyActive) {
                     var destLayer = PEEL_LAYER[destIdx];
                     var inTargetLayer = (destLayer === targetLayer);
 
-                    // Never revert ANY completed cube — every stomp is precious.
-                    // Completed cubes in any layer are walls.
-                    if (destNeed === 0) {
-                        tc = 100; // wall: don't undo progress
+                    // Protect completed cubes in the target layer and below.
+                    // Inner layers (above target) are traversable — the AI may
+                    // need to cross them to reach the target, and they'll be
+                    // re-done when their layer becomes the target.
+                    if (destNeed === 0 && destLayer <= targetLayer) {
+                        tc = 100; // wall: don't undo target-layer progress
                     } else {
                         // BFS distance from dest to nearest unfinished target-layer cube
                         var distToTarget = 99;
