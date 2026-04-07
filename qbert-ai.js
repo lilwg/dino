@@ -2042,8 +2042,8 @@ function unifiedPick(gs, coilyActive) {
                     // Inner layers (above target) are traversable — the AI may
                     // need to cross them to reach the target, and they'll be
                     // re-done when their layer becomes the target.
-                    if (destNeed === 0 && destLayer <= targetLayer) {
-                        tc = 100; // wall: don't undo target-layer progress
+                    if (destNeed === 0 && destLayer < targetLayer) {
+                        tc = 100; // wall: completed layer below target
                     } else {
                         // BFS distance from dest to nearest unfinished target-layer cube
                         var distToTarget = 99;
