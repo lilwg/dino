@@ -374,10 +374,7 @@ function syncVisuals() {
             // Animate sprite
             player.frameTimer = (player.frameTimer || 0) + 1;
             if (player.frameTimer > 6) { player.frameTimer = 0; player.spriteFrame = (player.spriteFrame || 0) ^ 1; }
-        } else if (player.dead && gs.deathEnemy === 'fall') {
-            // Fall death: animate player dropping off-screen
-            player.py += 3;
-        } else if (!player.dead) {
+        } else if (!player.dead && !player.fallOff) {
             var pos = cubeXY(player.row, player.col);
             player.px = pos.cx; player.py = pos.cy;
         }
@@ -584,6 +581,7 @@ function initRound() {
     player.facing = 'R';
     player.deathAnimTimer = 0;
     player.pendingDisc = null;
+    player.fallOff = false;
 
     if (debugEnemies) {
         roundStarted = true;
@@ -600,7 +598,7 @@ function initRound() {
 
 // ─── Player move (delegates to simulation) ──────────────────────────────────
 function tryMove(dirKey) {
-    if (debugEnemies || player.dead || player.jumping || gameOver || paused || discRide) return;
+    if (debugEnemies || player.dead || player.jumping || player.fallOff || gameOver || paused || discRide) return;
     var d = DIRS[dirKey]; if (!d) return;
     roundStarted = true;
 
@@ -631,13 +629,19 @@ function tryMove(dirKey) {
                 return;
             }
         }
-        // Fall off edge — death
-        gs.alive = false;
-        gs.player.dead = true;
+        // Fall off edge — ballistic arc off-screen
+        var src = cubeXY(gs.player.row, gs.player.col);
+        var dst = cubeXY(nr, nc);
+        var dx = dst.cx - src.cx, dy = dst.cy - src.cy;
+        var hopFrames = 18;
         gs.deathEnemy = 'fall';
         if (gs.player.row % 2 === 1) gs.oddRowFalls = (gs.oddRowFalls || 0) + 1;
-        gs.player.deathTimer = 100;
-        killPlayerVisual();
+        player.fallOff = true;
+        player.fallOffBottom = (dy > 0);  // bottom falls render in front of pyramid
+        player.fallVx = dx / hopFrames;
+        player.fallVy = Math.min(dy / hopFrames - 4, -5);  // ensure visible upward arc
+        DinoSounds.press();
+        player.spriteFrame = 0; player.frameTimer = 0;
         return;
     }
 
@@ -769,6 +773,28 @@ function update() {
             freezeTimer = gs.freezeTimer;
             score += gs.score; gs.score = 0;
             checkExtraLife();
+        }
+        syncVisuals();
+        return;
+    }
+
+    // Falling off board — single ballistic arc then death
+    if (player.fallOff) {
+        player.fallVy += 0.55;
+        player.px += player.fallVx;
+        player.py += player.fallVy;
+        if (player.py > CH + 50) {
+            player.fallOff = false;
+            gs.alive = false;
+            gs.player.dead = true;
+            gs.player.deathTimer = 100;
+            killPlayerVisual();
+        }
+        // Enemies keep moving while player falls
+        if (roundStarted && enemiesEnabled) {
+            simUpdateEnemies(gs);
+            enemies = gs.enemies;
+            freezeTimer = gs.freezeTimer;
         }
         syncVisuals();
         return;
@@ -998,6 +1024,8 @@ function draw() {
         }
     }
     pyrCtx.restore();
+    // Side falls: draw player behind pyramid
+    if (player.fallOff && !player.fallOffBottom) drawPlayer();
     ctx.imageSmoothingEnabled = false;
     ctx.drawImage(pyrCvs, 0, 0, CW, CH);
     ctx.imageSmoothingEnabled = true;
@@ -1010,7 +1038,7 @@ function draw() {
 
     // Enemies and player (before inversion so they invert with scene)
     if (enemiesEnabled) for (var i = 0; i < enemies.length; i++) drawEnemy(enemies[i]);
-    drawPlayer();
+    if (!player.fallOff || player.fallOffBottom) drawPlayer();
 
     // Draw spinning disc under player during disc ride
     if (discRide) {
