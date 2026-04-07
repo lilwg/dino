@@ -2038,26 +2038,38 @@ function unifiedPick(gs, coilyActive) {
                     var destLayer = PEEL_LAYER[destIdx];
                     var inTargetLayer = (destLayer === targetLayer);
 
-                    // BFS distance from dest to nearest unfinished target-layer cube
-                    var distToTarget = 99;
-                    for (var ndi = 0; ndi < POS_COUNT; ndi++) {
-                        if (PEEL_LAYER[ndi] === targetLayer) {
-                            var ndrc = idxToPos[ndi];
-                            for (var nci = 0; nci < gs.cubes.length; nci++) {
-                                if (gs.cubes[nci].row === ndrc[0] && gs.cubes[nci].col === ndrc[1] && gs.cubes[nci].state < gs.tgt) {
-                                    var nd = distMatrix[destIdx * POS_COUNT + ndi];
-                                    if (nd < distToTarget) distToTarget = nd;
-                                    break;
+                    // Check if destination's peel layer is fully completed (sealed).
+                    // Sealed layers are walls — never step on them.
+                    var destLayerSealed = false;
+                    if (destLayer < targetLayer) {
+                        // Any layer below the target must be fully done
+                        destLayerSealed = true;
+                    }
+
+                    if (destLayerSealed) {
+                        tc = 100; // sealed: treat as wall
+                    } else {
+                        // BFS distance from dest to nearest unfinished target-layer cube
+                        var distToTarget = 99;
+                        for (var ndi = 0; ndi < POS_COUNT; ndi++) {
+                            if (PEEL_LAYER[ndi] === targetLayer) {
+                                var ndrc = idxToPos[ndi];
+                                for (var nci = 0; nci < gs.cubes.length; nci++) {
+                                    if (gs.cubes[nci].row === ndrc[0] && gs.cubes[nci].col === ndrc[1] && gs.cubes[nci].state < gs.tgt) {
+                                        var nd = distMatrix[destIdx * POS_COUNT + ndi];
+                                        if (nd < distToTarget) distToTarget = nd;
+                                        break;
+                                    }
                                 }
                             }
                         }
-                    }
 
-                    if (destNeed === 1 && inTargetLayer) tc = 0;        // half-done in target layer: best!
-                    else if (destNeed >= 2 && inTargetLayer) tc = 2;    // fresh in target layer
-                    else if (destNeed === 1) tc = 3 + distToTarget;     // half-done elsewhere: route toward target
-                    else if (destNeed >= 2) tc = 5 + distToTarget;      // fresh elsewhere: route toward target
-                    else tc = 30 + distToTarget;                        // completed: penalize + route toward target
+                        if (destNeed === 1 && inTargetLayer) tc = 0;        // half-done in target layer: best!
+                        else if (destNeed >= 2 && inTargetLayer) tc = 2;    // fresh in target layer
+                        else if (destNeed === 1) tc = 3 + distToTarget;     // half-done elsewhere
+                        else if (destNeed >= 2) tc = 5 + distToTarget;      // fresh elsewhere
+                        else tc = 30 + distToTarget;                        // completed in active layer
+                    }
                 }
             }
         } else {
