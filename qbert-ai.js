@@ -2034,19 +2034,30 @@ function unifiedPick(gs, coilyActive) {
                     }
                     var destNeed = stompsNeeded(destState, gs.lv);
 
+                    // BFS distance from dest to nearest unfinished work-row cube
+                    var destIdx = posToIdx[dnr * ROWS + dnc];
+                    var distToWork = 99;
+                    for (var wti = 0; wti < gs.cubes.length; wti++) {
+                        if (gs.cubes[wti].row === workRow && gs.cubes[wti].state < gs.tgt) {
+                            var wtIdx = posToIdx[gs.cubes[wti].row * ROWS + gs.cubes[wti].col];
+                            var wd = distMatrix[destIdx * POS_COUNT + wtIdx];
+                            if (wd < distToWork) distToWork = wd;
+                        }
+                    }
+
                     if (dnr > workRow) {
                         // Below work row = completed row = WALL
                         tc = 100;
                     } else if (dnr === workRow) {
-                        // On the work row — this is where we want to be
+                        // On the work row
                         if (destNeed === 1) tc = 0;       // half-done: finish it!
                         else if (destNeed >= 2) tc = 2;   // fresh: progress
-                        else tc = 40;                      // completed in work row: avoid
+                        else tc = 20 + distToWork;        // completed: route toward unfinished
                     } else {
-                        // Above work row — transit zone, prefer moving DOWN
-                        if (destNeed === 1) tc = 3 + (workRow - dnr);
-                        else if (destNeed >= 2) tc = 5 + (workRow - dnr);
-                        else tc = 10 + (workRow - dnr);   // completed above: mild penalty + distance
+                        // Above work row — transit, gradient toward unfinished work cubes
+                        if (destNeed === 1) tc = 3 + distToWork;
+                        else if (destNeed >= 2) tc = 5 + distToWork;
+                        else tc = 8 + distToWork;
                     }
                 }
             }
