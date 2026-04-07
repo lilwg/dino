@@ -1970,26 +1970,30 @@ function unifiedPick(gs, coilyActive) {
         var tc;
         var _vizPath = [];
 
-        if (gs.lv >= 5 && dir !== 'STAY') {
-            // L5+ sweep: replace heavy tour cost with sweep-driven scoring.
-            // The sweep direction gets tc=0, others get distance-based penalty.
-            var sweepDir = sweepNextDir(gs);
-            var dd = DIRS[dir];
-            var dnr = gs.player.row + dd.dr, dnc = gs.player.col + dd.dc;
-            if (dir === sweepDir) {
-                tc = 0; // sweep direction: best possible
-            } else if (isValidPos(dnr, dnc)) {
-                // Non-sweep direction: penalize by distance from where sweep wants us
-                tc = 10;
-                // Extra penalty if landing on a completed cube (revert!)
-                for (var rci = 0; rci < gs.cubes.length; rci++) {
-                    if (gs.cubes[rci].row === dnr && gs.cubes[rci].col === dnc && gs.cubes[rci].state >= gs.tgt) {
-                        tc += 30;
-                        break;
-                    }
-                }
+        if (gs.lv >= 5) {
+            // L5+ simple rule: look at destination cube state.
+            // Prefer half-done (finish it!), then fresh, avoid completed (revert).
+            // This naturally creates double-stomp: after stomping 0→1, the AI
+            // bounces to a neighbor, then the half-done cube wins next hop.
+            if (dir === 'STAY') {
+                tc = 20;
             } else {
-                tc = 50; // off-board (unless disc)
+                var dd = DIRS[dir];
+                var dnr = gs.player.row + dd.dr, dnc = gs.player.col + dd.dc;
+                if (!isValidPos(dnr, dnc)) {
+                    tc = 50; // off-board (disc handling below may override)
+                } else {
+                    var destState = -1;
+                    for (var dsi = 0; dsi < gs.cubes.length; dsi++) {
+                        if (gs.cubes[dsi].row === dnr && gs.cubes[dsi].col === dnc) {
+                            destState = gs.cubes[dsi].state; break;
+                        }
+                    }
+                    var destNeed = stompsNeeded(destState, gs.lv);
+                    if (destNeed === 1) tc = 0;       // half-done: finish it!
+                    else if (destNeed >= 2) tc = 5;   // fresh: progress
+                    else tc = 40;                      // completed: revert!
+                }
             }
         } else {
         simSeed(k * 100);
