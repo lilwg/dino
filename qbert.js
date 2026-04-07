@@ -574,6 +574,13 @@ function simUpdateEnemies(gs) {
                     targetR = prevR; targetC = prevC;
                 }
             }
+            // When lured and AT the lure position, force jump off the correct edge
+            if (hasLure && e.row === e.lureRow && e.col === e.lureCol) {
+                var exitDir = e.lureCol <= 0 ? DIRS['UL'] : DIRS['UR'];
+                simEnemyJumpTo(e, e.row + exitDir.dr, e.col + exitDir.dc, gs.sm);
+                e.falling = true;
+                continue;
+            }
             // Grid word comparison (ROM algorithm):
             // gw1 = row - col + 1; compare rows then gw1 values
             var c_gw1 = e.row - e.col + 1;
@@ -585,11 +592,6 @@ function simUpdateEnemies(gs) {
             } else {               // target above or same → go UP
                 if (t_gw1 < c_gw1) { enr = e.row - 1; enc = e.col; }     // UP-RIGHT
                 else                { enr = e.row - 1; enc = e.col - 1; } // UP-LEFT
-            }
-            // When lured and on the disc's row, allow jumping off the edge
-            var canExit = hasLure && e.row === e.lureRow;
-            if (!canExit && !isValidPos(enr, enc)) {
-                e.falling = true;
             }
             simEnemyJumpTo(e, enr, enc, gs.sm);
             if (!isValidPos(enr, enc)) e.falling = true;
@@ -692,11 +694,11 @@ function simUseDisc(gs, idx) {
     disc.active = false;
     // Track even-row disc usage for L5+ parity
     if (disc.row % 2 === 0) gs.evenRowDiscs = (gs.evenRowDiscs || 0) + 1;
-    // Set lure on Coily — it will chase toward the disc exit and fall off naturally
-    // Left side lure: col -1 (off left edge). Right side lure: col disc.row
-    // (the rightmost valid column on that row, so UR takes Coily off the grid).
+    // Set lure on Coily — it chases to the disc edge, then gets forced off
+    // Left side: col 0 (leftmost valid). Right side: col disc.row (rightmost valid).
+    // When Coily reaches the lure, force-exit logic pushes it off the correct edge.
     var lureRow = disc.row;
-    var lureCol = disc.side === 0 ? -1 : disc.row + 1;
+    var lureCol = disc.side === 0 ? 0 : disc.row;
     for (var i = 0; i < gs.enemies.length; i++) {
         if (gs.enemies[i].type === 'coily') {
             gs.enemies[i].lureRow = lureRow;
@@ -843,7 +845,7 @@ function simStepSurvival(gs, dir) {
                 // Disc ride
                 disc.active = false;
                 var lureRow = disc.row;
-                var lureCol = disc.side === 0 ? -1 : disc.row + 1;
+                var lureCol = disc.side === 0 ? 0 : disc.row;
                 for (var ei = 0; ei < gs.enemies.length; ei++)
                     if (gs.enemies[ei].type === 'coily') {
                         gs.enemies[ei].lureRow = lureRow; gs.enemies[ei].lureCol = lureCol;
