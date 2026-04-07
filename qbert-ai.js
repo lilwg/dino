@@ -321,10 +321,18 @@ function l5smDirFromTo(r1, c1, r2, c2) {
     return null;
 }
 
+// Fast cube state lookup — build once per hop via l5smBuildStateMap
+var _l5stateMap = new Int8Array(POS_COUNT);
+function l5smBuildStateMap(gs) {
+    for (var i = 0; i < POS_COUNT; i++) _l5stateMap[i] = -1;
+    for (var i = 0; i < gs.cubes.length; i++) {
+        var idx = posToIdx[gs.cubes[i].row * ROWS + gs.cubes[i].col];
+        if (idx >= 0) _l5stateMap[idx] = gs.cubes[i].state;
+    }
+}
 function l5smCubeState(gs, r, c) {
-    for (var i = 0; i < gs.cubes.length; i++)
-        if (gs.cubes[i].row === r && gs.cubes[i].col === c) return gs.cubes[i].state;
-    return -1;
+    var idx = posToIdx[r * ROWS + c];
+    return idx >= 0 ? _l5stateMap[idx] : -1;
 }
 
 function l5smNavigateToward(gs, destR, destC) {
@@ -345,7 +353,7 @@ function l5smNavigateToward(gs, destR, destC) {
             var v = adj[a];
             if (dist[v] >= 0) continue;
             // Avoid completed cubes (except the destination itself)
-            if (v !== dstIdx && stompsNeeded(l5smCubeState(gs, idxToPos[v][0], idxToPos[v][1]), gs.lv) === 0) continue;
+            if (v !== dstIdx && _l5stateMap[v] >= 0 && stompsNeeded(_l5stateMap[v], gs.lv) === 0) continue;
             dist[v] = dist[u] + 1; prev[v] = u; queue.push(v);
         }
     }
@@ -392,8 +400,7 @@ function l5smPickTarget(gs) {
         // Cluster: prefer cubes near other unfinished cubes
         var adj = posAdj[idx];
         for (var a = 0; a < adj.length; a++) {
-            var ar = idxToPos[adj[a]][0], ac = idxToPos[adj[a]][1];
-            if (stompsNeeded(l5smCubeState(gs, ar, ac), gs.lv) > 0) score += 3;
+            if (_l5stateMap[adj[a]] >= 0 && stompsNeeded(_l5stateMap[adj[a]], gs.lv) > 0) score += 3;
         }
         // Corner bonus
         if (cb.row >= 5 && (cb.col <= 1 || cb.col >= cb.row - 1)) score += 5;
@@ -412,14 +419,13 @@ function l5smPickBounce(gs) {
         var dir = l5smDirFromTo(l5smTargetRow, l5smTargetCol, nr, nc);
         if (!dir) continue;
         var score = 0;
-        var need = stompsNeeded(l5smCubeState(gs, nr, nc), gs.lv);
+        var need = _l5stateMap[adj[a]] >= 0 ? stompsNeeded(_l5stateMap[adj[a]], gs.lv) : 0;
         if (need > 0) score += 10;  // unfinished: useful stomp
         else score -= 15;            // completed: will revert
         // Prefer neighbors with more unfinished cubes nearby
         var nadj = posAdj[adj[a]];
         for (var na = 0; na < nadj.length; na++) {
-            var nar = idxToPos[nadj[na]][0], nac = idxToPos[nadj[na]][1];
-            if (stompsNeeded(l5smCubeState(gs, nar, nac), gs.lv) > 0) score += 3;
+            if (_l5stateMap[nadj[na]] >= 0 && stompsNeeded(_l5stateMap[nadj[na]], gs.lv) > 0) score += 3;
         }
         if (score > bestScore) { bestScore = score; bestDir = dir; bestR = nr; bestC = nc; }
     }
@@ -428,6 +434,7 @@ function l5smPickBounce(gs) {
 }
 
 function l5smUpdate(gs) {
+    l5smBuildStateMap(gs); // O(28) lookup table for this hop
     var pr = gs.player.row, pc = gs.player.col;
 
     // Respawn detection: jumped to apex from far away

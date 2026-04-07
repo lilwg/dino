@@ -1677,24 +1677,29 @@ function drawHUD() {
     ctx.lineWidth = 1;
     ctx.stroke();
 
-    // Top-right: lives — 10 individual dinos, then 🦕×N for overflow
+    // Top-right: lives — up to 11 individual dinos, then 10 + dino×N for overflow
     ctx.fillStyle = '#535353';
-    var maxIcons = 10;
-    var showIcons = Math.min(lives, maxIcons + 1);
     if (spriteClean) {
         var sp = SPRITES.TREX_IDLE;
         var sc = 0.38;
-        for (var i = 0; i < showIcons; i++) {
-            ctx.drawImage(spriteClean, sp.x, sp.y, sp.w, sp.h,
-                CW - 8 - (i + 1) * 20, 4, sp.w * sc, sp.h * sc);
-        }
-        if (lives > maxIcons + 1) {
-            // Overflow: dino icon + ×N to the left of the regular icons
-            var overflowLabel = '\u00d7' + (lives - showIcons);
+        var iconW = sp.w * sc;
+        if (lives <= 11) {
+            // Show individual icons
+            for (var i = 0; i < lives; i++) {
+                ctx.drawImage(spriteClean, sp.x, sp.y, sp.w, sp.h,
+                    CW - 8 - (i + 1) * 20, 4, iconW, sp.h * sc);
+            }
+        } else {
+            // 10 normal icons on the right
+            for (var i = 0; i < 10; i++) {
+                ctx.drawImage(spriteClean, sp.x, sp.y, sp.w, sp.h,
+                    CW - 8 - (i + 1) * 20, 4, iconW, sp.h * sc);
+            }
+            // 11th icon + ×N label to the left (N = lives - 10)
+            var overflowLabel = '\u00d7' + (lives - 10);
             ctx.font = '600 11px "Courier New",monospace';
             var labelW = ctx.measureText(overflowLabel).width;
-            var iconW = sp.w * sc;
-            var leftmostRegular = CW - 8 - showIcons * 20;
+            var leftmostRegular = CW - 8 - 10 * 20;
             var elevenX = leftmostRegular - labelW - iconW - 6;
             ctx.drawImage(spriteClean, sp.x, sp.y, sp.w, sp.h,
                 elevenX, 4, iconW, sp.h * sc);
