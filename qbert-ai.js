@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI: hybrid strategy + survival tree
-var AI_VERSION = 'v14.3-teacher';
+var AI_VERSION = 'v13.8-teacher';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -22,159 +22,6 @@ var AI_VERSION = 'v14.3-teacher';
 //   - Factored per-enemy survival tree as fallback when teacher times out
 
 // ─── Tour planning ───────────────────────────────────────────────────────────
-
-// ─── Peel layers: outside-in completion order ───────────────────────────────
-// Graph peeling assigns each cube a layer: corners/edges = 0, next ring = 1, etc.
-// Completing outside-in ensures you never cross completed cubes to reach inner ones.
-var PEEL_LAYER = null;
-(function() {
-    PEEL_LAYER = new Int8Array(POS_COUNT);
-    var degree = new Int8Array(POS_COUNT);
-    var removed = new Uint8Array(POS_COUNT);
-    for (var i = 0; i < POS_COUNT; i++) {
-        var deg = 0;
-        var adj = posAdj[i];
-        for (var a = 0; a < adj.length; a++) deg++;
-        degree[i] = deg;
-    }
-    var count = POS_COUNT, lay = 0;
-    while (count > 0) {
-        var minDeg = 99;
-        for (var i = 0; i < POS_COUNT; i++)
-            if (!removed[i] && degree[i] < minDeg) minDeg = degree[i];
-        var batch = [];
-        for (var i = 0; i < POS_COUNT; i++) {
-            if (!removed[i] && degree[i] === minDeg) {
-                batch.push(i); PEEL_LAYER[i] = lay; removed[i] = 1; count--;
-            }
-        }
-        for (var b = 0; b < batch.length; b++) {
-            var adj = posAdj[batch[b]];
-            for (var a = 0; a < adj.length; a++)
-                if (!removed[adj[a]]) degree[adj[a]]--;
-        }
-        lay++;
-    }
-})();
-
-// L5+ bounce-walk sweep: compute ideal next direction.
-// Humans complete rows bottom-up using UR/DL bounces that naturally
-// double-stomp both the working row and the row above.
-// Pattern for walking LEFT along row r: UL→(r-1,c-1), DL→(r,c-1)
-// Pattern for walking RIGHT along row r: UR→(r-1,c), DR→(r,c+1)
-// Each cube in row r gets stomped on arrival + on return bounce = 2 stomps.
-// Row r-1 cubes get stomped as bounce points = free progress.
-function sweepNextDir(gs) {
-    var pr = gs.player.row, pc = gs.player.col;
-    var tgt = gs.tgt;
-
-    // Find the lowest row with unfinished cubes
-    var workRow = -1;
-    for (var r = ROWS - 1; r >= 0; r--) {
-        for (var c = 0; c <= r; c++) {
-            for (var ci = 0; ci < gs.cubes.length; ci++) {
-                if (gs.cubes[ci].row === r && gs.cubes[ci].col === c && gs.cubes[ci].state < tgt) {
-                    workRow = r; break;
-                }
-            }
-            if (workRow >= 0) break;
-        }
-        if (workRow >= 0) break;
-    }
-    if (workRow < 0) return null; // all done
-
-    // Find the leftmost and rightmost unfinished cube in workRow
-    var leftCol = 99, rightCol = -1;
-    for (var ci = 0; ci < gs.cubes.length; ci++) {
-        var cb = gs.cubes[ci];
-        if (cb.row === workRow && cb.state < tgt) {
-            if (cb.col < leftCol) leftCol = cb.col;
-            if (cb.col > rightCol) rightCol = cb.col;
-        }
-    }
-
-    // If player is above the work row, go down toward it
-    if (pr < workRow) {
-        // Go toward the work row — prefer DL/DR that leads toward unfinished cubes
-        if (pc <= leftCol) return 'DR'; // we're left of target, go down-right
-        if (pc > rightCol) return 'DL'; // we're right of target, go down-left
-        // In between — go down toward the nearest unfinished cube
-        var midTarget = Math.round((leftCol + rightCol) / 2);
-        return pc <= midTarget ? 'DR' : 'DL';
-    }
-
-    // If player is on the work row, bounce-walk pattern
-    if (pr === workRow) {
-        // Find nearest unfinished cube in this row
-        var nearestCol = -1, nearestDist = 99;
-        for (var ci = 0; ci < gs.cubes.length; ci++) {
-            var cb = gs.cubes[ci];
-            if (cb.row === workRow && cb.state < tgt) {
-                var d = Math.abs(cb.col - pc);
-                if (d < nearestDist) { nearestDist = d; nearestCol = cb.col; }
-            }
-        }
-
-        // Current cube needs stomping? We're on it, so look for bounce direction.
-        // Bounce UP to row-1, then come back down to finish this cube.
-        var curState = -1;
-        for (var ci = 0; ci < gs.cubes.length; ci++) {
-            if (gs.cubes[ci].row === pr && gs.cubes[ci].col === pc) { curState = gs.cubes[ci].state; break; }
-        }
-
-        if (nearestCol === pc) {
-            // We're on the target cube — bounce up
-            // Prefer bouncing through a non-completed cube in row above
-            if (pr > 0 && isValidPos(pr - 1, pc) && !_cubeCompleted(gs, pr - 1, pc)) return 'UR';
-            if (pr > 0 && isValidPos(pr - 1, pc - 1) && !_cubeCompleted(gs, pr - 1, pc - 1)) return 'UL';
-            // All bounces go through completed cubes — bounce anyway (necessary cost)
-            if (isValidPos(pr - 1, pc)) return 'UR';
-            if (isValidPos(pr - 1, pc - 1)) return 'UL';
-        }
-
-        // Need to move to a different cube in this row — bounce-walk toward it
-        if (nearestCol > pc) {
-            // Target is to the right: UR then DR pattern
-            return 'UR'; // go up first, then DR next hop brings us right
-        } else {
-            // Target is to the left: UL then DL pattern
-            return 'UL'; // go up first, then DL next hop brings us left
-        }
-    }
-
-    // Player is on the bounce row (workRow - 1): come back down
-    if (pr === workRow - 1) {
-        // Find where we should land in workRow
-        // Check which DL/DR target is unfinished
-        var dlTarget = isValidPos(pr + 1, pc) ? pc : -1;     // DL → (pr+1, pc)
-        var drTarget = isValidPos(pr + 1, pc + 1) ? pc + 1 : -1; // DR → (pr+1, pc+1)
-
-        var dlNeed = dlTarget >= 0 && !_cubeCompleted(gs, pr + 1, dlTarget);
-        var drNeed = drTarget >= 0 && !_cubeCompleted(gs, pr + 1, drTarget);
-
-        if (dlNeed && drNeed) {
-            // Both need work — prefer the one closer to the nearest unfinished
-            return dlTarget <= rightCol ? 'DL' : 'DR';
-        }
-        if (dlNeed) return 'DL';
-        if (drNeed) return 'DR';
-        // Both completed — go toward remaining unfinished cubes
-        return pc <= leftCol ? 'DR' : 'DL';
-    }
-
-    // Player is below work row (on completed rows) — go up
-    if (isValidPos(pr - 1, pc)) return 'UR';
-    if (isValidPos(pr - 1, pc - 1)) return 'UL';
-    return null;
-}
-
-function _cubeCompleted(gs, r, c) {
-    for (var i = 0; i < gs.cubes.length; i++) {
-        if (gs.cubes[i].row === r && gs.cubes[i].col === c)
-            return gs.cubes[i].state >= gs.tgt;
-    }
-    return false;
-}
 
 // How many stomps does a cube need to reach target state?
 function stompsNeeded(cubeState, lv) {
@@ -233,7 +80,7 @@ function dijkstraFrom(srcIdx, stomps, penalty, discSources) {
 // Greedy nearest-neighbor tour cost with deterministic tie-breaking.
 // On toggle levels, uses Dijkstra to route around completed cubes.
 // Ties broken by lowest position index for stability.
-function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts, pathOut, coilyIdx) {
+function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts, pathOut) {
     var stomps = new Int8Array(POS_COUNT);
     for (var i = 0; i < cubes.length; i++) {
         var idx = posToIdx[cubes[i].row * ROWS + cubes[i].col];
@@ -265,52 +112,36 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts, pathOut, 
         var dijk = dijkstraFrom(curIdx, stomps, REVERT_PENALTY, discSources);
 
         var bestIdx = -1, bestDist = 999;
-        if (lv >= 5) {
-            // L5+ sweep: prefer half-done cubes, then lowest-row unfinished cube.
-            // Matches the bounce-walk pattern driven by sweepNextDir().
-            var sweepHalfDone = -1, sweepHalfDist = 999;
-            var sweepFresh = -1, sweepFreshDist = 999;
-            for (var i = 0; i < POS_COUNT; i++) {
-                if (stomps[i] > 0 && i !== curIdx) {
-                    var d = dijk.dist[i];
-                    var row_i = idxToPos[i][0];
-                    // Bottom-up bias: prefer lower rows
-                    d -= row_i * 3;
-                    if (stomps[i] === 1 && d < sweepHalfDist) {
-                        sweepHalfDone = i; sweepHalfDist = d;
-                    }
-                    if (d < sweepFreshDist) {
-                        sweepFresh = i; sweepFreshDist = d;
-                    }
-                }
-            }
-            bestIdx = sweepHalfDone !== -1 ? sweepHalfDone : sweepFresh;
-            if (bestIdx !== -1) bestDist = dijk.dist[bestIdx];
-        } else {
         for (var i = 0; i < POS_COUNT; i++) {
             if (stomps[i] > 0 && i !== curIdx) {
                 var d = dijk.dist[i];
                 // Deprioritize frequently-reverted cubes — go to fresh ones first
                 if (revertCounts && revertCounts[i] > 1) d += (revertCounts[i] - 1) * 3;
                 // Prefer cubes not visited recently — breaks oscillation loops
+                // by steering toward "forgotten" cubes instead of re-visiting familiar ones
                 var curHops = typeof hops !== 'undefined' ? hops : 0;
                 var hopsSinceVisit = curHops - (aiCubeLastVisit[i] || 0);
                 if (hopsSinceVisit < 20) d += (20 - hopsSinceVisit) * 0.5;
-                // Bottom-up sweep: complete lower rows first
+                // Bottom-up sweep: complete lower rows first to avoid backtracking
+                // through completed upper rows. L5 needs very strong bias to enforce
+                // systematic sweep — weak bias lets planner pick distant targets.
                 var row_i = idxToPos[i][0], col_i = idxToPos[i][1];
-                d -= row_i * 2;
-                // Corner priority
+                d -= row_i * (lv >= 5 ? 2.5 : 2);
+                // Corner priority: bottom corners (few exits) should be done first
                 if (row_i >= 4 && (col_i <= 1 || col_i >= row_i - 1)) d -= 2;
-                // Cluster bonus
+                // Half-done priority: on L5+, cubes needing 1 more stomp are urgent —
+                // complete them now before travel or enemies revert them
+                if (lv >= 5 && stomps[i] === 1) d -= 4;
+                // Cluster bonus: prefer cubes with unfinished neighbors (sweep clusters together)
+                var clusterW = (lv >= 5) ? 1.5 : 0.5;
                 var adj = posAdj[i];
                 for (var ai = 0; ai < adj.length; ai++) {
-                    if (stomps[adj[ai]] > 0) d -= 0.5;
+                    if (stomps[adj[ai]] > 0) d -= clusterW;
                 }
                 if (d < bestDist || (d === bestDist && (bestIdx === -1 || i < bestIdx))) {
                     bestDist = d; bestIdx = i;
                 }
             }
-        }
         }
         if (bestIdx === -1) {
             if (stomps[curIdx] > 0) totalHops += stomps[curIdx] * 2;
@@ -363,8 +194,8 @@ function greedyTourCost(startIdx, cubes, tgt, lv, discs, revertCounts, pathOut, 
 }
 
 // Tour cost from a simulation state
-function simTourCost(gs, pathOut, coilyIdx) {
-    return greedyTourCost(posToIdx[gs.player.row * ROWS + gs.player.col], gs.cubes, gs.tgt, gs.lv, gs.discs, aiRevertCounts, pathOut, coilyIdx != null ? coilyIdx : -1);
+function simTourCost(gs, pathOut) {
+    return greedyTourCost(posToIdx[gs.player.row * ROWS + gs.player.col], gs.cubes, gs.tgt, gs.lv, gs.discs, aiRevertCounts, pathOut);
 }
 
 // ─── Danger zone assessment ──────────────────────────────────────────────────
@@ -1859,9 +1690,6 @@ function unifiedPick(gs, coilyActive) {
 
     // ── Core: survival tree safety check + strategy-aware tour cost per direction ──
 
-    // Coily position index for tour planner (avoids routing through Coily's zone)
-    var coilyIdx = (coilyInit && coilyInit.row >= 0) ? posToIdx[coilyInit.row * ROWS + coilyInit.col] : -1;
-
     var safe1 = {};
     var safe2 = {};
     var tourCosts = {};
@@ -2003,73 +1831,13 @@ function unifiedPick(gs, coilyActive) {
         var _tcT0 = typeof performance !== 'undefined' ? performance.now() : 0;
         var tc;
         var _vizPath = [];
-
-        if (gs.lv >= 5) {
-            // L5+ bottom-up row sweep. Complete bottom row first, seal it,
-            // move up. Once a row is done it's a wall — can never be reverted.
-            if (dir === 'STAY') {
-                tc = 20;
-            } else {
-                var dd = DIRS[dir];
-                var dnr = gs.player.row + dd.dr, dnc = gs.player.col + dd.dc;
-                if (!isValidPos(dnr, dnc)) {
-                    tc = 50; // off-board
-                } else {
-                    // Find the lowest row with unfinished cubes = work row
-                    var workRow = -1;
-                    for (var wr = ROWS - 1; wr >= 0; wr--) {
-                        for (var wci = 0; wci < gs.cubes.length; wci++) {
-                            if (gs.cubes[wci].row === wr && gs.cubes[wci].state < gs.tgt) {
-                                workRow = wr; break;
-                            }
-                        }
-                        if (workRow >= 0) break;
-                    }
-
-                    var destState = -1;
-                    for (var dsi = 0; dsi < gs.cubes.length; dsi++) {
-                        if (gs.cubes[dsi].row === dnr && gs.cubes[dsi].col === dnc) {
-                            destState = gs.cubes[dsi].state; break;
-                        }
-                    }
-                    var destNeed = stompsNeeded(destState, gs.lv);
-
-                    // BFS distance from dest to nearest unfinished work-row cube
-                    var destIdx = posToIdx[dnr * ROWS + dnc];
-                    var distToWork = 99;
-                    for (var wti = 0; wti < gs.cubes.length; wti++) {
-                        if (gs.cubes[wti].row === workRow && gs.cubes[wti].state < gs.tgt) {
-                            var wtIdx = posToIdx[gs.cubes[wti].row * ROWS + gs.cubes[wti].col];
-                            var wd = distMatrix[destIdx * POS_COUNT + wtIdx];
-                            if (wd < distToWork) distToWork = wd;
-                        }
-                    }
-
-                    if (dnr > workRow) {
-                        // Below work row = completed row = WALL
-                        tc = 100;
-                    } else if (dnr === workRow) {
-                        // On the work row
-                        if (destNeed === 1) tc = 0;       // half-done: finish it!
-                        else if (destNeed >= 2) tc = 2;   // fresh: progress
-                        else tc = 20 + distToWork;        // completed: route toward unfinished
-                    } else {
-                        // Above work row — transit, gradient toward unfinished work cubes
-                        if (destNeed === 1) tc = 3 + distToWork;
-                        else if (destNeed >= 2) tc = 5 + distToWork;
-                        else tc = 8 + distToWork;
-                    }
-                }
-            }
-        } else {
         simSeed(k * 100);
         var tcClone = simDeepClone(gs);
         var tcAlive = simStep(tcClone, dir);
         if (tcAlive) {
-            tc = tcClone.levelWon ? 0 : simTourCost(tcClone, _vizPath, coilyIdx);
+            tc = tcClone.levelWon ? 0 : simTourCost(tcClone, _vizPath);
         } else {
-            tc = simTourCost(gs, _vizPath, coilyIdx) + 1;
-        }
+            tc = simTourCost(gs, _vizPath) + 1;
         }
         _dirTourPaths[dir] = _vizPath;
         // STAY penalty: escalates with consecutive STAYs, much higher during freeze
@@ -2095,18 +1863,17 @@ function unifiedPick(gs, coilyActive) {
             }
         }
 
-        // Anti-revert: on toggle/cycle levels, penalize directions that land
-        // on completed cubes. Each revert costs 2+ extra hops to fix.
-        // Drop the penalty when deeply stuck (np>200) — must accept reverts.
-        if (gs.lv >= 3 && dir !== 'STAY' && aiNoProgressCount < 200) {
+        // Anti-oscillation: on toggle levels with moderate hops, penalize
+        // directions that land on completed cubes (prevents undo/redo cycles).
+        // But when deeply stuck (np>200), REMOVE the penalty — the AI must
+        // accept reverts to reach the last cubes.
+        if (gs.lv >= 3 && dir !== 'STAY' && typeof hops !== 'undefined' && hops > 200 && aiNoProgressCount < 200) {
             var aod = DIRS[dir];
             var aor = gs.player.row + aod.dr, aoc = gs.player.col + aod.dc;
             if (isValidPos(aor, aoc)) {
                 for (var aoi = 0; aoi < gs.cubes.length; aoi++) {
                     if (gs.cubes[aoi].row === aor && gs.cubes[aoi].col === aoc && gs.cubes[aoi].state >= gs.tgt) {
-                        // L5+ cycle: revert costs 2 stomps + travel = ~4 hops
-                        // L3-4 toggle: revert costs 1 stomp + travel = ~2 hops
-                        tc += (gs.lv >= 5) ? 8 : 4;
+                        tc += Math.min(30, 10 + Math.floor(hops / 100) * 5); // cap at 30
                         break;
                     }
                 }
@@ -2123,9 +1890,9 @@ function unifiedPick(gs, coilyActive) {
             if (isValidPos(_knr, _knc)) {
                 var _cDistBefore = Math.abs(coilyInit.row - gs.player.row) + Math.abs(coilyInit.col - gs.player.col);
                 var _cDistAfter = Math.abs(coilyInit.row - _knr) + Math.abs(coilyInit.col - _knc);
-                if (_cDistBefore <= 5) {
+                if (_cDistBefore <= 4) {
                     // Coily is close — reward moving away, penalize moving toward
-                    tc += (_cDistBefore - _cDistAfter) * 4;
+                    tc += (_cDistBefore - _cDistAfter) * 3;
                 }
             }
         }
@@ -2140,7 +1907,7 @@ function unifiedPick(gs, coilyActive) {
                 var distAfter = exBfsDist(lnr, lnc, lureDiscAdj.row, lureDiscAdj.col);
                 if (distAfter < distBefore) {
                     var coilyDist = exBfsDist(coilyInit.row, coilyInit.col, gs.player.row, gs.player.col);
-                    var lureBonus = coilyDist <= 3 ? 25 : (coilyDist <= 5 ? 18 : 10);
+                    var lureBonus = coilyDist <= 3 ? 15 : (coilyDist <= 5 ? 10 : 5);
                     tc -= lureBonus;
                 }
             } else if (!isValidPos(lnr, lnc)) {
@@ -2151,15 +1918,13 @@ function unifiedPick(gs, coilyActive) {
                     if (!djd.active) continue;
                     if ((djd.side === 0 && dir === 'UL' && gs.player.col === 0 && gs.player.row === djd.row) ||
                         (djd.side === 1 && dir === 'UR' && gs.player.col === gs.player.row && gs.player.row === djd.row)) {
-                        tc -= 30;
+                        tc -= 15;
                         break;
                     }
                 }
             }
         }
 
-
-        // (L5+ sweep is handled above in tour cost section)
 
         tourCosts[dir] = tc;
         var _tcMs = typeof performance !== 'undefined' ? performance.now() - _tcT0 : 0;
@@ -2168,6 +1933,7 @@ function unifiedPick(gs, coilyActive) {
         // Combined score: P(survive)^SAFETY_EXP × discount^tour_cost
         // SAFETY_EXP < 1 compresses probabilities toward 1 (less risk-averse)
         // DISCOUNT < 1 penalizes longer tours (each extra hop = more danger)
+        // PROB_FLOOR: minimum probability to consider (below = give up)
         // Score = log(P_per_hop) - λ × tour_cost
         // log(P_per_hop) = log(P_D) / D normalizes danger across depths.
         // λ controls how much tour progress matters vs survival.
