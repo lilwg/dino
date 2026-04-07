@@ -1,5 +1,5 @@
 // qbert-ai.js — Q*bert AI: hybrid strategy + survival tree
-var AI_VERSION = 'v13.7-teacher';
+var AI_VERSION = 'v13.9-teacher';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
@@ -1933,12 +1933,15 @@ function unifiedPick(gs, coilyActive) {
         // Combined score: P(survive)^SAFETY_EXP × discount^tour_cost
         // SAFETY_EXP < 1 compresses probabilities toward 1 (less risk-averse)
         // DISCOUNT < 1 penalizes longer tours (each extra hop = more danger)
-        // PROB_FLOOR: minimum probability to consider (below = give up)
         // Score = log(P_per_hop) - λ × tour_cost
         // log(P_per_hop) = log(P_D) / D normalizes danger across depths.
-        // λ controls how much tour progress matters vs survival.
-        var LAMBDA = window.AI_LAMBDA || 0.002;
+        // λ = per-hop death rate: each extra hop of tour cost carries real
+        // survival cost (more time exposed to enemies). When safe (P≈1),
+        // λ stays at floor (0.002) and tour cost is just routing preference.
+        // When dangerous, λ scales up so reverts are penalized as survival risk.
         var logPerHop = survProb > 0 ? (DEPTH > 0 ? Math.log(survProb) / DEPTH : 0) : -100;
+        var perHopDeathRate = (DEPTH > 0 && survProb > 0 && survProb < 1) ? -logPerHop : 0;
+        var LAMBDA = Math.max(perHopDeathRate, window.AI_LAMBDA || 0.002);
         var score = logPerHop - LAMBDA * tc;
         if (survProb <= 0) {
             aiMoveScores[dir] = -10000;
