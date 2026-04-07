@@ -1,24 +1,25 @@
 // qbert-ai.js — Q*bert AI: hybrid strategy + survival tree
-var AI_VERSION = 'v13.5-teacher';
+var AI_VERSION = 'v13.6-teacher';
 // Requires: qbert.js loaded first (provides constants, board, simulation)
 //
 // Provides: aiPickBestDir() — main entry point for AI move selection
 //
-// Architecture: human-style strategy decides WHERE to go, survival tree
-// validates IF it's safe. Best of both worlds.
+// Architecture: strategy layer decides WHERE to go, safety layer validates
+// IF it's safe. Score = log(P_survive)/depth - λ × tour_cost.
 //
-// Strategy layer (greedyTourCost):
+// Strategy layer (greedyTourCost + Dijkstra):
 //   - Bottom-up sweep: complete lower rows first, never backtrack
 //   - Corner priority: finish low-exit corner cubes early
 //   - Cluster awareness: prefer cubes near other unfinished cubes
 //   - Active disc luring: route toward discs when Coily is active
-//   - Corner escape: avoid low-exit tiles when Coily is nearby
+//   - Coily kiting: drag snake away before working on cubes (L5+)
+//   - Disc parity checks: prevent unsolvable board states (L5+)
 //
-// Safety layer (survive/surviveOne):
-//   - Factored survival tree: P(survive) = product of per-enemy trees
-//   - Coily simulated deterministically (ROM chase algorithm)
-//   - Frame-accurate collision detection during mid-hop flight
-//   - 8-hop lookahead with memoized AND-OR tree
+// Safety layer (perfectTeacherEval / findReactiveSurvival fallback):
+//   - Expectimax search over real game engine (simStep)
+//   - Enumerates enemy RNG branches for exact survival probability
+//   - Adaptive depth: up to 20 hops, scales with speed multiplier
+//   - Factored per-enemy survival tree as fallback when teacher times out
 
 // ─── Tour planning ───────────────────────────────────────────────────────────
 
