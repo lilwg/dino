@@ -1670,14 +1670,17 @@ function drawHUD() {
                 CW - 8 - (i + 1) * 20, 4, sp.w * sc, sp.h * sc);
         }
         if (lives > maxIcons) {
-            // 11th dino icon
-            var elevenX = CW - 8 - (maxIcons + 1) * 20;
-            ctx.drawImage(spriteClean, sp.x, sp.y, sp.w, sp.h,
-                elevenX, 4, sp.w * sc, sp.h * sc);
-            // ×N text right after the 11th dino
+            // Overflow: dino icon + ×N to the left of the regular icons
+            var overflowLabel = '\u00d7' + (lives - showIcons);
             ctx.font = '600 11px "Courier New",monospace';
+            var labelW = ctx.measureText(overflowLabel).width;
+            var iconW = sp.w * sc;
+            var leftmostRegular = CW - 8 - showIcons * 20;
+            var elevenX = leftmostRegular - labelW - iconW - 6;
+            ctx.drawImage(spriteClean, sp.x, sp.y, sp.w, sp.h,
+                elevenX, 4, iconW, sp.h * sc);
             ctx.textAlign = 'left';
-            ctx.fillText('\u00d7' + (lives - maxIcons), elevenX + sp.w * sc + 1, 17);
+            ctx.fillText(overflowLabel, elevenX + iconW + 1, 17);
             ctx.font = '600 13px "Courier New",monospace';
         }
     }
