@@ -1942,8 +1942,12 @@ function unifiedPick(gs, coilyActive) {
         if (hop1Surv[sk] >= 1.0 && aiMoveScores[sk] !== undefined) { hasPerfect = true; break; }
     }
     if (hasPerfect) {
+        // When deeply stuck on L5+, relax safety-first to allow P≥0.8 moves.
+        // The AI wastes hundreds of hops choosing STAY or the single P=1.0
+        // direction when a P=0.9 move would make routing progress.
+        var safetyFloor = (gs.lv >= 5 && aiNoProgressCount > 200) ? 0.8 : 1.0;
         for (var sk2 in hop1Surv) {
-            if (hop1Surv[sk2] < 1.0 && aiMoveScores[sk2] !== undefined && aiMoveScores[sk2] > -10000) {
+            if (hop1Surv[sk2] < safetyFloor && aiMoveScores[sk2] !== undefined && aiMoveScores[sk2] > -10000) {
                 aiMoveScores[sk2] = -10000;
             }
         }
